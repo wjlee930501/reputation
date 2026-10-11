@@ -1112,3 +1112,31 @@ def test_recently_failed_source_still_blocks_synthesis(pg_session) -> None:
         reviewer=lambda *_a, **_k: _approved_review(note),
     )
     assert result.status == EssenceRefreshStatus.WAITING_FOR_SOURCES
+
+
+def test_conflicting_sources_escalate_straight_to_a_person(pg_session) -> None:
+    hospital, source, note, previous = _seed_baseline(pg_session, label="conflict-terminal")
+    pg_session.delete(previous)
+    pg_session.flush()
+
+    def synthesize(*_args, **_kwargs):
+        payload = _candidate_payload(source, note)
+        payload["conflict_notes"] = ["원장 인터뷰와 홈페이지의 진료 시간이 다릅니다."]
+        return payload
+
+    def never_review(*_args, **_kwargs):
+        raise AssertionError("결정적 보류는 유료 검수를 사지 않는다")
+
+    result = refresh_essence_snapshot(
+        pg_session, hospital.id, synthesizer=synthesize, reviewer=never_review
+    )
+
+    assert result.status == EssenceRefreshStatus.ESCALATED
+    assert result.next_automatic_attempt_at is None
+    assert result.automatic_recovery_exhausted is True
+    draft = pg_session.get(HospitalContentPhilosophy, result.philosophy_id)
+    assert {"field": "automatic_recovery_terminal", "reason": "conflict_notes"} in (
+        draft.unsupported_gaps or []
+    )
+    # 다음 15분 조정이 같은 입력을 다시 사지 않는다.
+    assert essence_refresh_needed(pg_session, hospital.id) is False

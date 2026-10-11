@@ -18,6 +18,7 @@ from app.models.content import ContentItem
 from app.models.essence import (
     AUTO_RECOVERY_CYCLE_GAP_FIELD,
     AUTO_RECOVERY_LAST_AT_GAP_FIELD,
+    AUTO_RECOVERY_TERMINAL_GAP_FIELD,
     AUTO_REVIEW_GAP_FIELD,
     EXCLUDED_ERROR_SOURCE_GAP_FIELD,
     HospitalContentPhilosophy,
@@ -396,6 +397,28 @@ def _has_prompt_injection(sources: list[HospitalSourceAsset]) -> bool:
     return any(pattern.search(source_text) for pattern in _PROMPT_INJECTION_PATTERNS)
 
 
+def _operator_required_reason(
+    payload: dict[str, Any],
+    sources: list[HospitalSourceAsset],
+) -> str | None:
+    """자동 재합성·재검수로 풀 수 없는 보류의 사유. None이면 확률적 보류다."""
+
+    if _has_prompt_injection(sources):
+        return "prompt_injection"
+    if payload.get("conflict_notes"):
+        return "conflict_notes"
+    return None
+
+
+def _automatic_recovery_terminal_reason(philosophy: HospitalContentPhilosophy) -> str | None:
+    """바로 사람에게 넘긴 보류라는 서버 표식의 사유. 없으면 None."""
+
+    for item in getattr(philosophy, "unsupported_gaps", None) or []:
+        if isinstance(item, dict) and item.get("field") == AUTO_RECOVERY_TERMINAL_GAP_FIELD:
+            return str(item.get("reason") or "operator_required")
+    return None
+
+
 def _candidate_evidence_ids(payload: dict[str, Any]) -> set[str]:
     ids: set[str] = set()
     evidence_map = payload.get("evidence_map")
@@ -476,6 +499,8 @@ def automatic_recovery_due_at(philosophy: HospitalContentPhilosophy) -> datetime
     다시 시도한다. 표식이 없는 옛 초안(c=0)과 레거시 영구 정지 표식은 지금 바로 한 번 받는다.
     """
 
+    if _automatic_recovery_terminal_reason(philosophy) is not None:
+        return None
     cycles = effective_recovery_cycle(philosophy)
     last_at = _automatic_recovery_last_at(philosophy)
     if cycles >= AUTO_ESSENCE_MAX_RECOVERY_CYCLES:
@@ -607,7 +632,7 @@ def _can_automatically_remediate(
 ) -> bool:
     """Source-level ambiguity is never rewritten away by a second model call."""
 
-    return not _has_prompt_injection(sources) and not bool(payload.get("conflict_notes"))
+    return _operator_required_reason(payload, sources) is None
 
 
 def _critical_losses(
@@ -1869,14 +1894,18 @@ def refresh_essence_snapshot(
     recovery_cycle = (
         effective_recovery_cycle(retryable_auto_draft) if retryable_auto_draft else 0
     ) + 1
+    operator_required_reason = (
+        _operator_required_reason(payload, sources) if findings else None
+    )
     next_attempt_at = (
         escalated_at + automatic_recovery_backoff(recovery_cycle)
-        if recovery_cycle < AUTO_ESSENCE_MAX_RECOVERY_CYCLES
+        if recovery_cycle < AUTO_ESSENCE_MAX_RECOVERY_CYCLES and operator_required_reason is None
         else None
     )
     if findings:
-        # 보류는 종착이 아니라 계수되는 사이클이다. 예산이 남아 있으면 백오프 뒤 자동으로
-        # 한 번 더 만들고, 다 쓰면 그때 사람이 본다.
+        # 확률적 보류는 계수되는 사이클이다. 예산이 남아 있으면 백오프 뒤 자동으로 한 번 더
+        # 만들고, 다 쓰면 그때 사람이 본다. 상충·주입 의심은 같은 입력으로 다시 사도 결론이
+        # 같으므로 바로 사람에게 넘긴다(표식이 자동 사다리를 끊는다).
         candidate.unsupported_gaps = (
             list(candidate.unsupported_gaps or [])
             + [{"field": AUTO_REVIEW_GAP_FIELD, "reason": finding} for finding in findings]
@@ -1890,6 +1919,16 @@ def refresh_essence_snapshot(
                     "reason": escalated_at.isoformat(),
                 },
             ]
+            + (
+                [
+                    {
+                        "field": AUTO_RECOVERY_TERMINAL_GAP_FIELD,
+                        "reason": operator_required_reason,
+                    }
+                ]
+                if operator_required_reason
+                else []
+            )
         )
     write_audit_log_sync(
         db,
@@ -1922,6 +1961,7 @@ def refresh_essence_snapshot(
             "next_automatic_attempt_at": (
                 next_attempt_at.isoformat() if next_attempt_at else None
             ),
+            "operator_required_reason": operator_required_reason,
             "findings": findings[:_MAX_REVIEW_FINDINGS],
         },
     )

@@ -98,11 +98,15 @@ AUTO_RECOVERY_LAST_AT_GAP_FIELD = "automatic_recovery_last_at"
 # 72시간 넘게 처리 오류인 필수 자료를 근거에서 제외했다는 사실. 승인 근거의 일부이므로
 # 사람이 지울 수 없다 — 자료를 고쳐 다시 처리하면 새 snapshot이 되어 사라진다.
 EXCLUDED_ERROR_SOURCE_GAP_FIELD = "excluded_error_source"
+# 자동 재검수로 풀 수 없는 보류(자료 간 상충·프롬프트 주입 의심)라 바로 사람에게 넘겼다는 표식.
+# 사람이 자료를 고치면 새 snapshot이 되어 새 초안이 만들어진다.
+AUTO_RECOVERY_TERMINAL_GAP_FIELD = "automatic_recovery_terminal"
 SERVER_OWNED_GAP_FIELDS = (
     AUTO_REVIEW_GAP_FIELD,
     AUTO_RECOVERY_CYCLE_GAP_FIELD,
     AUTO_RECOVERY_LAST_AT_GAP_FIELD,
     EXCLUDED_ERROR_SOURCE_GAP_FIELD,
+    AUTO_RECOVERY_TERMINAL_GAP_FIELD,
 )
 
 
