@@ -652,6 +652,9 @@ class Settings(BaseSettings):
     # Domain
     CNAME_TARGET: str = "cname.reputation.motionlabs.kr"
     CUSTOM_DOMAIN_IP_TARGETS: str = ""
+    # 자기 도메인을 저장한 뒤 DNS가 맞기를 15분마다 기다리는 최대 일수. 넘으면 폴링을 멈추고
+    # 사람의 일(CUSTOM_DOMAIN_DNS_NOT_CONFIGURED) 하나를 연다. 도메인을 다시 저장하면 새로 센다.
+    DOMAIN_DNS_POLL_MAX_DAYS: int = 14
 
     # Admin
     ADMIN_BASE_URL: str = (
