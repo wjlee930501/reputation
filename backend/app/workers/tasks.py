@@ -534,6 +534,7 @@ from app.workers.generation_retry_policy import (
     attempt_is_terminal,
     environment_attempt_period,
     environment_window_closed,
+    environment_window_start,
     has_model_declared_hard_finding,
     next_recovery_deadline,
     repair_session_is_available,
@@ -1416,16 +1417,16 @@ def _remember_generation_attempt(
         # 환경 장애 연속 구간의 시작. 원인 문자열이 바뀌어도(PROVIDER_TIMEOUT → GENERATION_FAILED,
         # 게이트의 CONTENT_NOT_GENERATED 덮어쓰기) 같은 문맥의 환경 기록이 이어지면 시작을 잇는다 —
         # 원인을 갈아타며 3일 창을 새로 여는 일이 없게 한다.
+        # 이어받는 시작은 읽는 쪽과 같은 규칙이다(`environment_window_start`) — `environment_since`가
+        # 없는 레거시 기록은 그 마지막 관측 시각이다. `now`로 새로 잡으면 닫힌 창이 다시 열린다.
         carried = (
-            previous.get(ENVIRONMENT_SINCE_KEY)
+            environment_window_start(previous)
             if previous.get("context") == context
             and previous.get("retry_class")
             == GenerationRetryClass.ENVIRONMENT_RECOVERABLE.value
             else None
         )
-        attempt[ENVIRONMENT_SINCE_KEY] = (
-            carried if isinstance(carried, str) else observed_at.isoformat()
-        )
+        attempt[ENVIRONMENT_SINCE_KEY] = (carried or observed_at).isoformat()
     if reason == "GENERATION_REJECTED":
         attempt["message"] = safe_generation_rejection_message(message)
     # 이 차단이 어떤 승인 사실 위에서 내려졌는지 남긴다. 사람이 그 자료를 채우면 스윕이
@@ -2342,6 +2343,10 @@ SOFT_REMEDIATION_MAX_GENERATIONS = 1
 HARD_REMOVAL_MAX_GENERATIONS = 1
 
 
+# 실행 진입이 남기는 예약 토큰 일시 속성(`_enter_claimed_execution`). 매핑되지 않은 속성이다.
+_GENERATION_RESERVATION_ATTR = "_generation_reservation_token"
+
+
 async def _generate_with_auto_review(
     *,
     db,
@@ -2377,11 +2382,17 @@ async def _generate_with_auto_review(
             default=str,
         ).encode("utf-8")
     ).hexdigest()[:16]
-    # 작가 결과의 재생 범위는 한 claim(세션)이다. 같은 claim의 재배달은 저장된 결과를 다시
-    # 쓰고(중복 구매 없음), 새 claim은 새 표본을 산다. 본문이 저장되지 않은 실패(제목 거절
-    # 등)가 다음 세션에서 같은 후보를 0원에 재생해 표본 예산만 태우지 않게 한다.
-    # claim이 없는 직접 호출(테스트·도구)은 종전처럼 하나의 범위를 공유한다.
-    session_scope = str(getattr(item, "generation_claim_token", None) or "unclaimed")
+    # 작가 결과의 재생 범위는 한 예약(세션)이다. 같은 예약의 재배달은 저장된 결과를 다시
+    # 쓰고(중복 구매 없음), 새 예약은 새 표본을 산다. 본문이 저장되지 않은 실패(제목 거절
+    # 등)가 다음 세션에서 같은 후보를 0원에 재생해 표본 예산만 태우지 않게 한다. 실행 진입
+    # (`begin_generation_execution`)은 배달마다 claim 토큰을 바꾸므로 예약 토큰을 먼저 본다.
+    # 예약이 없는 경로는 그 실행의 claim 토큰, claim도 없는 직접 호출(테스트·도구)은 종전처럼
+    # 하나의 범위를 공유한다.
+    session_scope = str(
+        getattr(item, _GENERATION_RESERVATION_ATTR, None)
+        or getattr(item, "generation_claim_token", None)
+        or "unclaimed"
+    )
 
     async def _budgeted_generate(*args, **kwargs):
         findings = [str(value) for value in (kwargs.get("remediation_findings") or [])]
@@ -5521,7 +5532,7 @@ def generate_claimed_content_item(
         else:
             context = explicit_run_context(self)
             if context is not None:
-                leased = begin_generation_execution(db, item_id, token, context)
+                leased = _enter_claimed_execution(db, item_id, token, context)
                 if leased is None:
                     item = None
                 else:
@@ -5566,6 +5577,21 @@ def generate_claimed_content_item(
             safe_error_code=code,
             safe_error_message=message,
         )
+
+
+def _enter_claimed_execution(db, item_id, reservation, context):
+    """예약을 실행 lease로 올린다(`begin_generation_execution`). 공급자 호출 전 진입점.
+
+    실행 토큰은 같은 예약의 (재)배달마다 새로 바뀐다. 작가 결과의 재생 범위는 그 배달들이
+    공유하는 예약 토큰이어야 하므로 행에 일시 속성으로 남긴다(`_generate_with_auto_review`).
+    """
+
+    leased = begin_generation_execution(db, item_id, reservation, context)
+    if leased is None:
+        return None
+    item, execution_token = leased
+    setattr(item, _GENERATION_RESERVATION_ATTR, reservation)
+    return item, execution_token
 
 
 _ITEM_RUN_STATES = {

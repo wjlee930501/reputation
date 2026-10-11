@@ -216,3 +216,32 @@ def test_a_legacy_record_without_the_window_start_counts_from_its_last_observati
     assert environment_window_last_day(legacy) == date(2026, 9, 18)
     assert environment_window_closed(legacy, _kst(2026, 9, 18, 22)) is False
     assert environment_window_closed(legacy, _kst(2026, 9, 19, 1)) is True
+
+
+def test_a_legacy_window_stays_closed_through_the_gate_and_the_next_failure(monkeypatch):
+    """`environment_since` 없는 레거시 환경 기록 — 읽기·게이트 덮어쓰기·다음 실패 저장이 같은 창을 본다.
+
+    읽는 쪽은 마지막 관측일(9/16)부터 3일(9/18까지)로 본다. 쓰는 쪽이 그 시작을 `now`로 새로 잡으면
+    9/20 게이트가 닫힌 창을 다시 연다.
+    """
+
+    philosophy, item = _empty_slot(monkeypatch)
+    for moment in _DAY1:
+        _remember(monkeypatch, item, philosophy, moment, "PROVIDER_TIMEOUT")
+    legacy = item.essence_check_summary["generation_attempt"]
+    legacy.pop(ENVIRONMENT_SINCE_KEY)
+    legacy["next_retry_at"] = None  # 배포 전 코드의 평생 4회 소진 모양
+    assert environment_window_last_day(legacy) == date(2026, 9, 18)
+
+    _gate(monkeypatch, item, philosophy, _kst(2026, 9, 20, 7, 45))
+
+    gate_record = _record(item)
+    assert gate_record["reason"] == "CONTENT_NOT_GENERATED"
+    assert gate_record[ENVIRONMENT_SINCE_KEY] == legacy["observed_at"]
+    assert gate_record["next_retry_at"] is None
+    assert not _loader_takes(monkeypatch, item, _kst(2026, 9, 20, 12))
+
+    after = _remember(monkeypatch, item, philosophy, _kst(2026, 9, 20, 13), "PROVIDER_TIMEOUT")
+    assert after[ENVIRONMENT_SINCE_KEY] == legacy["observed_at"]
+    assert after["next_retry_at"] is None
+    assert environment_window_closed(after, _kst(2026, 9, 21, 1)) is True
