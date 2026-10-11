@@ -801,3 +801,40 @@ def test_the_swapped_topic_actually_buys_its_first_writer_call(pg_conn, pg_sessi
     assert budget["prior_topic_spend"]["writer_results"] == WRITER_RESULT_LIMIT
     assert budget["prior_topic_spend"]["acquisition_count"] == WRITER_RESULT_LIMIT
     assert budget["acquisitions"][-1]["status"] == "RESERVED"
+
+
+def test_a_retrying_slot_whose_topic_spent_its_writers_is_swapped_on_day_one(
+    pg_conn, pg_session
+):
+    """현재 주제의 작가 예산 소진은 3일 사다리를 기다리지 않고 교체 후보다(D1).
+
+    소진 첫날의 기록은 아직 자동 복구가 소유한 RETRYING(`SAMPLE_RECOVERABLE`)이다. 후보
+    SQL이 이 기록을 거르지 않고 정본 파이썬 술어까지 올려 보내는지 실제 Postgres로 본다.
+    """
+
+    hospital_id = _seed_hospital(pg_conn)
+    target_id = pg_conn.execute(
+        text("SELECT id FROM ai_query_targets WHERE hospital_id=:h AND name=:name"),
+        {"h": hospital_id, "name": "대장내시경 수면 여부"},
+    ).scalar_one()
+    summary = json.loads(_exhausted_summary(target_id))
+    summary[GENERATION_ATTEMPT_KEY].update(
+        {
+            "reason": "GENERATION_BUDGET_EXHAUSTED",
+            "retry_class": GenerationRetryClass.SAMPLE_RECOVERABLE.value,
+            "exhausted_days": 0,
+        }
+    )
+    item_id = _seed_item(
+        pg_conn,
+        hospital_id,
+        scheduled_date=SLOT - timedelta(days=1),
+        summary=json.dumps(summary),
+    )
+
+    report = _swap(pg_session)
+
+    assert report.swapped == 1
+    row = pg_session.get(ContentItem, item_id)
+    pg_session.refresh(row)
+    assert row.topic_swap_history[0]["reason_code"] == "GENERATION_BUDGET_EXHAUSTED"

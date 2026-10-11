@@ -24,7 +24,11 @@ from app.models.operations import Incident, IncidentState
 from app.workers import generation_retry_policy, nightly_generation_batch, topic_swap_fallback
 from app.workers.generation_attempt_state import (
     GENERATION_ATTEMPT_KEY,
+    WRITER_RESULT_LIMIT,
+    acquisition_completed,
     fresh_generation_attempt,
+    record_topic_swap,
+    reserve_acquisition,
 )
 from app.workers.generation_incident_control import generation_incident_dedupe_key
 from app.workers.generation_retry_policy import GenerationRetryClass
@@ -211,6 +215,72 @@ def test_synthetic_uncertain_finding_is_still_swapped():
     )
 
     assert topic_swap_fallback.exhausted_body_sample_reason(item) == "CONTENT_AI_HARD_FINDING"
+
+
+# ── 현재 주제의 작가 예산 소진은 3일을 기다리지 않는다(D1) ──────────────────────
+
+
+def _bought_writers(attempt: dict, *, topic: str, count: int) -> dict:
+    for index in range(count):
+        acquisition_id = f"writer:ctx:{topic}:claim:{index}"
+        attempt = reserve_acquisition(attempt, acquisition_id=acquisition_id, kind="WRITER")
+        attempt = acquisition_completed(
+            attempt, acquisition_id=acquisition_id, transport_attempts=1, outcome="RESULT"
+        )
+    return attempt
+
+
+def _budget_exhausted_summary(attempt: dict) -> dict:
+    # 첫날의 소진이다 — 자동 복구가 아직 소유한(RETRYING) 표본 실패 기록이다.
+    return {
+        GENERATION_ATTEMPT_KEY: {
+            **attempt,
+            "reason": "GENERATION_BUDGET_EXHAUSTED",
+            "retry_class": GenerationRetryClass.SAMPLE_RECOVERABLE.value,
+            "exhausted_days": 0,
+        }
+    }
+
+
+def test_exhausted_writer_budget_is_a_swap_candidate_on_day_one():
+    # Given: 현재 주제가 작가 결과 6회를 첫날에 다 썼다. 남은 이틀은 지출 없는 공회전이다.
+    attempt = _bought_writers(
+        fresh_generation_attempt(topic_id="topic-a"), topic="topic-a", count=WRITER_RESULT_LIMIT
+    )
+    item = _item(essence_check_summary=_budget_exhausted_summary(attempt))
+
+    # Then: 소진 일수와 무관하게 곧바로 교체 후보다.
+    assert (
+        topic_swap_fallback.exhausted_body_sample_reason(item) == "GENERATION_BUDGET_EXHAUSTED"
+    )
+
+
+def test_budget_exhausted_while_writers_remain_waits_for_the_ladder():
+    # 작가 예산이 남은 소진(검수·전송 등)은 이 규칙 밖이다 — 종전 3일 사다리를 탄다.
+    attempt = _bought_writers(
+        fresh_generation_attempt(topic_id="topic-a"),
+        topic="topic-a",
+        count=WRITER_RESULT_LIMIT - 1,
+    )
+    item = _item(essence_check_summary=_budget_exhausted_summary(attempt))
+
+    assert topic_swap_fallback.exhausted_body_sample_reason(item) is None
+
+
+def test_exhausted_writer_budget_after_the_last_swap_is_left_to_the_operator_path():
+    # Given: 교체를 이미 한 번 썼고 새 주제도 작가 6회를 다 썼다.
+    attempt = _bought_writers(
+        fresh_generation_attempt(topic_id="topic-a"), topic="topic-a", count=WRITER_RESULT_LIMIT
+    )
+    attempt = record_topic_swap(attempt, from_topic_id="topic-a", to_topic_id="topic-b")
+    attempt = _bought_writers(attempt, topic="topic-b", count=WRITER_RESULT_LIMIT)
+    item = _item(
+        essence_check_summary=_budget_exhausted_summary(attempt),
+        topic_swap_history=[{"to_target_id": "topic-b"}],
+    )
+
+    # Then: 다시 교체하지 않는다 — 기존 사다리가 OPERATOR_REQUIRED로 넘긴다.
+    assert topic_swap_fallback.exhausted_body_sample_reason(item) is None
 
 
 def test_published_and_human_edited_rows_are_excluded_by_the_candidate_sql():

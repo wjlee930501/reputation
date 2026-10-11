@@ -446,6 +446,26 @@ def _current_topic_usage(budget: dict[str, Any]) -> _TopicUsage:
     return _TopicUsage(writer, reviewer, active_writers, active_reviewers, attempts, reserved)
 
 
+def _topic_writers_full(usage: _TopicUsage) -> bool:
+    return usage.writer_results + usage.active_writers >= WRITER_RESULT_LIMIT
+
+
+def current_topic_writers_exhausted(attempt: dict[str, Any]) -> bool:
+    """현재 주제가 작가 결과를 더 살 수 없는가 — `reserve_acquisition`의 주제당 작가 상한.
+
+    주제당 작가 6회는 하루 예산(2세션 × 3회)으로 첫날에 닿는다. 그 뒤의 이틀은 지출 없는
+    공회전이므로 주제 교체 판정(`topic_swap_fallback.exhausted_body_sample_reason`)이 이
+    값으로 소진 일수를 기다리지 않는다. 신뢰할 수 없는 예산은 소진으로 보지 않는다 —
+    그 슬롯은 교체 상한 판정(`topic_swap_budget_left`)이 따로 막는다.
+    """
+
+    try:
+        budget = _budget_dict(attempt)
+    except GenerationBudgetUnknown:
+        return False
+    return _topic_writers_full(_current_topic_usage(budget))
+
+
 def reserve_acquisition(
     attempt: dict[str, Any], *, acquisition_id: str, kind: AcquisitionKind
 ) -> dict[str, Any]:
@@ -466,7 +486,7 @@ def reserve_acquisition(
     snapshot = _snapshot_from_budget(budget)
     usage = _current_topic_usage(budget)
     if kind == "WRITER" and (
-        usage.writer_results + usage.active_writers >= WRITER_RESULT_LIMIT
+        _topic_writers_full(usage)
         or snapshot.writer_results + _active_acquisitions(budget, kind)
         >= LIFETIME_WRITER_RESULT_LIMIT
     ):

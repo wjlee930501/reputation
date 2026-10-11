@@ -49,6 +49,7 @@ from app.workers.generation_attempt_state import (
     GENERATION_ATTEMPT_KEY,
     GenerationBudgetExceeded,
     GenerationBudgetUnknown,
+    current_topic_writers_exhausted,
     read_generation_attempt,
     read_generation_budget,
     record_topic_swap,
@@ -86,6 +87,9 @@ TOPIC_SWAP_MAX_PAGES = 5
 TOPIC_SWAP_RECONCILE_LIMIT = 200
 # `@>` 담음 조건. 이 모양을 담은 행에만 아직 닫지 못한 옛 인시던트가 있다.
 UNRECONCILED_HISTORY = [{"incident_recovered": False}]
+# 생성 예산 소진의 시도 기록 코드(`generation_run_control.classify_generation_failure`).
+# 현재 주제의 작가 예산이 다 찬 소진은 소진 일수를 기다리지 않고 교체 후보다.
+BUDGET_EXHAUSTED_REASON = "GENERATION_BUDGET_EXHAUSTED"
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,7 +143,8 @@ def _exhausted_body_sample_filter():
     없으면 `->>`가 NULL이라 비교가 NULL이 되어 자연히 제외된다(원하는 결과다).
 
     최소 교정 상한을 다 쓴 사실·안전 차단(`AUTO_CORRECTION_EXHAUSTED_KEY`)도 후보다 — 그
-    기록은 교체를 기다리는 동안 RETRYING(`SAMPLE_RECOVERABLE`)으로 남는다.
+    기록은 교체를 기다리는 동안 RETRYING(`SAMPLE_RECOVERABLE`)으로 남는다. 생성 예산
+    소진도 RETRYING인 채로 올린다 — 현재 주제의 작가 예산이 찼는지는 파이썬 술어가 본다.
     """
 
     attempt = _stored_attempt_json()
@@ -151,6 +156,11 @@ def _exhausted_body_sample_filter():
         and_(
             attempt["reason"].as_string() == "CONTENT_AI_HARD_FINDING",
             attempt[AUTO_CORRECTION_EXHAUSTED_KEY].as_boolean().is_(True),
+        ),
+        and_(
+            attempt["reason"].as_string() == BUDGET_EXHAUSTED_REASON,
+            attempt["retry_class"].as_string()
+            == GenerationRetryClass.SAMPLE_RECOVERABLE.value,
         ),
     )
 
@@ -253,7 +263,15 @@ def exhausted_body_sample_reason(item: ContentItem) -> str | None:
         # 지적 문장 최소 교정을 상한까지 거친 사실·안전 차단이다. 승인 자료 변경만 기다리지
         # 않고 같은 슬롯·예정일로 다른 질문을 답하게 한다(`tasks._escalate_exhausted_correction`).
         return reason
-    if attempt.get("retry_class") != GenerationRetryClass.OPERATOR_REQUIRED.value:
+    # 현재 주제의 작가 예산(6회)은 하루 예산으로 첫날에 다 찬다. 남은 소진 일수는 지출 없는
+    # 공회전이라 기다리지 않고 곧바로 교체한다. 교체 상한을 다 쓴 뒤의 소진은 위 방어선이
+    # 막아 종전 사다리대로 `OPERATOR_REQUIRED`로 간다.
+    writers_spent = reason == BUDGET_EXHAUSTED_REASON and current_topic_writers_exhausted(
+        attempt
+    )
+    if not writers_spent and (
+        attempt.get("retry_class") != GenerationRetryClass.OPERATOR_REQUIRED.value
+    ):
         return None
     if reason not in SAMPLE_BODY_CODES:
         return None
