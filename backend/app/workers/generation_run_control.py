@@ -181,7 +181,12 @@ def classify_generation_failure(error: BaseException) -> tuple[str, str]:
         case TimeoutError() | openai.APITimeoutError():
             code = "PROVIDER_TIMEOUT"
             message = _SAFE_FAILURE_MESSAGE
-        case ConnectionError():
+        case ConnectionError() | openai.APIConnectionError():
+            code = "PROVIDER_UNAVAILABLE"
+            message = _SAFE_FAILURE_MESSAGE
+        case openai.APIStatusError() if _provider_side_status(error.status_code):
+            # OpenRouter·상위 공급자의 과부하(429)·서버 오류(5xx). 기다리면 풀리는 환경 장애다.
+            # 결정적 4xx(400·401·403·404)와 크레딧 부족(402)은 여기 들지 않는다.
             code = "PROVIDER_UNAVAILABLE"
             message = _SAFE_FAILURE_MESSAGE
         case ValueError():
@@ -191,6 +196,10 @@ def classify_generation_failure(error: BaseException) -> tuple[str, str]:
             code = "GENERATION_FAILED"
             message = _SAFE_FAILURE_MESSAGE
     return code, message
+
+
+def _provider_side_status(status_code: int) -> bool:
+    return status_code == 429 or status_code >= 500
 
 
 def safe_generation_rejection_message(message: str | None) -> str:
