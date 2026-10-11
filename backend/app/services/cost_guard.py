@@ -30,6 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.database import get_async_sessionmaker
 from app.models.operations import Incident, IncidentSeverity
+from app.services import cost_guard_health
 from app.services.incident_types import IncidentFingerprint, IncidentOpenRequest
 from app.services.incidents import open_or_touch_incident
 from app.services.notification_contracts import NotificationIntent, SlackMessage
@@ -438,6 +439,8 @@ async def check_and_increment(
         )
         new_daily = int(reservation[2])
         new_monthly = int(reservation[3])
+        # Redis로 판정했다 — 이 프로세스가 알린 fail-open이 있으면 닫는다(cost_guard_health).
+        await cost_guard_health.report_guard_healthy(category)
 
         # 한 Lua 연산 안에서 current + count를 검사하고 두 카운터를 함께 예약한다.
         if not allowed and blocked_scope == "monthly":
@@ -463,11 +466,8 @@ async def check_and_increment(
 
     except (OSError, RedisError, RuntimeError, TimeoutError) as exc:
         # fail-open: Redis 장애가 콘텐츠/이미지/측정 파이프라인을 멈추게 하지 않는다(가용성 우선).
-        logger.warning(
-            "cost_guard fail-open (redis unavailable): category=%s error=%s",
-            category,
-            exc.__class__.__name__,
-        )
+        # 첫 발생은 ERROR와 개발 사고로 남긴다(cost_guard_health).
+        await cost_guard_health.report_fail_open(category, exc.__class__.__name__)
         return CostGuardDecision(True, None)
 
 
@@ -534,6 +534,7 @@ async def reserve(
             _RESERVATION_TTL_SECONDS,
         )
         status = int(result[0])
+        await cost_guard_health.report_guard_healthy(category)
         scope_raw = result[1]
         scope = scope_raw.decode() if isinstance(scope_raw, bytes) else str(scope_raw)
         daily_value = int(result[2])
@@ -593,11 +594,8 @@ async def reserve(
     except ValueError:
         raise
     except (OSError, RedisError, RuntimeError, TimeoutError) as exc:
-        logger.warning(
-            "cost_guard reservation fail-open (redis unavailable): category=%s error=%s",
-            category,
-            exc.__class__.__name__,
-        )
+        # 킬스위치 확인에서 터진 Redis 오류도 여기로 온다 — 같은 fail-open이다.
+        await cost_guard_health.report_fail_open(category, exc.__class__.__name__)
         return CostGuardDecision(True, None)
 
 

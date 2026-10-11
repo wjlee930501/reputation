@@ -68,6 +68,10 @@ _DEVELOPER_INCIDENT_TYPES: frozenset[str] = frozenset(
         # 같은 점검에서 여러 병원 주소가 공유 공개 서비스의 5xx를 받은 상태. AE가 병원 정보에서 고칠
         # 수 있는 일이 아니다(`domain_health_control.record_public_site_check`).
         "PUBLIC_SITE_UNAVAILABLE",
+        # 비용 가드가 Redis를 읽지 못해 상한 확인 없이 허용 중. AE가 고칠 수 없는 인프라 사실이다.
+        "COST_GUARD_FAIL_OPEN",
+        # 공급자 사용량 기록 spool이 넘쳐 오래된 기록을 버렸다(provider_usage).
+        "PROVIDER_USAGE_SPOOL_TRUNCATED",
     }
 )
 

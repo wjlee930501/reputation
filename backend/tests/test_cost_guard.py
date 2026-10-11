@@ -4,6 +4,7 @@ fakeredis 패키지가 미설치이므로, 기존 test_admin_session_revocation.
 패턴을 확장해 이 테스트에서 필요한 async 메서드(get/set/incrby/expire/exists/delete)를
 구현한다.
 """
+import logging
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from uuid import uuid4
@@ -18,7 +19,7 @@ from app.schemas.operations import (
     CostGuardKillSwitchRequest,
     CostGuardStatusResponse,
 )
-from app.services import audit_log, cost_guard
+from app.services import audit_log, cost_guard, cost_guard_health
 
 
 class FakeRedis:
@@ -177,6 +178,29 @@ class AlertRecorder:
             }
         )
         return self.succeed
+
+
+class FailOpenRecorder:
+    def __init__(self):
+        self.opened: list[tuple[str, str]] = []
+        self.recovered: list[str] = []
+
+    async def open(self, category, error_name, *, now):
+        self.opened.append((category, error_name))
+
+    async def recover(self, category, *, now):
+        self.recovered.append(category)
+
+
+@pytest.fixture(autouse=True)
+def fail_open_incidents(monkeypatch):
+    """fail-open 사고는 별도 DB 세션으로 남긴다 — 단위 테스트에서는 기록만 본다."""
+    recorder = FailOpenRecorder()
+    monkeypatch.setattr(cost_guard_health, "_open_fail_open_incident", recorder.open)
+    monkeypatch.setattr(cost_guard_health, "_recover_fail_open_incident", recorder.recover)
+    cost_guard_health._REPORTED.clear()
+    yield recorder
+    cost_guard_health._REPORTED.clear()
 
 
 @pytest.fixture
@@ -978,3 +1002,52 @@ async def test_receipt_cannot_be_reused_for_different_reservation(monkeypatch, a
         await cost_guard.reserve(
             "content", count=2, reservation_id="collision", redis_client=redis
         )
+
+
+async def test_first_fail_open_per_category_logs_error_and_opens_one_incident(
+    monkeypatch, alerts, fail_open_incidents, caplog
+):
+    _set_limits(monkeypatch, daily=10, monthly=10)
+    _set_limits(monkeypatch, category="image", daily=10, monthly=10)
+    redis = FakeRedis()
+    redis.fail = True
+
+    with caplog.at_level(logging.WARNING, logger="app.services.cost_guard_health"):
+        for _ in range(3):
+            assert (await cost_guard.check_and_increment("content", redis_client=redis)).allowed
+        assert (await cost_guard.reserve("image", redis_client=redis)).allowed
+
+    assert fail_open_incidents.opened == [("content", "RedisError"), ("image", "RedisError")]
+    errors = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert [r.getMessage().split(" ")[0] for r in errors] == ["cost_guard_fail_open", "cost_guard_fail_open"]
+    # 두 번째 이후 같은 카테고리는 WARNING만 — 사고를 다시 열지 않는다.
+    assert sum(1 for r in caplog.records if r.levelname == "WARNING") == 2
+
+
+async def test_guard_recovery_closes_the_fail_open_incident_once(monkeypatch, alerts, fail_open_incidents):
+    _set_limits(monkeypatch, daily=10, monthly=10)
+    redis = FakeRedis()
+    redis.fail = True
+    await cost_guard.check_and_increment("content", redis_client=redis)
+
+    redis.fail = False
+    await cost_guard.check_and_increment("content", redis_client=redis)
+    await cost_guard.check_and_increment("content", redis_client=redis)
+
+    assert fail_open_incidents.recovered == ["content"]
+    assert "content" not in cost_guard_health._REPORTED
+
+
+async def test_fail_open_incident_failure_never_blocks_the_guard_decision(monkeypatch, alerts):
+    _set_limits(monkeypatch, daily=10, monthly=10)
+
+    async def broken(*_args, **_kwargs):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(cost_guard_health, "_open_fail_open_incident", broken)
+    redis = FakeRedis()
+    redis.fail = True
+
+    decision = await cost_guard.check_and_increment("content", redis_client=redis)
+
+    assert decision.allowed is True
