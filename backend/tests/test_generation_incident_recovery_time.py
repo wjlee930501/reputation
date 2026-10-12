@@ -252,6 +252,8 @@ def _past_due_record(**fields) -> dict:
                 retry_class=GenerationRetryClass.ENVIRONMENT_RECOVERABLE.value,
                 attempt_count=4,
                 provider_attempt_count=4,
+                # 3일 창의 마지막 날(_D)에 하루 예산까지 다 썼다 — 내일 다시 열리지 않는다.
+                environment_since=_at(_D - timedelta(days=2), 1).astimezone(UTC).isoformat(),
             ),
             True,
             id="ENV-budget-spent",

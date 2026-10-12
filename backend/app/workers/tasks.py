@@ -496,6 +496,7 @@ from app.workers.generation_attempt_state import (
     GenerationBudgetLedger,
     GenerationBudgetUnknown,
     released_generation_attempt,
+    writer_acquisition_prefix,
 )
 from app.workers.generation_batch_run import (
     GenerationBatchRecorder,
@@ -522,13 +523,18 @@ from app.workers.generation_retry_policy import (
     AUTO_CORRECTION_EXHAUSTED_KEY,
     BODY_REPAIR_CODES,
     BODY_REPAIR_STATE_KEY,
+    DAILY_RESET_ENVIRONMENT_CODES,
+    ENVIRONMENT_SINCE_KEY,
     OPERATOR_DECIDES_KEY,
     REVIEW_UNAVAILABLE_CODE,
     SAMPLE_EXHAUSTED_DAY_LIMIT,
     SAMPLE_IMAGE_DAILY_BUDGET,
+    WINDOWED_ENVIRONMENT_CODES,
     GenerationRetryClass,
     attempt_is_terminal,
     environment_attempt_period,
+    environment_window_closed,
+    environment_window_start,
     has_model_declared_hard_finding,
     next_recovery_deadline,
     repair_session_is_available,
@@ -1059,12 +1065,11 @@ def _auto_correct_blocked_body(
     plan = plan_corrections(candidate, review, must_use_messages=must_use)
     state = _stored_auto_correction_state(item)
     if not plan.applicable:
-        if (
-            state.get("passes") or state.get("exhausted") or state.get("swap_requested_at")
-        ) and _stored_model_declared_hard(item):
-            # 이 주제는 이미 교정을 거쳤는데 남은 HARD를 문장 단위로 고칠 수 없다(인용 없음·제목
-            # 인용 등). 기존 경로로 돌려보내면 교체 pass가 바꾸지 못한 슬롯이 기한 지난
-            # SAMPLE_RECOVERABLE로 남는다 — 같은 계단(교체, 그다음 사람)으로 넘긴다.
+        if _stored_model_declared_hard(item):
+            # 모델이 HARD로 단정했지만 문장 단위로 고칠 수 없다(인용 없음·제목·필수 문구 인용 등).
+            # 교정 이력이 없어도 승인 자료 변경을 기다리며 INPUT_CHANGE_REQUIRED로 멈추지 않고 같은
+            # 계단(주제 교체, 그다음 사람)으로 넘긴다. 이 글은 고치지 않고 버려지며 새 주제의 글은
+            # 처음부터 같은 독립 검수를 다시 받는다.
             return _escalate_exhausted_correction(db, item, philosophy, state)
         return None
     limits = correction_limits()
@@ -1363,6 +1368,14 @@ def _remember_generation_attempt(
             previous if same_context else None, reason, observed_at
         )
     elif retry_class == GenerationRetryClass.ENVIRONMENT_RECOVERABLE:
+        if (
+            reason in DAILY_RESET_ENVIRONMENT_CODES
+            and stored_attempt_period(previous) != attempt_period
+        ):
+            # 하루 예산은 KST 날마다 다시 열린다. 3일 창의 시작(`environment_since`)은 아래에서
+            # 따로 잇는다. 같은 날 안에서는 `previous.reason`을 일부러 보지 않는다 — 원인이 바뀌어도
+            # (PROVIDER_TIMEOUT → GENERATION_FAILED) 그날의 계수를 이어 센다.
+            provider_attempt_count = 0
         provider_attempt_count += 1
     if (
         reason == "IMAGE_GENERATION_FAILED"
@@ -1397,6 +1410,23 @@ def _remember_generation_attempt(
     }
     if GENERATION_BUDGET_KEY in previous:
         attempt[GENERATION_BUDGET_KEY] = previous[GENERATION_BUDGET_KEY]
+    if (
+        retry_class == GenerationRetryClass.ENVIRONMENT_RECOVERABLE
+        and reason in WINDOWED_ENVIRONMENT_CODES
+    ):
+        # 환경 장애 연속 구간의 시작. 원인 문자열이 바뀌어도(PROVIDER_TIMEOUT → GENERATION_FAILED,
+        # 게이트의 CONTENT_NOT_GENERATED 덮어쓰기) 같은 문맥의 환경 기록이 이어지면 시작을 잇는다 —
+        # 원인을 갈아타며 3일 창을 새로 여는 일이 없게 한다.
+        # 이어받는 시작은 읽는 쪽과 같은 규칙이다(`environment_window_start`) — `environment_since`가
+        # 없는 레거시 기록은 그 마지막 관측 시각이다. `now`로 새로 잡으면 닫힌 창이 다시 열린다.
+        carried = (
+            environment_window_start(previous)
+            if previous.get("context") == context
+            and previous.get("retry_class")
+            == GenerationRetryClass.ENVIRONMENT_RECOVERABLE.value
+            else None
+        )
+        attempt[ENVIRONMENT_SINCE_KEY] = (carried or observed_at).isoformat()
     if reason == "GENERATION_REJECTED":
         attempt["message"] = safe_generation_rejection_message(message)
     # 이 차단이 어떤 승인 사실 위에서 내려졌는지 남긴다. 사람이 그 자료를 채우면 스윕이
@@ -1484,9 +1514,17 @@ def _record_gate_blocker_decision(db, item: ContentItem, philosophy, code: str) 
 
     stored = _stored_generation_attempt(item)
     stored_reason = stored.get("reason")
-    if stored_reason == code and bool(stored.get(OPERATOR_DECIDES_KEY)) == (
-        operator_decides_references(code, item)
+    if (
+        stored_reason == code
+        and bool(stored.get(OPERATOR_DECIDES_KEY)) == operator_decides_references(code, item)
+        and not (
+            code == "CONTENT_NOT_GENERATED"
+            and isinstance(stored.get("next_retry_at"), str)
+            and environment_window_closed(stored)
+        )
     ):
+        # 같은 증상을 이미 기록했다. 예외: 원고 미생성의 3일 창이 끝났는데 저장된 기한이
+        # 아직 문자열이면 한 번 다시 써서 `next_retry_at=None`(사람의 일)으로 굳힌다.
         return
     if code in _IMAGE_SYMPTOM_CODES and stored_reason in _STORED_IMAGE_CAUSE_CODES:
         return
@@ -1504,6 +1542,7 @@ def _record_gate_blocker_decision(db, item: ContentItem, philosophy, code: str) 
             GenerationRetryClass.SAMPLE_RECOVERABLE,
         )
         and (retry_is_due(stored) or isinstance(stored.get("next_retry_at"), str))
+        and not environment_window_closed(stored)
     ):
         # 스윕이 아직 소유한 실패(PROVIDER_TIMEOUT 등)도 같다. 덮으면 로더가 다시 집지
         # 않고, CONTENT_NOT_GENERATED는 교체 후보 코드가 아니라 교체 이력과 무관하게 영영
@@ -1527,6 +1566,27 @@ def _record_gate_blocker_decision(db, item: ContentItem, philosophy, code: str) 
         # 시도 전이다. 여기서 증상을 지금 문맥의 기한 없는 OPERATOR_REQUIRED로 쓰면 그 시도가
         # 작가 0회로 사라진다(2026-10-02 gate_catalog 갱신 뒤 09:00 발행기가 4건을 그렇게
         # 굳혔다). 기록이 아예 없는 빈 슬롯은 종전대로 아래에서 기록한다.
+        return
+    if code == "CONTENT_NOT_GENERATED" and stored.get("retry_class") in (
+        GenerationRetryClass.OPERATOR_REQUIRED.value,
+        GenerationRetryClass.INPUT_CHANGE_REQUIRED.value,
+    ):
+        # 사람·입력 변경이 소유한 종착 기록(소진된 본문 표본·인용 없는 HARD 등)을 증상이 덮을 때는
+        # 종전처럼 사람의 몫으로 남긴다. 원고 미생성이 복구 가능한 증상이 됐다고 종착 기록을
+        # 자동 재시도로 되살리면 표본 사다리·주제 교체 상한을 우회해 작가 세션을 다시 산다.
+        _remember_generation_attempt(
+            db,
+            item,
+            philosophy,
+            code,
+            count_attempt=False,
+            extra={
+                "retry_class": GenerationRetryClass.OPERATOR_REQUIRED.value,
+                "next_retry_at": None,
+                # 사람의 일로 남긴 기록에는 환경 창의 시작을 남기지 않는다.
+                ENVIRONMENT_SINCE_KEY: None,
+            },
+        )
         return
     _remember_generation_attempt(db, item, philosophy, code, count_attempt=False)
 
@@ -2283,6 +2343,10 @@ SOFT_REMEDIATION_MAX_GENERATIONS = 1
 HARD_REMOVAL_MAX_GENERATIONS = 1
 
 
+# 실행 진입이 남기는 예약 토큰 일시 속성(`_enter_claimed_execution`). 매핑되지 않은 속성이다.
+_GENERATION_RESERVATION_ATTR = "_generation_reservation_token"
+
+
 async def _generate_with_auto_review(
     *,
     db,
@@ -2318,6 +2382,17 @@ async def _generate_with_auto_review(
             default=str,
         ).encode("utf-8")
     ).hexdigest()[:16]
+    # 작가 결과의 재생 범위는 한 예약(세션)이다. 같은 예약의 재배달은 저장된 결과를 다시
+    # 쓰고(중복 구매 없음), 새 예약은 새 표본을 산다. 본문이 저장되지 않은 실패(제목 거절
+    # 등)가 다음 세션에서 같은 후보를 0원에 재생해 표본 예산만 태우지 않게 한다. 실행 진입
+    # (`begin_generation_execution`)은 배달마다 claim 토큰을 바꾸므로 예약 토큰을 먼저 본다.
+    # 예약이 없는 경로는 그 실행의 claim 토큰, claim도 없는 직접 호출(테스트·도구)은 종전처럼
+    # 하나의 범위를 공유한다.
+    session_scope = str(
+        getattr(item, _GENERATION_RESERVATION_ATTR, None)
+        or getattr(item, "generation_claim_token", None)
+        or "unclaimed"
+    )
 
     async def _budgeted_generate(*args, **kwargs):
         findings = [str(value) for value in (kwargs.get("remediation_findings") or [])]
@@ -2325,7 +2400,9 @@ async def _generate_with_auto_review(
             "\n".join(findings).encode("utf-8")
         ).hexdigest()[:16]
         topic_id = str(getattr(item, "query_target_id", "") or "unassigned")
-        acquisition_prefix = f"writer:{context_id}:{topic_id}:{fingerprint}"
+        acquisition_prefix = writer_acquisition_prefix(
+            context_id, topic_id, session_scope, fingerprint
+        )
         cached = ledger.latest_payload(acquisition_prefix)
         if cached is not None:
             return cached
@@ -5455,7 +5532,7 @@ def generate_claimed_content_item(
         else:
             context = explicit_run_context(self)
             if context is not None:
-                leased = begin_generation_execution(db, item_id, token, context)
+                leased = _enter_claimed_execution(db, item_id, token, context)
                 if leased is None:
                     item = None
                 else:
@@ -5500,6 +5577,21 @@ def generate_claimed_content_item(
             safe_error_code=code,
             safe_error_message=message,
         )
+
+
+def _enter_claimed_execution(db, item_id, reservation, context):
+    """예약을 실행 lease로 올린다(`begin_generation_execution`). 공급자 호출 전 진입점.
+
+    실행 토큰은 같은 예약의 (재)배달마다 새로 바뀐다. 작가 결과의 재생 범위는 그 배달들이
+    공유하는 예약 토큰이어야 하므로 행에 일시 속성으로 남긴다(`_generate_with_auto_review`).
+    """
+
+    leased = begin_generation_execution(db, item_id, reservation, context)
+    if leased is None:
+        return None
+    item, execution_token = leased
+    setattr(item, _GENERATION_RESERVATION_ATTR, reservation)
+    return item, execution_token
 
 
 _ITEM_RUN_STATES = {

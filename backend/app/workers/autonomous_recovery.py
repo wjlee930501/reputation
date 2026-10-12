@@ -9,7 +9,8 @@ from datetime import UTC, datetime, timedelta
 from typing import Final, TypedDict
 
 from celery import current_task
-from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy import Interval, and_, case, func, literal, null, or_, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 
 from app.core.celery_app import celery_app
@@ -54,6 +55,45 @@ _BATCH_SIZE: Final = 100
 # 관측된 최악의 content 적체는 약 70분이었고, 2분 만에 다시 보내던 때는 적체마다 사본이 생겼다.
 _REQUESTED_REDISPATCH_GRACE: Final = timedelta(minutes=2)
 _QUEUED_REDISPATCH_GRACE: Final = timedelta(hours=3)
+# 고객이 기다리는 결과(V0·월간 보고서)는 45분만 기다린다. 배포 중 유실은 cold shutdown
+# (REMAP_SIGTERM=SIGQUIT)이 몇 초 안에 메시지를 반납해 사라졌고, 남은 대기는 앞 큐(content·sov)의
+# 적체다 — reports 큐는 priority 순서상 뒤에 있다. 적체 중 다시 보내도 늦게 온 이전 사본은
+# task id가 달라 STALE로 물러나므로 공급자 비용이 없다.
+_FAST_QUEUED_REDISPATCH_GRACE: Final = timedelta(minutes=45)
+_FAST_QUEUED_REDISPATCH_TYPES: Final = frozenset(
+    {"TRIGGER_V0_REPORT", "GENERATE_MONTHLY_REPORT"}
+)
+# 유형별 재배달 예산. 재배달마다 QUEUED 유예가 두 배가 되므로(45m→90m→3h→6h) 정상 적체로는
+# 소진되지 않는다. 다 쓰면 실행을 FAILED로 끝내고 원인별 사고 하나에 묶는다.
+_REDISPATCH_BUDGET: Final = 3
+_RECOVERY_STOP_INCIDENT_TYPE: Final = "OPERATION_RECOVERY_EXHAUSTED"
+_REDISPATCH_EXHAUSTED: Final = "OPERATION_REDISPATCH_EXHAUSTED"
+_LEASE_EXPIRED: Final = "OPERATION_LEASE_EXPIRED"
+# 이만큼 아무 갱신이 없고 lease도 없는 RUNNING은 끝낼 주체가 사라진 잔재다(9/7 야간 배치 잔재).
+# 시작 시각이 아니라 마지막 갱신으로 본다 — 월간 측정 구간 실행은 24~31일 내내 RUNNING이다.
+_ABANDONED_RUNNING_AFTER: Final = timedelta(days=10)
+# 유형별로 더 길게 기다리는 예외. 정상인 `MONTHLY_SOV_PERIOD`는 말일 18시(KST) 마지막 창 sweep 뒤
+# 다음 달 8일 00:15 최종화(`_finalize_monthly_sov_period_run`)까지 약 7일 6시간 아무도 건드리지
+# 않는다. 기본 10일과의 여유가 3일뿐이라 이 유형만 20일을 기다린다.
+_ABANDONED_RUNNING_AFTER_BY_TYPE: Final[dict[str, timedelta]] = {
+    "MONTHLY_SOV_PERIOD": timedelta(days=20),
+}
+_RUN_ABANDONED: Final = "OPERATION_RUN_ABANDONED"
+# 사고 없이 FAILED만 남은 멈춘 실행을 다시 찾는 범위와 tick당 상한.
+_RECOVERY_STOP_REPAIR_WINDOW: Final = timedelta(days=7)
+_RECOVERY_STOP_REPAIR_LIMIT: Final = 50
+_RECOVERY_STOP_MESSAGES: Final[dict[str, str]] = {
+    # FAILED는 마지막 재배달의 유예(기본값 × 8) 뒤에 온다 — V0·월간 보고서는 6시간, 그 밖은 24시간.
+    _REDISPATCH_EXHAUSTED: (
+        f"자동 재배달을 {_REDISPATCH_BUDGET}번 했지만 작업이 시작되지 않거나 끝나지 않아 "
+        "자동 복구를 멈췄습니다."
+    ),
+    _LEASE_EXPIRED: (
+        "보고서 재생성 작업이 끝나지 않은 채 중단됐습니다. 다시 실행하면 새 버전이 중복으로 생길 수 "
+        "있어 자동으로 다시 실행하지 않았습니다."
+    ),
+    _RUN_ABANDONED: "10일 넘게 진행 기록이 없는 작업을 종료 처리했습니다.",
+}
 _RECERTIFY_DISPATCH_LIMIT: Final = 20
 _REBUILD_SITE_ATTEMPT_BUDGET: Final = 3
 _REBUILD_SITE_BUDGET_WINDOW: Final = timedelta(hours=24)
@@ -120,12 +160,118 @@ _OPERATION_REDISPATCH_POLICIES: Final[dict[str, _RedispatchPolicy]] = {
 }
 
 
+# lease가 만료된 RUNNING을 새 task id로 다시 보내도 안전한 유형과 근거(2026-10-11).
+# lease(1시간)는 가장 긴 hard limit(2700초)보다 길어, 만료된 RUNNING은 죽은 실행이다.
+_LEASE_TAKEOVER_TYPES: Final = frozenset(
+    {
+        "TRIGGER_V0_REPORT",  # 측정 체크포인트 — 이미 산 공급자 단계를 다시 사지 않는다
+        "REBUILD_SITE",  # 상태 준비는 멱등이고 하루 시도 예산이 있다
+        "RUN_SOV",  # 고정 manifest의 남은 칸만 측정, 슬롯은 유료 호출 전에 저장된다
+        "GENERATE_MONTHLY_REPORT",  # rebuild=False만 — 아래 `_lease_takeover_refused`
+        "REGENERATE_CONTENT",  # 글 단위 생성 lease + 일일 예산
+        "REGENERATE_CONTENT_IMAGE",  # 같은 생성 lease + 이미지 일일 예산
+        # 저장된 claim token이 바뀌었으면 공급자 호출 없이 CANCELLED로 끝난다.
+        generation_run_control.GENERATE_CONTENT_ITEM_OPERATION,
+    }
+)
+# RECERTIFY_PUBLISHED_IMAGE는 넣지 않는다 — 재인증 sweep이 30분 뒤 좌초 실행을 새 실행으로
+# 대체하므로(`IN_FLIGHT_TIMEOUT`) 인수하면 같은 (글, subject)에 주인이 둘이 된다.
+
+
 class RecoveryCounts(TypedDict):
     site_builds: int
     site_revalidations: int
     operation_runs: int
     image_recertifications: int
     resolved_task_incidents: int
+
+
+def _redispatch_count(run: OperationRun) -> int:
+    return run.redispatch_count
+
+
+def _queued_redispatch_grace(run: OperationRun) -> timedelta:
+    base = (
+        _FAST_QUEUED_REDISPATCH_GRACE
+        if str(run.operation_type) in _FAST_QUEUED_REDISPATCH_TYPES
+        else _QUEUED_REDISPATCH_GRACE
+    )
+    return base * (2 ** min(_redispatch_count(run), _REDISPATCH_BUDGET))
+
+
+def _queued_redispatch_grace_sql():
+    """`_queued_redispatch_grace`의 SQL 판."""
+
+    base = case(
+        (
+            OperationRun.operation_type.in_(tuple(_FAST_QUEUED_REDISPATCH_TYPES)),
+            literal(_FAST_QUEUED_REDISPATCH_GRACE, Interval()),
+        ),
+        else_=literal(_QUEUED_REDISPATCH_GRACE, Interval()),
+    )
+    return base * func.power(2, func.least(OperationRun.redispatch_count, _REDISPATCH_BUDGET))
+
+
+def _counts_against_redispatch_budget(run: OperationRun) -> bool:
+    """이 재배달이 '브로커에 있던 사본을 잃었다'는 추정인가.
+
+    publish 실패로 남은 REQUESTED는 브로커 장애 동안 2분마다 다시 시도하므로 세지 않는다.
+    미룬 실행(`not_before_at`)이 정한 시각에 나가는 것도 계획된 배달이라 세지 않는다.
+    """
+
+    if run.state == OperationRunState.RUNNING:
+        return True
+    return run.state == OperationRunState.QUEUED and getattr(run, "not_before_at", None) is None
+
+
+def _redispatch_budget_exhausted(run: OperationRun) -> bool:
+    return _counts_against_redispatch_budget(run) and _redispatch_count(run) >= _REDISPATCH_BUDGET
+
+
+def _lease_takeover_refused(run: OperationRun) -> bool:
+    """월간 보고서 재생성(rebuild=True)은 다시 돌면 새 버전을 하나 더 만든다 — 인수하지 않는다."""
+
+    return (
+        str(run.operation_type) == "GENERATE_MONTHLY_REPORT"
+        and run.state == OperationRunState.RUNNING
+        and _stored_monthly_report_flags(run) != ()
+    )
+
+
+def _is_abandoned_running(run: OperationRun, observed_at: datetime) -> bool:
+    if run.state != OperationRunState.RUNNING:
+        return False
+    if str(getattr(run, "operation_type", "")) == "SITE_REVALIDATION":
+        # 재검증 실행은 같은 reconcile의 재검증 루프가 소유한다.
+        return False
+    lease = getattr(run, "lease_expires_at", None)
+    if lease is not None and lease > observed_at:
+        return False
+    touched = getattr(run, "updated_at", None)
+    window = _ABANDONED_RUNNING_AFTER_BY_TYPE.get(
+        str(getattr(run, "operation_type", "")), _ABANDONED_RUNNING_AFTER
+    )
+    return touched is not None and touched <= observed_at - window
+
+
+def _abandoned_running_clause(observed_at: datetime):
+    return and_(
+        OperationRun.state == OperationRunState.RUNNING,
+        # 재검증 실행은 같은 reconcile의 재검증 루프가 소유한다.
+        OperationRun.operation_type != "SITE_REVALIDATION",
+        or_(
+            OperationRun.lease_expires_at.is_(None),
+            OperationRun.lease_expires_at <= observed_at,
+        ),
+        OperationRun.updated_at
+        <= case(
+            *(
+                (OperationRun.operation_type == operation_type, observed_at - window)
+                for operation_type, window in _ABANDONED_RUNNING_AFTER_BY_TYPE.items()
+            ),
+            else_=observed_at - _ABANDONED_RUNNING_AFTER,
+        ),
+    )
 
 
 def _now() -> datetime:
@@ -152,14 +298,14 @@ def _operation_redispatch_is_due(run: OperationRun, observed_at: datetime) -> bo
             # 워커가 미뤄 둔 실행이다(예: V0 비용 창). 그 시각 전에는 막힌 것이 아니다.
             return not_before <= observed_at
         last_transition = run.queued_at or run.requested_at
-        grace = _QUEUED_REDISPATCH_GRACE
+        grace = _queued_redispatch_grace(run)
     elif (
-        run.operation_type in {"TRIGGER_V0_REPORT", "REBUILD_SITE"}
+        run.operation_type in _LEASE_TAKEOVER_TYPES
         and run.state == OperationRunState.RUNNING
         and run.lease_expires_at is not None
     ):
-        # V0 checkpoints and idempotent site preparation make takeover safe only after
-        # the former worker's durable lease proves it can no longer own this execution.
+        # 이전 워커의 lease가 만료돼 더는 이 실행을 소유할 수 없다는 것이 증명된 뒤에만 인수한다.
+        # 재실행 안전성은 유형별로 `_LEASE_TAKEOVER_TYPES` 주석에 있다.
         return run.lease_expires_at <= observed_at
     else:
         return False
@@ -220,33 +366,43 @@ def reconcile() -> RecoveryCounts:
             for run in db.execute(
                 select(OperationRun)
                 .where(
-                    OperationRun.operation_type.in_(tuple(_OPERATION_REDISPATCH_POLICIES)),
                     or_(
                         and_(
-                            OperationRun.state == OperationRunState.REQUESTED,
-                            OperationRun.requested_at
-                            <= observed_at - _REQUESTED_REDISPATCH_GRACE,
-                        ),
-                        and_(
-                            OperationRun.state == OperationRunState.QUEUED,
-                            OperationRun.not_before_at.is_(None),
-                            func.coalesce(OperationRun.queued_at, OperationRun.requested_at)
-                            <= observed_at - _QUEUED_REDISPATCH_GRACE,
-                        ),
-                        # 미룬 실행은 적체가 아니다 — 정한 시각이 지났을 때만 보낸다.
-                        and_(
-                            OperationRun.state == OperationRunState.QUEUED,
-                            OperationRun.not_before_at <= observed_at,
-                        ),
-                        and_(
                             OperationRun.operation_type.in_(
-                                ("TRIGGER_V0_REPORT", "REBUILD_SITE")
+                                tuple(_OPERATION_REDISPATCH_POLICIES)
                             ),
-                            OperationRun.state == OperationRunState.RUNNING,
-                            OperationRun.lease_expires_at.isnot(None),
-                            OperationRun.lease_expires_at <= observed_at,
+                            or_(
+                                and_(
+                                    OperationRun.state == OperationRunState.REQUESTED,
+                                    OperationRun.requested_at
+                                    <= observed_at - _REQUESTED_REDISPATCH_GRACE,
+                                ),
+                                and_(
+                                    OperationRun.state == OperationRunState.QUEUED,
+                                    OperationRun.not_before_at.is_(None),
+                                    # `_queued_redispatch_grace`와 같은 유예(유형별 기본 × 2^횟수)를
+                                    # SQL에서 건다. 아직 두 배 유예 안의 행이 배치(100)를 채워 이미
+                                    # 기한이 지난 V0·만료 lease를 굶기지 않게 한다.
+                                    func.coalesce(OperationRun.queued_at, OperationRun.requested_at)
+                                    + _queued_redispatch_grace_sql()
+                                    <= observed_at,
+                                ),
+                                # 미룬 실행은 적체가 아니다 — 정한 시각이 지났을 때만 보낸다.
+                                and_(
+                                    OperationRun.state == OperationRunState.QUEUED,
+                                    OperationRun.not_before_at <= observed_at,
+                                ),
+                                and_(
+                                    OperationRun.operation_type.in_(tuple(_LEASE_TAKEOVER_TYPES)),
+                                    OperationRun.state == OperationRunState.RUNNING,
+                                    OperationRun.lease_expires_at.isnot(None),
+                                    OperationRun.lease_expires_at <= observed_at,
+                                ),
+                            ),
                         ),
-                    ),
+                        # 끝낼 주체가 사라진 RUNNING 잔재(정책 밖 유형 포함).
+                        _abandoned_running_clause(observed_at),
+                    )
                 )
                 .order_by(OperationRun.requested_at, OperationRun.id)
                 .with_for_update(skip_locked=True)
@@ -255,6 +411,7 @@ def reconcile() -> RecoveryCounts:
             .scalars()
             .all()
             if _operation_redispatch_is_due(run, observed_at)
+            or _is_abandoned_running(run, observed_at)
         ]
 
         for run in runs:
@@ -266,13 +423,35 @@ def reconcile() -> RecoveryCounts:
                 headers=build_dispatch_headers("retry-site-revalidation", str(run.id)),
             )
             run.heartbeat_at = observed_at
+        # 사고 없이 FAILED만 남은 멈춘 실행을 이번 tick의 새 멈춤보다 먼저 기록한다. 새 멈춤이
+        # 먼저 `last_seen_at`을 지금으로 올리면 더 이른 멈춤이 '기록됨'으로 보인다.
+        _repair_unrecorded_recovery_stops(db, observed_at)
         operation_redispatches = 0
         handled_site_hospitals: set[uuid.UUID] = set()
         for run in operation_runs:
+            if _is_abandoned_running(run, observed_at):
+                if (
+                    _stop_operation_run(db, run, observed_at, _RUN_ABANDONED)
+                    and run.operation_type == "REBUILD_SITE"
+                    and run.hospital_id is not None
+                ):
+                    handled_site_hospitals.add(run.hospital_id)
+                continue
             if _site_rebuild_attempts_exhausted(run):
                 if _fail_exhausted_site_rebuild(db, run, observed_at):
                     if run.hospital_id is not None:
                         handled_site_hospitals.add(run.hospital_id)
+                continue
+            if _lease_takeover_refused(run):
+                _stop_operation_run(db, run, observed_at, _LEASE_EXPIRED)
+                continue
+            if _redispatch_budget_exhausted(run):
+                if (
+                    _stop_operation_run(db, run, observed_at, _REDISPATCH_EXHAUSTED)
+                    and run.operation_type == "REBUILD_SITE"
+                    and run.hospital_id is not None
+                ):
+                    handled_site_hospitals.add(run.hospital_id)
                 continue
             redispatched = _redispatch_operation_run(db, run, observed_at)
             if redispatched:
@@ -520,6 +699,7 @@ def _ensure_rebuild_site_run(
         task_id=str(uuid.uuid4()),
         requested_at=observed_at,
         attempt_count=len(failed),
+        redispatch_count=0,
         total_count=0,
         success_count=0,
         failure_count=0,
@@ -729,6 +909,8 @@ def _redispatch_operation_run(db, run: OperationRun, observed_at: datetime) -> b
     previous_task_id = run.task_id
     previous_state = run.state
     previous_version = run.version
+    # 상태를 REQUESTED로 바꾸기 전에 정한다 — 유실 추정 재배달만 예산을 쓴다.
+    spent = 1 if _counts_against_redispatch_budget(run) else 0
     task_id = str(uuid.uuid4())
     prepared_version = previous_version + 1
     prepared = db.execute(
@@ -750,6 +932,7 @@ def _redispatch_operation_run(db, run: OperationRun, observed_at: datetime) -> b
             lease_expires_at=None,
             safe_error_code=None,
             safe_error_message=None,
+            redispatch_count=OperationRun.redispatch_count + spent,
             version=prepared_version,
         )
         .returning(OperationRun.id)
@@ -767,6 +950,7 @@ def _redispatch_operation_run(db, run: OperationRun, observed_at: datetime) -> b
     run.lease_expires_at = None
     run.safe_error_code = None
     run.safe_error_message = None
+    run.redispatch_count = _redispatch_count(run) + spent
     run.version = prepared_version
     db.commit()
     celery_app.send_task(
@@ -1018,6 +1202,214 @@ def _arg_matches_shape(value: object, expected: object) -> bool:
     if expected is False:
         return value is False
     return value == expected
+
+
+def _stop_operation_run(db, run: OperationRun, observed_at: datetime, code: str) -> bool:
+    """자율 복구가 더 다루지 않는 실행을 FAILED로 끝내고 원인별 사고 하나에 묶는다.
+
+    CAS는 읽은 task id·상태·판이 그대로일 때만 쓴다 — 같은 틱의 다른 reconciler나 늦게
+    claim한 워커가 이미 전진시킨 실행을 덮지 않는다. 끝난 실행의 늦은 사본은 claim을 못 해
+    STALE로 물러난다.
+    """
+
+    message = _RECOVERY_STOP_MESSAGES[code]
+    stopped = db.execute(
+        update(OperationRun)
+        .where(
+            OperationRun.id == run.id,
+            OperationRun.task_id.is_not_distinct_from(run.task_id),
+            OperationRun.state == run.state,
+            OperationRun.version == run.version,
+        )
+        .values(
+            state=OperationRunState.FAILED,
+            completed_at=observed_at,
+            heartbeat_at=None,
+            lease_owner=None,
+            lease_expires_at=None,
+            not_before_at=None,
+            safe_error_code=code,
+            safe_error_message=message,
+            version=OperationRun.version + 1,
+        )
+        .returning(OperationRun.id)
+        .execution_options(synchronize_session=False)
+    ).scalar_one_or_none()
+    if stopped is None:
+        return False
+    run.state = OperationRunState.FAILED
+    run.completed_at = observed_at
+    run.heartbeat_at = None
+    run.lease_owner = None
+    run.lease_expires_at = None
+    run.not_before_at = None
+    run.safe_error_code = code
+    run.safe_error_message = message
+    run.version += 1
+    # FAILED와 사고(·알림 intent)는 한 트랜잭션이다. 둘 사이에서 끊기면 FAILED 실행은 다시
+    # 후보가 되지 않아 사고가 영영 열리지 않는다 — 함께 되돌아가면 다음 tick이 다시 멈춘다.
+    hospital = (
+        db.get(Hospital, run.hospital_id)
+        if run.operation_type == "REBUILD_SITE" and run.hospital_id is not None
+        else None
+    )
+    if hospital is not None:
+        # 사이트 준비는 이미 병원 하나당 사고 한 건이 있다(H-13).
+        _open_rebuild_site_incident(db, hospital, run, observed_at)
+    else:
+        _open_recovery_stop_incident(db, run, observed_at, code)
+    db.commit()
+    return True
+
+
+def _unrecorded_recovery_stops_query(observed_at: datetime):
+    """원인 사고에 기록되지 않은 채 멈춘 실행(최근 7일). 같은 원인 사고의 마지막 관측이 실행의
+    종료보다 늦으면 이미 기록된 것이다. 사이트 준비는 병원 사고가 맡으므로 뺀다."""
+
+    recorded = (
+        select(Incident.id)
+        .where(
+            Incident.incident_type == _RECOVERY_STOP_INCIDENT_TYPE,
+            Incident.safe_error_code == OperationRun.safe_error_code,
+            Incident.last_seen_at >= OperationRun.completed_at,
+        )
+        .exists()
+    )
+    return (
+        select(OperationRun)
+        .where(
+            OperationRun.state == OperationRunState.FAILED,
+            OperationRun.safe_error_code.in_(tuple(_RECOVERY_STOP_MESSAGES)),
+            OperationRun.operation_type != "REBUILD_SITE",
+            OperationRun.completed_at >= observed_at - _RECOVERY_STOP_REPAIR_WINDOW,
+            ~recorded,
+        )
+        .order_by(OperationRun.completed_at, OperationRun.id)
+        # 같은 tick의 다른 reconciler가 같은 실행으로 사고·알림을 두 번 만들지 않게 한다.
+        .with_for_update(skip_locked=True)
+        .limit(_RECOVERY_STOP_REPAIR_LIMIT)
+    )
+
+
+def _repair_unrecorded_recovery_stops(db, observed_at: datetime) -> int:
+    """FAILED만 남고 원인 사고가 없는 멈춘 실행에 사고를 채운다(멱등, tick당 상한). 커밋은 호출자."""
+
+    runs = db.execute(_unrecorded_recovery_stops_query(observed_at)).scalars().all()
+    for run in runs:
+        _open_recovery_stop_incident(
+            db, run, observed_at, str(run.safe_error_code), occurred_at=run.completed_at
+        )
+    return len(runs)
+
+
+def _open_recovery_stop_incident(
+    db,
+    run: OperationRun,
+    observed_at: datetime,
+    code: str,
+    *,
+    occurred_at: datetime | None = None,
+) -> None:
+    """원인 코드 하나에 사고 하나. 열려 있으면 횟수만 늘리고, 닫혔으면 새 에피소드로 다시 연다.
+
+    `occurred_at`은 실행이 멈춘 시각이다(기본은 관측 시각). 사고의 시각은 이 값으로만 움직인다:
+    - `last_seen_at`은 뒤로 가지 않는다(`greatest`). 먼저 시작한 reconciler가 더 이른 시각으로
+      늦게 기록해도 이미 기록된 멈춤을 '기록 안 됨'으로 되돌리지 않는다.
+    - 열린 사고의 `first_seen_at`은 더 이른 멈춤까지 넓힌다(`least`) — 나중에 복구해 기록한 멈춤도
+      이번 에피소드에 들어가 해결 판정(`incident_backlog._stopped_runs_recovered`)이 본다.
+    - 닫힌 사고는 마지막 관측보다 늦은 멈춤만 새 에피소드로 다시 연다. 그보다 이른 관측은 이미
+      닫힌 일이라 상태·횟수·에피소드를 바꾸지 않고 알림도 내지 않는다.
+    """
+
+    occurred_at = occurred_at or observed_at
+    dedupe_key = build_incident_key(
+        "autonomous_recovery", "operation_recovery_stop", code, IncidentFingerprint.UNKNOWN
+    )
+    closed = (IncidentState.RECOVERED.value, IncidentState.ACKNOWLEDGED.value)
+    previous_episode = db.scalar(
+        select(Incident.episode_seq).where(Incident.dedupe_key == dedupe_key)
+    )
+    is_closed = Incident.state.in_(closed)
+    reopen = and_(is_closed, Incident.last_seen_at < occurred_at)
+    counted = or_(~is_closed, reopen)
+    message = _RECOVERY_STOP_MESSAGES[code]
+    impact = "자동 복구가 멈춘 작업이 있어 진단·보고서·콘텐츠·사이트 준비 결과가 늦어질 수 있습니다."
+    next_action = (
+        "운영 관제의 실패한 작업에서 이 원인으로 멈춘 작업을 열어 ‘작업 다시 시도’를 누르세요. "
+        "다시 멈추면 ‘개발팀 문의용 정보 복사’를 개발팀에 전달하세요."
+    )
+    incident = db.execute(
+        pg_insert(Incident)
+        .values(
+            id=uuid.uuid4(),
+            hospital_id=None,
+            operation_run_id=run.id,
+            dedupe_key=dedupe_key,
+            incident_type=_RECOVERY_STOP_INCIDENT_TYPE,
+            state=IncidentState.OPEN.value,
+            severity=IncidentSeverity.HIGH.value,
+            customer_impact=impact,
+            source_type="OPERATION_RUN",
+            source_id=code,
+            safe_error_code=code,
+            safe_error_message=message,
+            next_action=next_action,
+            admin_path="/operations",
+            first_seen_at=occurred_at,
+            last_seen_at=occurred_at,
+            created_at=observed_at,
+            updated_at=observed_at,
+        )
+        .on_conflict_do_update(
+            index_elements=[Incident.dedupe_key],
+            set_={
+                "state": case((counted, IncidentState.OPEN.value), else_=Incident.state),
+                "operation_run_id": case((counted, run.id), else_=Incident.operation_run_id),
+                "last_seen_at": func.greatest(Incident.last_seen_at, occurred_at),
+                "occurrence_count": Incident.occurrence_count + case((counted, 1), else_=0),
+                "episode_seq": Incident.episode_seq + case((reopen, 1), else_=0),
+                "first_seen_at": case(
+                    (reopen, occurred_at),
+                    (is_closed, Incident.first_seen_at),
+                    else_=func.least(Incident.first_seen_at, occurred_at),
+                ),
+                "recovered_at": case((reopen, null()), else_=Incident.recovered_at),
+                "acknowledged_at": case((reopen, null()), else_=Incident.acknowledged_at),
+                "acknowledged_by_id": case(
+                    (reopen, null()), else_=Incident.acknowledged_by_id
+                ),
+                "version": Incident.version + 1,
+                "updated_at": observed_at,
+            },
+        )
+        .returning(Incident)
+        .execution_options(populate_existing=True)
+    ).scalar_one()
+    if previous_episode is not None and incident.episode_seq == previous_episode:
+        # 열린 사고에 더해졌거나, 닫힌 사고의 지난 관측이다 — 새로 알릴 일이 없다.
+        return
+    auto_assign_owner_sync(db, incident, observed_at=observed_at)
+    projection = IncidentSlackProjection(
+        incident_id=incident.id,
+        hospital_name="시스템 공통 작업",
+        severity=incident.severity,
+        customer_impact=incident.customer_impact,
+        next_action=incident.next_action,
+        admin_path=incident.admin_path,
+        owner_label=owner_label_sync(db, incident.owner_id),
+        sla_label="확인 필요",
+        hospital_id=None,
+        operation_run_id=incident.operation_run_id,
+        version=incident.version,
+        problem=message,
+        episode_seq=incident.episode_seq,
+        incident_type=incident_type_of(incident),
+    )
+    enqueue_notification_sync(
+        db,
+        build_open_incident_notification(projection, settings.ADMIN_BASE_URL),
+        now=observed_at,
+    )
 
 
 def _fail_unsafe_operation_run(db, run: OperationRun, observed_at: datetime) -> None:

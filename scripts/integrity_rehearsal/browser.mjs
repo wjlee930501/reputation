@@ -8,6 +8,7 @@ import {
   recordExpectedOptionalScheduleAbsence,
 } from './browser_error_classifier.mjs'
 import { adminServiceOrigin, probeAdminUnavailable } from './admin_availability.mjs'
+import { pollUntil } from './poll_until.mjs'
 
 function parseArgs(argv) {
   const result = {}
@@ -504,10 +505,23 @@ try {
         retry: replacementProjection?.body?.retry ?? null,
       })}`)
     }
-    const settledIncident = await adminPage.evaluate(async ({ hospitalId, incidentId }) => {
-      const response = await fetch(`/api/admin/operations/hospitals/${hospitalId}/incidents/${incidentId}`)
-      return { status: response.status, body: await response.json() }
-    }, { hospitalId: fixture.hospitalId, incidentId: fixture.budgetIncidentId })
+    // 워커는 실행을 SUCCEEDED로 커밋한 뒤 별도 세션에서 사고를 새 실행으로 옮긴다
+    // (tasks.regenerate_content_item → recover_generation_incidents). 그 사이에 한 번만 읽으면
+    // 옮기기 전의 사고를 본다 — 기한 안에서 다시 읽는다.
+    const incidentSettledOn = (observed) => observed.status === 200
+      && observed.body?.incident?.operation_run_id === replacementRunId
+      && observed.body?.incident?.retry === null
+      && observed.body?.run?.run_id === replacementRunId
+      && observed.body?.run?.state === 'SUCCEEDED'
+      && observed.body?.run?.retry === null
+    const settledIncident = await pollUntil(
+      () => adminPage.evaluate(async ({ hospitalId, incidentId }) => {
+        const response = await fetch(`/api/admin/operations/hospitals/${hospitalId}/incidents/${incidentId}`)
+        return { status: response.status, body: await response.json() }
+      }, { hospitalId: fixture.hospitalId, incidentId: fixture.budgetIncidentId }),
+      incidentSettledOn,
+      { timeoutMs: 15_000, intervalMs: 500 },
+    )
     if (settledIncident.status !== 200
       || settledIncident.body?.incident?.operation_run_id !== replacementRunId
       || settledIncident.body?.incident?.retry !== null

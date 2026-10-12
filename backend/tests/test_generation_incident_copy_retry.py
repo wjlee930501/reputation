@@ -36,7 +36,6 @@ from app.services.notification_copy import display_time
 from app.workers import generation_incident_control, generation_retry_policy, tasks
 from app.workers.generation_attempt_state import GENERATION_ATTEMPT_KEY
 from app.workers.generation_incident_control import (
-    CONTENT_NOT_GENERATED_OPERATOR_ACTION,
     ENVIRONMENT_EXHAUSTED_OPERATOR_ACTION,
     operator_retry_releases,
 )
@@ -70,8 +69,16 @@ def test_a_gate_recorded_slot_says_press_and_pressing_writes_it(monkeypatch):
 
     action = _action(monkeypatch, item, "CONTENT_NOT_GENERATED", _SLOT_GATE_AT)
 
-    assert action == CONTENT_NOT_GENERATED_OPERATOR_ACTION
-    assert _PRESS_ANYTIME in action
+    # 기록 없던 슬롯의 원고 미생성은 이제 다음 스윕이 다시 쓴다 — 시각과 버튼을 함께 말한다.
+    due = generation_incident_control._stored_retry_deadline(
+        item.essence_check_summary[GENERATION_ATTEMPT_KEY]
+    )
+    assert due is not None
+    assert action == (
+        f"자동 복구가 {display_time(due.astimezone(UTC))}에 이 글의 원고 생성을 다시 시도합니다. 원인이 "
+        "풀렸으면 운영 센터에서 해당 항목의 “작업 다시 시도”를 눌러 지금 바로 다시 시도할 수 있습니다."
+    )
+    assert _PRESS_NOW in action
     assert operator_retry_releases(item)
     assert _press_retry(monkeypatch, item, _PRESS, operator=True) == [
         (OperationRunState.SUCCEEDED, None)
@@ -86,8 +93,10 @@ def test_an_exhausted_provider_failure_says_press_now_and_pressing_writes_it(
     """예산 소진은 07:45 전이어도 누르면 된다 — 게이트를 기다리라고 하지 않는다."""
 
     philosophy, item, writer_calls, _seen = _slot_with_writer(monkeypatch, swapped=False)
-    for moment in (_kst(2026, 9, 15, 23), _kst(2026, 9, 16, 1), _kst(2026, 9, 16, 4), _FAILED_AT):
-        record = _remember(monkeypatch, item, philosophy, moment, code)
+    # 하루 4회 예산이 날마다 다시 열리므로 3일 창(9/13~9/15)을 다 써야 소진이다.
+    for day in (13, 14, 15):
+        for hour in (1, 4, 7, 12):
+            record = _remember(monkeypatch, item, philosophy, _kst(2026, 9, day, hour), code)
     assert record["next_retry_at"] is None
     assert generation_retry_policy.recovery_is_abandoned(record)
 

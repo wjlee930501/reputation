@@ -29,11 +29,29 @@ BACKLOG_RECOVERY_HOUR = 22
 BACKLOG_RECOVERY_MINUTE = 30
 BACKLOG_RECOVERY_GRACE = timedelta(hours=1)
 ENVIRONMENT_ATTEMPT_BUDGET = 4
-DAILY_RESET_ENVIRONMENT_CODES = frozenset({"CONTENT_AI_REVIEW_UNAVAILABLE"})
 # 같은 후보의 독립 검수 장애가 이어지면 다음 재검수를 물린다. n번째 연속 실패 뒤에는
 # `관측 + min(1시간·2^(n-1), 24시간)` 이전에 다시 사지 않는다. 계수(`review_unavailable_total`)는
-# KST 날을 넘어 누적되므로 위의 일일 초기화가 이 물러서기를 지우지 않는다.
+# KST 날을 넘어 누적되므로 아래의 일일 초기화가 이 물러서기를 지우지 않는다.
 REVIEW_UNAVAILABLE_CODE = "CONTENT_AI_REVIEW_UNAVAILABLE"
+# 하루 4회(`ENVIRONMENT_ATTEMPT_BUDGET`) 예산이 다음 KST 일에 다시 열리는 환경 원인. 공급자
+# 장애는 몇 시간~하루면 풀리는데 평생 4회로 끝내면 하루짜리 장애가 사람의 일로 굳는다.
+# 원고 미생성(CONTENT_NOT_GENERATED)은 게이트가 예산 없이 남긴 증상이다 — 유실된 배달을
+# 다음 스윕이 다시 집게 한다.
+DAILY_RESET_ENVIRONMENT_CODES = frozenset(
+    {
+        REVIEW_UNAVAILABLE_CODE,
+        "PROVIDER_TIMEOUT",
+        "PROVIDER_UNAVAILABLE",
+        "GENERATION_FAILED",
+        "CONTENT_NOT_GENERATED",
+    }
+)
+# 일일 초기화 코드의 끝. 처음 관측한 KST 날부터 이 일수가 지나면 어떤 스윕도 다시 사지 않고
+# 사람의 일이다(표본 실패의 `SAMPLE_EXHAUSTED_DAY_LIMIT`와 같은 3일). 검수 장애는 후보별 연속
+# 실패 한도(`CONTENT_AI_REVIEW_UNAVAILABLE_MAX_RETRIES`)가 따로 끝을 소유하므로 뺀다.
+ENVIRONMENT_EXHAUSTED_DAY_LIMIT = 3
+ENVIRONMENT_SINCE_KEY = "environment_since"
+WINDOWED_ENVIRONMENT_CODES = DAILY_RESET_ENVIRONMENT_CODES - {REVIEW_UNAVAILABLE_CODE}
 REVIEW_UNAVAILABLE_BACKOFF_BASE = timedelta(hours=1)
 REVIEW_UNAVAILABLE_BACKOFF_MAX = timedelta(hours=24)
 
@@ -86,6 +104,7 @@ _ENVIRONMENT_CODES = frozenset(
         "PROVIDER_UNAVAILABLE",
         "CONTENT_AI_REVIEW_UNAVAILABLE",
         "GENERATION_FAILED",
+        "CONTENT_NOT_GENERATED",
     }
 )
 # 이미지 표본 실패. 하루 4회(야간 스윕 수)까지 재시도하고 다음 KST 일에 초기화된다.
@@ -98,9 +117,12 @@ SAMPLE_IMAGE_CODES = frozenset(
         "CONTENT_IMAGE_NOT_VERIFIED",
     }
 )
+# 생성 예산 소진의 시도 기록 코드(`generation_run_control.classify_generation_failure`가 쓴다).
+# 이 모듈은 다른 생성 모듈을 import하지 않는 잎이라 정본 상수를 여기 둔다.
+GENERATION_BUDGET_EXHAUSTED_CODE = "GENERATION_BUDGET_EXHAUSTED"
 # 본문 표본 실패. 작가 세션은 비싸므로 하루 2회로 제한한다.
 SAMPLE_BODY_CODES = frozenset(
-    {"GENERATION_REJECTED", "CONTENT_AI_HARD_FINDING", "GENERATION_BUDGET_EXHAUSTED"}
+    {"GENERATION_REJECTED", "CONTENT_AI_HARD_FINDING", GENERATION_BUDGET_EXHAUSTED_CODE}
 )
 _SAMPLE_CODES = SAMPLE_IMAGE_CODES | SAMPLE_BODY_CODES
 _INPUT_CODES = frozenset(
@@ -131,6 +153,49 @@ def stored_attempt_period(attempt: dict) -> str | None:
     if observed.tzinfo is None:
         observed = observed.replace(tzinfo=UTC)
     return environment_attempt_period(observed)
+
+
+def environment_window_start(attempt: Mapping) -> datetime | None:
+    """일일 초기화 환경 원인의 3일 창이 시작된 시각. 창이 없는 원인이면 `None`.
+
+    시작은 그 환경 장애 연속 구간을 처음 관측한 시각(`environment_since`)이다. 그 키가 없는
+    레거시 기록은 마지막 관측일(`observed_at`)부터 3일 창을 받는다 — 같은 문맥의 옛 표본 실패
+    시각을 물려받을 수 있는 `first_observed_at`으로 보면 이미 닫힌 창으로 읽힌다. 읽는 쪽
+    (`environment_window_last_day`)과 잇는 쪽(`tasks._remember_generation_attempt`)이 함께 쓴다.
+    """
+
+    if attempt.get("reason") not in WINDOWED_ENVIRONMENT_CODES:
+        return None
+    for key in (ENVIRONMENT_SINCE_KEY, "observed_at"):
+        raw = attempt.get(key)
+        if not isinstance(raw, str):
+            continue
+        try:
+            started = datetime.fromisoformat(raw)
+        except ValueError:
+            continue
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=UTC)
+        return started
+    return None
+
+
+def environment_window_last_day(attempt: Mapping) -> date | None:
+    """일일 초기화 환경 원인이 자동 재시도를 살 수 있는 마지막 KST 날. 상한이 없으면 `None`."""
+
+    started = environment_window_start(attempt)
+    if started is None:
+        return None
+    return started.astimezone(KST).date() + timedelta(days=ENVIRONMENT_EXHAUSTED_DAY_LIMIT - 1)
+
+
+def environment_window_closed(attempt: Mapping, now: datetime | None = None) -> bool:
+    """일일 초기화 환경 원인의 3일 창이 끝났는가."""
+
+    last_day = environment_window_last_day(attempt)
+    if last_day is None:
+        return False
+    return (now or datetime.now(UTC)).astimezone(KST).date() > last_day
 
 
 def review_unavailable_backoff(failures: int) -> timedelta:
@@ -372,14 +437,20 @@ def _earliest_eligible_date(
     except (TypeError, ValueError):
         return None
     if count < ENVIRONMENT_ATTEMPT_BUDGET:
-        return today
-    if attempt.get("reason") in DAILY_RESET_ENVIRONMENT_CODES:
+        earliest = today
+    elif attempt.get("reason") in DAILY_RESET_ENVIRONMENT_CODES:
         # 소진된 예산이 어제 것이면 오늘 이미 초기화됐다. 하루를 더 미루면 새 예산의
         # 하루를 통째로 버린다.
         if stored_attempt_period(attempt) != environment_attempt_period(observed):
-            return today
-        return today + timedelta(days=1)
-    return None
+            earliest = today
+        else:
+            earliest = today + timedelta(days=1)
+    else:
+        return None
+    last_day = environment_window_last_day(attempt)
+    if last_day is not None and earliest > last_day:
+        return None
+    return earliest
 
 
 def next_recovery_deadline(
@@ -408,9 +479,14 @@ def next_recovery_deadline(
     if earliest_date is None:
         return None
     not_before = review_unavailable_not_before(attempt)
+    last_day = environment_window_last_day(attempt)
     for candidate in _candidate_sweeps(observed):
         if candidate.date() < earliest_date:
             continue
+        if last_day is not None and candidate.date() > last_day:
+            # 3일 창 밖의 스윕은 이 기록을 집지 않는다(`retry_is_due`). catch-up 창보다 오래된
+            # 슬롯의 백로그 복구 판정은 아래에서 그대로 준다.
+            break
         if not_before is not None and candidate < not_before:
             continue
         window_start, window_end = _sweep_window(candidate)
@@ -562,6 +638,9 @@ def retry_is_due(attempt: dict, now: datetime | None = None) -> bool:
         return _sample_retry_is_due(attempt, observed)
     if retry_class != GenerationRetryClass.ENVIRONMENT_RECOVERABLE.value:
         return False
+    if environment_window_closed(attempt, observed):
+        # 3일 창이 끝났다. 아래의 일일 초기화 되살리기보다 앞선다.
+        return False
     legacy_count = (
         0 if attempt.get("reason") == "COST_BLOCKED" else attempt.get("attempt_count")
     )
@@ -573,9 +652,10 @@ def retry_is_due(attempt: dict, now: datetime | None = None) -> bool:
         attempt.get("reason") in DAILY_RESET_ENVIRONMENT_CODES
         and stored_attempt_period(attempt) != environment_attempt_period(observed)
     )
-    # Review outages receive a fresh bounded allowance on the next KST day so an
-    # already-written due slot cannot remain empty forever. Other provider failures
-    # retain their finite H-08 budget.
+    # 일일 초기화 원인(검수 장애·공급자 장애·원고 미생성)은 다음 KST 날에 새 하루 예산을 받아
+    # 이미 기한이 된 슬롯이 영영 비지 않는다. 공급자 장애·원고 미생성의 끝은 위의 3일 창
+    # (`environment_window_closed`), 검수 장애의 끝은 후보별 연속 실패 한도다. 그 밖의 환경
+    # 원인(COST_BLOCKED 등)은 유한한 H-08 예산 그대로다.
     if count >= ENVIRONMENT_ATTEMPT_BUDGET and not budget_reset_due:
         return False
     not_before = review_unavailable_not_before(attempt)

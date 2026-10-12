@@ -100,6 +100,9 @@ class _RecoverySession:
                 return _ScalarResult(self.visible_block_keys)
             return _ScalarResult(self.rebuild_site_incidents)
         if entity is OperationRun:
+            if "operation_runs.safe_error_code IN" in str(statement):
+                # 사고 없이 FAILED만 남은 멈춘 실행 복구 조회 — 이 가짜 DB에는 없다.
+                return _ScalarResult(())
             self._operation_run_reads += 1
             # 1: SITE_REVALIDATION, 2: 재배달 후보, 그다음 병원별 사이트 준비 이력,
             # 마지막이 재인증 실행 이력.
@@ -258,6 +261,7 @@ def test_site_build_recovery_does_not_requeue_a_hospital_with_a_queued_run(
     queued = SimpleNamespace(
         id=uuid.uuid4(),
         operation_type="REBUILD_SITE",
+        redispatch_count=0,
         state=OperationRunState.QUEUED,
         hospital_id=hospital.id,
         task_id="already-queued",
@@ -290,6 +294,7 @@ def _rebuild_site_failures(hospital, now, count=3):
         SimpleNamespace(
             id=uuid.uuid4(),
             operation_type="REBUILD_SITE",
+            redispatch_count=0,
             state=OperationRunState.FAILED,
             hospital_id=hospital.id,
             task_id=f"failed-{index}",
@@ -603,6 +608,8 @@ def test_site_build_budget_only_counts_the_last_day_of_runs(monkeypatch) -> None
         for statement in session.statements
         if statement.column_descriptions[0].get("entity") is OperationRun
         and "REBUILD_SITE" in statement.compile().params.values()
+        # 멈춘 실행 복구 조회도 REBUILD_SITE를 (제외 조건으로) 싣는다.
+        and "OPERATION_RECOVERY_EXHAUSTED" not in statement.compile().params.values()
     )
     assert now - timedelta(hours=24) in budget_query.compile().params.values()
 
@@ -620,6 +627,7 @@ def test_site_build_budget_ignores_failures_before_a_later_success(monkeypatch) 
     succeeded = SimpleNamespace(
         id=uuid.uuid4(),
         operation_type="REBUILD_SITE",
+        redispatch_count=0,
         state=OperationRunState.SUCCEEDED,
         hospital_id=hospital.id,
         task_id="operator-retry",
@@ -713,6 +721,7 @@ def test_reconciler_redispatches_stranded_requested_operation_run(monkeypatch) -
     run = SimpleNamespace(
         id=uuid.uuid4(),
         operation_type="REBUILD_SITE",
+        redispatch_count=0,
         state=OperationRunState.REQUESTED,
         hospital_id=hospital_id,
         task_id="lost-before-publish",
@@ -783,6 +792,7 @@ def test_reconciler_does_not_duplicate_legitimately_queued_operation(monkeypatch
     run = SimpleNamespace(
         id=uuid.uuid4(),
         operation_type="REBUILD_SITE",
+        redispatch_count=0,
         state=OperationRunState.QUEUED,
         hospital_id=hospital_id,
         task_id="waiting-for-worker-capacity",
@@ -822,6 +832,7 @@ def test_reconciler_requeues_only_expired_running_v0_with_same_lineage(monkeypat
     run = SimpleNamespace(
         id=uuid.uuid4(),
         operation_type="TRIGGER_V0_REPORT",
+        redispatch_count=0,
         state=OperationRunState.RUNNING,
         hospital_id=hospital_id,
         task_id="hard-killed-v0-task",
@@ -878,6 +889,7 @@ def test_reconciler_does_not_take_over_live_running_v0(monkeypatch) -> None:
     run = SimpleNamespace(
         id=uuid.uuid4(),
         operation_type="TRIGGER_V0_REPORT",
+        redispatch_count=0,
         state=OperationRunState.RUNNING,
         hospital_id=uuid.uuid4(),
         task_id="live-v0-task",
@@ -911,6 +923,7 @@ def test_reconciler_rebuilds_unsafe_stored_dispatch_from_hospital_truth(monkeypa
     run = SimpleNamespace(
         id=uuid.uuid4(),
         operation_type="REBUILD_SITE",
+        redispatch_count=0,
         state=OperationRunState.REQUESTED,
         hospital_id=hospital_id,
         task_id="unsafe-dispatch",
@@ -981,6 +994,7 @@ def test_reconciler_fails_unrebuildable_dispatch_with_incident_and_open_intent(
     run = SimpleNamespace(
         id=uuid.uuid4(),
         operation_type="GENERATE_MONTHLY_REPORT",
+        redispatch_count=0,
         state=OperationRunState.REQUESTED,
         hospital_id=hospital_id,
         task_id="unsafe-monthly-dispatch",
@@ -1052,6 +1066,7 @@ def test_reconciler_allows_monthly_report_period_dispatch(monkeypatch) -> None:
     run = SimpleNamespace(
         id=uuid.uuid4(),
         operation_type="GENERATE_MONTHLY_REPORT",
+        redispatch_count=0,
         state=OperationRunState.REQUESTED,
         hospital_id=hospital_id,
         task_id="monthly-period-dispatch",
@@ -1112,6 +1127,7 @@ def test_reconciler_rebuilds_monthly_dispatch_from_summary_and_replaces_missing_
     run = SimpleNamespace(
         id=uuid.uuid4(),
         operation_type="GENERATE_MONTHLY_REPORT",
+        redispatch_count=0,
         state=OperationRunState.REQUESTED,
         hospital_id=hospital_id,
         task_id=None,
@@ -1151,6 +1167,7 @@ def test_reconciler_allows_monthly_report_rebuild_true_dispatch(monkeypatch) -> 
     run = SimpleNamespace(
         id=uuid.uuid4(),
         operation_type="GENERATE_MONTHLY_REPORT",
+        redispatch_count=0,
         state=OperationRunState.QUEUED,
         hospital_id=hospital_id,
         task_id="monthly-rebuild-dispatch",
@@ -1194,6 +1211,7 @@ def test_reconciler_allows_monthly_sov_dispatch(monkeypatch) -> None:
     run = SimpleNamespace(
         id=uuid.uuid4(),
         operation_type="RUN_SOV",
+        redispatch_count=0,
         state=OperationRunState.REQUESTED,
         hospital_id=hospital_id,
         task_id="monthly-sov-dispatch",
@@ -1237,6 +1255,7 @@ def test_reconciler_allows_monthly_report_coverage_recovery_dispatch(monkeypatch
     run = SimpleNamespace(
         id=uuid.uuid4(),
         operation_type="GENERATE_MONTHLY_REPORT",
+        redispatch_count=0,
         state=OperationRunState.QUEUED,
         hospital_id=hospital_id,
         task_id="monthly-coverage-recovery-dispatch",
@@ -1280,6 +1299,7 @@ def test_reconciler_rebuilds_monthly_report_dispatch_without_false_flag(monkeypa
     run = SimpleNamespace(
         id=uuid.uuid4(),
         operation_type="GENERATE_MONTHLY_REPORT",
+        redispatch_count=0,
         state=OperationRunState.REQUESTED,
         hospital_id=hospital_id,
         task_id="monthly-false-rebuild",
@@ -1322,6 +1342,7 @@ def test_reconciler_drops_unsafe_monthly_report_extra_args(monkeypatch) -> None:
     run = SimpleNamespace(
         id=uuid.uuid4(),
         operation_type="GENERATE_MONTHLY_REPORT",
+        redispatch_count=0,
         state=OperationRunState.REQUESTED,
         hospital_id=hospital_id,
         task_id="monthly-extra-arg",
@@ -1447,6 +1468,7 @@ def _recertify_run(
     return SimpleNamespace(
         id=uuid.uuid4(),
         operation_type="RECERTIFY_PUBLISHED_IMAGE",
+        redispatch_count=0,
         state=state,
         safe_error_code=safe_error_code,
         request_payload={
@@ -1676,6 +1698,7 @@ def test_reconciler_redispatches_a_lost_fanned_out_generation_with_its_claim_tok
     run = SimpleNamespace(
         id=uuid.uuid4(),
         operation_type="GENERATE_CONTENT_ITEM",
+        redispatch_count=0,
         state=OperationRunState.REQUESTED,
         hospital_id=hospital_id,
         task_id="lost-generation-item",

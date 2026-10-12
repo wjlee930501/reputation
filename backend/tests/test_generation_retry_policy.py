@@ -4,14 +4,20 @@ import pytest
 
 from app.services.post_publish_review_policy import AUTO_PUBLISH_CATCHUP_DAYS
 from app.workers.generation_attempt_state import (
+    LIFETIME_WRITER_RESULT_LIMIT,
+    TEXT_HTTP_ATTEMPT_LIMIT,
     GenerationBudgetExceeded,
     GenerationBudgetUnknown,
+    _topic_boundary,
     acquisition_completed,
+    current_topic_writers_exhausted,
     fresh_generation_attempt,
     read_generation_budget,
+    record_topic_swap,
     replace_unknown_legacy_budget,
     reserve_acquisition,
     transport_attempt_started,
+    writer_acquisition_prefix,
 )
 from app.workers.generation_retry_policy import (
     BODY_REPAIR_DAILY_BUDGET,
@@ -639,10 +645,12 @@ def test_environment_budget_is_finite_unless_the_code_resets_daily() -> None:
             "attempt_period": slot.isoformat(),
         }
 
-    assert next_recovery_deadline(attempt("PROVIDER_TIMEOUT"), scheduled_date=slot, now=now) is None
-    assert next_recovery_deadline(
-        attempt("CONTENT_AI_REVIEW_UNAVAILABLE"), scheduled_date=slot, now=now
-    ) == _kst(2026, 9, 15, 1, 0).astimezone(UTC)
+    # 비용 가드 보류는 하루 초기화가 없다. 공급자 장애는 검수 장애처럼 다음 KST 일에 다시 열린다.
+    assert next_recovery_deadline(attempt("COST_BLOCKED"), scheduled_date=slot, now=now) is None
+    for reason in ("CONTENT_AI_REVIEW_UNAVAILABLE", "PROVIDER_TIMEOUT"):
+        assert next_recovery_deadline(
+            attempt(reason), scheduled_date=slot, now=now
+        ) == _kst(2026, 9, 15, 1, 0).astimezone(UTC)
 
 
 def test_terminal_classes_and_unreachable_slots_have_no_deadline() -> None:
@@ -872,3 +880,157 @@ def test_an_input_change_repair_code_has_no_automatic_deadline() -> None:
         )
         is None
     )
+
+
+# ── 주제 교체 뒤 예산(0-1) ───────────────────────────────────────────────────
+
+
+def _buy(attempt, *, kind, topic, count, transports=1, start=0):
+    for index in range(start, start + count):
+        acquisition_id = f"{kind.lower()}:ctx:{topic}:{index}"
+        attempt = reserve_acquisition(attempt, acquisition_id=acquisition_id, kind=kind)
+        attempt = acquisition_completed(
+            attempt,
+            acquisition_id=acquisition_id,
+            transport_attempts=transports,
+            outcome="RESULT",
+            payload={"index": index},
+        )
+    return attempt
+
+
+def test_swapped_topic_can_buy_a_writer_after_the_old_topic_spent_all_six() -> None:
+    # Given: 옛 주제가 작가 결과 6회를 다 썼다(실패 세션 2개면 첫날에 닿는다).
+    attempt = _buy(
+        fresh_generation_attempt(topic_id="topic-a"), kind="WRITER", topic="topic-a", count=6
+    )
+    with pytest.raises(GenerationBudgetExceeded, match="WRITER_RESULTS_EXHAUSTED"):
+        reserve_acquisition(attempt, acquisition_id="writer:ctx:topic-a:7", kind="WRITER")
+
+    # When: 슬롯 평생 한 번의 주제 교체를 기록한다.
+    swapped = record_topic_swap(attempt, from_topic_id="topic-a", to_topic_id="topic-b")
+
+    # Then: 새 주제의 첫 작가 호출이 실제로 예약된다.
+    reserved = reserve_acquisition(
+        swapped, acquisition_id="writer:ctx:topic-b:0", kind="WRITER"
+    )
+    assert reserved["budget"]["acquisitions"][-1]["status"] == "RESERVED"
+
+
+def test_swapped_topic_has_its_own_six_and_the_slot_lifetime_stays_twelve() -> None:
+    attempt = _buy(
+        fresh_generation_attempt(topic_id="topic-a"), kind="WRITER", topic="topic-a", count=6
+    )
+    attempt = record_topic_swap(attempt, from_topic_id="topic-a", to_topic_id="topic-b")
+    attempt = _buy(attempt, kind="WRITER", topic="topic-b", count=6)
+
+    budget = read_generation_budget(attempt)
+    assert budget.writer_results == LIFETIME_WRITER_RESULT_LIMIT == 12
+    with pytest.raises(GenerationBudgetExceeded, match="WRITER_RESULTS_EXHAUSTED"):
+        reserve_acquisition(attempt, acquisition_id="writer:ctx:topic-b:7", kind="WRITER")
+
+
+def test_swap_reopens_reviewer_and_text_transport_but_not_image_transport() -> None:
+    # Given: 옛 주제가 작가·검수 6회씩, 본문 전송 36회, 이미지 전송 12회를 다 썼다.
+    attempt = fresh_generation_attempt(topic_id="topic-a")
+    attempt = _buy(attempt, kind="WRITER", topic="topic-a", count=6, transports=3)
+    attempt = _buy(attempt, kind="REVIEWER", topic="topic-a", count=6, transports=3)
+    attempt = _buy(attempt, kind="IMAGE", topic="topic-a", count=4, transports=3)
+    assert read_generation_budget(attempt).text_http_attempts == TEXT_HTTP_ATTEMPT_LIMIT
+
+    swapped = record_topic_swap(attempt, from_topic_id="topic-a", to_topic_id="topic-b")
+
+    reserve_acquisition(swapped, acquisition_id="writer:ctx:topic-b:0", kind="WRITER")
+    reserve_acquisition(swapped, acquisition_id="reviewer:ctx:new", kind="REVIEWER")
+    # 이미지는 주제가 아니라 슬롯의 지출이다 — 교체로 다시 열리지 않는다.
+    with pytest.raises(GenerationBudgetExceeded, match="IMAGE_HTTP_ATTEMPTS_EXHAUSTED"):
+        reserve_acquisition(swapped, acquisition_id="image:new", kind="IMAGE")
+
+
+def test_swap_records_the_old_topic_spend_without_erasing_lifetime_counters() -> None:
+    attempt = _buy(
+        fresh_generation_attempt(topic_id="topic-a"),
+        kind="WRITER",
+        topic="topic-a",
+        count=6,
+        transports=2,
+    )
+
+    swapped = record_topic_swap(attempt, from_topic_id="topic-a", to_topic_id="topic-b")
+
+    assert swapped["budget"]["prior_topic_spend"] == {
+        "acquisition_count": 6,
+        "writer_results": 6,
+        "reviewer_results": 0,
+        "text_http_attempts": 12,
+    }
+    budget = read_generation_budget(swapped)
+    assert (budget.writer_results, budget.text_http_attempts, budget.topic_swaps) == (6, 12, 1)
+
+
+def test_pre_fix_swapped_budget_without_marker_derives_the_new_topic_boundary() -> None:
+    # Given: 이 수정 이전에 교체된 슬롯 — topic_swaps=1이지만 표시가 없다.
+    attempt = _buy(
+        fresh_generation_attempt(topic_id="topic-a"), kind="WRITER", topic="topic-a", count=6
+    )
+    attempt["budget"]["topics"] = ["topic-a", "topic-b"]
+    attempt["budget"]["topic_swaps"] = 1
+    assert "prior_topic_spend" not in attempt["budget"]
+
+    # Then: 새 주제의 작가 획득이 아직 없으면 목록 전체를 옛 주제의 지출로 본다.
+    attempt = _buy(attempt, kind="WRITER", topic="topic-b", count=2)
+    assert current_topic_writers_exhausted(attempt) is False
+    # 새 주제가 2회를 썼으므로 4회가 더 남는다.
+    attempt = _buy(attempt, kind="WRITER", topic="topic-b", count=4, start=2)
+    with pytest.raises(GenerationBudgetExceeded, match="WRITER_RESULTS_EXHAUSTED"):
+        reserve_acquisition(attempt, acquisition_id="writer:ctx:topic-b:9", kind="WRITER")
+
+
+def test_writer_acquisition_prefix_carries_the_topic_token_the_boundary_reads() -> None:
+    # 표시 없는 옛 교체 예산의 경계(`_topic_boundary`)는 작가 획득 id 안의 `:{topic}:`를 찾는다.
+    # 실제 작가 획득 id(`tasks._generate_with_auto_review`)가 이 형식을 벗어나면 여기서 깨진다.
+    prefix = writer_acquisition_prefix("ctx", "topic-b", "claim-1", "fp")
+    assert ":topic-b:" in prefix
+
+    attempt = _buy(
+        fresh_generation_attempt(topic_id="topic-a"), kind="WRITER", topic="topic-a", count=6
+    )
+    attempt["budget"]["topics"] = ["topic-a", "topic-b"]
+    attempt["budget"]["topic_swaps"] = 1
+    attempt = reserve_acquisition(attempt, acquisition_id=prefix, kind="WRITER")
+
+    assert _topic_boundary(attempt["budget"]) == 6
+
+
+def test_unswapped_budget_keeps_the_existing_six_result_ceiling() -> None:
+    attempt = _buy(
+        fresh_generation_attempt(topic_id="topic-a"), kind="WRITER", topic="topic-a", count=6
+    )
+    assert "prior_topic_spend" not in attempt["budget"]
+    with pytest.raises(GenerationBudgetExceeded, match="WRITER_RESULTS_EXHAUSTED"):
+        reserve_acquisition(attempt, acquisition_id="writer:ctx:topic-a:6", kind="WRITER")
+
+
+@pytest.mark.parametrize(
+    "malformation",
+    ["not_object", "count_past_end", "without_swap", "string_counter", "counter_above_lifetime"],
+)
+def test_malformed_prior_topic_spend_never_mints_allowance(malformation: str) -> None:
+    attempt = _buy(
+        fresh_generation_attempt(topic_id="topic-a"), kind="WRITER", topic="topic-a", count=6
+    )
+    attempt = record_topic_swap(attempt, from_topic_id="topic-a", to_topic_id="topic-b")
+    prior = attempt["budget"]["prior_topic_spend"]
+    if malformation == "not_object":
+        attempt["budget"]["prior_topic_spend"] = "bad"
+    elif malformation == "count_past_end":
+        prior["acquisition_count"] = 7
+    elif malformation == "without_swap":
+        attempt["budget"]["topic_swaps"] = 0
+    elif malformation == "string_counter":
+        prior["writer_results"] = "6"
+    elif malformation == "counter_above_lifetime":
+        prior["writer_results"] = 7
+
+    with pytest.raises(GenerationBudgetUnknown, match="LEGACY_SPEND_UNKNOWN"):
+        reserve_acquisition(attempt, acquisition_id="writer:ctx:topic-b:0", kind="WRITER")

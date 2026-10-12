@@ -27,6 +27,7 @@ from app.workers import (
 from app.workers.generation_attempt_state import (
     GENERATION_ATTEMPT_KEY,
     WRITER_RESULT_LIMIT,
+    GenerationBudgetLedger,
     fresh_generation_attempt,
 )
 from app.workers.generation_incident_control import generation_incident_dedupe_key
@@ -770,3 +771,128 @@ def test_internal_medicine_slot_is_swapped_to_a_compatible_topic_not_radiology(
     pg_session.refresh(row)
     assert row.query_target_id == ids["internal"]
     assert row.query_target_id != ids["d7a5603e"]
+
+
+def test_the_swapped_topic_actually_buys_its_first_writer_call(pg_conn, pg_session):
+    """교체된 주제의 첫 작가 호출이 옛 주제의 소진으로 막히지 않는다(0-1).
+
+    옛 주제가 작가 결과 6회를 다 쓴 슬롯을 교체한 뒤, 정본 원장(`GenerationBudgetLedger`)이
+    새 주제의 작가 획득을 실제로 예약하는지 본다. 종전에는 교체가 `topics`만 바꾸고 예산을
+    이월해 첫 `reserve`가 곧바로 WRITER_RESULTS_EXHAUSTED였다.
+    """
+
+    hospital_id = _seed_hospital(pg_conn)
+    item_id = _seed_item(pg_conn, hospital_id, scheduled_date=SLOT - timedelta(days=1))
+
+    assert _swap(pg_session).swapped == 1
+    row = pg_session.get(ContentItem, item_id)
+    pg_session.refresh(row)
+
+    ledger = GenerationBudgetLedger(pg_session, row)
+    reservation = ledger.reserve(
+        acquisition_id=f"writer:ctx:{row.query_target_id}:claim:first", kind="WRITER"
+    )
+
+    assert reservation.cached_payload is None
+    pg_session.refresh(row)
+    budget = row.essence_check_summary[GENERATION_ATTEMPT_KEY]["budget"]
+    # 지출 사실은 지우지 않는다 — 평생 계수는 옛 주제의 6회 그대로다.
+    assert budget["writer_results"] == WRITER_RESULT_LIMIT
+    assert budget["prior_topic_spend"]["writer_results"] == WRITER_RESULT_LIMIT
+    assert budget["prior_topic_spend"]["acquisition_count"] == WRITER_RESULT_LIMIT
+    assert budget["acquisitions"][-1]["status"] == "RESERVED"
+
+
+def test_a_retrying_slot_whose_topic_spent_its_writers_is_swapped_on_day_one(
+    pg_conn, pg_session
+):
+    """현재 주제의 작가 예산 소진은 3일 사다리를 기다리지 않고 교체 후보다(D1).
+
+    소진 첫날의 기록은 아직 자동 복구가 소유한 RETRYING(`SAMPLE_RECOVERABLE`)이다. 후보
+    SQL이 이 기록을 거르지 않고 정본 파이썬 술어까지 올려 보내는지 실제 Postgres로 본다.
+    """
+
+    hospital_id = _seed_hospital(pg_conn)
+    target_id = pg_conn.execute(
+        text("SELECT id FROM ai_query_targets WHERE hospital_id=:h AND name=:name"),
+        {"h": hospital_id, "name": "대장내시경 수면 여부"},
+    ).scalar_one()
+    summary = json.loads(_exhausted_summary(target_id))
+    summary[GENERATION_ATTEMPT_KEY].update(
+        {
+            "reason": "GENERATION_BUDGET_EXHAUSTED",
+            "retry_class": GenerationRetryClass.SAMPLE_RECOVERABLE.value,
+            "exhausted_days": 0,
+        }
+    )
+    item_id = _seed_item(
+        pg_conn,
+        hospital_id,
+        scheduled_date=SLOT - timedelta(days=1),
+        summary=json.dumps(summary),
+    )
+
+    report = _swap(pg_session)
+
+    assert report.swapped == 1
+    row = pg_session.get(ContentItem, item_id)
+    pg_session.refresh(row)
+    assert row.topic_swap_history[0]["reason_code"] == "GENERATION_BUDGET_EXHAUSTED"
+
+
+# ── 0-6b: 수리 예산 소진·사람이 정하는 참고자료 보류의 후보 SQL ─────────────────────
+
+
+def _repair_blocked_summary(topic_id, *, exhausted_days: int, operator_decides: bool) -> str:
+    attempt = fresh_generation_attempt(topic_id=str(topic_id))
+    attempt.update(
+        {
+            "reason": "MISSING_REFERENCES",
+            "retry_class": GenerationRetryClass.OPERATOR_REQUIRED.value,
+        }
+    )
+    if operator_decides:
+        attempt[generation_retry_policy.OPERATOR_DECIDES_KEY] = True
+    return json.dumps(
+        {
+            GENERATION_ATTEMPT_KEY: attempt,
+            generation_retry_policy.BODY_REPAIR_STATE_KEY: {
+                "period": "2026-09-15",
+                "count": 2,
+                "exhausted_days": exhausted_days,
+            },
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    ("exhausted_days", "operator_decides", "flag", "swapped"),
+    [
+        (3, False, False, 1),  # 수리 3일 소진 → 교체
+        (2, False, False, 0),  # 수리 예산이 남았다
+        (3, True, False, 0),  # 사람이 정하는 보류 — 기본은 교체하지 않는다
+        (0, True, True, 1),  # 대표가 켠 경우에만 보류도 교체
+    ],
+    ids=["repair_exhausted", "repair_left", "operator_decides_off", "operator_decides_on"],
+)
+def test_the_candidate_sql_selects_reference_blocks_by_their_ladder(
+    pg_conn, pg_session, monkeypatch, exhausted_days, operator_decides, flag, swapped
+):
+    monkeypatch.setattr(
+        topic_swap_fallback.settings, "CONTENT_TOPIC_SWAP_OPERATOR_DECIDES", flag
+    )
+    hospital_id = _seed_hospital(pg_conn)
+    target_id = pg_conn.execute(
+        text("SELECT id FROM ai_query_targets WHERE hospital_id=:h AND name=:name"),
+        {"h": hospital_id, "name": "대장내시경 수면 여부"},
+    ).scalar_one()
+    _seed_item(
+        pg_conn,
+        hospital_id,
+        scheduled_date=SLOT - timedelta(days=1),
+        summary=_repair_blocked_summary(
+            target_id, exhausted_days=exhausted_days, operator_decides=operator_decides
+        ),
+    )
+
+    assert _swap(pg_session).swapped == swapped

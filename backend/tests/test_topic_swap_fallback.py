@@ -24,7 +24,11 @@ from app.models.operations import Incident, IncidentState
 from app.workers import generation_retry_policy, nightly_generation_batch, topic_swap_fallback
 from app.workers.generation_attempt_state import (
     GENERATION_ATTEMPT_KEY,
+    WRITER_RESULT_LIMIT,
+    acquisition_completed,
     fresh_generation_attempt,
+    record_topic_swap,
+    reserve_acquisition,
 )
 from app.workers.generation_incident_control import generation_incident_dedupe_key
 from app.workers.generation_retry_policy import GenerationRetryClass
@@ -213,6 +217,72 @@ def test_synthetic_uncertain_finding_is_still_swapped():
     assert topic_swap_fallback.exhausted_body_sample_reason(item) == "CONTENT_AI_HARD_FINDING"
 
 
+# ── 현재 주제의 작가 예산 소진은 3일을 기다리지 않는다(D1) ──────────────────────
+
+
+def _bought_writers(attempt: dict, *, topic: str, count: int) -> dict:
+    for index in range(count):
+        acquisition_id = f"writer:ctx:{topic}:claim:{index}"
+        attempt = reserve_acquisition(attempt, acquisition_id=acquisition_id, kind="WRITER")
+        attempt = acquisition_completed(
+            attempt, acquisition_id=acquisition_id, transport_attempts=1, outcome="RESULT"
+        )
+    return attempt
+
+
+def _budget_exhausted_summary(attempt: dict) -> dict:
+    # 첫날의 소진이다 — 자동 복구가 아직 소유한(RETRYING) 표본 실패 기록이다.
+    return {
+        GENERATION_ATTEMPT_KEY: {
+            **attempt,
+            "reason": "GENERATION_BUDGET_EXHAUSTED",
+            "retry_class": GenerationRetryClass.SAMPLE_RECOVERABLE.value,
+            "exhausted_days": 0,
+        }
+    }
+
+
+def test_exhausted_writer_budget_is_a_swap_candidate_on_day_one():
+    # Given: 현재 주제가 작가 결과 6회를 첫날에 다 썼다. 남은 이틀은 지출 없는 공회전이다.
+    attempt = _bought_writers(
+        fresh_generation_attempt(topic_id="topic-a"), topic="topic-a", count=WRITER_RESULT_LIMIT
+    )
+    item = _item(essence_check_summary=_budget_exhausted_summary(attempt))
+
+    # Then: 소진 일수와 무관하게 곧바로 교체 후보다.
+    assert (
+        topic_swap_fallback.exhausted_body_sample_reason(item) == "GENERATION_BUDGET_EXHAUSTED"
+    )
+
+
+def test_budget_exhausted_while_writers_remain_waits_for_the_ladder():
+    # 작가 예산이 남은 소진(검수·전송 등)은 이 규칙 밖이다 — 종전 3일 사다리를 탄다.
+    attempt = _bought_writers(
+        fresh_generation_attempt(topic_id="topic-a"),
+        topic="topic-a",
+        count=WRITER_RESULT_LIMIT - 1,
+    )
+    item = _item(essence_check_summary=_budget_exhausted_summary(attempt))
+
+    assert topic_swap_fallback.exhausted_body_sample_reason(item) is None
+
+
+def test_exhausted_writer_budget_after_the_last_swap_is_left_to_the_operator_path():
+    # Given: 교체를 이미 한 번 썼고 새 주제도 작가 6회를 다 썼다.
+    attempt = _bought_writers(
+        fresh_generation_attempt(topic_id="topic-a"), topic="topic-a", count=WRITER_RESULT_LIMIT
+    )
+    attempt = record_topic_swap(attempt, from_topic_id="topic-a", to_topic_id="topic-b")
+    attempt = _bought_writers(attempt, topic="topic-b", count=WRITER_RESULT_LIMIT)
+    item = _item(
+        essence_check_summary=_budget_exhausted_summary(attempt),
+        topic_swap_history=[{"to_target_id": "topic-b"}],
+    )
+
+    # Then: 다시 교체하지 않는다 — 기존 사다리가 OPERATOR_REQUIRED로 넘긴다.
+    assert topic_swap_fallback.exhausted_body_sample_reason(item) is None
+
+
 def test_published_and_human_edited_rows_are_excluded_by_the_candidate_sql():
     statement = topic_swap_fallback._candidate_stmt(SLOT, SLOT, NOW)
     compiled = str(statement)
@@ -239,6 +309,13 @@ def test_swap_resets_the_slot_and_keeps_the_month_accounting(chosen_target):
     assert values["references_list"] is None
     swapped_attempt = values["essence_check_summary"][GENERATION_ATTEMPT_KEY]
     assert swapped_attempt["budget"]["topic_swaps"] == 1
+    # 새 주제의 예산은 이 위치 뒤의 획득만 센다(평생 계수는 그대로 남는다).
+    assert swapped_attempt["budget"]["prior_topic_spend"] == {
+        "acquisition_count": 0,
+        "writer_results": 0,
+        "reviewer_results": 0,
+        "text_http_attempts": 0,
+    }
     assert swapped_attempt["budget"]["topics"] == [
         str(item.query_target_id),
         str(chosen_target.id),
@@ -1094,3 +1171,113 @@ def test_only_the_empty_slot_symptom_leaves_the_swap_record_alone(
     after = item.essence_check_summary[GENERATION_ATTEMPT_KEY]
     assert (after == swapped) is kept
     assert after["reason"] == (topic_swap_fallback.TOPIC_SWAPPED_REASON if kept else gate_code)
+
+
+# ── 0-5: 후보를 여러 개 살펴본다 ──────────────────────────────────────────────
+
+
+def test_a_rejected_candidate_is_excluded_and_the_next_one_is_taken(monkeypatch):
+    similar = _target("허리디스크 초기증상 자가진단")
+    good = _target()
+    excluded_per_call: list[set] = []
+
+    def choose(db, *, exclude_target_ids, **kwargs):
+        excluded_per_call.append(set(exclude_target_ids))
+        for candidate in (similar, good):
+            if candidate.id not in exclude_target_ids:
+                return candidate
+        return None
+
+    monkeypatch.setattr(topic_swap_fallback, "_choose_target", choose)
+    item = _item()
+    db = _FakeDB([item])
+
+    report = _run(db)
+
+    assert (report.considered, report.swapped, report.similar_topic) == (1, 1, 0)
+    assert excluded_per_call == [{item.query_target_id}, {item.query_target_id, similar.id}]
+    assert _values(db)["query_target_id"] == good.id
+
+
+def test_the_candidate_search_is_bounded(monkeypatch):
+    calls: list[int] = []
+
+    def choose(db, **kwargs):
+        calls.append(1)
+        return _target("허리디스크 초기증상 자가진단")  # 매번 새 id, 매번 유사
+
+    monkeypatch.setattr(topic_swap_fallback, "_choose_target", choose)
+    db = _FakeDB([_item()])
+
+    report = _run(db)
+
+    assert len(calls) == topic_swap_fallback.TOPIC_SWAP_CANDIDATE_LIMIT
+    assert (report.swapped, report.similar_topic) == (0, 1)
+    assert db.updates == []
+
+
+# ── 0-6b: 수리 예산 소진·사람이 정하는 참고자료 보류도 교체 계단에 ──────────────────
+
+
+def _repair_exhausted(reason="MISSING_REFERENCES", *, exhausted_days=3, **attempt_fields):
+    summary = _attempt(reason=reason)
+    summary[GENERATION_ATTEMPT_KEY].update(attempt_fields)
+    summary[generation_retry_policy.BODY_REPAIR_STATE_KEY] = {
+        "period": "2026-09-15",
+        "count": 2,
+        "exhausted_days": exhausted_days,
+    }
+    return summary
+
+
+@pytest.mark.parametrize("reason", ["MISSING_REFERENCES", "FAQ_FIELDS_MISSING", "ESSENCE_NOT_ALIGNED"])
+def test_a_body_repair_code_is_a_candidate_once_its_repair_budget_is_spent(reason):
+    item = _item(essence_check_summary=_repair_exhausted(reason))
+
+    assert topic_swap_fallback.exhausted_body_sample_reason(item) == reason
+
+
+@pytest.mark.parametrize(
+    "summary",
+    [
+        _repair_exhausted(exhausted_days=2),  # 수리 예산이 아직 남았다(내일 또 고친다)
+        _repair_exhausted(retry_class=GenerationRetryClass.INPUT_CHANGE_REQUIRED.value),
+        _repair_exhausted("FORBIDDEN_EXPRESSION"),  # 입력 변경 종착 — 교체 대상 아님
+        _repair_exhausted(**{generation_retry_policy.OPERATOR_DECIDES_KEY: True}),
+        _attempt(reason="MISSING_REFERENCES"),  # 수리 기록이 없다
+    ],
+    ids=["budget_left", "input_change", "forbidden", "operator_decides", "no_repair_state"],
+)
+def test_body_repair_records_that_are_not_swapped(summary):
+    assert topic_swap_fallback.exhausted_body_sample_reason(_item(essence_check_summary=summary)) is None
+
+
+def test_the_operator_decides_hold_is_swapped_only_behind_the_flag(monkeypatch):
+    summary = _attempt(reason="MISSING_REFERENCES")
+    summary[GENERATION_ATTEMPT_KEY][generation_retry_policy.OPERATOR_DECIDES_KEY] = True
+    item = _item(essence_check_summary=summary)
+
+    monkeypatch.setattr(topic_swap_fallback.settings, "CONTENT_TOPIC_SWAP_OPERATOR_DECIDES", False)
+    assert topic_swap_fallback.exhausted_body_sample_reason(item) is None
+
+    monkeypatch.setattr(topic_swap_fallback.settings, "CONTENT_TOPIC_SWAP_OPERATOR_DECIDES", True)
+    assert topic_swap_fallback.exhausted_body_sample_reason(item) == "MISSING_REFERENCES"
+
+
+def test_a_reference_blocked_slot_is_not_swapped_into_a_cost_question(monkeypatch):
+    cost = _target("대장내시경 비용")
+    good = _target()
+
+    def choose(db, *, exclude_target_ids, **kwargs):
+        for candidate in (cost, good):
+            if candidate.id not in exclude_target_ids:
+                return candidate
+        return None
+
+    monkeypatch.setattr(topic_swap_fallback, "_choose_target", choose)
+    db = _FakeDB([_item(essence_check_summary=_repair_exhausted())])
+
+    report = _run(db)
+
+    assert report.swapped == 1
+    assert _values(db)["query_target_id"] == good.id

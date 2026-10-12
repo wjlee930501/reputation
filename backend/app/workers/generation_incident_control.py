@@ -40,6 +40,7 @@ from app.workers.generation_retry_policy import (
     OPERATOR_DECIDES_KEY,
     REVIEW_UNAVAILABLE_CODE,
     GenerationRetryClass,
+    environment_window_closed,
     next_recovery_deadline,
     recovery_is_abandoned,
     repair_recovery_remains,
@@ -218,6 +219,16 @@ def scheduled_recovery_owns_blocker(code: str, item) -> bool:
         return False
     if code in _AUTOMATIC_RECOVERY_CODES:
         return True
+    if (
+        code == "CONTENT_NOT_GENERATED"
+        and attempt.get("reason") == code
+        and attempt.get("retry_class") == GenerationRetryClass.ENVIRONMENT_RECOVERABLE.value
+        and not environment_window_closed(attempt)
+    ):
+        # 게이트가 남긴 원고 미생성 증상은 3일 창 안에서 스윕이 다시 집는다(유실된 배달).
+        # 창이 끝나면 게이트가 기록을 다시 쓰기 전(기한 문자열이 남은 동안)에도 소유하지 않는다
+        # — `tasks._record_gate_blocker_decision`과 같은 판정이다.
+        return True
     return (
         attempt.get("reason") == code
         and attempt.get("retry_class") == GenerationRetryClass.SAMPLE_RECOVERABLE.value
@@ -269,9 +280,10 @@ def scheduled_recovery_deadline(item, code: str) -> datetime | None:
 
 
 def environment_recovery_exhausted(code: str, item) -> bool:
-    """공급자 장애의 환경 예산이 끝나 예약 복구가 이 빈 슬롯을 더 집지 않는가.
+    """공급자 장애의 자동 재시도 창이 끝나 예약 복구가 이 빈 슬롯을 더 집지 않는가.
 
-    `ENVIRONMENT_ATTEMPT_BUDGET`을 다 쓰면 재시도 정책이 다음 시도 시각을 `None`으로 저장한다
+    하루 예산(`ENVIRONMENT_ATTEMPT_BUDGET`)은 KST 날마다 다시 열리고, 처음 관측한 날부터 3일 창
+    (`environment_window_closed`)이 끝나면 재시도 정책이 다음 시도 시각을 `None`으로 저장한다
     (`recovery_is_abandoned`). 그 뒤에도 '다음 예약 배치가 다시 시도합니다'라고 하면 사람이 할
     일이 없는 것처럼 보인다. 본문이 있는 글은 저장 본문 수리가 소유하므로 여기 들지 않는다.
     """
@@ -518,11 +530,11 @@ def generation_operator_action(code: str, message: str | None = None) -> str:
 # 시도”가 지금 다시 시도하면 그 말이 틀린다(`ENVIRONMENT_EXHAUSTED_OPERATOR_ACTION`·`PROVIDER_RETRY_NOW_ACTIONS`).
 _ENVIRONMENT_WAIT_CODES = frozenset({"PROVIDER_TIMEOUT", "PROVIDER_UNAVAILABLE"})
 
-# 원고 미생성은 07:45·08:00 게이트가 기록한다(`tasks._record_gate_blocker_decision`). 분류는
-# OPERATOR_REQUIRED이고 다음 시도 시각이 없어 01·04·07·12·18·22시 복구와 23시 야간 배치 어느
-# 것도 이 슬롯을 다시 쓰지 않는다(`_generation_attempt_is_unchanged`). 예외는 생성 지문(운영 기준·
-# 유형·측정 질문·검사 규칙 판, `tasks._generation_attempt_context`)이 바뀐 때뿐이다. 운영센터의
-# “작업 다시 시도”는 이 기록의 억제를 풀고 원고를 만든다(`tasks.regenerate_content_item`).
+# 원고 미생성은 07:45·08:00 게이트가 기록한다(`tasks._record_gate_blocker_decision`). 기록이 없던
+# 빈 슬롯(유실된 배달)·환경 기록은 ENVIRONMENT_RECOVERABLE·3일 창으로 남아 다음 스윕이 다시 쓴다.
+# 이 조치 문구는 그 창이 끝났거나, 게이트가 종착 기록(소진된 표본 등)을 덮어 OPERATOR_REQUIRED로
+# 남긴 경우의 것이다. 운영센터의 “작업 다시 시도”는 이 기록의 억제를 풀고 원고를 만든다
+# (`tasks.regenerate_content_item`).
 CONTENT_NOT_GENERATED_OPERATOR_ACTION = (
     "예약된 자동 복구는 이 글의 원고 생성을 다시 시도하지 않습니다(운영 기준이 새로 승인되는 등 "
     "생성 조건이 바뀔 때만 다시 시도합니다). 운영 센터에서 해당 항목의 “작업 다시 시도”를 누르세요."

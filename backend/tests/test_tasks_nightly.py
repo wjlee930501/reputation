@@ -35,6 +35,7 @@ from app.services.content_ai_review import (
     ContentAiReviewStatus,
     ContentAiReviewUnavailableReason,
 )
+from app.services.content_engine import EXAM_TREATMENT_TITLE_FINDING_PREFIX
 from app.services.essence_engine import compute_sources_snapshot_hash
 from app.services.post_publish_review_policy import auto_publish_catchup_start
 from app.services.reference_verification import (
@@ -2274,8 +2275,12 @@ def test_style_rewrite_to_fact_hard_skips_image_spend(monkeypatch):
 
     assert state == tasks.GenerationItemState.FAILED
     assert code == "CONTENT_AI_HARD_FINDING"
-    assert "근거" in message
-    assert tasks._stored_generation_attempt(item)["reason"] == code
+    # 인용 없는 사실 HARD는 교정 이력 없이도 주제 교체 계단으로 넘어간다(감사 0-6). 예정일이
+    # 스윕 창 밖이라 교체 기한이 없어 곧바로 사람의 일이다.
+    assert "주제" in message
+    attempt = tasks._stored_generation_attempt(item)
+    assert attempt["reason"] == code
+    assert attempt["auto_correction_exhausted"] is True
 
 
 def test_same_context_style_soft_finding_regenerates_body(monkeypatch):
@@ -7304,3 +7309,165 @@ def test_eight_oclock_judges_every_post_with_the_date_the_run_started(monkeypatc
     text = _od_digest_text(row)
     assert text.count(_OD_LINE_TITLE) == 1
     assert "발행 보류 1편" in text
+
+
+# ── 작가 재생 범위는 claim 하나(0-2) ────────────────────────────────────────
+
+_EXAM_TITLE_REJECTED = {
+    "title": "갑상선초음파 치료 비용",
+    "body": "본문",
+    "target_alignment_findings": [
+        f"{EXAM_TREATMENT_TITLE_FINDING_PREFIX}: 제목 '갑상선초음파 치료 비용'"
+    ],
+}
+
+
+def _patch_exam_title_rejection(monkeypatch) -> list:
+    """작가가 매번 검사 제목에 '치료'를 붙인다 — 본문이 저장되지 않는 ValueError 경로."""
+
+    calls: list = []
+
+    async def fake_generate(*_args, **kwargs):
+        calls.append(kwargs.get("remediation_findings"))
+        return dict(_EXAM_TITLE_REJECTED)
+
+    async def allow_cost(*_args, **_kwargs):
+        return SimpleNamespace(allowed=True)
+
+    async def reviewer_pass(**_kwargs):
+        return ContentAiReview(
+            status=ContentAiReviewStatus.PASS,
+            confidence=0.98,
+            findings=(),
+            summary="통과",
+            model="reviewer-test",
+        )
+
+    monkeypatch.setattr(tasks, "generate_content", fake_generate)
+    monkeypatch.setattr(
+        tasks,
+        "screen_content_against_philosophy",
+        lambda *_args: SimpleNamespace(
+            status="ALIGNED", summary={"blocking": False, "findings": []}
+        ),
+    )
+    monkeypatch.setattr(tasks, "review_generated_content", reviewer_pass)
+    monkeypatch.setattr(tasks.cost_guard, "check_and_increment", allow_cost)
+    return calls
+
+
+def _claimed_item(claim_token):
+    # 가짜 행이 흉내 내는 속성이 실제 모델에 있어야 한다. 이름이 바뀌면 작가 획득 범위가
+    # 조용히 "unclaimed"로 떨어져 이 테스트들이 의미를 잃는다.
+    assert hasattr(ContentItem, "generation_claim_token")
+    return SimpleNamespace(
+        content_type="FAQ", essence_check_summary=None, generation_claim_token=claim_token
+    )
+
+
+async def _session(item) -> None:
+    with pytest.raises(ValueError, match="Exam title"):
+        await _generate_with_known_zero_budget(
+            hospital=SimpleNamespace(id=uuid.UUID(int=7)),
+            item=item,
+            existing_titles=[],
+            philosophy=SimpleNamespace(),
+            approved_brief=None,
+        )
+
+
+_WORKER = "generation-worker-1"
+
+
+class _ExecutionDB:
+    """`begin_generation_execution`이 잠그고 읽는 실행 기록·행을 차례로 돌려준다."""
+
+    def __init__(self, run, item):
+        self.run, self.item, self._reads = run, item, 0
+
+    def execute(self, _stmt):
+        value = self.run if self._reads % 2 == 0 else self.item
+        self._reads += 1
+        return SimpleNamespace(scalar_one_or_none=lambda: value)
+
+    def commit(self):
+        pass
+
+    def rollback(self):
+        pass
+
+
+def _reserved_slot(reservation):
+    item = _claimed_item(reservation)
+    item.id = uuid.uuid4()
+    item.hospital_id = uuid.UUID(int=7)
+    item.status = ContentStatus.DRAFT
+    item.hospital = SimpleNamespace(status=HospitalStatus.ACTIVE, site_live=True)
+    item.human_edited_at = None
+    item.generation_claimed_at = None
+    run = SimpleNamespace(
+        id=uuid.uuid4(),
+        operation_type="GENERATE_CONTENT_ITEM",
+        state=OperationRunState.RUNNING,
+        task_id=_WORKER,
+        lease_owner=_WORKER,
+        version=1,
+        lease_expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        request_payload={"source_type": "content_item", "source_id": str(item.id)},
+        hospital_id=item.hospital_id,
+    )
+    return _ExecutionDB(run, item)
+
+
+async def _delivery(db, reservation):
+    """(재)배달 한 번 — 실행 진입(`begin_generation_execution`)을 거쳐 작가 세션을 돈다."""
+
+    context = SimpleNamespace(run_id=db.run.id, worker_id=_WORKER, version=db.run.version)
+    entered = tasks._enter_claimed_execution(db, db.item.id, reservation, context)
+    assert entered is not None
+    item, execution_token = entered
+    assert item.generation_claim_token == execution_token != reservation
+    await _session(item)
+    return execution_token
+
+
+@pytest.mark.asyncio
+async def test_a_new_claim_resamples_the_writer_after_an_unsaved_rejection(monkeypatch):
+    # Given: 한 세션이 작가 2회(초안 + 보완)를 사고 제목 거절로 끝났다. 본문은 저장되지 않는다.
+    calls = _patch_exam_title_rejection(monkeypatch)
+    first = uuid.uuid4()
+    db = _reserved_slot(first)
+    await _delivery(db, first)
+    assert len(calls) == 2
+
+    # When: 다음 스윕이 새 예약으로 같은 슬롯을 다시 집는다.
+    second = uuid.uuid4()
+    db.item.generation_claim_token = second
+    db.run.version += 1
+    db.run.request_payload = {"source_type": "content_item", "source_id": str(db.item.id)}
+    await _delivery(db, second)
+
+    # Then: 저장된 후보를 0원에 재생하지 않고 작가를 실제로 다시 산다.
+    assert len(calls) == 4
+    writer_ids = [
+        entry["id"]
+        for entry in db.item.essence_check_summary["generation_attempt"]["budget"]["acquisitions"]
+        if entry["kind"] == "WRITER"
+    ]
+    assert len(writer_ids) == len(set(writer_ids)) == 4
+
+
+@pytest.mark.asyncio
+async def test_same_claim_redelivery_replays_without_buying_again(monkeypatch):
+    calls = _patch_exam_title_rejection(monkeypatch)
+    reservation = uuid.uuid4()
+    db = _reserved_slot(reservation)
+    first_execution = await _delivery(db, reservation)
+
+    # 같은 예약의 재배달(서명 봉투 재배달·자율 복구)은 더 높은 run version으로 실행에 다시
+    # 진입한다. 실행 토큰은 바뀌지만 저장된 작가 결과를 다시 쓰고 공급자를 다시 부르지 않는다.
+    db.run.version += 1
+    second_execution = await _delivery(db, reservation)
+
+    assert second_execution != first_execution
+    assert len(calls) == 2

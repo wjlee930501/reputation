@@ -41,7 +41,10 @@ from app.services.content_brief import PLANNING_REASON_KEY
 from app.services.content_similarity import DUPLICATE_TITLE_THRESHOLD, topic_similarity
 from app.services.content_target_planner import _choose_target
 from app.services.incidents import mark_recovered, mark_retrying
-from app.services.reference_requirement import references_required_for
+from app.services.reference_requirement import (
+    references_required_for,
+    topic_without_authoritative_source,
+)
 from app.services.reference_verification import curated_sources_for_topic
 from app.services.specialty_compatibility import target_conflicts_with_hospital
 from app.services.sync_async_bridge import SyncAsyncBridge
@@ -49,15 +52,23 @@ from app.workers.generation_attempt_state import (
     GENERATION_ATTEMPT_KEY,
     GenerationBudgetExceeded,
     GenerationBudgetUnknown,
+    current_topic_writers_exhausted,
     read_generation_attempt,
     read_generation_budget,
     record_topic_swap,
 )
-from app.workers.generation_incident_control import generation_incident_dedupe_key
+from app.workers.generation_incident_control import (
+    _body_repair_budget_remains,
+    generation_incident_dedupe_key,
+)
 from app.workers.generation_retry_policy import (
     AUTO_CORRECTION_EXHAUSTED_KEY,
+    BODY_REPAIR_STATE_KEY,
+    GENERATION_BUDGET_EXHAUSTED_CODE,
+    OPERATOR_DECIDES_KEY,
     SAMPLE_BODY_CODES,
     SAMPLE_BODY_DAILY_BUDGET,
+    SAMPLE_EXHAUSTED_DAY_LIMIT,
     GenerationRetryClass,
     environment_attempt_period,
     has_model_declared_hard_finding,
@@ -81,11 +92,23 @@ TOPIC_SWAPPED_REASON = "TOPIC_SWAPPED"
 # 못하는 비후보가 한 페이지를 통째로 채울 수 있으므로 정렬 키로 그 뒤를 이어 읽는다.
 TOPIC_SWAP_SELECT_LIMIT = 50
 TOPIC_SWAP_MAX_PAGES = 5
+# 저장 본문 수리 세션 예산(3일)을 다 쓴 뒤 주제 교체 계단을 타는 코드. 같은 주제로 작가가 매일
+# 다시 써도 풀리지 않은 참고자료·FAQ 필드·운영 기준 불일치다. 금지 표현(FORBIDDEN_EXPRESSION)과
+# 검수 지문 불일치(CONTENT_AI_REVIEW_STALE)는 입력 변경 종착(INPUT_CHANGE_REQUIRED)이라 뺀다.
+BODY_REPAIR_SWAP_CODES = frozenset({"MISSING_REFERENCES", "FAQ_FIELDS_MISSING", "ESSENCE_NOT_ALIGNED"})
+REFERENCE_SWAP_REASON = "MISSING_REFERENCES"
+# 한 슬롯을 교체할 때 살펴보는 측정 질문 후보 수. 고른 질문이 진료과 불일치·수기 목록 문서 없음·
+# 기존 주제와 유사로 맞지 않으면 그 질문을 빼고 다음 후보를 고른다(`_choose_target`은 결정적이라
+# 빼지 않으면 같은 질문을 다시 고른다).
+TOPIC_SWAP_CANDIDATE_LIMIT = 5
 # 인시던트 종결 수렴은 창 전체가 아니라 미완료 이력만 읽으므로 더 넉넉히 둔다. 남은 행은
 # 다음 pass가 이어서 닫는다(멱등).
 TOPIC_SWAP_RECONCILE_LIMIT = 200
 # `@>` 담음 조건. 이 모양을 담은 행에만 아직 닫지 못한 옛 인시던트가 있다.
 UNRECONCILED_HISTORY = [{"incident_recovered": False}]
+# 생성 예산 소진의 시도 기록 코드(`generation_run_control.classify_generation_failure`).
+# 현재 주제의 작가 예산이 다 찬 소진은 소진 일수를 기다리지 않고 교체 후보다.
+BUDGET_EXHAUSTED_REASON = GENERATION_BUDGET_EXHAUSTED_CODE
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,6 +118,7 @@ class SwapReport:
     considered: int = 0
     swapped: int = 0
     no_candidate_target: int = 0
+    # 방어용 라벨이다. `_choose_target`이 이미 진료과 불일치를 거르므로 실제로는 거의 오지 않는다.
     incompatible_specialty: int = 0
     similar_topic: int = 0
     write_conflicts: int = 0
@@ -139,11 +163,13 @@ def _exhausted_body_sample_filter():
     없으면 `->>`가 NULL이라 비교가 NULL이 되어 자연히 제외된다(원하는 결과다).
 
     최소 교정 상한을 다 쓴 사실·안전 차단(`AUTO_CORRECTION_EXHAUSTED_KEY`)도 후보다 — 그
-    기록은 교체를 기다리는 동안 RETRYING(`SAMPLE_RECOVERABLE`)으로 남는다.
+    기록은 교체를 기다리는 동안 RETRYING(`SAMPLE_RECOVERABLE`)으로 남는다. 생성 예산
+    소진도 RETRYING인 채로 올린다 — 현재 주제의 작가 예산이 찼는지는 파이썬 술어가 본다.
     """
 
     attempt = _stored_attempt_json()
-    return or_(
+    repair_state = ContentItem.essence_check_summary[BODY_REPAIR_STATE_KEY]
+    clauses = [
         and_(
             attempt["retry_class"].as_string() == GenerationRetryClass.OPERATOR_REQUIRED.value,
             attempt["reason"].as_string().in_(sorted(SAMPLE_BODY_CODES)),
@@ -152,7 +178,28 @@ def _exhausted_body_sample_filter():
             attempt["reason"].as_string() == "CONTENT_AI_HARD_FINDING",
             attempt[AUTO_CORRECTION_EXHAUSTED_KEY].as_boolean().is_(True),
         ),
-    )
+        and_(
+            attempt["reason"].as_string() == BUDGET_EXHAUSTED_REASON,
+            attempt["retry_class"].as_string()
+            == GenerationRetryClass.SAMPLE_RECOVERABLE.value,
+        ),
+        # 저장 본문 수리 예산을 3일 다 쓴 참고자료·FAQ·운영 기준 차단(사람이 정하는 보류 제외).
+        and_(
+            attempt["reason"].as_string().in_(sorted(BODY_REPAIR_SWAP_CODES)),
+            attempt["retry_class"].as_string()
+            != GenerationRetryClass.INPUT_CHANGE_REQUIRED.value,
+            attempt[OPERATOR_DECIDES_KEY].as_boolean().is_not(True),
+            repair_state["exhausted_days"].as_integer() >= SAMPLE_EXHAUSTED_DAY_LIMIT,
+        ),
+    ]
+    if settings.CONTENT_TOPIC_SWAP_OPERATOR_DECIDES:
+        clauses.append(
+            and_(
+                attempt["reason"].as_string() == REFERENCE_SWAP_REASON,
+                attempt[OPERATOR_DECIDES_KEY].as_boolean().is_(True),
+            )
+        )
+    return or_(*clauses)
 
 
 def topic_swap_limit() -> int:
@@ -241,6 +288,8 @@ def exhausted_body_sample_reason(item: ContentItem) -> str | None:
 
     모델이 HARD로 단정한 사실·안전 지적은 승인 자료 자체가 틀렸다는 뜻이라 주제를
     바꿔도 해결되지 않는다(`INPUT_CHANGE_REQUIRED`). 이미지 코드도 자기 폴백이 있다.
+    저장 본문 수리 예산(3일)을 다 쓴 참고자료·FAQ·운영 기준 차단도 후보다. 진료비·병원 선택
+    참고자료 보류는 `CONTENT_TOPIC_SWAP_OPERATOR_DECIDES`가 켜졌을 때만 후보다.
     """
 
     if not topic_swap_budget_left(item):
@@ -249,11 +298,36 @@ def exhausted_body_sample_reason(item: ContentItem) -> str | None:
         return None
     attempt = read_generation_attempt(item)
     reason = str(attempt.get("reason") or "")
+    if attempt.get(OPERATOR_DECIDES_KEY):
+        # 진료비·병원 선택 글의 참고자료 보류는 사람이 정한다. 대표가 켠 경우에만 교체한다.
+        if reason == REFERENCE_SWAP_REASON and settings.CONTENT_TOPIC_SWAP_OPERATOR_DECIDES:
+            return reason
+        return None
+    if (
+        reason in BODY_REPAIR_SWAP_CODES
+        and attempt.get("retry_class") != GenerationRetryClass.INPUT_CHANGE_REQUIRED.value
+    ):
+        # 수리 예산이 남았으면(오늘 또는 내일) 아직 작가가 고친다. 3일을 다 쓴 뒤에만 바꾼다.
+        # 수리 기록이 없으면 예산이 남은 것이다(인시던트 소유 판정과 같은 술어).
+        if not _body_repair_budget_remains(item):
+            return reason
+        return None
     if reason == "CONTENT_AI_HARD_FINDING" and attempt.get(AUTO_CORRECTION_EXHAUSTED_KEY):
         # 지적 문장 최소 교정을 상한까지 거친 사실·안전 차단이다. 승인 자료 변경만 기다리지
         # 않고 같은 슬롯·예정일로 다른 질문을 답하게 한다(`tasks._escalate_exhausted_correction`).
         return reason
-    if attempt.get("retry_class") != GenerationRetryClass.OPERATOR_REQUIRED.value:
+    # 현재 주제의 작가 예산(6회)은 하루 예산으로 첫날에 다 찬다. 남은 소진 일수는 지출 없는
+    # 공회전이라 기다리지 않고 곧바로 교체한다. 교체 상한을 다 쓴 뒤의 소진은 위 방어선이
+    # 막아 종전 사다리대로 `OPERATOR_REQUIRED`로 간다.
+    # 사흘짜리 공급자 장애도 주제당 HTTP 상한(36)을 다 써 생성 예산 소진으로 이 계단에 들어와
+    # 한 번뿐인 주제 교체를 쓸 수 있다. HTTP 예산이 남지 않은 주제는 교체로만 이어갈 수 있으므로
+    # 의도적으로 받아들인 결정이다.
+    writers_spent = reason == BUDGET_EXHAUSTED_REASON and current_topic_writers_exhausted(
+        attempt
+    )
+    if not writers_spent and (
+        attempt.get("retry_class") != GenerationRetryClass.OPERATOR_REQUIRED.value
+    ):
         return None
     if reason not in SAMPLE_BODY_CODES:
         return None
@@ -360,30 +434,56 @@ def _superseded_incident(db, item: ContentItem, reason: str) -> Incident | None:
     ).scalar_one_or_none()
 
 
-def _swap_one(db, item: ContentItem, reason: str, *, now: datetime) -> tuple[dict | None, str]:
-    """한 슬롯의 주제를 바꾼다. `(history 항목 또는 None, 결과 라벨)`."""
+def _target_rejection(target, item: ContentItem, hospital, reason: str) -> str | None:
+    """이 측정 질문으로 바꾸면 안 되는 이유(결과 라벨). 바꿔도 되면 ``None``."""
 
     # 병원 대표 진료과와 어울리지 않는 질문(내과 병원의 영상의학과 질문 등)은 교체 후보에서
     # 뺀다. 61810ef4 → d7a5603e처럼 같은 계열로 바꿔 봐야 같은 이유로 다시 소진된다.
-    hospital = getattr(item, "hospital", None)
-    target = _choose_target(
-        db,
-        item=item,
-        hospital_id=item.hospital_id,
-        exclude_target_ids={item.query_target_id},
-        hospital=hospital,
-    )
-    if target is None:
-        return None, "no_candidate_target"
     if target_conflicts_with_hospital(target, hospital):
-        return None, "incompatible_specialty"
+        return "incompatible_specialty"
     new_topic = str(target.name or "")
+    if reason == REFERENCE_SWAP_REASON and topic_without_authoritative_source(new_topic):
+        # 참고자료 때문에 막힌 슬롯을 다시 진료비·병원 선택 질문으로 바꾸면 같은 보류로 돌아온다.
+        return "no_candidate_target"
     if references_required_for(item.content_type, query_target_id=target.id) and not (
         curated_sources_for_topic([new_topic])
     ):
-        return None, "no_candidate_target"
+        return "no_candidate_target"
     if _topic_is_too_similar(new_topic, item):
-        return None, "similar_topic"
+        return "similar_topic"
+    return None
+
+
+def _swap_target(db, item: ContentItem, reason: str) -> tuple[Any, str]:
+    """교체할 측정 질문과 결과 라벨. 맞는 질문이 없으면 `(None, 마지막 거절 라벨)`."""
+
+    hospital = getattr(item, "hospital", None)
+    excluded: set = {item.query_target_id}
+    label = "no_candidate_target"
+    for _attempt in range(TOPIC_SWAP_CANDIDATE_LIMIT):
+        target = _choose_target(
+            db,
+            item=item,
+            hospital_id=item.hospital_id,
+            exclude_target_ids=excluded,
+            hospital=hospital,
+        )
+        if target is None:
+            return None, label
+        rejection = _target_rejection(target, item, hospital, reason)
+        if rejection is None:
+            return target, "swapped"
+        label = rejection
+        excluded.add(target.id)
+    return None, label
+
+
+def _swap_one(db, item: ContentItem, reason: str, *, now: datetime) -> tuple[dict | None, str]:
+    """한 슬롯의 주제를 바꾼다. `(history 항목 또는 None, 결과 라벨)`."""
+
+    target, label = _swap_target(db, item, reason)
+    if target is None:
+        return None, label
 
     superseded = _superseded_incident(db, item, reason)
     revision_before = int(item.content_revision or 1)

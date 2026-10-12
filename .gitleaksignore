@@ -7,3 +7,8 @@ c5bb1279e76d922592dc4d1601d4bf9738334a6a:backend/tests/test_notification_outbox.
 # False positive: the verified Cloud Run rollback revision name is public metadata, not an API key.
 # This exception covers only the exact documentation commit/path/line reported by the scanner.
 2dff0873fc3c9e66a79d3ce63efddf1b4b6eda93:docs/releases/2026-09-16-refactor-production-validation.json:generic-api-key:171
+
+# False positive: a Cloud Run revision name (reputation-api-00239-mqs) inside a plan document's test snippet, not a credential.
+# Both the original commit/path and the moved path are listed so the scanner's commit-range scan stays clean.
+c210a5d162ccd20e9ee85b8d7e31e60bb74144ec:docs/superpowers/plans/2026-10-11-p2-infra-deploy.md:generic-api-key:3200
+a3158b8b1f493fa64d5f226f4543d9af63cb2bb2:docs/plans/2026-10-11-p2-infra-deploy.md:generic-api-key:3200

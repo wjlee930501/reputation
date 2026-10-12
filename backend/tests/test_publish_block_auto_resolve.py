@@ -1206,8 +1206,9 @@ def test_disease_treatment_questions_are_not_excluded(name):
     assert not target_fits_hospital(_target("골밀도검사 가능한 정형외과"), _ortho())
 
 
-def test_corrected_topic_left_with_uncorrectable_hard_reaches_operator(worker, monkeypatch):
-    """교정 뒤 재검수가 인용 없는 HARD를 남기고 교체 pass도 바꾸지 못하면 사람의 일로 굳는다."""
+@pytest.mark.parametrize("history", [None, {"passes": 1, "rereviews": 1}], ids=["fresh", "corrected"])
+def test_uncorrectable_hard_goes_to_swap_then_operator(worker, monkeypatch, history):
+    """인용 없는 HARD는 교정 이력과 무관하게 주제 교체 계단을 타고, 교체도 못 하면 사람의 일이다."""
 
     philosophy, calls = worker
     body = _body(NEUTRAL_A, MAPO_PROFILE_SENTENCE)
@@ -1215,12 +1216,9 @@ def test_corrected_topic_left_with_uncorrectable_hard_reaches_operator(worker, m
     hospital = _hospital()
     _install(monkeypatch, calls, propose=_no_provider, review=_no_provider)
 
-    # 교정을 거치지 않은 주제의 인용 없는 HARD는 이 패스가 맡지 않는다(기존 경로).
-    fresh = _blocked_item(philosophy, body, finding)
-    assert tasks._auto_correct_blocked_body(_DB(), fresh, hospital, philosophy) is None
-
     item = _blocked_item(philosophy, body, finding)
-    item.essence_check_summary[mc.AUTO_CORRECTION_KEY] = {"passes": 1, "rereviews": 1}
+    if history is not None:
+        item.essence_check_summary[mc.AUTO_CORRECTION_KEY] = dict(history)
     calls["item"] = item
 
     state, code, message = tasks._auto_correct_blocked_body(_DB(), item, hospital, philosophy)

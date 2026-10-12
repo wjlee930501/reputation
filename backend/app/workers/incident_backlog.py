@@ -330,7 +330,93 @@ def _monthly_cohort_enrolled(db: Session, incident: Incident, _now: datetime) ->
     return "enrolled_in_monthly_cohort" if hospital is not None and hospital.monthly_sov_cohort else None
 
 
+# 자율 복구(`autonomous_recovery._stop_operation_run`)가 실행을 멈추며 남기는 원인 코드.
+# autonomous_recovery가 이 모듈을 불러 쓰므로 여기에 문자열로 두고, 테스트가 두 목록을 맞춘다.
+RECOVERY_STOP_CODES = frozenset(
+    {"OPERATION_REDISPATCH_EXHAUSTED", "OPERATION_LEASE_EXPIRED", "OPERATION_RUN_ABANDONED"}
+)
+
+
+def _has_succeeded_follow_up(db: Session, run) -> bool:
+    """멈춘 실행 뒤에 같은 일이 성공했는가.
+
+    운영 관제의 '작업 다시 시도'(`operation_runs.retry_operation_run`)는 `parent_run_id`로 실패
+    실행을 가리키는 같은 종류의 새 실행을 만들고, 그 재시도가 또 실패하면 다시 그 아래로 잇는다.
+    같은 종류로 이어진 후손 중 하나라도 SUCCEEDED면 근거다. 종류를 묶는 이유: 야간 배치의 자식
+    (글 단위 생성)도 `parent_run_id`로 배치를 가리키지만 배치의 재시도가 아니다.
+
+    병원 없는 실행(야간 배치 잔재 등)은 운영 관제가 다시 시도할 수 없다(병원 범위 조회). 그런
+    실행은 같은 종류의 병원 없는 실행이 그 뒤에 성공한 것이 근거다 — 다음 밤 배치가 같은 일을 했다.
+    """
+
+    child = aliased(OperationRun)
+    retries = (
+        select(OperationRun.id)
+        .where(
+            OperationRun.parent_run_id == run.id,
+            OperationRun.operation_type == run.operation_type,
+        )
+        .cte("recovery_stop_retries", recursive=True)
+    )
+    retries = retries.union_all(
+        select(child.id).where(
+            child.parent_run_id == retries.c.id,
+            child.operation_type == run.operation_type,
+        )
+    )
+    succeeded = db.scalar(
+        select(OperationRun.id)
+        .where(
+            OperationRun.id.in_(select(retries.c.id)),
+            OperationRun.state == OperationRunState.SUCCEEDED,
+        )
+        .limit(1)
+    )
+    if succeeded is not None:
+        return True
+    if run.hospital_id is not None:
+        return False
+    later = db.scalar(
+        select(OperationRun.id)
+        .where(
+            OperationRun.operation_type == run.operation_type,
+            OperationRun.hospital_id.is_(None),
+            OperationRun.state == OperationRunState.SUCCEEDED,
+            OperationRun.completed_at > run.completed_at,
+        )
+        .limit(1)
+    )
+    return later is not None
+
+
+def _stopped_runs_recovered(db: Session, incident: Incident, _now: datetime) -> str | None:
+    """이 원인으로 멈춘 실행(이번 에피소드)이 모두 후속 성공을 가지면 닫는다(D5)."""
+
+    code = incident.safe_error_code
+    if code not in RECOVERY_STOP_CODES:
+        return None
+    stopped = db.execute(
+        select(
+            OperationRun.id,
+            OperationRun.operation_type,
+            OperationRun.hospital_id,
+            OperationRun.completed_at,
+        ).where(
+            OperationRun.state == OperationRunState.FAILED,
+            OperationRun.safe_error_code == code,
+            # 다시 열린 사고의 first_seen_at은 새 에피소드의 시작이다 — 앞 에피소드는 이미 닫혔다.
+            OperationRun.completed_at >= incident.first_seen_at,
+        )
+    ).all()
+    if not stopped:
+        return None
+    if all(_has_succeeded_follow_up(db, run) for run in stopped):
+        return "stopped_runs_recovered"
+    return None
+
+
 RESOLVERS: dict[str, Resolver] = {
+    "OPERATION_RECOVERY_EXHAUSTED": _stopped_runs_recovered,
     "MONTHLY_SOV_COHORT_GAP": _monthly_cohort_enrolled,
     "WEEKLY_SOV_MEASUREMENT_FAILED": _same_period_measurement,
     "MONTHLY_SOV_MEASUREMENT_FAILED": _same_period_measurement,

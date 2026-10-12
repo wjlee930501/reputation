@@ -402,7 +402,17 @@ def collect_fleet_facts(db, *, now):
     # Another month's report, another article, another hospital or an earlier
     # success is not recovery proof.
     accounted_incident = exists(
-        select(Incident.id).where(Incident.operation_run_id == OperationRun.id)
+        select(Incident.id).where(
+            or_(
+                Incident.operation_run_id == OperationRun.id,
+                # 자율 복구가 멈춘 실행은 원인 코드 하나에 사고 하나다. 사고는 마지막 실행만
+                # 가리키므로 같은 원인 코드로 멈춘 실행 전부를 그 사고로 설명한다.
+                and_(
+                    Incident.incident_type == "OPERATION_RECOVERY_EXHAUSTED",
+                    Incident.safe_error_code == OperationRun.safe_error_code,
+                ),
+            )
+        )
     )
     later_success = exists(
         select(newer.id).where(
