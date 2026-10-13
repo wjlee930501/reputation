@@ -55,6 +55,13 @@ def _merge_rejection_counts(total: dict[str, dict[str, int]], counts: object) ->
                 merged[str(kind)] = merged.get(str(kind), 0) + count
 
 
+def _attach_rejection_counts(error: BaseException, counts: dict[str, dict[str, int]]) -> None:
+    """세션이 최종 실패로 끝날 때 세션 전체의 누적 거절 횟수를 예외에 싣는다."""
+
+    if counts:
+        setattr(error, GENERATION_REJECTIONS_KEY, {bucket: dict(kinds) for bucket, kinds in counts.items()})
+
+
 @dataclass(frozen=True, slots=True)
 class ContentReviewDependencies:
     """Effects supplied by the caller, resolved once for each generation session."""
@@ -136,6 +143,8 @@ async def generate_reviewed_content(
         except ValueError as exc:
             generations += 1
             last_generation_error = exc
+            # 실패한 회차의 결정적 거절도 센다(작가 호출 안에서 치유·재작성을 다 쓴 경우).
+            _merge_rejection_counts(rejection_counts, getattr(exc, GENERATION_REJECTIONS_KEY, None))
             findings = [f"생성 안전검사 실패: {' '.join(str(exc).split())[:300]}"]
             if accepted_content is not None:
                 # 앞선 회차가 만들어 둔(이미 결제된) 후보가 있다. 보완 재작성이 실패했다고
@@ -145,6 +154,7 @@ async def generate_reviewed_content(
             if _remediation_budget_left():
                 remediation_rewrites += 1
                 continue
+            _attach_rejection_counts(exc, rejection_counts)
             raise
         generations += 1
         last_generation_error = None
@@ -236,6 +246,7 @@ async def generate_reviewed_content(
 
     if last_content is None or last_screening is None:
         if last_generation_error is not None:
+            _attach_rejection_counts(last_generation_error, rejection_counts)
             raise last_generation_error
         raise RuntimeError("automatic content review produced no candidate")
 

@@ -1633,12 +1633,13 @@ async def generate_content(
         kind = generation_rejection_kind(error)
         rejection_counts[bucket][kind] = rejection_counts[bucket].get(kind, 0) + 1
 
+    def _counts_snapshot() -> dict[str, dict[str, int]]:
+        return {bucket: dict(counts) for bucket, counts in rejection_counts.items() if counts}
+
     def _finish(generated: dict) -> dict:
         generated["_provider_http_attempts"] = int(attempt_context.get("http_attempt") or 0)
         if rejection_counts["rejected"]:
-            generated[GENERATION_REJECTIONS_KEY] = {
-                bucket: dict(counts) for bucket, counts in rejection_counts.items() if counts
-            }
+            generated[GENERATION_REJECTIONS_KEY] = _counts_snapshot()
         return generated
     # 결정적 치유도 필수 문구 검사를 건너뛰지 않는다 — 작가 회차와 같은 집합이다.
     # 금지 표현 때문에 요구에서 뺀 승인본 문구는 여기서 경고·운영자 기록을 남긴다.
@@ -1687,15 +1688,17 @@ async def generate_content(
             # 덧붙이기는 결정적으로 고칠 수 있다. 본문이 그 한 가지만 빼고 완전한데도 재작성을
             # 두 번 더 사면 정상 글 한 편에 세 번 결제한다.
             _count("rejected", exc)
-            healed, last_error = _apply_deterministic_heals(
+            healed, last_error, heal_events = _apply_deterministic_heals(
                 exc,
                 hospital,
                 content_type,
                 content_brief,
                 must_use_messages=must_use_messages,
             )
+            # 사슬 안의 거절·치유를 모두 센다(금지 표현 삭제 뒤 필수 문구 덧붙이기 등).
+            for bucket, event in heal_events:
+                _count(bucket, event)
             if healed is not None:
-                _count("healed", exc)
                 return _finish(healed)
         except ValueError as exc:
             last_error = exc
@@ -1716,6 +1719,9 @@ async def generate_content(
 
     if last_error is None:  # pragma: no cover - 루프는 최소 1회 실행된다
         raise RuntimeError("content generation ended without a result or an error")
+    # 최종 실패에도 이번 호출의 누적 거절 횟수를 예외에 싣는다 — 세션이 다음 회차 후보의 횟수와 합친다.
+    if rejection_counts["rejected"]:
+        setattr(last_error, GENERATION_REJECTIONS_KEY, _counts_snapshot())
     raise last_error
 
 
@@ -1806,8 +1812,60 @@ def _heal_missing_hospital_name(
 
 # 금지 표현 치유가 한 응답에서 지울 수 있는 문장 수. 이보다 많으면 글의 논조 자체가 광고라 다시 쓴다.
 FORBIDDEN_SENTENCE_HEAL_LIMIT = 3
-_HEAL_SENTENCE_SPLIT = re.compile(r"(?<=[.?!。])\s+")
+# 문장 끝: 마침표·물음표·느낌표·말줄임과 그 뒤의 공백. 공백이 없어도 끊는다("최고입니다.최고입니다."는
+# 두 문장이다). 소수점('1.5cm')은 문장 끝이 아니다.
+_HEAL_SENTENCE_END = re.compile(r"(?:[.?!…。](?!\d))+\s*")
 _HEAL_LINE_PREFIX = re.compile(r"^\s*(?:[-*+]\s+|\d+[.)]\s+|>\s*)?")
+_HEAL_ATX_HEADING = re.compile(r"^\s{0,3}#{1,6}(?:\s|$)")
+_HEAL_SETEXT_UNDERLINE = re.compile(r"^\s{0,3}(?:=+|-+)\s*$")
+_HEAL_FENCE = re.compile(r"^\s{0,3}(?:`{3,}|~{3,})")
+
+
+def _heal_protected_lines(lines: list[str]) -> set[int]:
+    """문장 단위로 지우면 안 되는 Markdown 블록의 줄 번호.
+
+    ATX(`#`)·Setext(밑줄 `===`/`---`) 제목, `|`가 든 표 줄(앞 `|`가 없는 GFM 표 포함), 코드 펜스와 그
+    안쪽. 판정이 애매하면 보호 쪽으로 기운다 — 보호된 줄의 위반은 치유하지 않고 작가에게 돌려보낸다.
+    """
+
+    protected: set[int] = set()
+    in_fence = False
+    paragraph_start: int | None = None
+    for index, line in enumerate(lines):
+        if _HEAL_FENCE.match(line):
+            protected.add(index)
+            in_fence = not in_fence
+            paragraph_start = None
+            continue
+        if in_fence:
+            protected.add(index)
+            continue
+        if not line.strip():
+            paragraph_start = None
+            continue
+        if _HEAL_SETEXT_UNDERLINE.match(line) and paragraph_start is not None:
+            # 바로 위 문단 전체가 Setext 제목이다(여러 줄 제목 포함).
+            protected.update(range(paragraph_start, index + 1))
+            paragraph_start = None
+            continue
+        if _HEAL_ATX_HEADING.match(line) or "|" in line:
+            protected.add(index)
+        if paragraph_start is None:
+            paragraph_start = index
+    return protected
+
+
+def _split_heal_sentences(text: str) -> list[str]:
+    """원문 구간 그대로의 문장 목록. 이어 붙이면 원문과 바이트 단위로 같다."""
+
+    pieces: list[str] = []
+    last = 0
+    for end in _HEAL_SENTENCE_END.finditer(text):
+        pieces.append(text[last : end.end()])
+        last = end.end()
+    if last < len(text):
+        pieces.append(text[last:])
+    return pieces
 
 
 def _heal_forbidden_sentences(
@@ -1816,29 +1874,31 @@ def _heal_forbidden_sentences(
     """본문에서 금지 표현이 든 문장만 통째로 지운다. 고칠 수 없으면 None(재작성으로 간다).
 
     - 금지 표현이 제목·메타·FAQ·참고자료 제목에 있으면 맡지 않는다.
-    - 제목(#)·표(|) 줄, 필수 문구가 든 문장, 문장 경계를 넘는 강조처럼 문장 하나로 짚을 수 없는
-      위반은 맡지 않는다.
-    - 지운 문장이 `FORBIDDEN_SENTENCE_HEAL_LIMIT`를 넘거나, 지운 뒤 본문이 분량 하한
-      (`CONTENT_BODY_MIN_CHARS`) 아래면 맡지 않는다.
-    문장을 고쳐 쓰지 않고 지우기만 하므로 새 사실·주장이 생기지 않는다. 결과는 같은 게이트 전체
-    (`_validate_generated_result`)를 다시 지나고, 저장 전 독립 검수가 최종 본문을 다시 본다.
+    - 본문의 제목(ATX `#`·Setext 밑줄)·표(`|`가 든 줄)·코드 펜스, 필수 문구가 든 문장, 문장 경계를 넘는
+      위반(지운 뒤에도 그 줄에 위반이 남는 경우 포함)처럼 문장 하나로 짚을 수 없는 위반은 맡지 않는다.
+    - 문장은 문장부호 뒤 공백이 없어도 끊어 세고, 지운 문장이 `FORBIDDEN_SENTENCE_HEAL_LIMIT`를 넘거나
+      지운 뒤 본문이 분량 하한(`CONTENT_BODY_MIN_CHARS`) 아래면 맡지 않는다.
+    남는 문장은 원문 구간 그대로 이어 붙인다. 문장을 고쳐 쓰지 않고 지우기만 하므로 새 사실·주장이
+    생기지 않는다. 결과는 같은 게이트 전체(`_validate_generated_result`)를 다시 지나고, 저장 전 독립
+    검수가 최종 본문을 다시 본다.
     """
 
     if not error.body_only:
         return None
     result = error.result
     must_use = [message for message in must_use_messages or [] if normalize_verbatim(message)]
+    lines = str(result.get("body") or "").split("\n")
+    protected = _heal_protected_lines(lines)
     kept_lines: list[str] = []
     removed = 0
-    for line in str(result.get("body") or "").split("\n"):
+    for index, line in enumerate(lines):
         if not check_forbidden_markdown(line):
             kept_lines.append(line)
             continue
-        if line.lstrip().startswith(("#", "|")):
+        if index in protected:
             return None
         prefix = _HEAL_LINE_PREFIX.match(line).group(0)
-        sentences = _HEAL_SENTENCE_SPLIT.split(line[len(prefix):])
-        kept = [sentence for sentence in sentences if not check_forbidden_markdown(sentence)]
+        sentences = _split_heal_sentences(line[len(prefix):])
         dropped = [sentence for sentence in sentences if check_forbidden_markdown(sentence)]
         if not dropped:
             return None  # 위반이 문장 경계를 넘는다 — 문장 하나로 짚을 수 없다
@@ -1846,9 +1906,16 @@ def _heal_forbidden_sentences(
         if any(sentence_holds_must_use(sentence, must_use) for sentence in dropped):
             return None
         removed += len(dropped)
-        if kept:
-            kept_lines.append(prefix + " ".join(kept))
-    if removed == 0 or removed > FORBIDDEN_SENTENCE_HEAL_LIMIT:
+        if removed > FORBIDDEN_SENTENCE_HEAL_LIMIT:
+            return None
+        kept_text = "".join(
+            sentence for sentence in sentences if not check_forbidden_markdown(sentence)
+        ).rstrip()
+        if kept_text and check_forbidden_markdown(kept_text):
+            return None  # 남은 문장끼리 이어 위반이 생기거나 경계를 넘는 위반이 남았다
+        if kept_text:
+            kept_lines.append(prefix + kept_text)
+    if removed == 0:
         return None
     healed_body = "\n".join(kept_lines)
     if body_plain_length(healed_body) < CONTENT_BODY_MIN_CHARS:
@@ -1899,17 +1966,23 @@ def _apply_deterministic_heals(
     content_brief: dict | None,
     *,
     must_use_messages: list[str],
-) -> tuple[dict | None, ValueError]:
+) -> tuple[dict | None, ValueError, list[tuple[str, ValueError]]]:
     """결정적 치유를 이어서 적용하고 같은 게이트 전체로 다시 검증한다(공급자 호출 없음).
 
     한 치유가 다른 치유 대상을 드러낼 수 있다 — 금지 표현 문장을 지웠더니 병원명이 빠졌다, 병원명을
     붙였더니 필수 문구가 없다. 치유 종류 수만큼만 잇는다. 고치지 못하면 (None, 다음 회차에 넘길
-    거절)을 돌려준다. 문장을 지운 치유가 끼었으면 그 뒤의 거절은 우리가 만든 것이므로 원래 거절을
-    넘긴다(작가가 지운 적 없는 병원명을 빼먹었다고 듣지 않게).
+    거절, 사건)을 돌려준다. 문장을 지운 치유가 끼었으면 그 뒤의 거절은 우리가 만든 것이므로 원래
+    거절을 넘긴다(작가가 지운 적 없는 병원명을 빼먹었다고 듣지 않게).
+
+    사건 목록은 첫 거절(`error`, 호출자가 이미 셌다) **뒤의** 거절마다 ("rejected", 거절)을, 사슬이
+    끝내 통과하면 적용한 치유마다 ("healed", 그 치유가 고친 거절)을 담는다. 사슬이 실패하면 저장되는
+    치유가 없으므로 치유 사건은 넣지 않는다.
     """
 
     current = error
     deleted = False
+    applied: list[ValueError] = []
+    rejected: list[tuple[str, ValueError]] = []
     for _ in range(len(_DETERMINISTIC_HEALS)):
         healer = _DETERMINISTIC_HEALS.get(type(current))
         patched = (
@@ -1920,20 +1993,21 @@ def _apply_deterministic_heals(
         if patched is None:
             break
         deleted = deleted or isinstance(current, ForbiddenExpressionError)
+        applied.append(current)
         try:
-            return (
-                _validate_generated_result(
-                    patched,
-                    hospital,
-                    content_type,
-                    content_brief,
-                    must_use_messages=must_use_messages,
-                ),
-                error,
+            validated = _validate_generated_result(
+                patched,
+                hospital,
+                content_type,
+                content_brief,
+                must_use_messages=must_use_messages,
             )
         except ValueError as next_error:
             current = next_error
-    return None, (error if deleted else current)
+            rejected.append(("rejected", next_error))
+            continue
+        return validated, error, [*rejected, *(("healed", healed) for healed in applied)]
+    return None, (error if deleted else current), rejected
 
 
 # Keep the transport retry controller observable/configurable at the public seam used by

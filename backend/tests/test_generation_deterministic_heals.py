@@ -260,9 +260,39 @@ def test_deletion_refuses_a_line_whose_sentence_carries_a_must_use_message():
     assert _heal(_forbidden_error(f"검사 전날 식단을 조절합니다. {AD_SENTENCE}"), [message]) is None
 
 
-@pytest.mark.parametrize("line", [f"## {AD_SENTENCE}", f"| 항목 | {AD_SENTENCE} |"])
-def test_deletion_refuses_heading_and_table_lines(line):
-    assert _heal(_forbidden_error(f"검사 전날 식단을 조절합니다.\n{line}")) is None
+@pytest.mark.parametrize(
+    "line",
+    [
+        f"## {AD_SENTENCE}",
+        f"| 항목 | {AD_SENTENCE} |",
+        # 2026-10-13 교차 검토: Setext 제목, 앞 `|` 없는 GFM 표 행, 코드 펜스 안쪽.
+        "최고의 의료진\n---",
+        "최고의 의료진\n===",
+        "진료 | 최고의 의료진",
+        "```\n최고의 의료진\n```",
+    ],
+)
+def test_deletion_refuses_heading_table_and_code_lines(line):
+    assert _heal(_forbidden_error(f"검사 전날 식단을 조절합니다.\n\n{line}\n")) is None
+
+
+def test_deletion_counts_sentences_without_a_space_after_the_period():
+    """문장부호 뒤 공백이 없어도 문장을 끊어 센다 — 네 문장은 상한(3)을 넘는다."""
+
+    assert _heal(_forbidden_error("최고입니다.최고입니다.최고입니다.최고입니다.")) is None
+
+
+def test_deletion_keeps_the_remaining_sentences_as_original_substrings(caplog):
+    import logging
+
+    line = "검사 전날 식단을 조절합니다.최고의 의료진입니다.물을 1.5L 드세요!  다음 날 오세요."
+    with caplog.at_level(logging.INFO, logger="app.services.content_engine"):
+        healed = _heal(_forbidden_error(line))
+
+    assert healed is not None
+    assert "검사 전날 식단을 조절합니다.물을 1.5L 드세요!  다음 날 오세요." in healed["body"]
+    assert "최고" not in healed["body"]
+    assert any("Deleted 1 sentence" in record.getMessage() for record in caplog.records)
 
 
 def test_deletion_keeps_the_list_marker_of_the_line():
@@ -300,7 +330,7 @@ def test_heal_chain_deletion_then_hospital_name_is_validated_again(monkeypatch):
         ],
     )
 
-    healed, error = content_engine._apply_deterministic_heals(
+    healed, error, events = content_engine._apply_deterministic_heals(
         original,
         SimpleNamespace(name="테스트의원", director_name="김의사"),
         content_engine.ContentType.NOTICE,
@@ -310,6 +340,11 @@ def test_heal_chain_deletion_then_hospital_name_is_validated_again(monkeypatch):
 
     assert healed == {"ok": True}
     assert error is original
+    assert [(bucket, type(event)) for bucket, event in events] == [
+        ("rejected", content_engine.HospitalNameMissingError),
+        ("healed", content_engine.ForbiddenExpressionError),
+        ("healed", content_engine.HospitalNameMissingError),
+    ]
     assert len(calls) == 2
     assert AD_SENTENCE not in calls[1]["body"]
     assert calls[1]["body"].rstrip().endswith("이 글은 테스트의원에서 안내합니다.")
@@ -327,7 +362,7 @@ def test_heal_chain_failure_after_a_deletion_passes_the_original_rejection_on(mo
         ],
     )
 
-    healed, error = content_engine._apply_deterministic_heals(
+    healed, error, events = content_engine._apply_deterministic_heals(
         original,
         SimpleNamespace(name="테스트의원", director_name="김의사"),
         content_engine.ContentType.NOTICE,
@@ -337,6 +372,58 @@ def test_heal_chain_failure_after_a_deletion_passes_the_original_rejection_on(mo
 
     assert healed is None
     assert error is original
+    # 사슬이 실패하면 저장되는 치유가 없다 — 거절만 센다.
+    assert [bucket for bucket, _event in events] == ["rejected"]
+
+
+async def test_a_heal_chain_counts_every_rejection_and_heal(monkeypatch):
+    """금지 표현 문장 삭제와 필수 문구 덧붙이기가 같은 회차에 일어나면 둘 다 센다."""
+
+    writer = _Writer([_payload(f"검사 전날 식단을 조절합니다. {AD_SENTENCE}", MUST_USE_SCREENING)])
+    _install_writer(monkeypatch, writer)
+
+    saved = await _generate([MUST_USE_2CM, MUST_USE_SCREENING])
+
+    assert len(writer.calls) == 1
+    assert AD_SENTENCE not in saved["body"]
+    assert saved["body"].rstrip().endswith(MUST_USE_2CM)
+    assert saved[content_engine.GENERATION_REJECTIONS_KEY] == {
+        "rejected": {"forbidden": 1, "must_use": 1},
+        "healed": {"forbidden": 1, "must_use": 1},
+    }
+
+
+async def test_a_final_generation_failure_keeps_the_cumulative_counts(monkeypatch):
+    bad_title = _payload("검사 전날 식단을 조절합니다.")
+    bad_title["title"] = "최고의 대장내시경 준비 안내"
+    writer = _Writer([bad_title])
+    _install_writer(monkeypatch, writer)
+
+    with pytest.raises(content_engine.ForbiddenExpressionError) as raised:
+        await _generate([])
+
+    rounds = len(writer.calls)
+    assert rounds == content_engine.GENERATION_REMEDIATION_ROUNDS
+    assert getattr(raised.value, content_engine.GENERATION_REJECTIONS_KEY) == {
+        "rejected": {"forbidden": rounds}
+    }
+
+
+def test_the_review_session_merges_counts_from_a_failed_round():
+    from app.services.content_generation_review import (
+        _attach_rejection_counts,
+        _merge_rejection_counts,
+    )
+
+    error = ValueError("Forbidden medical expressions require complete regeneration: ['최고']")
+    setattr(error, content_engine.GENERATION_REJECTIONS_KEY, {"rejected": {"forbidden": 3}})
+    total: dict = {"rejected": {"price": 1}}
+    _merge_rejection_counts(total, getattr(error, content_engine.GENERATION_REJECTIONS_KEY))
+    _attach_rejection_counts(error, total)
+
+    assert getattr(error, content_engine.GENERATION_REJECTIONS_KEY) == {
+        "rejected": {"price": 1, "forbidden": 3}
+    }
 
 
 def test_hard_removal_findings_leave_out_uncertain_findings_without_a_quote():
