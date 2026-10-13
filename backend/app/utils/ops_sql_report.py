@@ -1,4 +1,4 @@
-"""읽기 전용 운영 조회: 자율 운영 지표(Q1~Q6)를 JSON 한 줄씩 출력한다.
+"""읽기 전용 운영 조회: 자율 운영 지표(Q1~Q8)를 JSON 한 줄씩 출력한다.
 
 새 세션의 트랜잭션에서 첫 문장으로 `SET TRANSACTION READ ONLY`를 실행해 DB 수준에서 쓰기를 막고,
 끝나면 롤백한다. 받은 세션에 이미 열린 트랜잭션이 있으면 먼저 롤백해 새로 시작한다::
@@ -136,6 +136,67 @@ QUERIES: dict[str, tuple[str, ...]] = {
         WHERE jsonb_typeof(c.topic_swap_history)='array'
           AND jsonb_array_length(c.topic_swap_history) > 0
         ORDER BY (e.entry->>'swapped_at') DESC
+        """,
+    ),
+    # 사후 검수 FLAGGED 공개 글의 지적 분포 — 유형 × 심각도 × 종류. 보조: 교정 결과 사유 분포.
+    "q7": (
+        """
+        SELECT c.content_type,
+               f.finding->>'severity' AS severity,
+               f.finding->>'kind' AS kind,
+               count(*) AS findings,
+               count(DISTINCT c.id) AS items,
+               count(*) FILTER (WHERE coalesce(f.finding->>'quote', '') <> '') AS quoted
+        FROM content_items c
+        CROSS JOIN LATERAL jsonb_array_elements(
+          CASE WHEN jsonb_typeof(c.essence_check_summary->'post_publish_ai_review'
+                                 ->'structured_findings') = 'array'
+               THEN c.essence_check_summary->'post_publish_ai_review'->'structured_findings'
+               ELSE '[]'::jsonb END
+        ) AS f(finding)
+        WHERE c.status = 'PUBLISHED'
+          AND c.essence_check_summary->'post_publish_ai_review'->>'status' = 'FLAGGED'
+        GROUP BY 1, 2, 3
+        ORDER BY findings DESC, 1, 2, 3
+        """,
+        """
+        SELECT c.content_type,
+               c.essence_check_summary->'post_publish_ai_review'->'correction'->>'reason'
+                 AS correction_reason,
+               count(*) AS items
+        FROM content_items c
+        WHERE c.status = 'PUBLISHED'
+          AND c.essence_check_summary->'post_publish_ai_review'->>'status' = 'FLAGGED'
+        GROUP BY 1, 2
+        ORDER BY items DESC, 1, 2
+        """,
+    ),
+    # 생성 거절의 사유 분포(E5). 첫째: 최신 시도 기록이 GENERATION_REJECTED인 글의 사유 라벨.
+    # 둘째: 최근 30일 예정 글의 생성 세션이 겪은 결정적 거절·치유 횟수(사유별 합).
+    "q8": (
+        """
+        SELECT coalesce(essence_check_summary->'generation_attempt'->>'rejection_kind', 'unlabelled')
+                 AS rejection_kind,
+               essence_check_summary->'generation_attempt'->>'retry_class' AS retry_class,
+               count(*) AS n
+        FROM content_items
+        WHERE essence_check_summary->'generation_attempt'->>'reason' = 'GENERATION_REJECTED'
+        GROUP BY 1, 2
+        ORDER BY n DESC, 1, 2
+        """,
+        """
+        SELECT b.bucket, k.kind, sum(k.n::int) AS total, count(DISTINCT c.id) AS items
+        FROM content_items c
+        CROSS JOIN LATERAL jsonb_each(
+          CASE WHEN jsonb_typeof(c.essence_check_summary->'generation_rejections') = 'object'
+               THEN c.essence_check_summary->'generation_rejections' ELSE '{}'::jsonb END
+        ) AS b(bucket, counts)
+        CROSS JOIN LATERAL jsonb_each_text(
+          CASE WHEN jsonb_typeof(b.counts) = 'object' THEN b.counts ELSE '{}'::jsonb END
+        ) AS k(kind, n)
+        WHERE c.scheduled_date >= (now() AT TIME ZONE 'Asia/Seoul')::date - 30
+        GROUP BY 1, 2
+        ORDER BY 1, total DESC, 2
         """,
     ),
 }

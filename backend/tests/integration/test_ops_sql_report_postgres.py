@@ -17,6 +17,6 @@ def test_all_named_queries_run_read_only_against_the_migrated_schema(pg_engine) 
 
     lines = [json.loads(line) for line in out.getvalue().splitlines()]
     assert [line["q"] for line in lines] == [
-        "q1", "q1b", "q2", "q3", "q3b", "q4", "q5", "q6"
+        "q1", "q1b", "q2", "q3", "q3b", "q4", "q5", "q6", "q7", "q7b", "q8", "q8b"
     ]
     assert all(isinstance(line["rows"], list) for line in lines)

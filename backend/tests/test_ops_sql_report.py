@@ -98,3 +98,16 @@ def test_every_query_is_a_read() -> None:
     for statements in ops_sql_report.QUERIES.values():
         for sql in statements:
             assert sql.lstrip().upper().startswith("SELECT")
+
+
+def test_gate_measurement_queries_are_registered_read_only_selects() -> None:
+    """E5(2026-10-13): 사후 검수 FLAGGED 분포(q7)와 생성 거절 사유(q8)."""
+
+    assert [len(ops_sql_report.QUERIES[name]) for name in ("q7", "q8")] == [2, 2]
+    for name in ("q7", "q8"):
+        for sql in ops_sql_report.QUERIES[name]:
+            assert sql.strip().upper().startswith("SELECT")
+    assert "structured_findings" in ops_sql_report.QUERIES["q7"][0]
+    assert "rejection_kind" in ops_sql_report.QUERIES["q8"][0]
+    assert "generation_rejections" in ops_sql_report.QUERIES["q8"][1]
+    assert ops_sql_report.parse_args(["--only=q7", "--only=q8"]).only == ["q7", "q8"]
