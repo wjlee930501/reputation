@@ -306,3 +306,66 @@ async def test_both_legacy_keys_keep_the_time_ordered_pairing(pg_async_session):
     assert rows[0].id in claimed
     assert rows[1].id not in claimed
     assert (await _row(db, rows[1])).safe_error_code == RESOLVED_BEFORE_SEND_CODE
+
+
+# 종결 상한(200)을 넘는 후보 — 상한 밖의 하나가 claim으로 새지 않는지 본다(Codex R3-1).
+_OVER_SETTLE_LIMIT = 201
+
+
+async def _sendable_bystander(db) -> NotificationOutbox:
+    """종결 대상이 아닌, 정말 나가야 하는 열림 알림(열린 사고)."""
+
+    live = _incident("CONTENT_GENERATION_FAILED", "OPEN")
+    db.add(live)
+    await db.flush()
+    notice = _notice(live, created_at=NOW - timedelta(minutes=1))
+    db.add(notice)
+    await db.flush()
+    return notice
+
+
+async def test_recoveries_beyond_the_settle_limit_are_never_claimed(pg_async_session):
+    """열림이 모두 FAILED인 복구가 종결 상한보다 많아도 상한 밖의 복구는 나가지 않는다."""
+
+    db = pg_async_session
+    incidents = [
+        _incident("CONTENT_GENERATION_FAILED", "RECOVERED") for _ in range(_OVER_SETTLE_LIMIT)
+    ]
+    db.add_all(incidents)
+    await db.flush()
+    recoveries = []
+    for incident in incidents:
+        failed_open = _notice(
+            incident, state="FAILED", created_at=NOW - timedelta(minutes=50),
+            safe_error_code="SLACK_HTTP_ERROR",
+        )
+        recovered = _notice(incident, "INCIDENT_RECOVERED", created_at=NOW - timedelta(minutes=20))
+        recoveries.append(recovered)
+        db.add_all([failed_open, recovered])
+    await db.flush()
+    bystander = await _sendable_bystander(db)
+
+    claimed = await _claimed_ids(db)
+
+    assert not claimed & {row.id for row in recoveries}
+    assert bystander.id in claimed
+
+
+async def test_unsent_opens_of_resolved_incidents_beyond_the_settle_limit_are_never_claimed(
+    pg_async_session,
+):
+    db = pg_async_session
+    incidents = [
+        _incident("CONTENT_GENERATION_FAILED", "RECOVERED") for _ in range(_OVER_SETTLE_LIMIT)
+    ]
+    db.add_all(incidents)
+    await db.flush()
+    opens = [_notice(incident) for incident in incidents]
+    db.add_all(opens)
+    await db.flush()
+    bystander = await _sendable_bystander(db)
+
+    claimed = await _claimed_ids(db)
+
+    assert not claimed & {row.id for row in opens}
+    assert bystander.id in claimed

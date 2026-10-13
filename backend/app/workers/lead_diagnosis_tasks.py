@@ -278,8 +278,14 @@ async def _notify_lead_intake_in(session, lead_id: str) -> dict:
             ).scalar_one(),
             admin_url=f"{settings.ADMIN_BASE_URL.rstrip('/')}/leads",
         )
+    unknown = sent is notifier.SendOutcome.UNKNOWN
+    sent = bool(sent)
     if sent:
         outcome = LEAD_NOTIFICATION_SENT
+    elif inquiry and unknown:
+        # 갔는지 모른다(응답 유실·5xx) — SENDING 그대로 두어 다시 보내지 않는다. 창+여유 뒤 만료가
+        # '확인하지 못함' 사고로 끝낸다.
+        outcome = LEAD_NOTIFICATION_SENDING
     else:
         # 도입문의는 창 안에서 다시 보낸다(만료는 drain이 FAILED+사고로 끝낸다). 무료 진단은 종전대로 FAILED.
         outcome = LEAD_NOTIFICATION_PENDING if inquiry else LEAD_NOTIFICATION_FAILED
@@ -291,7 +297,11 @@ async def _notify_lead_intake_in(session, lead_id: str) -> dict:
             .values(
                 notification_status=outcome,
                 notification_error=(
-                    None if sent else "Slack/webhook delivery failed or is not configured."
+                    None
+                    if sent
+                    else notifier.DELIVERY_UNKNOWN_ERROR
+                    if unknown
+                    else "Slack/webhook delivery failed or is not configured."
                 ),
             )
             .returning(SalesLead.id)
@@ -820,8 +830,21 @@ async def _lead_notifications_to_dispatch(session) -> list[str]:
     return [str(row) for row in rows]
 
 
-async def _open_intake_notice_incident(session, lead_id) -> None:
-    """도입문의 접수 알림 실패 사고. 호출자의 트랜잭션에 쓰고 커밋하지 않는다."""
+async def _open_intake_notice_incident(session, lead_id, *, unconfirmed: bool = False) -> None:
+    """도입문의 접수 알림 실패 사고. 호출자의 트랜잭션에 쓰고 커밋하지 않는다.
+
+    `unconfirmed`는 SENDING으로 만료된 리드다 — 보냈지만 응답을 잃었거나 보내는 도중 죽어 Slack
+    수신 여부를 모른다. 못 보낸 것으로 단정하지 않고 다시 보내지 않았다고 말한다.
+    """
+    if unconfirmed:
+        problem = "도입문의 접수 알림이 Slack에 도착했는지 확인하지 못했습니다."
+        customer_impact = (
+            "담당자가 새 도입문의를 Slack으로 받지 못했을 수 있습니다. "
+            "중복 알림을 피하려고 다시 보내지 않았습니다."
+        )
+    else:
+        problem = "도입문의 접수 알림을 1시간 동안 보내지 못했습니다."
+        customer_impact = "새 도입문의를 담당자가 Slack으로 받지 못했습니다."
     await open_ops_incident_in(
         session,
         pipeline="lead_intake_notification",
@@ -829,8 +852,8 @@ async def _open_intake_notice_incident(session, lead_id) -> None:
         object_id=str(lead_id),
         incident_type=INTAKE_NOTICE_INCIDENT_TYPE,
         safe_error_code=INTAKE_NOTICE_INCIDENT_TYPE,
-        problem="도입문의 접수 알림을 1시간 동안 보내지 못했습니다.",
-        customer_impact="새 도입문의를 담당자가 Slack으로 받지 못했습니다.",
+        problem=problem,
+        customer_impact=customer_impact,
         next_action=(
             "상담 요청 화면에서 새 문의를 확인해 담당자를 정하세요. "
             "처리를 시작하면 자동으로 닫힙니다."
@@ -852,17 +875,19 @@ async def _expired_inquiry_candidates(session, now: datetime) -> list:
     return list(
         (
             await session.execute(
-                select(SalesLead.id)
+                select(SalesLead.id, SalesLead.notification_status)
                 .where(_intake_notice_expirable(now))
                 .order_by(SalesLead.created_at.asc())
                 .limit(DRAIN_BATCH_SIZE)
                 .with_for_update(skip_locked=True)
             )
-        ).scalars().all()
+        ).all()
     )
 
 
-async def _expire_inquiry_notice(session, lead_id, now: datetime) -> bool:
+async def _expire_inquiry_notice(
+    session, lead_id, now: datetime, *, unconfirmed: bool = False
+) -> bool:
     """한 리드의 FAILED와 그 사고·열림 알림을 savepoint 하나로 쓴다. 이미 끝난 행이면 False.
 
     UPDATE는 선택과 같은 술어의 CAS다 — 선택 뒤 발송 쪽이 SENT를 커밋했다면 덮지 않는다.
@@ -882,7 +907,7 @@ async def _expire_inquiry_notice(session, lead_id, now: datetime) -> bool:
             ).scalar_one_or_none()
             if expired is None:
                 return False
-            await _open_intake_notice_incident(session, lead_id)
+            await _open_intake_notice_incident(session, lead_id, unconfirmed=unconfirmed)
         return True
     except Exception:  # noqa: BLE001 — 한 리드의 실패가 drain을 멈추지 않는다. 다음 tick이 다시 본다.
         logger.warning("lead intake notice expiry failed for %s", lead_id, exc_info=True)
@@ -899,8 +924,10 @@ async def _expire_inquiry_notifications(session, *, now: datetime | None = None)
     observed = now or datetime.now(timezone.utc)
     expired = []
     try:
-        for lead_id in await _expired_inquiry_candidates(session, observed):
-            if await _expire_inquiry_notice(session, lead_id, observed):
+        for lead_id, status in await _expired_inquiry_candidates(session, observed):
+            # 잠근 행이라 상태가 바뀌지 않는다. SENDING 만료는 수신 불명이다.
+            unconfirmed = status == LEAD_NOTIFICATION_SENDING
+            if await _expire_inquiry_notice(session, lead_id, observed, unconfirmed=unconfirmed):
                 expired.append(lead_id)
         await session.commit()
     except Exception:  # noqa: BLE001 — 다음 tick이 다시 본다.

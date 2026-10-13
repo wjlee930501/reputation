@@ -336,7 +336,7 @@ async def test_a_sent_commit_between_selection_and_expiry_stays_sent(pg_async_se
     now = datetime.now(timezone.utc)
     lead = await _inquiry(pg_async_session, status="PENDING", created_at=now - timedelta(hours=2))
     candidates = await leadgen._expired_inquiry_candidates(pg_async_session, now)
-    assert lead.id in candidates
+    assert lead.id in {lead_id for lead_id, _status in candidates}
 
     # 선택과 만료 사이에 발송 워커가 SENT를 커밋했다.
     lead.notification_status = "SENT"
@@ -540,6 +540,126 @@ async def test_a_failed_intake_send_is_left_pending_for_the_drain(pg_async_sessi
     assert str(lead.id) in await leadgen._lead_notifications_to_dispatch(pg_async_session)
 
 
+# ── 수신 불명(Codex R3-3): 요청이 나간 뒤 응답을 잃은 Slack 결과는 다시 보내지 않는다.
+
+_REAL_NOTIFY_LEAD_CREATED = notifier.notify_lead_created
+
+
+def _slack_transport(monkeypatch, *steps):
+    """실제 notifier를 쓰되 httpx POST의 결과를 차례로 정한다(상태 코드 또는 예외 클래스)."""
+    import httpx
+
+    script = list(steps)
+    posts = []
+
+    class _Client:
+        def __init__(self, *_a, **_k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return False
+
+        async def post(self, url, json):
+            posts.append(json)
+            request = httpx.Request("POST", url)
+            step = script.pop(0)
+            if isinstance(step, type) and issubclass(step, Exception):
+                raise step("scripted", request=request)
+            return httpx.Response(step, request=request)
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(notifier.settings, "SLACK_WEBHOOK_URL_INQUIRY", "")
+    monkeypatch.setattr(
+        notifier.settings, "SLACK_WEBHOOK_URL", "https://hooks.slack.com/services/T/B/x"
+    )
+    monkeypatch.setattr(notifier.httpx, "AsyncClient", _Client)
+    monkeypatch.setattr(notifier.asyncio, "sleep", no_sleep)
+    return posts
+
+
+@pytest.mark.asyncio
+async def test_an_intake_read_timeout_is_never_resent_and_expires_to_an_unconfirmed_incident(
+    pg_async_session, monkeypatch
+):
+    import httpx
+
+    posts = _slack_transport(monkeypatch, httpx.ReadTimeout)
+
+    await _call_intake(pg_async_session, monkeypatch, notify=_REAL_NOTIFY_LEAD_CREATED)
+
+    lead = await _intake_lead(pg_async_session)
+    assert len(posts) == 1  # 응답을 잃은 요청은 notifier 안에서도 다시 보내지 않는다
+    assert lead.notification_status == "SENDING"
+    monkeypatch.setattr(notifier, "notify_lead_created", lambda **_k: pytest.fail("must not resend"))
+    await _age(pg_async_session, lead, timedelta(minutes=20))
+    assert str(lead.id) not in await leadgen._lead_notifications_to_dispatch(pg_async_session)
+    assert await leadgen._notify_lead_intake_in(pg_async_session, str(lead.id)) == {
+        "skipped": "already_claimed_or_finished"
+    }
+
+    await _age(pg_async_session, lead, timedelta(hours=2))
+    expired = await leadgen._expire_inquiry_notifications(pg_async_session)
+
+    assert lead.id in expired
+    assert (await _intake_lead(pg_async_session)).notification_status == "FAILED"
+    incident = (
+        await pg_async_session.execute(
+            select(Incident).where(
+                Incident.source_id == str(lead.id),
+                Incident.incident_type == "LEAD_INTAKE_NOTIFICATION_FAILED",
+            )
+        )
+    ).scalar_one()
+    assert "확인하지 못했" in incident.safe_error_message
+    assert "다시 보내지 않" in incident.customer_impact
+
+
+@pytest.mark.asyncio
+async def test_an_intake_connect_error_is_left_pending_and_the_drain_resends_it(
+    pg_async_session, monkeypatch
+):
+    import httpx
+
+    posts = _slack_transport(
+        monkeypatch, httpx.ConnectError, httpx.ConnectError, httpx.ConnectError, 200
+    )
+
+    await _call_intake(pg_async_session, monkeypatch, notify=_REAL_NOTIFY_LEAD_CREATED)
+
+    lead = await _intake_lead(pg_async_session)
+    assert len(posts) == 3
+    assert lead.notification_status == "PENDING"
+    assert str(lead.id) in await leadgen._lead_notifications_to_dispatch(pg_async_session)
+
+    result = await leadgen._notify_lead_intake_in(pg_async_session, str(lead.id))
+
+    assert result["sent"] is True and len(posts) == 4
+    assert (await _intake_lead(pg_async_session)).notification_status == "SENT"
+
+
+@pytest.mark.asyncio
+async def test_a_drain_resend_whose_response_is_lost_stays_sending(pg_async_session, monkeypatch):
+    import httpx
+
+    lead = await _inquiry(pg_async_session, status="PENDING")
+    posts = _slack_transport(monkeypatch, httpx.ReadTimeout)
+    monkeypatch.setattr(notifier, "notify_lead_created", _REAL_NOTIFY_LEAD_CREATED)
+
+    result = await leadgen._notify_lead_intake_in(pg_async_session, str(lead.id))
+
+    assert result["sent"] is False and len(posts) == 1
+    status = await pg_async_session.scalar(
+        select(SalesLead.notification_status).where(SalesLead.id == lead.id)
+    )
+    assert status == "SENDING"
+    assert str(lead.id) not in await leadgen._lead_notifications_to_dispatch(pg_async_session)
+
+
 # ── 만료·메움 스윕은 다른 트랜잭션이 잡은 행을 기다리지 않는다(Codex R2-4, lead 쪽).
 #    잠금 경합은 커밋된 행에서만 보이므로 이 둘은 실제 커밋과 두 번째 연결을 쓰고 스스로 지운다.
 
@@ -607,7 +727,7 @@ async def test_expiry_skips_a_row_locked_elsewhere_and_finishes_the_others(
 
     opened = []
 
-    async def record_incident(_db, lead_id):
+    async def record_incident(_db, lead_id, **_kwargs):
         opened.append(lead_id)
 
     monkeypatch.setattr(leadgen, "_open_intake_notice_incident", record_incident)
@@ -638,7 +758,7 @@ async def test_incident_repair_skips_a_row_locked_elsewhere(committed_sessions, 
 
     opened = []
 
-    async def record_incident(_db, lead_id):
+    async def record_incident(_db, lead_id, **_kwargs):
         opened.append(lead_id)
 
     monkeypatch.setattr(leadgen, "_open_intake_notice_incident", record_incident)

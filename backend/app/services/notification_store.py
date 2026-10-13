@@ -357,6 +357,8 @@ def claimable_notifications_stmt(*, claimed_at: datetime, limit: int):
 
     - 조용한 사고 종류에 묶인 행은 집지 않는다 — 입구에서 막기 전에 이미 쌓인 행(배포 전·배포 중
       생성분)도 보내지 않게 한다.
+    - 발송 전 종결 대상(`settle_incident_notices`의 두 규칙)은 종결 배치가 아직 닿지 않았어도
+      집지 않는다 — 종결 상한 밖의 행이 claim으로 새어 짝 없는 알림을 내보내지 않게 한다.
     - 스윕이 재시도를 소유하는 사고(`SWEEP_OWNED_INCIDENT_TYPES`)가 기한 안에서 RETRYING이면 그
       열림 알림을 집지 않는다. 기한이 지나면 그때 나간다 — 사람에게 넘어가는 순간의 알림이다.
       콘텐츠 생성처럼 등록하지 않은 종류는 RETRYING이어도 종전처럼 나간다(아침 알림 계약).
@@ -387,6 +389,9 @@ def claimable_notifications_stmt(*, claimed_at: datetime, limit: int):
             NotificationOutbox.next_attempt_at <= claimed_at,
             ~quiet_incident,
             ~and_(NotificationOutbox.notification_type == "INCIDENT_OPEN", machine_owned),
+            # 종결 대상은 종결 배치(상한 200)가 이번 tick에 닿지 못했어도 집지 않는다.
+            ~_open_settle_eligible(),
+            ~_recovered_settle_eligible(),
         )
         .order_by(
             NotificationOutbox.next_attempt_at,
@@ -442,6 +447,23 @@ async def settle_incident_notices(db: AsyncSession, *, now: datetime) -> None:
         "version": NotificationOutbox.version + 1,
         "updated_at": now,
     }
+    await _settle_locked(
+        db,
+        settled,
+        NotificationOutbox.state.in_(_SENDABLE_STATES),
+        _open_settle_eligible(),
+    )
+    await _settle_locked(
+        db,
+        settled,
+        NotificationOutbox.state.in_(_SENDABLE_STATES),
+        _recovered_settle_eligible(),
+    )
+
+
+def _open_settle_eligible():
+    """규칙 1: 사고가 발송 전에 복구·확인됐거나 지난 에피소드의 것이 된 열림 알림."""
+
     current_episode_key = func.concat(
         "INCIDENT_OPEN:", cast(Incident.id, String), ":e", cast(Incident.episode_seq, String)
     )
@@ -461,13 +483,12 @@ async def settle_incident_notices(db: AsyncSession, *, now: datetime) -> None:
         )
         .exists()
     )
-    await _settle_locked(
-        db,
-        settled,
-        NotificationOutbox.notification_type == "INCIDENT_OPEN",
-        NotificationOutbox.state.in_(_SENDABLE_STATES),
-        resolved_or_superseded,
-    )
+    return and_(NotificationOutbox.notification_type == "INCIDENT_OPEN", resolved_or_superseded)
+
+
+def _recovered_settle_eligible():
+    """규칙 2: 같은 에피소드의 열림이 있었고 그중 채널에 닿았을 수 있는 것이 없는 복구 알림."""
+
     unreached = aliased(NotificationOutbox)
     reached = aliased(NotificationOutbox)
     open_never_reached = (
@@ -490,11 +511,8 @@ async def settle_incident_notices(db: AsyncSession, *, now: datetime) -> None:
         )
         .exists()
     )
-    await _settle_locked(
-        db,
-        settled,
+    return and_(
         NotificationOutbox.notification_type == "INCIDENT_RECOVERED",
-        NotificationOutbox.state.in_(_SENDABLE_STATES),
         open_never_reached,
         ~open_may_have_reached,
     )
