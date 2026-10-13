@@ -1,4 +1,9 @@
-"""주간 측정 기준표의 정책 버전 전환 — 게이트는 그대로 막고, 알림만 Report 1회로 낮춘다.
+"""주간 측정 기준표의 정책 버전 전환 — 게이트는 그대로 막고, 사고 행에 사실을 남긴다.
+
+Phase 1-8(2026-10): 주간 측정 실패(`WEEKLY_SOV_MEASUREMENT_FAILED`)는 조용한 상태 기록이다.
+주간 측정은 월간 근거의 보조이며 사람의 일은 월간 측정 실패·코호트 공백이 따로 연다. 그래서
+같은 사고에 묶인 정책 전환 안내(Report)와 그 밖의 불일치 Error 모두 Slack에 가지 않는다.
+아래 옛 설명은 조용함 전의 알림 설계다(사고 행의 문구는 그대로다).
 
 9월 기준표는 v2.1로 동결됐고 9/20 OpenRouter 전환 뒤 실행 기준은 v3.0이다. 매주 같은 이유로
 막히는 이 차단은 재시도로 풀리지 않는다. 같은 병원·같은 월 기준표·같은 (동결, 현재) 버전 쌍은
@@ -27,7 +32,6 @@ from sqlalchemy.pool import NullPool
 from app.models.hospital import Hospital, HospitalStatus
 from app.models.operations import Incident, NotificationOutbox, OperationRunState
 from app.services import sov_engine
-from app.services.notification_labels import ERROR_LABEL, REPORT_LABEL
 from app.workers import tasks, weekly_sov_incident_control
 from tests.db_env import fail_unreachable, require_db_url
 
@@ -298,18 +302,13 @@ def _header(row: NotificationOutbox) -> str:
 # ── tests ────────────────────────────────────────────────────────────────────
 
 
-def test_intended_version_transition_first_week_sends_exactly_one_report(
-    monkeypatch, postgres, guard
-):
+def test_intended_version_transition_is_recorded_without_slack(monkeypatch, postgres, guard):
     _run_week(monkeypatch, postgres, _manifest(_september_v21_snapshot()), WEEK_ONE)
 
-    rows = postgres.rows(NotificationOutbox)
-    assert [row.notification_type for row in rows] == [TRANSITION_TYPE]
-    (notice,) = rows
-    assert notice.fallback_text.startswith(REPORT_LABEL)
-    assert _header(notice).startswith(REPORT_LABEL)
-    assert ERROR_LABEL not in _texts(notice)
-    assert notice.channel == "SLACK"
+    # 주간 측정 실패는 조용한 종류다 — 전환 안내도 outbox에 들어가지 않는다.
+    assert postgres.rows(NotificationOutbox) == []
+    (incident,) = postgres.rows(Incident)
+    assert incident.incident_type == "WEEKLY_SOV_MEASUREMENT_FAILED"
     assert guard.network == []
     assert guard.provider == []
 
@@ -318,32 +317,17 @@ def test_same_hospital_month_and_version_pair_second_week_sends_nothing(
     monkeypatch, postgres, guard
 ):
     _run_week(monkeypatch, postgres, _manifest(_september_v21_snapshot()), WEEK_ONE)
-    after_first_week = postgres.rows(NotificationOutbox)
-
     _run_week(monkeypatch, postgres, _manifest(_september_v21_snapshot()), WEEK_TWO)
-    after_second_week = postgres.rows(NotificationOutbox)
 
-    assert len(after_first_week) == 1
-    assert [row.id for row in after_second_week] == [row.id for row in after_first_week]
+    assert postgres.rows(NotificationOutbox) == []
     assert guard.network == []
     assert guard.provider == []
 
 
-def test_report_body_drops_retry_advice_and_says_no_action_needed(
+def test_transition_incident_drops_retry_advice_and_says_no_action_needed(
     monkeypatch, postgres, guard
 ):
     _run_week(monkeypatch, postgres, _manifest(_september_v21_snapshot()), WEEK_ONE)
-
-    notices = [
-        row for row in postgres.rows(NotificationOutbox) if row.notification_type == TRANSITION_TYPE
-    ]
-    assert len(notices) == 1
-    body = _texts(notices[0])
-    assert "재시도" not in body
-    assert "조치가 필요 없습니다" in body
-    assert "다음 달 기준표부터 자동 해소" in body
-    assert FROZEN_VERSION in body
-    assert sov_engine.MEASUREMENT_POLICY_VERSION in body
 
     (incident,) = postgres.rows(Incident)
     assert "재시도" not in incident.next_action
@@ -355,7 +339,7 @@ def test_report_body_drops_retry_advice_and_says_no_action_needed(
     "case",
     ["same_version_model_differs", "same_version_gateway_differs", "version_missing", "no_snapshot"],
 )
-def test_non_version_drift_stays_error_with_existing_copy(monkeypatch, postgres, guard, case):
+def test_non_version_drift_keeps_existing_copy_without_slack(monkeypatch, postgres, guard, case):
     current = sov_engine.measurement_protocol()
     snapshot = {
         "same_version_model_differs": {**current, "openai_model_query": "openai/gpt-4o-legacy"},
@@ -369,9 +353,8 @@ def test_non_version_drift_stays_error_with_existing_copy(monkeypatch, postgres,
 
     assert retries == []
     assert finished == [(OperationRunState.FAILED, DRIFT_CODE)]
-    rows = postgres.rows(NotificationOutbox)
-    assert [row.notification_type for row in rows] == ["INCIDENT_OPEN"]
-    assert rows[0].fallback_text.startswith(ERROR_LABEL)
+    # 조용한 종류라 Error도 Slack에 가지 않는다. 사고 행의 문구는 그대로다.
+    assert postgres.rows(NotificationOutbox) == []
     (incident,) = postgres.rows(Incident)
     assert incident.next_action == EXISTING_NEXT_ACTION
     assert incident.safe_error_message == EXISTING_SAFE_MESSAGE
@@ -383,7 +366,7 @@ def test_non_version_drift_stays_error_with_existing_copy(monkeypatch, postgres,
     assert manifest_policy_version_transition(manifest) is None
 
 
-def test_gate_still_blocks_and_records_each_week_while_notice_is_deduplicated(
+def test_gate_still_blocks_and_records_each_week_without_slack(
     monkeypatch, postgres, guard
 ):
     outcomes = [
@@ -405,6 +388,6 @@ def test_gate_still_blocks_and_records_each_week_while_notice_is_deduplicated(
         assert incident.incident_type == "WEEKLY_SOV_MEASUREMENT_FAILED"
         assert incident.safe_error_code == DRIFT_CODE
         assert incident.safe_error_message == EXISTING_SAFE_MESSAGE
-    assert len(postgres.rows(NotificationOutbox)) == 1
+    assert postgres.rows(NotificationOutbox) == []
     assert guard.provider == []
     assert guard.network == []

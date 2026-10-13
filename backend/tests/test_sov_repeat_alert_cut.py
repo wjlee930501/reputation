@@ -957,6 +957,8 @@ def _patch_monthly_report_batch(monkeypatch, hospitals, *, now, succeeded_ids=No
     monkeypatch.setattr(tasks, "_finish_monthly_operation_run", lambda *_args: None)
     monkeypatch.setattr(tasks, "_dispatch_monthly_sov_period_sweep", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(tasks, "_record_weekly_sov_failure", lambda *_args, **_kwargs: None)
+    # 최종 측정 사고 닫기는 비동기 DB 세션을 연다 — 이 가짜 배치에서는 기본으로 끈다.
+    monkeypatch.setattr(tasks, "_close_finalized_monthly_sov_incident", lambda *_args: None)
     monkeypatch.setattr(
         tasks.arrow,
         "now",
@@ -1902,3 +1904,69 @@ def test_monthly_measurement_beat_stays_day_24_to_31_and_skips_sep1(monkeypatch)
     tasks.run_monthly_sov_measurement.run()
 
     assert dispatched == []
+
+
+_REAL_CLOSE_FINALIZED = tasks._close_finalized_monthly_sov_incident
+
+
+def test_day_eight_finalize_closes_the_month_measurement_incident(monkeypatch):
+    """마감 뒤 LIMITED/UNAVAILABLE도 최종이다 — 새 RUN_SOV 성공이 없으니 그 달 측정 사고는 배치가 닫는다."""
+    hospital = SimpleNamespace(id=uuid.uuid4(), name="최종화의원", monthly_sov_cohort=True)
+    _patch_monthly_report_batch(
+        monkeypatch,
+        [hospital],
+        now=tasks.arrow.get(2026, 10, 8, 0, 15, tzinfo="Asia/Seoul"),
+        succeeded_ids={hospital.id},
+    )
+    monkeypatch.setattr(tasks, "_close_finalized_monthly_sov_incident", _REAL_CLOSE_FINALIZED)
+    monkeypatch.setattr(tasks, "_finalize_monthly_sov_period_run", lambda *_a, **_k: True)
+    recovered = []
+    monkeypatch.setattr(
+        tasks,
+        "_recover_sov_failure",
+        lambda **kwargs: recovered.append(kwargs) or "coroutine",
+    )
+    monkeypatch.setattr(tasks, "_run_async", lambda value: value)
+
+    tasks.run_monthly_reports.run()
+
+    assert recovered == [
+        {"hospital_id": hospital.id, "period_key": "2026-09", "measurement_mode": "monthly"}
+    ]
+
+
+def test_pending_measurement_is_not_closed_by_the_batch(monkeypatch):
+    hospital = SimpleNamespace(id=uuid.uuid4(), name="미완료의원", monthly_sov_cohort=True)
+    _patch_monthly_report_batch(
+        monkeypatch,
+        [hospital],
+        now=tasks.arrow.get(2026, 10, 2, 0, 15, tzinfo="Asia/Seoul"),
+        succeeded_ids=set(),
+    )
+    monkeypatch.setattr(tasks, "_close_finalized_monthly_sov_incident", _REAL_CLOSE_FINALIZED)
+    monkeypatch.setattr(
+        tasks, "_recover_sov_failure", lambda **_kwargs: pytest.fail("must not close")
+    )
+
+    tasks.run_monthly_reports.run()
+
+
+def test_a_failed_close_does_not_stop_the_report_batch(monkeypatch):
+    hospital = SimpleNamespace(id=uuid.uuid4(), name="닫기실패의원", monthly_sov_cohort=True)
+    built = _patch_monthly_report_batch(
+        monkeypatch,
+        [hospital],
+        now=tasks.arrow.get(2026, 10, 2, 0, 15, tzinfo="Asia/Seoul"),
+        succeeded_ids={hospital.id},
+    )
+    monkeypatch.setattr(tasks, "_close_finalized_monthly_sov_incident", _REAL_CLOSE_FINALIZED)
+    monkeypatch.setattr(tasks, "_recover_sov_failure", lambda **_kwargs: "coroutine")
+
+    def _boom(_value):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(tasks, "_run_async", _boom)
+
+    tasks.run_monthly_reports.run()
+
+    assert built == [(hospital.id, 2026, 9)]

@@ -65,7 +65,7 @@ cd /Users/woojinlee/Documents/projects/reputation/backend
 | 3-11 | 분량 "저장되지 않습니다" 문구를 SOFT 실제 동작에 맞춤 | E3 | `services/content_engine.py` |
 | 3-12 | 발행 재검증 신선도 24h → 7일(재사용 창 14일) | E4 | `services/reference_verification.py` |
 | 3-13 | 결정적 거절 사유 라벨·세션별 거절/치유 횟수 저장 | E5 | `workers/generation_retry_policy.py`, `generation_run_control.py`, `content_engine.py`, `content_generation_review.py`, `content_publication.py`, `tasks.py` |
-| 3-14 | 운영 조회 q7(사후 검수 FLAGGED 분포)·q8(거절 사유) | E5 | `utils/ops_sql_report.py` |
+| 3-14 | 운영 조회 q9(사후 검수 FLAGGED 분포)·q10(거절 사유) — main 병합 때 q7·q8에서 옮김 | E5 | `utils/ops_sql_report.py` |
 | 3-15 | 게이트 카탈로그 판 올리기 + 배포 전후 확인 + CLAUDE.md | 릴리스 | `workers/tasks.py`, `CLAUDE.md` |
 
 배포 단위: 3-1~3-15를 한 PR·한 배포로 낸다(카탈로그 판을 한 번만 올리기 위해). 나눠 낸다면 각 배포가 3-15의 판 올리기를 함께 가져간다.
@@ -2271,6 +2271,8 @@ def _merge_rejection_counts(total: dict[str, dict[str, int]], counts: object) ->
 
 ### Task 3-14: 운영 조회 q7(사후 검수 FLAGGED 분포)·q8(생성 거절 사유) (E5)
 
+> **main 병합(2026-10-13) 뒤 이름:** main이 q7(배포 전 outbox 확인)·q8(Phase 2 롤백 점검)을 먼저 썼으므로 이 태스크의 조회는 **q9**(FLAGGED 분포)·**q10**(생성 거절 사유)로 옮겼다. 아래 본문의 q7·q8은 작성 당시 이름이다.
+
 **Files:**
 - Modify: `backend/app/utils/ops_sql_report.py:1`(머리말), `:138` 뒤(`QUERIES`에 q7·q8)
 - Test: `backend/tests/test_ops_sql_report.py`(끝에 1개), `backend/tests/integration/test_ops_sql_report_postgres.py:19-21`(출력 이름 목록)
@@ -2411,7 +2413,7 @@ CLAUDE.md는 각 태스크의 "계약 영향"에 적은 문장을 이 커밋에�
 1. 배포 전, 새 이미지로 `gcloud run jobs execute reputation-migrate --wait --args=python,-m,app.utils.forbidden_impact_scan` → `summary`의 `할인·유인` 건수와 목록을 대표에게 보고. 0이 아니면 해당 공개 글·병원 문구를 사람이 고친 뒤 배포(또는 대표가 숨김을 수용).
 2. 배포 전, `--args=python,-m,app.utils.ops_sql_report,--only=q4` → 재평가될 종착 슬롯 수(비용 상한 계산).
 3. 배포 직후 첫 07:45·08:00 뒤, 진료비 보류 3건(10/6~10/7 예정)의 상태: 22:30 백로그 복구가 새 날짜를 주고 다음 발행기가 참고자료 0개로 발행하는지(사고 `MISSING_REFERENCES`가 `recover_generation_incidents`로 닫히는지).
-4. 배포 1주 뒤 `--only=q8`로 `forbidden` 거절·치유 몫, `--only=q7`로 FLAGGED 분포를 기록해 Phase 3 효과를 확인한다(검토 부록의 측정 공백 해소).
+4. 배포 1주 뒤 `--only=q10`으로 `forbidden` 거절·치유 몫, `--only=q9`로 FLAGGED 분포를 기록해 Phase 3 효과를 확인한다(검토 부록의 측정 공백 해소).
 
 **위험·롤백:** 판 올리기는 종착 슬롯에 한 번의 유료 재시도를 준다(상한은 Step 2 조회로 미리 센다). 롤백: 판을 되돌리면 같은 슬롯이 또 한 번 재평가된다 — 되돌리지 말고 앞 태스크만 revert한다.
 

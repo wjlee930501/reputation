@@ -5,6 +5,7 @@ import { createPortal } from 'react-dom'
 import Link from 'next/link'
 import { ApiError, fetchAPI } from '@/lib/api'
 import { OperatorIssuePanel } from '@/app/_components/OperatorIssuePanel'
+import { ADMIN_COPY } from '@/lib/admin-copy'
 import { formatDateTime } from '@/lib/format'
 import { SkeletonTable } from '@/app/components/Skeleton'
 import { type SalesLead } from '@/types'
@@ -657,7 +658,7 @@ export default function LeadsPage() {
                     )}
                     {lead.ack_sms_status === 'FAILED' && (
                       <p className="mt-1 text-[11px] font-semibold text-red-600">
-                        원장 안내 문자 미발송 — 직접 연락이 필요합니다.
+                        {lead.ack_sms_unconfirmed ? ADMIN_COPY.ackSmsUnconfirmed : ADMIN_COPY.ackSmsFailed}
                       </p>
                     )}
                   </td>

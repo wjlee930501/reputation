@@ -400,16 +400,24 @@ def mark_operation_run_queued(db: Session, run_id: uuid.UUID, observed_at: datet
     return queued is not None
 
 
-def defer_operation_run(db: Session, task: GenerationTask, not_before: datetime) -> bool:
+def defer_operation_run(
+    db: Session,
+    task: GenerationTask,
+    not_before: datetime,
+    *,
+    result_summary: dict[str, JSONValue] | None = None,
+) -> bool:
     """Hand the claimed run back as QUEUED until ``not_before``, and commit.
 
     긴 countdown 재시도 대신 쓴다. 지금 사본의 claim(task id·lease·판)이 그대로일 때만 바꾸며,
     판을 올리므로 뒤이은 성공 신호가 이 실행을 SUCCEEDED로 끝내지 않는다. 자율 복구가
-    ``not_before`` 뒤에 새 task id·새 봉투로 다시 보낸다.
+    ``not_before`` 뒤에 새 task id·새 봉투로 다시 보낸다. ``result_summary``를 주면 같은 판
+    조건으로 함께 바꾼다(재실행 예산처럼 미룸과 원자적으로 남아야 하는 기록).
     """
     context = explicit_run_context(task)
     if context is None:
         return False
+    extra = {} if result_summary is None else {"result_summary": result_summary}
     deferred = db.execute(
         update(OperationRun)
         .where(
@@ -427,6 +435,7 @@ def defer_operation_run(db: Session, task: GenerationTask, not_before: datetime)
             lease_owner=None,
             lease_expires_at=None,
             version=OperationRun.version + 1,
+            **extra,
         )
         .returning(OperationRun.id)
     ).scalar_one_or_none()

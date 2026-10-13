@@ -586,6 +586,8 @@ export interface SalesLead {
   /** 접수 직후 원장 휴대전화로 보낸 안내 문자 결과. */
   ack_sms_status?: 'SENT' | 'FAILED' | 'SKIPPED' | string | null
   ack_sms_error?: string | null
+  /** 문자가 나갔는지 모르는 실패(응답 유실·5xx). 다시 보내지 않았다. */
+  ack_sms_unconfirmed?: boolean
   created_at: string | null
   /** 무료 진단 또는 Admin 내부용 도입문의 진단 요약. */
   diagnoses?: LeadDiagnosisSummary[]

@@ -407,7 +407,9 @@ class Settings(BaseSettings):
         return value
 
     @field_validator(
-        "POST_PUBLISH_AUTO_CORRECTION_DAILY_CAP", "POST_PUBLISH_AUTO_CORRECTION_MAX_PASSES"
+        "POST_PUBLISH_AUTO_CORRECTION_DAILY_CAP",
+        "POST_PUBLISH_AUTO_CORRECTION_MAX_PASSES",
+        "POST_PUBLISH_UNCERTAIN_REREVIEW_DAYS",
     )
     @classmethod
     def _validate_post_publish_correction_budget(cls, value: int) -> int:
@@ -577,6 +579,9 @@ class Settings(BaseSettings):
     # 행에 쓰이므로 비용은 글당 교정 호출 + 재검수 호출이다. 0이면 자동 교정을 끈다(FLAGGED 표시만 남는다).
     POST_PUBLISH_AUTO_CORRECTION_DAILY_CAP: int = 20
     POST_PUBLISH_AUTO_CORRECTION_MAX_PASSES: int = 2
+    # 자동 교정이 끝나고도 UNCERTAIN(확신 부족)만 남은 공개 글을 검수 모델로 한 번 더 보는 대기 일수.
+    # PASS면 확인 완료로 닫는다. 0이면 끈다. 비용은 교정 하루 상한(POST_PUBLISH_AUTO_CORRECTION_DAILY_CAP)에 함께 센다.
+    POST_PUBLISH_UNCERTAIN_REREVIEW_DAYS: int = 7
     # docker-entrypoint.sh의 `celery worker -c`와 같은 환경변수를 읽는다. 운영자의
     # 처리량 손잡이이며 여기서는 용량 경고 계산에만 쓴다(워커 기동값은 entrypoint가 정한다).
     CELERY_CONCURRENCY: int = 2
@@ -585,6 +590,11 @@ class Settings(BaseSettings):
     # 나므로 정상 재연결(수 초)은 걸리지 않는다. 기동 유예 동안은 첫 heartbeat가 없어도 통과한다.
     WORKER_LIVENESS_STALE_SECONDS: int = 600
     WORKER_LIVENESS_STARTUP_GRACE_SECONDS: int = 300
+    # Beat 스케줄 루프(RedBeat tick, 30초 주기)가 이 시간(초) 멈추면 /live 실패 → Cloud Run이 재시작한다.
+    BEAT_LIVENESS_STALE_SECONDS: int = 600
+    # 기동 직후 첫 tick 전까지 /live를 통과시키는 유예(초). 강제 종료된 옛 Beat의 RedBeat 락은
+    # TTL(300초)까지 남고 새 Beat는 그동안 락을 기다리며 tick하지 않는다 — 그 대기를 덮는다.
+    BEAT_LIVENESS_STARTUP_GRACE_SECONDS: int = 900
 
     # Cost Guard — 전역 비용 가드레일 + 킬스위치.
     # 콘텐츠/이미지/SoV 호출은 병원 수에 비례해 무제한 확장되므로 카테고리별 일/월 호출
@@ -641,8 +651,8 @@ class Settings(BaseSettings):
     # SoV
     SOV_TRACKING_SET_N_DEFAULT: int = 15
     # 월간 코호트(Hospital.monthly_sov_cohort)는 계약된 ACTIVE 병원이 자동 편입되며 전원 측정한다.
-    # 이 값은 자르는 상한이 아니라 비용 경고 기준이다 — 넘으면 경고 로그와 월 1건의 사고만 남긴다.
-    SOV_MONTHLY_COHORT_LIMIT: int = 7
+    # 비용 경고선은 `sov_tracking_set.monthly_sov_cohort_cost_threshold`가
+    # COST_GUARD_MONTHLY_SOV_QUERIES에서 계산한다(손으로 맞추는 병원 수 설정은 없앴다).
     SOV_MONTHLY_WINDOW_START_DAY: int = 24
     # 아직 전환되지 않은 병원의 주간 측정 반복 횟수.
     SOV_REPEAT_COUNT_WEEKLY: int = 5
@@ -657,6 +667,9 @@ class Settings(BaseSettings):
     # Domain
     CNAME_TARGET: str = "cname.reputation.motionlabs.kr"
     CUSTOM_DOMAIN_IP_TARGETS: str = ""
+    # 자기 도메인을 저장한 뒤 DNS가 맞기를 15분마다 기다리는 일수. 넘으면 폴링은 계속하되
+    # 사람의 일(CUSTOM_DOMAIN_DNS_NOT_CONFIGURED) 하나를 연다. 도메인을 다시 저장하면 새로 센다.
+    DOMAIN_DNS_POLL_MAX_DAYS: int = 14
 
     # Admin
     ADMIN_BASE_URL: str = (
@@ -684,6 +697,13 @@ class Settings(BaseSettings):
     # 경고 로그를 남기고 무시한다. 수동 발행(/publish)과 이미 공개된 글에는 영향이 없다.
     # 해석은 `post_publish_review_policy.auto_publish_hold` 한 곳에서만 한다.
     AUTO_PUBLISH_HOLD_HOSPITALS: str = ""
+    # 근거 자료가 0건이고 등록한 채널 주소를 모두 24시간 넘게 읽지 못한 병원을 사람의 일
+    # (ONBOARDING_SOURCES_UNREACHABLE)로 올릴지. 기본 꺼짐 — 켜기 전에는 CLAUDE.md의
+    # "채널 fetch 실패는 인시던트가 아니라 자료 행 상태" 계약이 그대로다(대표 결정).
+    ONBOARDING_SOURCE_FETCH_ALERTS_ENABLED: bool = False
+    # 대표 결정 전에는 False. True면 병원 기본 정보 완료(=공개 활성화 선행조건)에서
+    # 원장 약력·진료 철학·Google 병원 정보를 보강 항목으로 내린다(원장명·네이버는 계속 필수).
+    PROFILE_GATE_OPTIONAL_ENRICHMENT: bool = False
 
     # Lead retention (개인정보보호법 제21조 — 보유기간)
     LEAD_RETENTION_DAYS: int = 180  # 수집 후 자동 파기까지 일수
@@ -714,6 +734,10 @@ class Settings(BaseSettings):
     # 리포트 발송 (Resend). 비어 있으면 발송을 시도하지 않고 delivery 행에 사유를 남긴다 —
     # 조용히 성공 처리하면 "발송 완료"인데 아무도 못 받는 상태가 된다.
     RESEND_API_KEY: str = ""
+    # 운영 경보 메일(2차 경로). 운영 Slack 채널이 죽었거나 외부 감시가 Slack에 전하지 못했을 때만
+    # 이 주소로 Resend 메일을 보낸다(services/ops_alert_email.py). 비어 있으면 보내지 않고 ERROR만 남긴다.
+    # 운영 값은 Terraform `alert_email`(GCP 경보 이메일 채널)과 같은 주소로 둔다 — 주소는 코드에 두지 않는다.
+    OPS_ALERT_EMAIL: str = ""
     # 도입문의 접수 직후 원장 휴대전화로 나가는 안내 문자(LMS). NHN Cloud Notification SMS.
     # INQUIRY_SMS_PROVIDER가 비어 있으면 발송을 시도하지 않고 리드에 SKIPPED 사유를 남긴다 —
     # 조용히 성공 처리하면 "문자 발송됨"인데 원장은 아무것도 못 받은 상태가 된다.

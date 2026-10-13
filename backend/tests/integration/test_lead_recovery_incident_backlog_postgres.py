@@ -2,7 +2,8 @@
 
 병원으로 전환되지 않은 리드의 복구 사고는 같은 진단의 다음 복구 성공(RETRYING에서만 닫힘)만
 기다렸다. 그 복구가 다시 오지 않으면 사고는 영영 OPEN이다(2026-09-22분, 10/4 보고).
-`close_resolved_backlog_incidents`(#203)와 같은 규칙으로 닫는다 — OPEN만, Slack 없이 감사만,
+`close_resolved_backlog_incidents`(#203)와 같은 규칙으로 닫는다 — OPEN만, 감사를 남기고 Slack은 짝 계약이
+요구할 때만(나간 열림 알림이 있을 때 복구 알림),
 RETRYING·ACKNOWLEDGED는 건드리지 않는다. 근거는 그 사고가 가리키는 **그 진단**의 현재 상태다.
 
 - 측정 사고: 진단 실행이 SUCCEEDED/PARTIAL(`REPORTABLE_EXECUTION_STATUSES`)이다.
@@ -184,8 +185,9 @@ async def _assert_closed_quietly(db, incident, evidence, outbox_before):
     audits = await _close_audits(db, incident)
     assert len(audits) == 1
     assert audits[0]["evidence"] == evidence
+    # 이 사고들은 열림 알림을 낸 적이 없다 — 짝 계약상 복구 알림도 없다(나간 열림이 있으면
+    # `close_resolved_backlog_incidents`가 복구 알림을 넣는다).
     assert audits[0]["slack_suppressed"] is True
-    # 지나간 일의 정리다 — 복구 알림을 채널에 보내지 않는다.
     assert await _outbox_count(db) == outbox_before
 
 

@@ -47,7 +47,7 @@ from app.services.site_revalidation_control import retry_delay
 from app.workers import generation_run_control
 from app.workers.dispatch_auth import build_dispatch_headers, require_dispatch
 from app.workers.dispatch_envelope import expected_purpose
-from app.workers.incident_backlog import close_resolved_backlog_incidents
+from app.workers.incident_backlog import close_resolved_backlog_incidents, settle_incidents
 
 _BATCH_SIZE: Final = 100
 # REQUESTED는 '아직 브로커에 넣지 못했다'만 뜻한다 — 모든 배포 지점이 publish 직후 QUEUED로
@@ -467,7 +467,7 @@ def reconcile() -> RecoveryCounts:
             if rebuild is not None and _redispatch_operation_run(db, rebuild, observed_at):
                 site_builds += 1
         recertifications = _dispatch_published_image_recertifications(db, observed_at)
-        resolved_task_incidents = close_resolved_backlog_incidents(db)
+        resolved_task_incidents = _settle_incident_backlog(db)
         db.commit()
     return {
         "site_builds": site_builds,
@@ -476,6 +476,15 @@ def reconcile() -> RecoveryCounts:
         "image_recertifications": recertifications,
         "resolved_task_incidents": resolved_task_incidents,
     }
+
+
+def _settle_incident_backlog(db) -> int:
+    """근거로 닫을 사고와 자동화가 끝낸 사고를 정리한다(사고 쪽 정리의 한 이음매).
+
+    새 정리 단계는 여기에 더한다 — 재조정 테스트는 이 한 함수만 막으면 된다.
+    """
+
+    return close_resolved_backlog_incidents(db) + settle_incidents(db)
 
 
 def _cleared_certificate_candidates(db) -> list[ContentItem]:
@@ -832,6 +841,13 @@ def _failures_since_last_success(recent: list[OperationRun]) -> list[OperationRu
     ]
 
 
+# 개발 담당의 사고다(`incident_types`). 원인을 고친 뒤 할 수 있는 일은 운영센터의 재시도 버튼 하나다.
+SITE_BUILD_EXHAUSTED_NEXT_ACTION = (
+    "사이트 준비 오류를 확인해 원인을 고친 뒤, 운영센터에서 이 사고에 연결된 작업의 "
+    "‘작업 다시 시도’를 눌러 주세요."
+)
+
+
 def _open_rebuild_site_incident(
     db, hospital: Hospital, newest_failed_run: OperationRun, observed_at: datetime
 ) -> None:
@@ -853,9 +869,7 @@ def _open_rebuild_site_incident(
             failed_run_id=newest_failed_run.id,
             safe_error_code="SITE_BUILD_RETRIES_EXHAUSTED",
             safe_error_message="사이트 준비 자동 재실행이 하루치 예산을 모두 사용했습니다.",
-            next_action=(
-                "병원 기본 정보와 공개 준비 오류를 확인하고 운영센터에서 다시 시도하세요."
-            ),
+            next_action=SITE_BUILD_EXHAUSTED_NEXT_ACTION,
             observed_at=observed_at,
         )
         if created is not None:

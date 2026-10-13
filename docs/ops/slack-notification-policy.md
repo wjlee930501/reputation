@@ -1,6 +1,6 @@
 # Slack 메시지 운영 체계
 
-정책 버전: 4.1 · 2026-10-10. 코드 기준: PR #226·#227·#228(운영 채널 하나·채널 상태·사람의 일 술어).
+정책 버전: 4.2 · 2026-10-13. 코드 기준: PR #226·#227·#228(운영 채널 하나·채널 상태·사람의 일 술어), Phase 1 `claude/autonomy-p1`(사고 종류 소유 레지스트리·알림 보류).
 상태: main 통합 정책. 운영 배포 여부는 별도 릴리스 기록으로 판단하며 이 문서는 배포 완료를 뜻하지 않는다.
 
 ## 알림 종류 라벨과 행동 안내
@@ -39,6 +39,8 @@ Slack은 작업 로그가 아니라 업무 전달 수단이다. 메시지를 읽
 | `[긴급]` / `[조치 필요]` | 해당 화면의 구체적인 항목 처리 | 중요한 장애·실제 사람의 판단이 필요한 예외. 기존 incident episode와 수신 채널을 유지 |
 | `[업무 알림]` / `[전달 준비]` | 자료 보완·고객 전달 등 남은 업무 처리 | 새로 바뀐 상태만. 월간 보고서는 병원·대상 월마다 최신 버전 하나(상태 키 `monthly:{hospital_id}:{YYYY-MM}`). 새 버전을 알리는 경우는 셋뿐 — 처음 준비 완료, 차단 뒤 다시 준비 완료, 전달 뒤 숫자가 바뀐 재빌드. 숫자가 같은 새 버전(TEMPLATE_REFRESH 포함)은 알리지 않는다. 정기 projector는 기존 15분 창에서 묶음 |
 | `[복구]` | 별도 조치 없음 | 앞서 알린 문제의 관측된 복구. 종료된 고객 영향과 담당자 지정 요구를 반복하지 않음 |
+
+복구 알림은 같은 에피소드의 열림 알림이 실제로 나간 뒤(SENT·보낸 뒤 결과 불명 HOLD)에만 나가고, 열림이 아직 나갈 수 있으면(PENDING·RETRYING·SENDING·보내기 전 보류 HOLD) 기다리며 — SENDING은 발송기가 HTTP 호출 전에 배치째 커밋한 선점이라 '나간 것'이 아니다 — 짝 열림이 모두 FAILED이거나 없으면 발송 전 종결한다.
 | `[일일 요약]` / `[주간 요약]` | 미해결 담당 항목만 확인 | 기존 18시 일일·월요일 주간 요약 유지. 불필요한 새 주기 없음 |
 
 새 문의와 무료 진단 접수는 상담 기회를 놓치지 않도록 개별 알림을 유지한다.
@@ -92,9 +94,24 @@ LLM 검수 원문·JSON 필드명·예외 본문은 Slack에 옮기지 않는다
   있으면 다시 쓰지 않으며, 알린 사실은 `GENERATION_BLOCKED_NOTICE` 실행 기록으로 남는다. 두 번째 실행은 요약을 만들지 않는다.
 - 월간 보고서 공백은 둘로 가른다. 자동 복구가 아직 도는 공백(측정 이어가기·재생성 예산 안)은 `MONTHLY_REPORT_GAP_AUTO`로
   Report이고, 자동 복구가 끝나 사람이 정해야 하는 공백만 `[조치 필요]`다. 분류가 바뀔 때만 알리고, 보고서가 준비되면
-  그 공백 알림은 종료된다. 코호트 밖 병원은 월간 측정 대상이 아니므로 공백으로 세지 않는다.
+  그 공백 알림은 종료된다. 코호트 밖 병원은 월간 측정 대상이 아니므로 공백으로 세지 않는다. 요약은 1~8일 09:00에 돌고,
+  '자동 복구 종료'는 8일 00:15 최종화 뒤 09:00에 한 번만 판정한다. 그 달 고정 매니페스트가 없는 달은 `MANIFEST_MISSING`
+  (전달 불가, 다음 달부터 자동)으로 병원·월마다 한 번만 알리고 다시 만들기를 권하지 않는다.
 - 사후검수 지적(`POST_PUBLISH_REVIEW_FLAGGED`)처럼 계약상 운영자 큐에 올리지 않는 조용한 종류는 Slack에도
-  보내지 않는다(`incident_types.QUIET_INCIDENT_TYPES`).
+  보내지 않는다. 조용함은 `incident_types.INCIDENT_TYPE_POLICIES`에 `quiet`로 등록한 종류이며, 주간 측정 실패·주간 상한
+  초과·행 단위 수신 불명도 여기에 든다.
+- 스윕이 재시도를 소유하는 사고(같은 표의 `sweep_owned`)의 열림 알림은 발송기가 그 기한까지 보류한다
+  (`notification_store.claimable_notifications_stmt`) — 기한이 지나 사람에게 넘어가는 순간에 나간다. 기한 전에 사고가
+  복구·확인되면 그 열림 알림은 `INCIDENT_RESOLVED_BEFORE_SEND`로 종결되고, 열림 알림이 나가지 않은 사고는 복구 알림도
+  보내지 않는다(`settle_incident_notices`). 열림 알림이 나간 사고는 근거·연결 실행 성공 어느 쪽으로 닫혀도 복구 알림이 따른다.
+- 온보딩 정체(`ONBOARDING_PROFILE_INCOMPLETE`·`ONBOARDING_SCHEDULE_MISSING`·`ONBOARDING_NO_PUBLICATION`, 플래그가 켜졌을 때만
+  `ONBOARDING_SOURCES_UNREACHABLE`)와 자기 도메인 DNS 미설정(`CUSTOM_DOMAIN_DNS_NOT_CONFIGURED`, 저장 뒤 14일)은 운영 대상이며
+  처음부터 OPEN이다(스윕 소유 아님). 병원·원인당 사고 하나로 열 때 알리고, 풀리면 복구 알림 없이 조용히 닫는다. 이미 열린·확인된
+  사고는 다시 열지 않는다. DNS 확인은 사고가 열린 뒤에도 15분마다 계속하며 맞으면 같은 경로로 공개를 연다.
+- 비용 가드 fail-open(`COST_GUARD_FAIL_OPEN`)과 사용량 spool 잘림(`PROVIDER_USAGE_SPOOL_TRUNCATED`)은 **개발 대상**이다. 비용 한도
+  도달(`COST_GUARD_LIMIT_REACHED`)은 대표 결정이라 운영 대상으로 남지만 fail-open은 AE가 고칠 수 없는 인프라 사실이다(MasterPlan D25).
+  fail-open은 프로세스·카테고리마다 첫 발생에 한 번 열고, 가드가 다시 Redis로 판정하면 복구하며(커밋 실패는 60초 뒤 재시도),
+  복구 뒤 10분 안의 재발은 다시 열지 않는다. 알린 프로세스가 교체돼 복구하지 못하면 15분 근거 정리가 Redis 응답을 근거로 닫는다. spool 잘림은 KST 하루 한 건이고 자동 복구하지 않는다(유실은 되살릴 수 없다). 정상 spool 복구는 알리지 않는다.
 
 일일 요약은 `병원 / 이유 / 건수 / 운영 또는 개발 담당 / 구체적인 할 일`을 먼저 보여준다.
 사람의 일 건수는 `operator_action.is_operator_todo` 하나로 센다 — 기한이 지난 사람의 일이면서 운영 담당 몫이고
@@ -130,6 +147,20 @@ Celery 밖 pipeline watchdog은 **조건 집합 에피소드당 한 번** 알린
 그 보류는 07:45·08:00 보류 요약·사고·18:00 일일 요약이 소유한다. 운영 복구 문구는 실제 공개가 있었을 때만 "다시 공개되고
 있습니다"라고 쓴다. Redis 장애 중 fail-open 경보는 20분에 한 번(정각·20분·40분 뒤 5분 안)만 보낸다.
 
+**운영 경보 메일(2차 경로, 2026-10 Phase 2).** Slack이 닿지 않을 때만 `OPS_ALERT_EMAIL`로 Resend 메일을 보낸다
+(`ops_alert_email.send_ops_alert`, 결정적 `idempotency_key`). 값이 비어 있으면 보내지 않고 ERROR 로그(`ops alert email: …`)만
+남긴다. 운영 값은 Terraform `alert_email`(GCP 경보 이메일 채널)과 같은 주소이며 주소를 코드에 두지 않는다. 보내는 경우는 둘뿐이다.
+(1) 외부 감시의 경보가 Slack에 전달되지 않았을 때 — 에피소드당 한 통(`watchdog:{audience}:{episode_id}`; Redis가 없어 에피소드를 모르면 `watchdog:{audience}:nr:{조건 서명}:{처음 시각}` — 같은 수신자·조건 집합의 24시간 안 기록을 같은 장애로 이어 써 KST 자정을 넘겨도 새 키를 만들지 않고, 장애가 더 길면 24시간마다 한 통). 메일 발송 기록의 정본은 Slack 상태와 별개인 DB 감사행(`watchdog_ops_email_planned`·`watchdog_ops_email_sent`, append-only)이고 Redis(7일)는 캐시일 뿐이라, Slack 장애가 Resend의 24시간 멱등 창보다 길어지거나 메일을 보내는 그때 Redis가 내려가 있어도 같은 에피소드 메일을 다시 보내지 않는다. 본문은 Slack 문구(판정마다 바뀌는 건수)가 아니라 경보 번호(키)와 처음 정할 때의 조건 집합으로 정한 고정 문구이고, 처음 정한 키·제목·본문을 계획 행에 남겨 같은 키의 재시도가 그대로 다시 쓴다(조건 집합이 줄어도 본문이 바뀌지 않아 409 반복 없음). 에피소드 키 메일과 Redis 장애 동안의 에피소드 없는 키 메일은 같은 수신자·조건 서명의 24시간 안 계획으로 서로 잇는다. DB와 Redis가 모두 없으면 프로세스 메모리로 프로세스 수명 동안(24시간 안) 수신자·조건 집합당 한 통이다 — 인스턴스가 바뀌거나 여럿이면 인스턴스마다 다시 보낼 수 있는 알려진 한계다. 복구는 메일로 보내지
+않으며 감시의 판정·에피소드 기록을 바꾸지 않는다. (2) 운영 채널 전송 사고가 열렸는데 대신
+받을 살아 있는 개발 채널도 없을 때 — 사고 episode당 한 통(`ops-channel-down:{incident_id}:e{episode_seq}`, 감사
+`ops_alert_email_sent`로 중복 방지). 실패하면 프로세스 안에서 15분 뒤 같은 키로 다시 시도하며 outbox·사고 상태는 바꾸지 않는다.
+Resend 409(같은 키가 처리 중이거나 다른 본문으로 쓰였다)는 전달 확인이 아니라 **결과 불명**이다 — '보냈음'을 기록하지 않고 같은
+키·같은 본문으로 다시 보낸다(처리 중이던 원래 요청이 끝났으면 재요청이 원래 응답을 받는다). 그래서 두 경로 모두 본문에 시각·건수·원인
+코드처럼 같은 사건 안에서 바뀌는 값을 넣지 않는다. 정상 경로가 아니므로 Slack 알림을 메일로 복제하지 않는다. Slack을 거치지 않는 GCP 이메일 경보도 둘 더 있다(시간당 1회, 24시간
+자동 종료, `terraform/monitoring.tf`): Cloud Scheduler 감시 호출(`watchdog-heartbeat`·`watchdog-publish-check`)의 ERROR 로그(토큰
+공백 401·LB·API 장애)와 API 서비스의 `pipeline watchdog`·`ops alert email` ERROR 로그. Worker 쪽 Slack 경로 실패는 기존 worker
+ERROR 경보가 이메일로 보낸다.
+
 공개 주소 점검은 같은 도메인이 **연속 두 번** 실패해야 병원 사고를 연다(한 번의 일시 503은 기록만 남긴다). 한 점검 회차에서
 두 병원 이상이 공용 사이트의 HTTP 5xx를 받으면 병원별 사고 대신 개발 대상 사고 `PUBLIC_SITE_UNAVAILABLE` 하나로 묶고, 그것도
 연속 두 회차에서 보여야 연다. 시간 초과·TLS·마커 불일치는 병원별 원인일 수 있어 종전처럼 병원 사고다. 복구는 연속 세 번 정상이다. 전송 실패는 outbox 행의 `incident_id`(그 알림이 말하는 사고)를
@@ -161,6 +192,8 @@ OPEN/RECOVERED의 episode 중복 키, outbox lease/CAS, 전송 재시도 상한�
 발송 선택: `milestone_event_tasks.should_notify_milestone`, `latest_report_facts`,
 `enqueue_generation_blocked_digest_sync`. 사람의 일 술어: `operator_action.is_operator_todo`, 원인 묶음:
 `incident_cause_group`. 채널 상태와 대체 전송: `notification_channel_health`, `notification_delivery`.
+2차 경로 메일: `ops_alert_email`(호출: `pipeline_watchdog`, `notification_channel_health.email_dead_operator_channel`).
+Phase 2 사고: `onboarding_stalls`, `workers/domain_dns_poll`, `cost_guard_health`, `provider_usage.report_dropped_usage`.
 `monthly_report_gap_notifications`는 최종 LIMITED 결과도 공유 전달 게이트로 판단한다.
 
 검증에는 실제 업무 DB와 분리한 PostgreSQL/Redis, mock Slack 응답을 쓴다.

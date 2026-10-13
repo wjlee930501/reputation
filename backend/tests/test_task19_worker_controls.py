@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import httpx
 
 from app.services.site_revalidation_control import RevalidationRetryPlan
-from app.workers import tasks
+from app.workers import domain_dns_poll, tasks
 
 
 class _Hospitals:
@@ -102,6 +102,14 @@ def test_domain_monitor_uses_bounded_no_redirect_probe_and_durable_control(monke
     monkeypatch.setattr(tasks, "record_domain_health_check", record)
     monkeypatch.setattr(tasks, "record_public_site_check", record_public_site)
 
+    async def no_pending_domains(_now):
+        return domain_dns_poll.DomainPollSummary()
+
+    # 대기 도메인 폴링은 같은 작업 끝에 붙어 있다 — 여기서는 라이브 감시만 본다.
+    monkeypatch.setattr(
+        domain_dns_poll, "poll_pending_custom_domains_once", no_pending_domains
+    )
+
     result = tasks.monitor_live_custom_domains.run()
 
     assert len(clients) == 1
@@ -124,6 +132,10 @@ def test_domain_monitor_uses_bounded_no_redirect_probe_and_durable_control(monke
         "shared_server_errors": 0,
         "public_site_incident_opened": False,
         "public_site_incident_recovered": False,
+        "pending_domains_verified": 0,
+        "pending_domains_not_ready": 0,
+        "pending_domains_skipped": 0,
+        "pending_domains_expired": 0,
     }
     # A-1: 살아 있는 도메인의 관측이 배지·트래커가 읽는 상태에 그대로 반영돼야 한다.
     assert hospital.domain_last_check_ok is True

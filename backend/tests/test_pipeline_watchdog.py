@@ -1175,3 +1175,371 @@ def test_an_overlapping_heartbeat_cannot_erase_a_recorded_delivery(monkeypatch, 
 
     assert raced and all(not d.send for d in second)
     assert all(not d.send for decisions in later for d in decisions)
+
+
+class FakeEmailStore:
+    """DB 감사행 대신 쓰는 메일 기록. `available=False`면 DB가 없는 것처럼 답한다."""
+
+    def __init__(self, *, available=True):
+        self.available = available
+        self.rows: list[tuple[str, str, datetime, dict]] = []  # (action, key, recorded_at, detail)
+        self.clock = datetime(2026, 1, 1, tzinfo=UTC)
+
+    def _recent_plans(self, now):
+        window = pipeline_watchdog._EPISODELESS_EMAIL_WINDOW
+        return [
+            (key, detail)
+            for action, key, at, detail in reversed(self.rows)
+            if action == pipeline_watchdog._EMAIL_PLANNED_ACTION and at >= now - window
+        ]
+
+    def find_plan(self, lookup_key, *, now):
+        if not self.available:
+            return False
+        for action, key, _at, detail in self.rows:  # 정확한 키 — 창 없이 처음 계획
+            if action == pipeline_watchdog._EMAIL_PLANNED_ACTION and key == lookup_key:
+                return pipeline_watchdog._plan_from_detail(detail)
+        return None
+
+    def find_linked(self, audience, signature, *, now, episodeless_only):
+        if not self.available:
+            return False
+        for key, detail in self._recent_plans(now):
+            if episodeless_only:
+                hit = key.startswith(pipeline_watchdog._episodeless_prefix(audience, signature))
+            else:
+                hit = key.startswith(f"watchdog:{audience}:") and detail.get("signature") == signature
+            if hit:
+                return pipeline_watchdog._plan_from_detail(detail)
+        return None
+
+    def was_sent(self, mail_key):
+        if not self.available:
+            return None
+        return any(
+            a == pipeline_watchdog._EMAIL_SENT_ACTION and k == mail_key for a, k, _, _ in self.rows
+        )
+
+    def record_plan(self, lookup_key, plan, decision, signature):
+        if not self.available:
+            return False
+        detail = {
+            "audience": decision.audience,
+            "signature": signature,
+            "mail_key": plan.mail_key,
+            "subject": plan.subject,
+            "lines": list(plan.lines),
+        }
+        self.rows.append((pipeline_watchdog._EMAIL_PLANNED_ACTION, lookup_key, self.clock, detail))
+        return True
+
+    def record_sent(self, mail_key, _decision):
+        if not self.available:
+            return False
+        self.rows.append((pipeline_watchdog._EMAIL_SENT_ACTION, mail_key, self.clock, {}))
+        return True
+
+
+@pytest.fixture
+def email_store(monkeypatch):
+    store = FakeEmailStore()
+    monkeypatch.setattr(pipeline_watchdog, "_email_store", store)
+    pipeline_watchdog.reset_email_memory_for_tests()
+    yield store
+    pipeline_watchdog.reset_email_memory_for_tests()
+
+
+def _mail_recorder(monkeypatch, results=None):
+    calls: list[dict] = []
+    pending = list(results or [])
+
+    async def fake_send(**kwargs):
+        calls.append(kwargs)
+        if pending:
+            return pending.pop(0)
+        return pipeline_watchdog.ops_alert_email.OpsAlertResult.SENT
+
+    monkeypatch.setattr(pipeline_watchdog.ops_alert_email, "send_ops_alert", fake_send)
+    return calls
+
+
+async def test_undelivered_alerts_are_emailed_once_per_episode(monkeypatch, email_store):
+    calls = _mail_recorder(monkeypatch)
+    monkeypatch.setattr(pipeline_watchdog, "_connect_redis", lambda: FakeRedis())
+    now = datetime(2026, 10, 11, 0, 5, tzinfo=UTC)
+    email_store.clock = now
+    decisions = (
+        pipeline_watchdog.AlertDecision(
+            True, "ALERT", "developer", "인프라 경보", "new_condition_set",
+            "https://hooks.slack.com/ops", ("beat_down",), "2026-10-11T00:00:00+00:00",
+        ),
+        pipeline_watchdog.AlertDecision(
+            True, "ALERT", "operator", "발행 경보", "redis_unavailable",
+            "https://hooks.slack.com/ops", ("publish_missing",), None,
+        ),
+        pipeline_watchdog.AlertDecision(
+            True, "RECOVERY", "operator", "복구", "recovered", "https://hooks.slack.com/ops"
+        ),
+        pipeline_watchdog.AlertDecision(False, None, "operator", None, "deduped", None),
+    )
+
+    emailed = await pipeline_watchdog.email_undelivered(
+        decisions, (False, False, False, False), now=now
+    )
+
+    # 전달 실패한 ALERT만 메일로 간다. RECOVERY·보내지 않은 결정은 메일이 없다.
+    assert emailed == (True, True, False, False)
+    signature = pipeline_watchdog._signature(("publish_missing",))
+    assert [call["idempotency_key"] for call in calls] == [
+        "watchdog:developer:2026-10-11T00:00:00+00:00",
+        f"watchdog:operator:nr:{signature}:20261011T0005",
+    ]
+    # 본문은 Slack 문구가 아니라 키·조건 집합으로 정해지는 고정 문구다.
+    assert calls[0]["lines"] == (
+        "외부 감시가 개발 담당 경보를 Slack에 전달하지 못해 메일로 알립니다.",
+        "감지된 조건: 예약 실행기(Beat) 정지",
+        "경보 번호: watchdog:developer:2026-10-11T00:00:00+00:00",
+        "같은 경보 동안 이 메일은 한 번만 보냅니다. 지금 상태와 건수는 운영센터와 Cloud Run 로그에서 확인해 주세요.",
+    )
+    # 전달은 DB 기록(정본)에 남는다.
+    sent = [k for a, k, _, _ in email_store.rows if a == pipeline_watchdog._EMAIL_SENT_ACTION]
+    assert sent == [call["idempotency_key"] for call in calls]
+
+
+async def test_delivered_alerts_are_not_emailed(monkeypatch, email_store):
+    async def unexpected(**_kwargs):
+        raise AssertionError("delivered alerts must not be emailed")
+
+    monkeypatch.setattr(pipeline_watchdog.ops_alert_email, "send_ops_alert", unexpected)
+    decision = pipeline_watchdog.AlertDecision(
+        True, "ALERT", "operator", "발행", "new_condition_set", "https://hooks.slack.com/ops",
+        ("publish_missing",), "e1",
+    )
+    assert await pipeline_watchdog.email_undelivered(
+        (decision,), (True,), now=datetime(2026, 10, 11, tzinfo=UTC)
+    ) == (False,)
+
+
+def _undelivered_alert(text: str, episode: str | None = "2026-10-11T00:00:00+00:00", conditions=("publish_missing",)):
+    return pipeline_watchdog.AlertDecision(
+        True, "ALERT", "operator", text, "new_condition_set",
+        "https://hooks.slack.com/ops", conditions, episode,
+    )
+
+
+async def test_an_emailed_episode_is_not_re_sent_while_slack_stays_down(monkeypatch, email_store):
+    """Slack 장애가 Resend의 24시간 멱등 창보다 길어져도 같은 에피소드 메일은 한 통이다."""
+    client = FakeRedis()
+    monkeypatch.setattr(pipeline_watchdog, "_connect_redis", lambda: client)
+    calls = _mail_recorder(monkeypatch)
+    now = datetime(2026, 10, 11, 0, 5, tzinfo=UTC)
+
+    first = await pipeline_watchdog.email_undelivered((_undelivered_alert("발행 경보"),), (False,), now=now)
+    # 25시간 뒤(Resend가 키를 잊은 뒤, Redis 캐시도 비었다고 하자)에도 Slack이 여전히 받지 않는다.
+    client.values.clear()
+    later = await pipeline_watchdog.email_undelivered(
+        (_undelivered_alert("발행 경보"),), (False,), now=now + timedelta(hours=25)
+    )
+
+    assert first == (True,) and later == (False,)
+    assert len(calls) == 1
+
+
+async def test_an_unconfirmed_email_retries_with_the_same_fixed_body(monkeypatch, email_store):
+    """409·실패는 '보냈음'이 아니다. 다음 판정이 같은 키·같은 본문으로 다시 보낸다(Slack 문구의 건수가 바뀌어도)."""
+    monkeypatch.setattr(pipeline_watchdog, "_connect_redis", lambda: FakeRedis())
+    calls = _mail_recorder(
+        monkeypatch,
+        [
+            pipeline_watchdog.ops_alert_email.OpsAlertResult.UNKNOWN,
+            pipeline_watchdog.ops_alert_email.OpsAlertResult.SENT,
+        ],
+    )
+    now = datetime(2026, 10, 11, 0, 5, tzinfo=UTC)
+
+    first = await pipeline_watchdog.email_undelivered(
+        (_undelivered_alert("발행 경보 1건"),), (False,), now=now
+    )
+    second = await pipeline_watchdog.email_undelivered(
+        (_undelivered_alert("발행 경보 3건"),), (False,), now=now + timedelta(minutes=15)
+    )
+
+    assert first == (False,) and second == (True,)
+    assert [call["idempotency_key"] for call in calls] == [
+        "watchdog:operator:2026-10-11T00:00:00+00:00"
+    ] * 2
+    assert calls[0]["lines"] == calls[1]["lines"]
+    # 판정마다 바뀌는 건수(Slack 문구)는 메일 본문에 들어가지 않는다.
+    assert not any("1건" in line or "3건" in line for line in calls[0]["lines"])
+
+
+async def test_a_shrunken_condition_set_retries_with_the_first_body(monkeypatch, email_store):
+    """{Beat, 대기열} 에피소드의 첫 메일이 결과 불명이면, 집합이 {Beat}로 줄어도 같은 키·같은 제목·본문이다."""
+    monkeypatch.setattr(pipeline_watchdog, "_connect_redis", lambda: FakeRedis())
+    calls = _mail_recorder(
+        monkeypatch,
+        [
+            pipeline_watchdog.ops_alert_email.OpsAlertResult.UNKNOWN,
+            pipeline_watchdog.ops_alert_email.OpsAlertResult.SENT,
+        ],
+    )
+    now = datetime(2026, 10, 11, 0, 5, tzinfo=UTC)
+    email_store.clock = now
+    both = _undelivered_alert("인프라", conditions=("beat_down", "queue_stale:content"))
+    only_beat = _undelivered_alert("인프라", conditions=("beat_down",))
+
+    first = await pipeline_watchdog.email_undelivered((both,), (False,), now=now)
+    # 새 프로세스(메모리 유실)여도 DB 계획이 처음 본문을 기억한다.
+    pipeline_watchdog.reset_email_memory_for_tests()
+    second = await pipeline_watchdog.email_undelivered(
+        (only_beat,), (False,), now=now + timedelta(minutes=15)
+    )
+
+    assert first == (False,) and second == (True,)
+    assert calls[0]["idempotency_key"] == calls[1]["idempotency_key"]
+    assert calls[0]["title"] == calls[1]["title"]
+    assert calls[0]["lines"] == calls[1]["lines"]
+    assert any("작업 대기열 정지(content)" in line for line in calls[1]["lines"])
+
+
+async def test_an_episode_mail_is_not_resent_when_redis_goes_down(monkeypatch, email_store):
+    """에피소드 E로 보낸 뒤 Redis가 내려가 에피소드 없는 판정이 와도 같은 장애로 보고 다시 보내지 않는다."""
+    redis_up = [True]
+    monkeypatch.setattr(
+        pipeline_watchdog, "_connect_redis", lambda: FakeRedis(broken=not redis_up[0])
+    )
+    calls = _mail_recorder(monkeypatch)
+    now = datetime(2026, 10, 11, 0, 5, tzinfo=UTC)
+    email_store.clock = now
+
+    first = await pipeline_watchdog.email_undelivered((_undelivered_alert("발행"),), (False,), now=now)
+    redis_up[0] = False
+    pipeline_watchdog.reset_email_memory_for_tests()
+    email_store.clock = now + timedelta(minutes=20)
+    later = await pipeline_watchdog.email_undelivered(
+        (_undelivered_alert("발행", episode=None),), (False,), now=now + timedelta(minutes=20)
+    )
+
+    assert first == (True,) and later == (False,)
+    assert len(calls) == 1
+
+
+async def test_an_episodeless_mail_is_not_resent_when_redis_returns(monkeypatch, email_store):
+    """Redis 장애 동안(에피소드 없는 키) 보낸 뒤 Redis가 돌아와 새 에피소드가 열려도 다시 보내지 않는다."""
+    redis_up = [False]
+    monkeypatch.setattr(
+        pipeline_watchdog, "_connect_redis", lambda: FakeRedis(broken=not redis_up[0])
+    )
+    calls = _mail_recorder(monkeypatch)
+    now = datetime(2026, 10, 11, 0, 5, tzinfo=UTC)
+    email_store.clock = now
+
+    first = await pipeline_watchdog.email_undelivered(
+        (_undelivered_alert("발행", episode=None),), (False,), now=now
+    )
+    redis_up[0] = True
+    pipeline_watchdog.reset_email_memory_for_tests()
+    email_store.clock = now + timedelta(minutes=20)
+    later = await pipeline_watchdog.email_undelivered(
+        (_undelivered_alert("발행", episode="2026-10-11T00:20:00+00:00"),),
+        (False,),
+        now=now + timedelta(minutes=20),
+    )
+    # 그 에피소드의 다음 판정도 같은 계획(에피소드 없는 키)을 이어 쓴다.
+    again = await pipeline_watchdog.email_undelivered(
+        (_undelivered_alert("발행", episode="2026-10-11T00:20:00+00:00"),),
+        (False,),
+        now=now + timedelta(minutes=35),
+    )
+
+    assert first == (True,) and later == (False,) and again == (False,)
+    assert len(calls) == 1
+
+
+async def test_a_linked_episode_keeps_its_first_plan_past_the_24h_window(monkeypatch, email_store):
+    """Redis 장애 키로 보낸 뒤(t0) 새 에피소드가 그 계획에 이어지고(t+20분), 25시간 뒤 프로세스가 바뀌어도
+    에피소드의 첫 계획(같은 키·본문)을 그대로 써 다시 보내지 않는다 — 정확한 키 조회에는 24시간 창이 없다."""
+    redis_up = [False]
+    monkeypatch.setattr(
+        pipeline_watchdog, "_connect_redis", lambda: FakeRedis(broken=not redis_up[0])
+    )
+    calls = _mail_recorder(monkeypatch)
+    t0 = datetime(2026, 10, 11, 0, 5, tzinfo=UTC)
+    episode = "2026-10-11T00:25:00+00:00"
+    email_store.clock = t0
+
+    first = await pipeline_watchdog.email_undelivered(
+        (_undelivered_alert("발행", episode=None),), (False,), now=t0
+    )
+    redis_up[0] = True
+    pipeline_watchdog.reset_email_memory_for_tests()
+    email_store.clock = t0 + timedelta(minutes=20)
+    linked = await pipeline_watchdog.email_undelivered(
+        (_undelivered_alert("발행", episode=episode),), (False,), now=t0 + timedelta(minutes=20)
+    )
+    pipeline_watchdog.reset_email_memory_for_tests()
+    email_store.clock = t0 + timedelta(hours=25)
+    plan_key, plan = pipeline_watchdog._email_plan(
+        _undelivered_alert("발행", episode=episode), t0 + timedelta(hours=25)
+    )
+    later = await pipeline_watchdog.email_undelivered(
+        (_undelivered_alert("발행", episode=episode),), (False,), now=t0 + timedelta(hours=25)
+    )
+
+    assert (first, linked, later) == ((True,), (False,), (False,))
+    assert len(calls) == 1
+    assert plan_key is None  # 이미 보낸 키
+    assert plan.mail_key == calls[0]["idempotency_key"] and plan.lines == calls[0]["lines"]
+
+
+async def test_a_redis_outage_across_kst_midnight_mails_once_under_one_key(monkeypatch, email_store):
+    """Redis가 없어 에피소드를 모를 때 23:40→00:00 KST로 이어진 장애가 날짜가 바뀌었다고 다시 보내지 않는다."""
+    monkeypatch.setattr(pipeline_watchdog, "_connect_redis", lambda: FakeRedis(broken=True))
+    calls = _mail_recorder(
+        monkeypatch,
+        [
+            pipeline_watchdog.ops_alert_email.OpsAlertResult.UNKNOWN,
+            pipeline_watchdog.ops_alert_email.OpsAlertResult.SENT,
+        ],
+    )
+    before = datetime(2026, 10, 11, 23, 40, tzinfo=KST)
+    after = datetime(2026, 10, 12, 0, 0, tzinfo=KST)
+    email_store.clock = before
+
+    first = await pipeline_watchdog.email_undelivered(
+        (_undelivered_alert("발행 경보 1건", episode=None),), (False,), now=before
+    )
+    email_store.clock = after
+    second = await pipeline_watchdog.email_undelivered(
+        (_undelivered_alert("발행 경보 4건", episode=None),), (False,), now=after
+    )
+    third = await pipeline_watchdog.email_undelivered(
+        (_undelivered_alert("발행 경보 5건", episode=None),), (False,), now=after + timedelta(minutes=15)
+    )
+
+    assert (first, second, third) == ((False,), (True,), (False,))
+    assert len({call["idempotency_key"] for call in calls}) == 1
+    assert calls[0]["lines"] == calls[1]["lines"]
+
+
+async def test_with_both_stores_down_the_process_mails_once_per_episode(monkeypatch, email_store):
+    """DB와 Redis가 모두 없으면 프로세스 수명 동안 (수신자, 조건 집합)당 한 통이다(알려진 한계)."""
+    email_store.available = False
+    monkeypatch.setattr(pipeline_watchdog, "_connect_redis", lambda: FakeRedis(broken=True))
+    calls = _mail_recorder(monkeypatch)
+    now = datetime(2026, 10, 11, 14, 40, tzinfo=UTC)  # KST 23:40
+
+    first = await pipeline_watchdog.email_undelivered(
+        (_undelivered_alert("발행 경보", episode=None),), (False,), now=now
+    )
+    later = await pipeline_watchdog.email_undelivered(
+        (_undelivered_alert("발행 경보", episode=None),), (False,), now=now + timedelta(minutes=20)
+    )
+    assert first == (True,) and later == (False,)
+    # 새 프로세스(메모리 유실)는 다시 보낼 수 있다 — 두 저장소가 모두 없을 때의 한계다.
+    pipeline_watchdog.reset_email_memory_for_tests()
+    again = await pipeline_watchdog.email_undelivered(
+        (_undelivered_alert("발행 경보", episode=None),), (False,), now=now + timedelta(minutes=35)
+    )
+    assert again == (True,)
+    assert len(calls) == 2

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -46,6 +47,9 @@ __all__ = (
 )
 
 
+logger = logging.getLogger(__name__)
+
+
 @dataclass(frozen=True, slots=True)
 class ProjectionResult:
     onboarding_count: int
@@ -59,6 +63,16 @@ async def _project_once(now: datetime) -> ProjectionResult:
         result = await project_milestone_window(db, window, settings.ADMIN_BASE_URL)
         await db.commit()
     return result
+
+
+async def _scan_onboarding_stalls_once(now: datetime) -> dict[str, int]:
+    from app.services.onboarding_stalls import apply_onboarding_stalls, load_onboarding_facts
+
+    async with get_async_sessionmaker()() as db:
+        facts = await load_onboarding_facts(db)
+    return await apply_onboarding_stalls(
+        facts, now, source_fetch_alerts=settings.ONBOARDING_SOURCE_FETCH_ALERTS_ENABLED
+    )
 
 
 async def project_milestone_window(
@@ -96,13 +110,25 @@ async def project_milestone_window(
 
 @celery_app.task(name="app.workers.milestone_event_tasks.project_milestone_events", bind=True)
 def project_milestone_events(_task: Task) -> dict[str, int | bool]:
-    """Project one completed window; Slack transport remains a separate worker."""
+    """Project one completed window; Slack transport remains a separate worker.
 
-    result = anyio.run(_project_once, datetime.now(UTC))
+    같은 15분 주기에 온보딩 정체 사고도 맞춘다. 정체 스캔의 실패가 마일스톤 투영을
+    되돌리지 않게 따로 실행한다.
+    """
+
+    now = datetime.now(UTC)
+    result = anyio.run(_project_once, now)
+    try:
+        stalls = anyio.run(_scan_onboarding_stalls_once, now)
+    except Exception:
+        logger.exception("onboarding stall scan failed")
+        stalls = {"opened": 0, "recovered": 0}
     return {
         "onboarding_count": result.onboarding_count,
         "monthly_count": result.monthly_count,
         "enqueued": result.enqueued,
+        "onboarding_stalls_opened": stalls["opened"],
+        "onboarding_stalls_recovered": stalls["recovered"],
     }
 
 

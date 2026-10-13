@@ -20,7 +20,7 @@ from app.models.operations import (
     NotificationOutbox,
     NotificationOutboxState,
 )
-from app.services import notification_delivery
+from app.services import notification_channel_health, notification_delivery
 from app.services.incident_types import (
     SLACK_DEVELOPER_CHANNEL,
     IncidentAudience,
@@ -151,6 +151,9 @@ async def _delete_channel_incidents(db) -> None:
         "MONTHLY_DOCTOR_PDF_BLOCKED",
         "PUBLIC_SITE_UNAVAILABLE",
         "OPERATION_RECOVERY_EXHAUSTED",
+        "UNVERIFIED_ADMIN_ACTOR",
+        "MONTHLY_SOV_COHORT_OVER_LIMIT",
+        "SITE_BUILD_RETRIES_EXHAUSTED",
     ],
 )
 def test_pure_infrastructure_incidents_leave_the_ae_channel(incident_type: str) -> None:
@@ -163,6 +166,19 @@ def test_pure_infrastructure_incidents_leave_the_ae_channel(incident_type: str) 
     # Then: the intent is addressed to the developer channel
     assert incident_audience(incident_type) is IncidentAudience.DEVELOPER
     assert intent.channel == SLACK_DEVELOPER_CHANNEL
+
+
+def test_spent_site_build_budget_tells_the_developer_which_button_to_press() -> None:
+    """유일한 조치가 운영센터의 '작업 다시 시도'다 — 개발 담당 알림이 그 경로를 말한다."""
+
+    intent = build_open_incident_notification(
+        replace(_projection(), incident_type="SITE_BUILD_RETRIES_EXHAUSTED"),
+        "https://admin.example.test",
+    )
+
+    assert intent.channel == SLACK_DEVELOPER_CHANNEL
+    assert "운영센터" in intent.message.fallback_text
+    assert "‘작업 다시 시도’" in intent.message.fallback_text
 
 
 @pytest.mark.parametrize(
@@ -256,6 +272,7 @@ def _isolate_dispatch(monkeypatch, row, decisions=None) -> None:
     monkeypatch.setattr(notification_delivery, "recover_after_send", nothing)
     monkeypatch.setattr(notification_delivery, "requeue_channel_held", nothing)
     monkeypatch.setattr(notification_delivery, "run_notification_success_hook", nothing)
+    monkeypatch.setattr(notification_delivery, "email_dead_operator_channel", nothing)
 
 
 @pytest.mark.asyncio
@@ -619,6 +636,10 @@ async def test_slack_success_never_recovers_the_linked_incident(outbox_sessions)
             source_type="CONTENT",
             next_action="운영 센터 확인",
             admin_path="/operations",
+            # 알림과 같은 고정 시계로 연다 — 에피소드 시작보다 먼저 만든 열림 알림은 지난
+            # 에피소드의 것으로 종결된다(`settle_incident_notices`).
+            first_seen_at=_NOW,
+            last_seen_at=_NOW,
         )
         db.add(incident)
         await db.flush()
@@ -670,6 +691,8 @@ async def test_retry_success_recovers_notification_delivery_incident(outbox_sess
             safe_error_code="DELIVERY_RETRY_EXHAUSTED",
             next_action="Slack 설정 확인 후 재시도",
             admin_path="/operations",
+            first_seen_at=_NOW,
+            last_seen_at=_NOW,
         )
         db.add(incident)
         await db.flush()
@@ -1605,3 +1628,294 @@ async def test_operations_center_and_retry_target_the_row_a_delivery_incident_de
         with pytest.raises(HTTPException):
             await _authorize_notification_retry(db, stranger, failed)
         await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_dead_operator_channel_without_alternate_is_emailed_once_per_episode(
+    outbox_sessions, monkeypatch
+) -> None:
+    # Given: 단일 채널 운영에서 운영 웹훅이 죽었다 — 채널 사고의 열림 알림도 보낼 곳이 없다
+    sent: list[dict] = []
+
+    async def fake_send(**kwargs):
+        sent.append(kwargs)
+        return notification_channel_health.ops_alert_email.OpsAlertResult.SENT
+
+    monkeypatch.setattr(notification_channel_health.ops_alert_email, "send_ops_alert", fake_send)
+    notification_channel_health._last_ops_email_attempt.clear()
+    dead = lambda _request: httpx.Response(404, text="no_service")  # noqa: E731
+
+    # When: 사고가 열린 회차와 20분 뒤 회차(탐침 간격 안)가 돈다
+    await _dispatch_once(outbox_sessions, "OPS-QA-T10-EMAIL-1", dead)
+    await _dispatch_once(outbox_sessions, "OPS-QA-T10-EMAIL-1", dead, now=_NOW + timedelta(minutes=20))
+
+    # Then: 사고 episode당 메일 한 통, 감사 기록이 '보냄'을 남긴다
+    async with outbox_sessions() as verify:
+        incident = await _channel_incident(verify, "SLACK")
+        assert incident is not None
+        marker = f"{incident.id}:e{incident.episode_seq}"
+        audits = (
+            await verify.execute(
+                select(AdminAuditLog).where(
+                    AdminAuditLog.action == "ops_alert_email_sent", AdminAuditLog.target_id == marker
+                )
+            )
+        ).scalars().all()
+    assert [call["idempotency_key"] for call in sent] == [f"ops-channel-down:{marker}"]
+    assert len(audits) == 1
+
+
+@pytest.mark.asyncio
+async def test_failed_ops_email_is_retried_after_fifteen_minutes(outbox_sessions, monkeypatch) -> None:
+    attempts: list[str] = []
+
+    async def failing_send(**kwargs):
+        attempts.append(kwargs["idempotency_key"])
+        return notification_channel_health.ops_alert_email.OpsAlertResult.FAILED
+
+    monkeypatch.setattr(notification_channel_health.ops_alert_email, "send_ops_alert", failing_send)
+    notification_channel_health._last_ops_email_attempt.clear()
+    dead = lambda _request: httpx.Response(404, text="no_service")  # noqa: E731
+
+    # 첫 회차가 채널 사고를 연다. 메일은 사고를 이미 확인한 다음 회차부터 시도한다.
+    await _dispatch_once(outbox_sessions, "OPS-QA-T10-EMAIL-2", dead)
+    await _dispatch_once(outbox_sessions, "OPS-QA-T10-EMAIL-2", dead, now=_NOW + timedelta(minutes=5))
+    await _dispatch_once(outbox_sessions, "OPS-QA-T10-EMAIL-2", dead, now=_NOW + timedelta(minutes=10))
+    await _dispatch_once(outbox_sessions, "OPS-QA-T10-EMAIL-2", dead, now=_NOW + timedelta(minutes=21))
+
+    # 첫 시도(5분)와 15분이 지난 뒤(21분)에만 시도한다. 같은 키라 Resend가 중복을 막는다.
+    assert len(attempts) == 2
+    assert attempts[0] == attempts[1]
+
+
+@pytest.mark.asyncio
+async def test_an_idempotency_conflict_is_not_recorded_as_sent(outbox_sessions, monkeypatch) -> None:
+    """409(같은 키가 처리 중이거나 다른 본문)는 전달 확인이 아니다 — 감사 기록 없이 같은 키·본문으로 다시 보낸다."""
+    calls: list[dict] = []
+    results = [
+        notification_channel_health.ops_alert_email.OpsAlertResult.UNKNOWN,
+        notification_channel_health.ops_alert_email.OpsAlertResult.SENT,
+    ]
+
+    async def conflicted_then_sent(**kwargs):
+        calls.append(kwargs)
+        return results.pop(0)
+
+    monkeypatch.setattr(
+        notification_channel_health.ops_alert_email, "send_ops_alert", conflicted_then_sent
+    )
+    notification_channel_health._last_ops_email_attempt.clear()
+    dead = lambda _request: httpx.Response(404, text="no_service")  # noqa: E731
+
+    await _dispatch_once(outbox_sessions, "OPS-QA-T10-EMAIL-3", dead)
+    await _dispatch_once(outbox_sessions, "OPS-QA-T10-EMAIL-3", dead, now=_NOW + timedelta(minutes=5))
+
+    async def sent_audits() -> int:
+        async with outbox_sessions() as verify:
+            incident = await _channel_incident(verify, "SLACK")
+            marker = f"{incident.id}:e{incident.episode_seq}"
+            return len(
+                (
+                    await verify.execute(
+                        select(AdminAuditLog).where(
+                            AdminAuditLog.action == "ops_alert_email_sent",
+                            AdminAuditLog.target_id == marker,
+                        )
+                    )
+                ).scalars().all()
+            )
+
+    assert len(calls) == 1 and await sent_audits() == 0
+    await _dispatch_once(outbox_sessions, "OPS-QA-T10-EMAIL-3", dead, now=_NOW + timedelta(minutes=21))
+    assert len(calls) == 2 and await sent_audits() == 1
+    # 재시도는 같은 키·같은 본문이다(Resend가 원래 응답을 돌려줄 수 있게).
+    assert calls[0]["idempotency_key"] == calls[1]["idempotency_key"]
+    assert calls[0]["lines"] == calls[1]["lines"]
+
+
+@pytest.mark.asyncio
+async def test_a_settle_candidate_locked_elsewhere_does_not_stall_the_claim(outbox_sessions) -> None:
+    """발송 전 종결 후보가 다른 트랜잭션에 잠겨 있어도 다른 알림의 claim은 기다리지 않는다(Codex R2-4)."""
+
+    # Given: a recovered incident whose unsent OPEN notice is a settle candidate, and an unrelated due row
+    async with outbox_sessions() as db:
+        incident = Incident(
+            dedupe_key="OPS-QA-T10-SETTLE-LOCK",
+            incident_type="CONTENT_GENERATION_FAILED",
+            state=IncidentState.RECOVERED.value,
+            severity="HIGH",
+            customer_impact="테스트",
+            source_type="TEST",
+            next_action="테스트",
+            admin_path="/operations",
+            first_seen_at=_NOW - timedelta(hours=1),
+            last_seen_at=_NOW - timedelta(hours=1),
+            recovered_at=_NOW - timedelta(minutes=30),
+        )
+        db.add(incident)
+        await db.flush()
+        stale_open = NotificationOutbox(
+            dedupe_key="OPS-QA-T10-SETTLE-LOCKED",
+            notification_type="INCIDENT_OPEN",
+            channel="SLACK",
+            state=NotificationOutboxState.PENDING.value,
+            incident_id=incident.id,
+            payload=_intent("ignored").message.payload(),
+            fallback_text="운영 알림",
+            next_attempt_at=_NOW - timedelta(minutes=5),
+        )
+        db.add(stale_open)
+        free = await enqueue_notification(db, _intent("OPS-QA-T10-SETTLE-FREE"), now=_NOW)
+        await db.commit()
+
+    # When: another transaction holds the candidate's row lock while a worker claims
+    async with outbox_sessions() as holder:
+        await holder.execute(
+            select(NotificationOutbox.id)
+            .where(NotificationOutbox.id == stale_open.id)
+            .with_for_update()
+        )
+        async with outbox_sessions() as claimer:
+            # 예전 무제한 UPDATE는 잠긴 행을 기다려 이 제한에 걸려 LockNotAvailable로 끝났다 —
+            # 시계가 아니라 claim이 예외 없이 끝나는 것으로 '기다리지 않았다'를 본다.
+            await claimer.execute(text("SET lock_timeout = '1s'"))
+            claimed = await claim_notification_batch(claimer, "worker-settle", now=_NOW, limit=50)
+        await holder.rollback()
+
+    # Then: the unrelated row is leased at once; the locked candidate waits for the next tick
+    assert free.id in {row.id for row in claimed}
+    assert stale_open.id not in {row.id for row in claimed}
+    async with outbox_sessions() as verify:
+        row = await verify.get(NotificationOutbox, stale_open.id)
+        assert row.state == NotificationOutboxState.PENDING.value
+
+    # And: the next tick settles it once the lock is gone
+    async with outbox_sessions() as db:
+        await claim_notification_batch(db, "worker-settle", now=_NOW, limit=50)
+    async with outbox_sessions() as verify:
+        row = await verify.get(NotificationOutbox, stale_open.id)
+        assert row.state == NotificationOutboxState.FAILED.value
+        assert row.safe_error_code == "INCIDENT_RESOLVED_BEFORE_SEND"
+
+
+@pytest.mark.asyncio
+async def test_a_recovery_is_not_claimed_while_its_open_is_locked_elsewhere(outbox_sessions) -> None:
+    """다른 트랜잭션이 잡은(아직 나가지 않은) 열림의 복구 알림은 이번 tick에 집지 않는다(Codex R4-1)."""
+
+    # Given: a recovered incident whose OPEN and RECOVERED notices are both still pending
+    async with outbox_sessions() as db:
+        incident = Incident(
+            dedupe_key="OPS-QA-T10-PAIR-LOCK",
+            incident_type="CONTENT_GENERATION_FAILED",
+            state=IncidentState.RECOVERED.value,
+            severity="HIGH",
+            customer_impact="테스트",
+            source_type="TEST",
+            next_action="테스트",
+            admin_path="/operations",
+            first_seen_at=_NOW - timedelta(hours=1),
+            last_seen_at=_NOW - timedelta(hours=1),
+            recovered_at=_NOW - timedelta(minutes=30),
+        )
+        db.add(incident)
+        await db.flush()
+        pending = {
+            "channel": "SLACK",
+            "state": NotificationOutboxState.PENDING.value,
+            "incident_id": incident.id,
+            "payload": _intent("ignored").message.payload(),
+            "fallback_text": "운영 알림",
+            "next_attempt_at": _NOW - timedelta(minutes=5),
+        }
+        # 에피소드 꼬리(:e1)가 같으므로 같은 에피소드의 짝이다.
+        locked_open = NotificationOutbox(
+            dedupe_key="OPS-QA-T10-PAIR-LOCK-OPEN:e1",
+            notification_type="INCIDENT_OPEN",
+            created_at=_NOW - timedelta(minutes=50),
+            **pending,
+        )
+        recovered = NotificationOutbox(
+            dedupe_key="OPS-QA-T10-PAIR-LOCK-RECOVERED:e1",
+            notification_type="INCIDENT_RECOVERED",
+            created_at=_NOW - timedelta(minutes=20),
+            **pending,
+        )
+        db.add_all([locked_open, recovered])
+        await db.commit()
+
+    # When: another transaction holds the OPEN's row lock while a worker claims
+    async with outbox_sessions() as holder:
+        await holder.execute(
+            select(NotificationOutbox.id)
+            .where(NotificationOutbox.id == locked_open.id)
+            .with_for_update()
+        )
+        async with outbox_sessions() as claimer:
+            await claimer.execute(text("SET lock_timeout = '1s'"))
+            claimed = await claim_notification_batch(claimer, "worker-pair", now=_NOW, limit=50)
+        await holder.rollback()
+
+    # Then: neither the locked OPEN nor its RECOVERED is leased; the RECOVERED is not sent alone
+    claimed_ids = {row.id for row in claimed}
+    assert locked_open.id not in claimed_ids
+    assert recovered.id not in claimed_ids
+    async with outbox_sessions() as verify:
+        row = await verify.get(NotificationOutbox, recovered.id)
+        assert row.state == NotificationOutboxState.PENDING.value
+
+    # And: the next tick settles the unsent pair together once the lock is gone
+    async with outbox_sessions() as db:
+        await claim_notification_batch(db, "worker-pair", now=_NOW, limit=50)
+    async with outbox_sessions() as verify:
+        for notice_id in (locked_open.id, recovered.id):
+            row = await verify.get(NotificationOutbox, notice_id)
+            assert row.state == NotificationOutboxState.FAILED.value
+            assert row.safe_error_code == "INCIDENT_RESOLVED_BEFORE_SEND"
+
+
+@pytest.mark.asyncio
+async def test_each_row_is_finalized_before_the_next_row_is_sent(outbox_sessions) -> None:
+    """한 배치의 행은 끝나는 즉시 결판이 커밋된다 — 열림이 SENT가 되는 순간 그 복구가 집힐 수 있다(Codex R5-1)."""
+
+    # Given: two due rows that sort first (A before B) ahead of any other due row in the shared DB
+    long_ago = _NOW - timedelta(days=3650)
+    async with outbox_sessions() as db:
+        await enqueue_notification(db, _intent("OPS-QA-T10-PER-ROW-A"), now=long_ago)
+        await enqueue_notification(
+            db, _intent("OPS-QA-T10-PER-ROW-B"), now=long_ago + timedelta(seconds=1)
+        )
+        await db.commit()
+    states_seen_at_second_post: list[str] = []
+    posts = 0
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal posts
+        posts += 1
+        if posts == 2:
+            async with outbox_sessions() as probe:
+                first = await probe.scalar(
+                    select(NotificationOutbox.state).where(
+                        NotificationOutbox.dedupe_key == "OPS-QA-T10-PER-ROW-A"
+                    )
+                )
+                states_seen_at_second_post.append(first)
+        return httpx.Response(200, text="ok")
+
+    async def no_pause() -> None:
+        return None
+
+    # When: one batch sends both rows
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await dispatch_notification_batch(
+            outbox_sessions,
+            client,
+            webhook_url="https://hooks.slack.com/services/T/B/X",
+            worker_id="worker-per-row",
+            now=_NOW,
+            limit=2,
+            throttle=no_pause,
+        )
+
+    # Then: the first row was already committed SENT before the second POST left
+    assert result.sent == 2
+    assert states_seen_at_second_post == [NotificationOutboxState.SENT.value]

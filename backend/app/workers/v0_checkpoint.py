@@ -132,7 +132,12 @@ def find_reusable_v0_measurement_run(
 ) -> MeasurementRun | None:
     """같은 V0 요청이 이미 완료한 측정 실행. 없으면 None(= 새로 측정한다)."""
     moment = now or datetime.now(UTC)
-    cutoff = moment - timedelta(seconds=V0_CHECKPOINT_MAX_AGE_SECONDS)
+    # 같은 V0 요청(lineage)의 재실행은 지금의 진단을 이어 만드는 것이다 — 자동 재실행이 6시간 뒤에
+    # 돌아도 이미 끝난 측정을 다시 사지 않는다(D9: 7일). lineage 없는 옛 배포만 6시간 창을 쓴다.
+    max_age = (
+        V0_RESUME_MAX_AGE_SECONDS if operation_run_id is not None else V0_CHECKPOINT_MAX_AGE_SECONDS
+    )
+    cutoff = moment - timedelta(seconds=max_age)
     candidates = (
         db.execute(
             select(MeasurementRun)

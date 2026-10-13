@@ -32,7 +32,7 @@ from app.workers.worker_liveness import touch_heartbeat
 # Redis에 저장된 정적 스케줄과 배포 이미지의 선언을 맞출 때 사용하는 명시적 버전.
 # beat_schedule을 추가/삭제/시간 변경할 때 반드시 올린다. 배포 스크립트의
 # reconcile-redbeat Job이 이 버전을 기록하고, --check 모드가 드리프트를 차단한다.
-REDBEAT_SCHEDULE_VERSION = "2026-10-09.1"
+REDBEAT_SCHEDULE_VERSION = "2026-10-12.1"
 
 # Worker logs share the API's structured format + request_id filter (OBS-1/OBS-2).
 configure_logging(level=settings.LOG_LEVEL, json_logs=settings.LOG_JSON)
@@ -149,6 +149,7 @@ celery_app = Celery(
         "app.workers.autonomous_recovery",
         "app.workers.content_backlog_recovery",
         "app.workers.domain_certificate_tasks",
+        "app.workers.profile_autofill_tasks",
         "app.workers.operation_run_signals",
         "app.workers.canary_tasks",
         "app.workers.indexnow_retry",
@@ -224,7 +225,8 @@ celery_app.conf.update(
     # Beat 신뢰성 (Cloud Run 롤아웃 중 구/신 beat가 잠시 공존):
     # RedBeat은 Redis 분산 락으로 단일 dispatcher를 보장하고, 스케줄 상태를
     # Redis에 보존해 재시작 후에도 last-run 정보가 유지된다(중복/누락 방지).
-    beat_scheduler="redbeat.RedBeatScheduler",
+    # RedBeat + tick마다 인스턴스 로컬 생존 파일 갱신(Beat /live가 그 나이를 본다).
+    beat_scheduler="app.workers.beat_scheduler.LivenessRedBeatScheduler",
     redbeat_redis_url=_redis_url_with_socket_options(settings.REDIS_URL),
     # RedBeat 기본 max loop interval은 300초다. 기존 락 TTL도 정확히 300초여서
     # 다음 tick에서 이미 만료된 락을 extend하며 LockNotOwnedError가 발생했다.
@@ -318,6 +320,9 @@ celery_app.conf.update(
         },
         "app.workers.domain_certificate_tasks.provision_domain_certificate": {
             "queue": "certificates"
+        },
+        "app.workers.profile_autofill_tasks.autofill_registered_hospital_profile": {
+            "queue": "default"
         },
         "app.workers.canary_tasks.canary_default": {"queue": "default"},
         "app.workers.canary_tasks.canary_content": {"queue": "content"},
@@ -430,10 +435,11 @@ celery_app.conf.update(
             "schedule": crontab(hour=0, minute=15, day_of_month="1-8"),
             "options": {"headers": build_dispatch_headers("monthly-reports")},
         },
-        # 1~7일 자동 복구가 돈 뒤에도 남은 미생성/측정 미완료만 하루 한 번 요약한다.
+        # 1~7일 자동 복구가 돈 뒤 남은 미생성/측정 미완료를 하루 한 번 요약하고, 8일 00:15 최종화 뒤
+        # 09:00에 마지막으로 판정한다(그때 남은 공백만 '자동 복구 종료').
         "monthly-report-gap-summary": {
             "task": "app.workers.tasks.summarize_monthly_report_gaps",
-            "schedule": crontab(hour=9, minute=0, day_of_month="1-7"),
+            "schedule": crontab(hour=9, minute=0, day_of_month="1-8"),
             "options": {"headers": build_dispatch_headers("monthly-report-gap-summary")},
         },
         # 매월 25일 00:00 — 다음 달 콘텐츠 슬롯 자동 생성

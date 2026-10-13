@@ -1,5 +1,6 @@
 """Explicit, audited customer handoff transitions."""
 
+import logging
 import uuid
 from datetime import UTC, datetime, time, timedelta, timezone
 
@@ -33,7 +34,10 @@ from app.schemas.handoff import (
 from app.services.audit_log import verified_request_actor, write_audit_log
 from app.services.hospital_duplicates import find_duplicate_hospitals
 from app.utils.db_locks import acquire_hospital_advisory_lock
+from app.utils.medical_filter import check_forbidden
+from app.workers.dispatch_auth import build_dispatch_headers
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin/handoffs", tags=["Admin — Handoffs"])
 
 #: 계약 등록은 `/admin/hospitals` 아래에 산다 — 운영자에게는 "병원을 만드는 일"이고,
@@ -74,6 +78,53 @@ def _hospital_exists(hospital_id: uuid.UUID | None) -> dict[str, object]:
     if hospital_id is not None:
         detail["hospital_id"] = str(hospital_id)
     return detail
+
+
+def _dispatch_profile_autofill(hospital_id: uuid.UUID) -> None:
+    """등록이 커밋된 뒤 자동 입력 초안을 백그라운드로 만든다. 실패해도 등록은 그대로다.
+
+    디스패치가 유실되면 회수하지 않는다 — 초안은 편의 기능이고 병원 정보 화면의
+    "자동 입력" 버튼이 같은 일을 사람이 즉시 할 수 있다.
+    """
+
+    from app.workers.profile_autofill_tasks import autofill_registered_hospital_profile
+
+    try:
+        autofill_registered_hospital_profile.apply_async(
+            args=[str(hospital_id)],
+            queue="default",
+            headers=build_dispatch_headers("autofill-registered-profile", str(hospital_id)),
+        )
+    except Exception:
+        logger.warning("profile autofill dispatch failed for hospital %s", hospital_id)
+
+
+def _lead_profile_seed(lead: SalesLead | None) -> dict[str, list[str]]:
+    """상담 요청이 이미 받은 진료과·지역·핵심 키워드를 병원 기본값으로 옮긴다.
+
+    병원 대표번호(`clinic_phone`)는 옮기지 않는다 — 공개 페이지에 바로 나가는 사실이라
+    AE가 확인해야 하고, 병원 행으로 복사하면 리드 보관기간 파기를 우회한다(PII-2·PII-3).
+    세 값 모두 공개 표면(공개 API의 병원 프로필)에 그대로 쓰이므로 의료광고 금지 표현이
+    든 값은 옮기지 않는다 — 진료과·지역도 공개 접수의 자유 입력이다.
+    """
+
+    if lead is None:
+        return {}
+    seed: dict[str, list[str]] = {}
+    specialty = (lead.specialty or "").strip()
+    if specialty and not check_forbidden(specialty):
+        seed["specialties"] = [specialty]
+    region = (lead.region_keyword or "").strip()
+    if region and not check_forbidden(region):
+        seed["region"] = [region]
+    keywords = [
+        keyword.strip()
+        for keyword in (lead.core_keywords or [])
+        if isinstance(keyword, str) and keyword.strip() and not check_forbidden(keyword.strip())
+    ]
+    if keywords:
+        seed["keywords"] = list(dict.fromkeys(keywords))
+    return seed
 
 
 async def _convertible_lead(db: AsyncSession, lead_id: uuid.UUID | None) -> SalesLead | None:
@@ -505,12 +556,14 @@ async def register_contract(
             },
         )
 
+    lead_seed = _lead_profile_seed(lead)
     hospital = Hospital(
         name=name,
         slug=await allocate_hospital_slug(db, name),
         plan=body.plan,
         source_lead_id=body.lead_id,
         onboarding_note="Created from admin contract registration.",
+        **lead_seed,
     )
     handoff = HospitalHandoff(
         state=HandoffState.HANDOFF_ACCEPTED,
@@ -550,6 +603,7 @@ async def register_contract(
                 "slug": hospital.slug,
                 "plan": body.plan.value,
                 "source_lead_id": str(body.lead_id) if body.lead_id else None,
+                "lead_profile_seed": sorted(lead_seed),
             },
         )
         await write_audit_log(
@@ -617,6 +671,7 @@ async def register_contract(
         raise
     await db.refresh(hospital)
     await db.refresh(handoff)
+    _dispatch_profile_autofill(hospital.id)
     return {
         **serialize_hospital_detail(hospital),
         "handoff": serialize_handoff_summary(handoff),

@@ -244,6 +244,9 @@ def test_build_report_requires_schema_owner_and_runtime_dependencies(monkeypatch
     sms = report["facts"]["inquiry_sms"]
     assert set(sms) == {"provider", "configured", "skip_reason"}
     assert sms["configured"] is (sms["skip_reason"] is None)
+    # 예약 자동 발행 보류도 참고 사실이다(꺼져 있으면 active False).
+    assert "auto_publish_hold" not in report["checks"]
+    assert report["facts"]["auto_publish_hold"]["active"] is False
 
 
 def test_slack_webhook_facts_classify_each_configured_webhook(monkeypatch) -> None:
@@ -311,3 +314,20 @@ def test_build_report_fails_closed_without_active_owner(monkeypatch) -> None:
 
     assert report["ready"] is False
     assert report["checks"]["active_owner_available"] is False
+
+
+def test_watchdog_token_is_a_production_readiness_check(monkeypatch) -> None:
+    """토큰이 비면 Cloud Scheduler 감시 호출이 전부 401이다 — 외부 감시가 꺼진 채 배포되지 않게 한다."""
+    settings = production_readiness.settings
+    monkeypatch.setattr(settings, "APP_ENV", "production")
+    monkeypatch.setattr(settings, "PIPELINE_WATCHDOG_TOKEN", "   ")
+
+    assert production_readiness._configuration_facts()["pipeline_watchdog_token_configured"] is False
+
+    monkeypatch.setattr(settings, "PIPELINE_WATCHDOG_TOKEN", "watchdog-token")
+    assert production_readiness._configuration_facts()["pipeline_watchdog_token_configured"] is True
+
+    # 운영이 아닌 환경은 감시가 없으므로 막지 않는다(release_revision_configured와 같은 규칙).
+    monkeypatch.setattr(settings, "APP_ENV", "test")
+    monkeypatch.setattr(settings, "PIPELINE_WATCHDOG_TOKEN", "")
+    assert production_readiness._configuration_facts()["pipeline_watchdog_token_configured"] is True

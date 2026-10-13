@@ -1,6 +1,17 @@
 # 현재 배포와 헬스체크
 
-## 최신 운영 배포 — 2026-10-13 Phase 0 자율성 보완
+## 최신 운영 배포 — 2026-10-13 Phase 1 자율성 보완
+
+main `08abf747`(api `00242-jsw`, worker `00232-vx2`, beat `00227-2mv`, admin `00106-psm`, Site 그대로, DB head
+`0088_add_outbox_open_pairing_index`, RedBeat `2026-10-12.1`). 같은 날 두 번째 배포(대표 승인)로 12:00 스윕 ±45분과 13:00 발행
+틱을 피해 13:03에 시작했다. 배포 전 `.env.production`에서 `SOV_MONTHLY_COHORT_LIMIT`을 지우고 env 대조로 차이가 그 키의
+"운영에만 있음" 하나뿐임을 확인했다(배포 뒤 0). 사전 조회는 옛(P0) 이미지에 q7이 없어 base64 `python -c`로 `notification_outbox`
+행 수(631)를 읽었다. backend와 admin 모두 `DEPLOY_ROLLBACK_STATE_FILE`(`.omo/rollback-p1/backend`·`admin`)으로 좌표를 따로 남겼다.
+readiness 17/17, 병원 11곳 헬스 200, 새 리비전 ERROR 0건, 첫 틱 RECOVERED 24시간 경과 190건 확인 처리(Slack 0). 배포 뒤 대표
+결정 D22로 `python -m app.utils.legacy_budget_reset`(dry-run 23건 확인 → `--apply --reason=…`) 23/23 교체.
+**이후 Worker를 `00223` 이하로 롤백하지 않는다.** 상세는 [배포 기록](../releases/2026-10-13-autonomy-phase1-production.md).
+
+## 이전 운영 배포 — 2026-10-13 Phase 0 자율성 보완
 
 main `31751a88`(api `00241-lhd`, worker `00231-4rx`, beat `00226-gpw`, admin `00105-x4r`, Site 그대로, DB head
 `0087_add_operation_run_redispatch_count`). 본 체크아웃의 untracked 파일이 release revision 검사에 걸리므로 깨끗한 worktree에서
@@ -47,7 +58,7 @@ gcloud run jobs execute reputation-migrate --project mso-platform-481505 --regio
 
 ## 운영 DB 읽기 전용 조회
 
-운영 DB는 사설 IP라 작업 PC에서 직접 붙지 않는다. 자율 운영 지표(Q1~Q6, 쿼리 원문은 `backend/app/utils/ops_sql_report.py`)는
+운영 DB는 사설 IP라 작업 PC에서 직접 붙지 않는다. 자율 운영 지표(Q1~Q6)와 배포 전 확인(Q7, 쿼리 원문은 `backend/app/utils/ops_sql_report.py`)은
 VPC 안의 migrate Job으로 돌린다. CLI는 첫 문장으로 `SET TRANSACTION READ ONLY`를 실행하고 끝나면 롤백하며, 쿼리마다 JSON 한 줄을
 Job 로그에 남긴다. gcloud `--args`는 쉼표로 인자를 나누므로 `--only`는 쿼리마다 따로 넘긴다(`--only=q1,q3`은 한 토큰이 아니다).
 
@@ -184,6 +195,13 @@ readiness gate는 아래 절차를 따랐다. Site/Admin SA는 분리됐으며 l
 
 저장소 루트의 `.env.production`과 접근 가능한 Secret Manager 설정을 준비한다. 비밀 값을 추적 파일에 넣지 않는다. `scripts/deploy.sh`는 Git 소스 버전을 고정하고 필수 환경·secret·DB 연결·공개 도메인 등을 검사한다.
 
+**`deploy.sh`가 스스로 지키는 규칙(2026-10 자율 운영 P2).** 사람이 배포 전후에 하던 확인 몇 가지를 스크립트가 맡는다.
+
+- **env 정본은 운영 서비스다.** backend 대상(`backend·api·worker·beat·all·migrate`)은 운영 `reputation-api`의 현재 env(비밀 아닌 값)를 배포 입력으로 쓴다. 로컬 `.env.production`이 다르면 바뀌는 키 이름만(값은 출력하지 않음) 보여 주고 멈춘다. 로컬 값으로 바꾸려는 것이 맞으면 `--accept-env-diff`를 붙인다. 서비스가 없는 신규 환경은 `.env.production`으로 시작한다. 운영 env를 읽지 못하면(권한 등) 로컬 파일로 대신 배포하지 않는다.
+- **시간대와 하루 잠금.** Worker·Beat를 바꾸는 대상(`backend·api·worker·beat·all`)은 콘텐츠 배치 시간대 — KST 22:15~02:00 전체(23:00 야간 생성이 몇 시간 이어지고 01시 복구 스윕이 뒤따른다)와 04·07·08·12·18·22시 앞뒤 45분(08시는 07:45·08:00 발행 게이트와 08:30 외부 감시) — 이면 멈춘다. 배치 시간대 밖이면 하루 여러 번 배포할 수 있다(2026-10-13 대표 결정). 하루 잠금(`gs://reputation-reports-<project>/ops/deploy-lock/<KST 날짜>.json`)은 권고다 — 같은 날 다른 릴리스가 이미 나갔으면 경고하고 `--override-reason="사유"`로 사유를 남겨야 진행한다(같은 릴리스의 재시도는 그대로 허용). 사유는 배치 시간대 규칙도 넘으므로, 배치 시간대 안에서 사유를 쓰면 따로 경고하고 기록(`batch_window`)에 남긴다. 이 확인은 legacy publish 사전 확인보다 먼저 돌고, 빌드·마이그레이션이 길어 실제 교체가 배치 시간대에 들어가지 않도록 **이미지 빌드 뒤 첫 운영 변경 직전과 Worker(또는 `beat` 대상의 Beat) 교체 직전에 다시 본다**(`beat` 단독은 RedBeat 정합성 복구 Job(`--wait`, 몇 분 걸릴 수 있다)이 끝난 뒤 Beat 교체 직전에 한 번 더 본다 — 여기서 멈추면 정합성 복구만 적용된 채이므로 배치 시간대 밖에서 같은 명령을 다시 실행한다) — 들어갔으면 그 단계 전에 멈춘다(빌드 뒤 첫 확인에서 멈추면 운영 변경이 없고 잠금도 되돌린다; Worker 교체 직전에 멈추면 이미 적용된 추가형 마이그레이션만 남으므로 배치 시간대 밖에서 같은 명령을 다시 실행한다). Worker를 바꾼 뒤에는 Beat까지 마저 바꾼다(둘 사이에서 멈추면 반쪽 상태가 남는다). `--override-reason`은 이 재확인도 경고와 함께 넘긴다. **운영 변경(마이그레이션·서비스 교체) 전에 실패하면 이 실행이 만든 잠금을 되돌린다** — 사전 확인·이미지 빌드 실패 뒤 고친 릴리스를 같은 날 다시 배포할 수 있다. 사유는 같은 경로의 `<날짜>-override-<HHMM>.json`에 남는다. `DEPLOY_CLOCK_KST`는 테스트 전용이며 운영에서는 사유 없이는 멈추고, 사유가 있으면 실제 시각으로 기록하고 `clock_override: true`를 남긴다. `site·admin·migrate·rollback`은 막지 않는다.
+- **자동 롤백.** readiness Job이 실패하거나, API 배포 뒤 공개 표면 확인(`/api/v1/health/live`의 `release`가 이번 배포 SHA인지, 배포 전 정상이던 병원 헬스의 `slug`·`canonical_host`·Site 리비전이 그대로인지 — `scripts/deploy_smoke.py`)에서 API `release`가 다르거나 기준선 병원의 절반 이상이 실패하면 `.deploy-rollback`의 배포 시작 전 리비전으로 트래픽을 자동으로 되돌린다. 일부(절반 미만) 병원만 실패하면 경고와 함께 실패로 끝나되 롤백하지 않는다(그 병원 공개 주소를 확인한다). DB 마이그레이션은 되돌리지 않는다. 0084 같은 비호환 릴리스는 `AUTO_ROLLBACK=0`으로 끄고(멈추기만 한다) 아래 롤백 절을 따른다. 공개 표면 확인은 `SKIP_POST_DEPLOY_SMOKE=1`로 건너뛸 수 있다(로그에 남는다). 기준선은 첫 mutation 전에 만들며, 병원 목록 조회 실패·목록이 아닌 응답과 **정상 병원 0곳**은 배포를 멈춘다 — 0곳 기준선이면 배포 뒤 확인이 병원 헬스를 하나도 보지 않고 통과하기 때문이다. 공개 병원이 정말 없는 환경만 `ALLOW_EMPTY_SMOKE_BASELINE=1`로 명시한다.
+- **고정 트래픽.** 서비스 트래픽이 특정 리비전에 고정돼 있으면 배포 전에 멈춘다. 고정이 의도한 것이 아니면 `--unpin`을 붙인다 — 새 리비전이 Ready가 된 뒤 `update-traffic --to-latest`로 옮기고, 롤백 좌표는 지금 트래픽을 받는 리비전으로 남긴다(배포 전에 `--to-latest`를 먼저 치면 고정의 이유였을 리비전으로 트래픽이 간다).
+
 **(완료 2026-09-08 — 체크포인트 2 배포 전에 아래 절차로 생성했다. 새 프로젝트/환경에서만 다시 필요하다.)** **`BFF_ACTOR_SECRET` 생성(H-10).** 백엔드는 사람이 일으키는 admin 변경(POST/PATCH/PUT/DELETE)에 Admin BFF가 서명한 actor 단언을 요구하고, 이 값이 비어 있으면 API가 프로덕션에서 부팅에 실패한다. API와 Admin이 **같은 값**을 읽어야 서명이 검증된다. Terraform이 secret 리소스와 두 서비스 주입·IAM을 선언하고(`terraform/secretmanager.tf`), `scripts/deploy.sh`도 API·Admin 필수 시크릿 목록에 넣어 값이 없으면 배포 전 검사에서 멈춘다. 배포 전에 값만 만들어 둔다.
 
 ```bash
@@ -215,8 +233,9 @@ bash scripts/deploy.sh all
 7. API, Site, Admin을 배포한다.
 8. 실제 트래픽·리비전과 외부 공개 표면을 별도로 검사한다. 앞선 readiness만으로 이후 프론트엔드까지 검증되었다고 보지 않는다.
 
-**배포 횟수와 시간대(2026-10-08).** 배포는 하루 한 번으로 묶고, 콘텐츠 배치 시간대(23:00과 01·04·07·12·18·22시 KST 전후)를
-피한다. 10/6~10/8의 V0 보고서 2건 유실과 `expired authenticated dispatch envelope` 폭주는 잦은 배포가 원인이었다 —
+**배포 횟수와 시간대(2026-10-08, 2026-10-13 완화).** 배포는 콘텐츠 배치 시간대(23:00과 01·04·07·12·18·22시 KST 전후)를
+피한다. 배치 시간대 밖이면 하루 여러 번 배포할 수 있다(2026-10-13 대표 결정 — 10/8에는 하루 한 번으로 묶었다).
+`deploy.sh`가 배치 시간대를 막고, 하루 1회 잠금은 `--override-reason`으로 넘긴다(위 "`deploy.sh`가 스스로 지키는 규칙"). 10/6~10/8의 V0 보고서 2건 유실과 `expired authenticated dispatch envelope` 폭주는 잦은 배포가 원인이었다 —
 Cloud Run이 옛 워커를 10초 뒤 SIGKILL하면 kombu가 미확인 메시지를 3600초 뒤 되돌려 봉투가 만료됐다. PR #226 뒤의
 워커는 `REMAP_SIGTERM=SIGQUIT`(cold shutdown)으로 실행 중 메시지를 즉시 큐에 반납하고, 반납된 사본은 새 워커가
 몇 초 안에 다시 받는다. 봉투 수명은 2단계로 올린다 — 이번 릴리스는 수락 상한만 6시간(`DISPATCH_MAX_LIFETIME_SECONDS`)으로
@@ -259,9 +278,110 @@ WHERE status NOT IN ('PUBLISHED','CANCELLED','WITHHELD');
 **Phase 0 — 배포 뒤 1회 조치.** 배포만으로는 이미 기한 없이 굳은 슬롯이 풀리지 않는다(게이트가 예전에 `OPERATOR_REQUIRED`로
 남긴 `CONTENT_NOT_GENERATED` 등). `ops_sql_report --only=q4`로 `OPERATOR_REQUIRED`·`INPUT_CHANGE_REQUIRED` 슬롯을 원인별로 뽑고,
 그중 원고 미생성으로 동결된 슬롯은 운영센터 사고 큐(`/operations?queue=incidents`)의 "작업 다시 시도"로 한 번 풀어 준다. `LEGACY_SPEND_UNKNOWN`(2026-10-11 조회 기준 12건)은 이 버튼으로 풀리지 않는다 — 운영센터의 "레거시 예산 교체 후 다시 시도"(`POST /api/admin/hospitals/{h}/content/{c}/regenerate`, 사유 필수·검증된 actor·멱등 키)로 글마다 예산을 교체해야 하며, 사람이 지출 사실을 확인하는 감사 가능한 행위라 일괄 스크립트로 대신하지 않는다.
+**승인된 1회 예외(2026-10-13 대표 결정 D22):** 10/9 이전에 만든 빈 슬롯 23건(10/12~15 예정, `LEGACY_SPEND_UNKNOWN` 11 + 게이트가 `CONTENT_NOT_GENERATED`로 덮은 12)은 버튼과 같은 교체 함수(`generation_attempt_state.replace_legacy_budget_and_release`)를 시스템 actor `system:legacy-budget-reset-20261013`로 부르는 CLI로 한 번에 교체한다. 교체는 행마다 행 잠금·감사 로그(`LEGACY_BUDGET_REPLACED`, 교체 전 시도 기록 전체 포함)·커밋이며, 억제를 풀어 다음 복구 스윕이 다시 쓴다. 대상은 공개 이력·제목·본문이 없고 2026-10-09 16:00 UTC 이전에 생성된 DRAFT/READY 중 저장 원인 또는 열린 사고 코드가 `LEGACY_SPEND_UNKNOWN`이고 교체 함수가 받아들이는 행이며, 두 번째 실행은 0건이다. 이 예외는 이 23건에만 적용하고 이후의 레거시 슬롯은 위 버튼으로 처리한다:
+`gcloud run jobs execute reputation-migrate --project mso-platform-481505 --region asia-northeast3 --wait --args=python,-m,app.utils.legacy_budget_reset` (dry-run, 건수·id 확인) → `--args="^@^python@-m@app.utils.legacy_budget_reset@--apply@--reason=<사유>"` (적용). 이 CLI가 든 이미지가 배포되기 전에는 같은 코드를 base64 `python -c`로 넘긴다.
 다음 날 지표는 MasterPlan §5 Phase 0 (f)를 따른다.
 
-**Phase 3(2026-10-13 콘텐츠 게이트 조정) — 배포 전 확인.** 새 DB 리비전은 없다(head `0087`).
+**Phase 1(`0088_add_outbox_open_pairing_index`) — 배포 전 확인.** 0088은 `notification_outbox`에 열림 알림 짝 조회용 부분
+인덱스를 CONCURRENTLY 없이 만든다(만드는 동안 outbox 쓰기가 기다린다). outbox는 운영 알림 행만 쌓이는 작은 표(수천 행 단위)라
+1초 안팎이지만, 배포 전에 행 수를 읽기 전용으로 확인해 기록한다.
+
+```bash
+gcloud run jobs execute reputation-migrate --project mso-platform-481505 --region asia-northeast3 --wait \
+  --args=python,-m,app.utils.ops_sql_report,--only=q7
+```
+
+`outbox_rows`가 **약 100만 행 이하**면 표준 `deploy.sh`(migrate 선행)로 진행한다. 넘으면 배포 전에 읽기 전용이 아닌 세션에서
+`CREATE INDEX CONCURRENTLY ix_notification_outbox_open_pairing ON notification_outbox (incident_id, state, created_at)
+WHERE notification_type = 'INCIDENT_OPEN';`을 먼저 실행한다 — 0088은 인덱스가 이미 있으면 생성을 건너뛴다.
+
+**Phase 2(마이그레이션 없음, DB head `0088` 그대로) — 배포일 절차.** 대상은 API·Worker·Beat(`bash scripts/deploy.sh backend`)와
+Admin(`bash scripts/deploy.sh admin` — 병원 정보 화면의 자동 입력 초안, 시간대 규칙 없음)이다. Site 변경은 없다. Phase 1이 먼저
+배포됐는지, 운영 DB head가 `0088_add_outbox_open_pairing_index`인지 먼저 확인한다.
+
+이 릴리스의 배포 근거는 MasterPlan의 **최신 결정**이다 — 하위 초안의 문구가 아니다. D26: 처리 ERROR 필수 자료는 Essence 합성에서
+'즉시'가 아니라 다른 필수 자료가 PROCESSED면 **1시간**, ERROR뿐이면 **6시간** 뒤에 제외한다. D27: 대기 자기 도메인의 DNS 확인은
+14일 창이 지나도 **멈추지 않고 15분마다** 계속하며(하루 1회로 줄이지 않는다), 창이 지난 뒤 그 회차가 실제로 DNS 불일치를 관측했을
+때만 사람의 일 하나를 연다. D28: 배포 금지 시간대는 아래 1번이고 그 밖이면 하루 여러 번 배포할 수 있다(하루 잠금은 권고). 배포 뒤
+공개 표면 확인(`deploy_smoke.py`)은 API `release`와 병원별 **slug·canonical_host·Site 리비전**만 비교한다 — hospital ID는 보지 않으므로
+hospital ID 대조를 smoke가 했다고 기록하지 않는다(필요하면 따로 확인한다).
+
+1. **시각.** `deploy.sh`(backend·api·worker·beat·all)가 막는 KST 구간은 21:15~02:00(22시 앞뒤 45분 + 22:15~02:00 야간), 03:15~04:45,
+   06:15~08:45, 11:15~12:45, 17:15~18:45다. 배포 가능 구간은 02:00~03:14, 04:46~06:14, 08:46~11:14, 12:46~17:14, 18:46~21:14.
+2. **Terraform 경보 2종(배포 코드와 독립, 먼저 적용해도 된다).** `terraform plan`이 아래 두 정책의 **추가 2건만** 보이는지 확인한 뒤
+   그 둘만 적용한다. 둘 다 기존 이메일 채널(`google_monitoring_notification_channel.email[0]`)과 감시 스케줄러 잡을 참조하므로 다른
+   리소스 변경이 나오면 멈추고 원인을 본다.
+
+   ```bash
+   terraform -chdir=terraform apply \
+     -target='google_monitoring_alert_policy.watchdog_scheduler_failures[0]' \
+     -target='google_monitoring_alert_policy.slack_path_failures[0]'
+   ```
+3. **`PIPELINE_WATCHDOG_TOKEN`.** 이번 릴리스부터 readiness가 운영에서 이 토큰이 비면 실패하고(`pipeline_watchdog_token_configured`)
+   자동 롤백된다. 활성 버전이 있는지 확인하고, Cloud Scheduler 감시 잡의 헤더 값과 같은지 본다(다르면 감시 호출이 401이고 새 경보
+   `watchdog_scheduler_failures`가 울린다 — 값 일치는 코드로 검증되지 않는다).
+
+   ```bash
+   gcloud secrets versions list PIPELINE_WATCHDOG_TOKEN --project=mso-platform-481505 --filter=state=enabled
+   ```
+4. **`OPS_ALERT_EMAIL` 값 = Terraform `alert_email`.** 저장소에는 실제 값이 없다(`terraform.tfvars` 비추적, 예시만 있음). 운영의 이메일
+   경보 채널 주소를 읽어 같은 주소를 `.env.production`에 `OPS_ALERT_EMAIL=<주소>`로 넣는다(비밀이 아닌 env). `RESEND_API_KEY`는 이미
+   필수 시크릿이라 메일은 바로 보낼 수 있다.
+
+   ```bash
+   gcloud monitoring channels list --project=mso-platform-481505 --filter='type=email' --format='value(labels.email_address)'
+   ```
+5. **하루 잠금 버킷.** 잠금 경로 `gs://reputation-reports-mso-platform-481505/ops/deploy-lock/`는 Phase 2 첫 배포가 처음 만든다. 작업 PC
+   계정이 그 버킷에 객체를 만들고 지울 수 있는지 미리 본다(못 하면 첫 실행이 "배포 잠금을 확인하지 못했습니다"로 멈춘다).
+
+   ```bash
+   echo '{}' | gcloud storage cp - gs://reputation-reports-mso-platform-481505/ops/deploy-lock/probe.json
+   gcloud storage rm gs://reputation-reports-mso-platform-481505/ops/deploy-lock/probe.json
+   ```
+6. **첫 실행과 `--accept-env-diff`.** 배포 정본이 로컬 파일에서 운영 env로 바뀌었다. 먼저 옵션 없이 `bash scripts/deploy.sh backend`를
+   실행하면 차이 키 목록(값은 출력하지 않는다)만 보여 주고 멈춘다. 목록이 **정확히 `added: OPS_ALERT_EMAIL` 하나**일 때만
+   `bash scripts/deploy.sh backend --accept-env-diff`로 다시 실행한다. `removed:`·`changed:`나 다른 `added:` 키가 하나라도 있으면
+   `--accept-env-diff`를 붙이지 않는다 — 로컬 파일이 낡은 것이고, 붙이면 로컬 파일이 서비스 env를 통째로 바꿔 `removed` 키가 운영에서
+   사라진다(9/23·10/1 사고의 원인). 로컬 파일을 운영 env에 맞춰 고친 뒤 다시 본다(Phase 1이 지우게 한 `SOV_MONTHLY_COHORT_LIMIT`이
+   운영에 남아 있으면 `removed:`로 나온다 — Phase 1 배포 기록부터 확인한다). 이후 배포부터는 운영 env가 정본이다.
+7. **배포 뒤 확인.** readiness 18개 검사 전부 통과(`checks.pipeline_watchdog_token_configured: true`, `facts.ops_alert_email_configured:
+   true`), `/api/v1/health/live`의 `release`가 이번 릴리스(`deploy.sh`가 자동 확인), Beat `/live` 정상(`beat_liveness_failed` 로그 없음,
+   기동 뒤 15분 유예), 새 리비전 ERROR 0건, 15분 뒤 `project_milestone_events` 결과에 `onboarding_stalls_*` 키와
+   `monitor_live_custom_domains` 결과에 `pending_domains_*` 키, GCP 경보 정책 2개 존재. 트래픽이 고정돼 있으면 `--unpin`을 붙인다.
+8. **롤백 — 마이그레이션이 없어도 트래픽 롤백만으로 안전하지 않다(첫 달 안분).** Phase 2 이전 Worker·API(main `08abf747` 이하)는
+   그 달 약속 편수를 언제나 요금제 편수로 계산하고, 옛 보고서·현황·계약 이행 집계도 안분을 모른다. Phase 2가 첫 일정을 만들며 첫
+   계약 월을 안분한 병원(예: PLAN_12 9편, 시작일 뒤로 게시 요일이 없는 달 0편)이 있는 채로 되돌리면, 매일 **21:30 KST 당월 조정**
+   (`current-month-slot-reconciliation`)이 그 달을 요금제 편수까지 채운다(9 → 12편, 0편 달은 남은 날에 한 달 편수를 몰아 넣는다).
+   채워진 슬롯은 23:00 야간 생성이 사서 쓰고 자동 발행한다 — **초과 배정·초과 비용**이다. 옛 코드가 만든 그 달 월간 보고서·현황은
+   요금제 편수를 약속으로 보여 준다(9편을 다 내도 "12편 중 9편"). 호환 리비전은 만들지 않았다. 자동 롤백(readiness·smoke 실패)도
+   같다 — 새 Worker·Beat는 API 승격 전에 15분 tick을 돌므로 실패한 배포도 첫 일정을 만들었을 수 있다. 롤백하면 다음을 한다.
+   1. **대상 확인(읽기 전용).** 안분된 첫 달이 있는 병원과 그 달 슬롯 수를 본다. `q8` 행이 없거나 모든 행의 첫 달이 지난달 이전이면
+      당월 조정과는 무관하다(지난달 보고서 재생성만 4번을 본다).
+
+      ```bash
+      gcloud run jobs execute reputation-migrate --region=asia-northeast3 --project=mso-platform-481505 --wait \
+        --args=python,-m,app.utils.ops_sql_report,--only=q8
+      ```
+
+      결과는 Cloud Logging의 그 실행 로그에 `{"q": "q8", ...}`(병원·첫 달·`first_month_target`·`month_slots`·`topped_up_slots`)와
+      `{"q": "q8b", ...}`(취소 후보 슬롯) 한 줄씩 남는다.
+   2. **시각.** 옛 Worker가 21:30 당월 조정을 한 번이라도 돌리면 1번의 병원에 초과 배정이 생긴다. 롤백한 채 21:30을 넘기지 않거나
+      (그 전에 원인을 고쳐 Phase 2로 다시 올린다 — 단 `deploy.sh`의 배치 시간대 규칙상 21:15 이후 Backend 배포는 사유가 필요하다),
+      넘긴다면 3번을 그날 23:00 야간 생성 **전에** 반드시 한다.
+   3. **초과 배정 되돌리기(수동).** 21:30이 지난 뒤(Phase 2로 다시 올린 뒤에도) `q8`을 다시 돌려 `topped_up_slots`가 0이 아닌 병원을
+      찾는다. 옛 코드가 채운 슬롯은 `total_count`가 기록된 안분 편수보다 커서 구분된다. `q8b`가 그중 아직 생성·공개·사람 편집이
+      없는(DRAFT·본문 없음·claim 없음) 슬롯을 준다. 그 슬롯을 기존 취소 API `POST /admin/hospitals/{hospital_id}/content/{content_id}/cancel`
+      (감사 `cancel_content`)로 CANCELLED로 바꾼다 — 전용 CLI도 Admin 화면 버튼도 없어 **수동 절차**다(운영 Admin 키와
+      `X-Admin-Actor-System` 헤더로 호출해 감사에 `system:<작업명>`으로 남긴다). 행을 DELETE하지 않는다 — CANCELLED 행도 그 달 슬롯 수에
+      남아 옛 코드·새 코드 모두 다시 채우지 않는다. 이미 생성됐거나 공개된 초과 슬롯은 자동으로 되돌릴 방법이 없다 — 공개 글은 내리지
+      않는 것이 기본이고, 사람이 그 달 약속과 함께 판단한다.
+   4. **보고서.** 롤백 중 옛 코드가 만든 안분된 달의 월간 보고서는 Phase 2로 다시 올린 뒤 일반 재생성으로 다시 만든다(약속 편수가
+      달라 숫자 그대로인 `TEMPLATE_REFRESH` 대상이 아니다).
+
+   Phase 0의 롤백 금지(Worker `00223` 이하)는 그대로다. 같은 이유로 롤백 뒤 사람이 그 달 일정을 바꾸면 옛 교체 경로도 요금제 편수로
+   다시 만든다 — 롤백 중에는 안분된 병원의 일정 교체를 미룬다.
+
+**Phase 3(2026-10-13 콘텐츠 게이트 조정) — 배포 전 확인.** 새 DB 리비전은 없다(head는 Phase 1의 `0088` 그대로).
 1. **금지 표현 필터(`utils/medical_filter.py`)를 바꾼 배포는 새 이미지로 영향 조회를 먼저 돌린다.** 필터는 공개 가시성·병원 공개
    문구에도 쓰여 배포 즉시 걸리는 공개 글을 숨기고, 문맥 예외가 넓어지면 운영 필터가 숨기던 글을 **다시 보이게** 한다.
    `scripts/deploy.sh migrate`로 migrate Job의 이미지를 새 이미지로 바꾼 뒤(이 릴리스는 alembic 변경이 없어 upgrade는 아무것도
@@ -345,7 +465,7 @@ WHERE status NOT IN ('PUBLISHED','CANCELLED','WITHHELD');
 
 ## 파이프라인 외부 감시 (Cloud Scheduler)
 
-Beat나 Worker가 죽으면 23:00 생성과 08:00 발행이 조용히 멈춘다. 그 사실을 알릴 작업도 같은 Beat 위에 있으므로 감시는 Celery 밖에 둔다. Cloud Scheduler 두 개가 API를 직접 호출한다 — `reputation-watchdog-heartbeat`(5분마다)와 `reputation-watchdog-publish-check`(매일 08:30 KST). 둘 다 공개 LB를 거쳐 `POST https://reputation.motionlabs.kr/api/v1/admin/watchdog/pipeline/alert`를 부르고 `X-Watchdog-Token` 헤더로 인증한다(선언: [terraform/watchdog.tf](../../terraform/watchdog.tf), 판정: [pipeline_watchdog.py](../../backend/app/services/pipeline_watchdog.py)). 새 Celery 태스크나 Beat 스케줄은 추가하지 않았다.
+Beat나 Worker가 죽으면 23:00 생성과 08:00 발행이 조용히 멈춘다. 그 사실을 알릴 작업도 같은 Beat 위에 있으므로 감시는 Celery 밖에 둔다. Cloud Scheduler 두 개가 API를 직접 호출한다 — `reputation-watchdog-heartbeat`(5분마다)와 `reputation-watchdog-publish-check`(매일 08:30 KST). 둘 다 공개 LB를 거쳐 `POST https://reputation.motionlabs.kr/api/v1/admin/watchdog/pipeline/alert`를 부르고 `X-Watchdog-Token` 헤더로 인증한다(선언: [terraform/watchdog.tf](../../terraform/watchdog.tf), 판정: [pipeline_watchdog.py](../../backend/app/services/pipeline_watchdog.py)). 새 Celery 태스크나 Beat 스케줄은 추가하지 않았다. 경보가 Slack에 전달되지 않으면 `OPS_ALERT_EMAIL`로 메일을 보낸다(2차 경로) — 발송 기록의 정본은 DB 감사행(`watchdog_ops_email_planned`·`watchdog_ops_email_sent`)이고 Redis는 캐시다. Redis가 내려가 있어 에피소드를 모르면 같은 수신자·조건 집합의 24시간 안 기록(에피소드 키로 보낸 메일 포함)을 이어 써 한 통이고, 처음 정한 키·제목·본문을 계획 행에 남겨 같은 키의 재시도가 그대로 다시 쓴다(조건 집합이 줄어도 본문이 바뀌지 않는다). DB와 Redis가 모두 없을 때는 API 프로세스 메모리로 프로세스 수명 동안 한 통이라, 인스턴스가 바뀌면 같은 경보 메일이 다시 올 수 있다(알려진 한계). 후속 검토: 메일 기록 조회는 `action`·대상 종류·최근 24시간·`LIMIT 1`로 좁히지만 `admin_audit_logs`에는 `action` 단독 인덱스뿐이다 — 감사행이 크게 쌓이면 `admin_audit_logs (action, created_at)` 복합 인덱스를 검토한다(이번 릴리스에는 마이그레이션을 더하지 않는다).
 
 **무엇을 보는가.** (1) 큐 canary 신선도 — Redis에 남은 큐별 canary가 현재 릴리스로 15분 안에 갱신됐는지. (2) 예약 실행기 생존 — RedBeat 분산 락이 잡혀 있고 5분 주기 canary 스케줄이 15분 안에 실제로 실행됐는지. 락만으로는 "누군가 dispatcher 자리를 잡았다"까지만 증명되므로 두 근거를 모두 요구한다. (3) 당일 발행 — KST 오늘 발행 예정으로 남은 슬롯 수와 08:00 이후 공개된 글 수. (4) 마지막 야간 생성 배치 `OperationRun`의 나이(26시간). 판정만 읽으려면 `GET /api/v1/admin/watchdog/pipeline`을 같은 토큰이나 admin 키로 호출한다.
 
@@ -371,7 +491,7 @@ terraform -chdir=terraform apply -target=google_cloud_scheduler_job.watchdog_hea
 | 런타임 | 5개 서비스 Ready, 의도한 revision에 트래픽, 환경·secret 참조 보존 |
 | DB | Alembic 현재 revision과 이미지의 expected head 일치 |
 | 작업 | 현재 릴리스의 7개 큐 canary, 필수 task routing·priority, RedBeat schedule `2026-09-07.2`, queue wait |
-| API / Admin | health와 로그인 표면 정상, 인증·오류 경계 유지 |
+| API / Admin | health와 로그인 표면 정상(LB 경로 `/api/v1/health/live`의 `release`가 배포 SHA — `deploy.sh`가 자동 확인), 인증·오류 경계 유지 |
 | 병원 공개 표면 | 홈페이지와 대표 글, 이미지 SSR, 정확한 병원·canonical·공개 주소 |
 | 크롤러 표면 | host별 sitemap, robots, llms.txt의 404/503·no-store, 부분 sitemap 금지, 구조화 데이터와 공개 URL 범위 |
 | 복구 | IndexNow intent와 provider usage spool의 1분 drain, retry 상한·중복 억제·정상 무알림 |

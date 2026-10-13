@@ -70,6 +70,7 @@ EXPECTED_TASKS = {
     "app.workers.autonomous_recovery.reconcile",
     "app.workers.content_backlog_recovery.reconcile",
     "app.workers.domain_certificate_tasks.provision_domain_certificate",
+    "app.workers.profile_autofill_tasks.autofill_registered_hospital_profile",
     "app.workers.canary_tasks.canary_content",
     "app.workers.canary_tasks.canary_default",
     "app.workers.canary_tasks.canary_leadgen",
@@ -195,6 +196,7 @@ def _workflow_facts() -> dict[str, bool]:
     import app.workers.naver_sync  # noqa: F401, PLC0415
     import app.workers.notification_tasks  # noqa: F401, PLC0415
     import app.workers.post_publish_ai_review  # noqa: F401, PLC0415
+    import app.workers.profile_autofill_tasks  # noqa: F401, PLC0415
     import app.workers.provider_usage_recovery  # noqa: F401, PLC0415
     import app.workers.published_image_refresh  # noqa: F401, PLC0415
     import app.workers.tasks  # noqa: F401, PLC0415
@@ -238,6 +240,10 @@ def _configuration_facts() -> dict[str, bool]:
         "certificate_auto_provisioning_enabled": settings.CERTIFICATE_MANAGER_AUTO_PROVISION,
         "web_search_enabled": settings.OPENAI_CHATGPT_USE_WEB_SEARCH,
         "release_revision_configured": bool(settings.REPUTATION_RELEASE_REVISION.strip())
+        or settings.APP_ENV != "production",
+        # Cloud Scheduler 외부 감시의 유일한 자격 증명. 비면 감시 호출이 전부 401이고 API는 그래도
+        # 뜨므로(부팅을 막지 않는다) 외부 감시가 조용히 꺼진다(2026-10 자율 운영 감사 F8).
+        "pipeline_watchdog_token_configured": bool(settings.PIPELINE_WATCHDOG_TOKEN.strip())
         or settings.APP_ENV != "production",
     }
 
@@ -340,7 +346,10 @@ def build_report() -> dict[str, Any]:
             **database,
             "worker_canaries": canaries,
             "inquiry_sms": _inquiry_sms_facts(),
+            "auto_publish_hold": _auto_publish_hold_facts(),
             "slack_webhook_valid": slack_webhooks,
+            # 2차 경로(운영 경보 메일) 설정 — 참고 사실이며 준비 판정을 막지 않는다.
+            "ops_alert_email_configured": bool(settings.OPS_ALERT_EMAIL.strip()),
         },
     }
 
@@ -359,6 +368,22 @@ def _inquiry_sms_facts() -> dict[str, Any]:
         "provider": settings.INQUIRY_SMS_PROVIDER.strip().lower() or None,
         "configured": problem is None,
         "skip_reason": problem,
+    }
+
+
+def _auto_publish_hold_facts() -> dict[str, Any]:
+    """예약 자동 발행 보류 설정 — 참고 사실이며 준비 판정을 막지 않는다.
+
+    보류는 발행 due 조건에서 걸러져 감시·운영센터 어디에도 '보류 중'으로 보이지 않는다. 켜 두고
+    잊으면 그 병원은 발행 0건이 된다. 배포 확인에서 한 번에 읽히게 둔다(병원 id는 싣지 않는다).
+    """
+    from app.services.post_publish_review_policy import auto_publish_hold  # noqa: PLC0415
+
+    hold = auto_publish_hold()
+    return {
+        "active": hold.active,
+        "all_hospitals": hold.all_hospitals,
+        "hospital_count": len(hold.hospital_ids),
     }
 
 

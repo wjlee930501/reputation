@@ -28,4 +28,6 @@ def test_server_owned_gap_fields_cover_both_automatic_writers():
         # 승인이 무엇을 못 봤는지가 사라진다.
         essence_model.AUTO_RECOVERY_LAST_AT_GAP_FIELD,
         essence_model.EXCLUDED_ERROR_SOURCE_GAP_FIELD,
+        # 바로 사람에게 넘긴 보류 표식 — 지워지면 같은 입력을 자동으로 다시 산다.
+        essence_model.AUTO_RECOVERY_TERMINAL_GAP_FIELD,
     }

@@ -19,7 +19,7 @@ from app.services.incident_types import (
     IncidentAudience,
     incident_audience,
 )
-from app.workers import tasks
+from app.workers import domain_dns_poll, tasks
 
 _AT = datetime(2026, 10, 9, 12, 30, tzinfo=UTC)
 
@@ -91,6 +91,12 @@ def _run_monitor(monkeypatch, verdicts: dict[str, tuple[bool, str]]):
     monkeypatch.setattr(tasks, "_persist_live_domain_check", lambda *_args: True)
     monkeypatch.setattr(tasks, "record_domain_health_check", record)
     monkeypatch.setattr(tasks, "record_public_site_check", record_public_site)
+
+    async def no_pending_domains(_now):
+        return domain_dns_poll.DomainPollSummary()
+
+    # 같은 작업 끝의 대기 도메인 폴링이 실 DB·DNS에 닿지 않게 한다.
+    monkeypatch.setattr(domain_dns_poll, "poll_pending_custom_domains_once", no_pending_domains)
     result = tasks.monitor_live_custom_domains.run()
     by_slug = {
         hospital.slug: facts

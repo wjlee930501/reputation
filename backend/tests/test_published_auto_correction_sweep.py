@@ -23,10 +23,11 @@ class _Rows:
 
 
 class _SweepDb:
-    """호출 순서: FLAGGED 조회 → 비공개 조회 → 표본 조회."""
+    """호출 순서: FLAGGED 조회 → (교정이 켜져 있으면) UNCERTAIN 상위 재검수 조회 두 번(숫자 시각 표시,
+    옛 표시 키셋 한 쪽) → 비공개 조회 → 표본 조회."""
 
     def __init__(self, flagged):
-        self._batches = [flagged, [], []]
+        self._batches = [flagged, [], [], [], []]
 
     def __enter__(self):
         return self
@@ -50,6 +51,8 @@ def _run_sweep(monkeypatch, items, *, cap=2):
     processed: list = []
     monkeypatch.setattr(sweep, "require_dispatch", lambda *_a, **_k: None)
     monkeypatch.setattr(sweep, "SyncSessionLocal", lambda: _SweepDb(items))
+    monkeypatch.setattr(sweep, "_load_uncertain_scan_cursor", lambda: None)
+    monkeypatch.setattr(sweep, "_save_uncertain_scan_cursor", lambda _cursor: None)
     monkeypatch.setattr(tasks_module, "_generation_philosophy_sync", lambda *_a: _philosophy())
     monkeypatch.setattr(settings, "POST_PUBLISH_AUTO_CORRECTION_DAILY_CAP", cap)
     monkeypatch.setattr(settings, "POST_PUBLISH_AI_REVIEW_DAILY_CAP", 20)

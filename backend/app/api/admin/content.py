@@ -59,6 +59,7 @@ from app.services.content_engine import (
     FORBIDDEN_CHECK_FIELDS,
     _normalize_references,
 )
+from app.services.content_month_target import month_content_target
 from app.services.content_publication import (
     PUBLICATION_CHECK_FIELDS,
     apply_publication_assessment,
@@ -381,6 +382,9 @@ async def set_schedule(
             .limit(1)
         )
     ).scalar_one_or_none() or body.plan
+    # 그 달 약속 편수. 시스템이 안분한 첫 계약 월은 그 편수다(content_month_target) — 사람이
+    # 같은 달에 요일·시작일을 바꿔 교체해도 요금제 편수로 다시 채우지 않는다(0편 달 포함).
+    month_target = await month_content_target(db, hospital_id, target_month, period_plan)
 
     schedule = ContentSchedule(
         hospital_id=hospital_id,
@@ -396,12 +400,17 @@ async def set_schedule(
     # 이번 달 콘텐츠 슬롯 자동 생성
     target_month = arrow.get(body.active_from).floor("month")
     try:
-        slots = generate_monthly_slots(
-            period_plan,
-            body.publish_days,
-            target_month,
-            start_date=body.active_from,
-            ensure_quota=bool(existing_rows),
+        slots = (
+            []
+            if month_target == 0
+            else generate_monthly_slots(
+                period_plan,
+                body.publish_days,
+                target_month,
+                start_date=body.active_from,
+                ensure_quota=bool(existing_rows),
+                total=month_target,
+            )
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

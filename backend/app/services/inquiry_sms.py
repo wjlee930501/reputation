@@ -13,6 +13,7 @@ NHN Cloud SMS v3.0: `POST /sms/v3.0/appKeys/{appKey}/sender/mms`, 헤더 `X-Secr
 있어야 하며 미등록이면 per-recipient resultCode로 거절된다.
 """
 
+import asyncio
 import logging
 import re
 from dataclasses import dataclass
@@ -24,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.models.lead import SalesLead
+from app.services.ops_incident_alerts import open_ops_incident_in
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +52,19 @@ SMS_SENT = "SENT"
 SMS_FAILED = "FAILED"
 SMS_SKIPPED = "SKIPPED"
 
+SMS_FAILURE_INCIDENT_TYPE = "INQUIRY_SMS_FAILED"
+
+# 요청이 사업자에 닿지 않았거나(연결 실패) 처리 전에 거절한(429) 경우만 한 번 다시 보낸다.
+# 사업자 쪽 멱등키가 없으므로 읽기 시간 초과·5xx(503 포함 — 응답 경로의 503은 발송 뒤에도 난다)는
+# 이미 발송됐을 수 있다. 재시도하면 원장 휴대전화에 문자가 두 번 간다 — '수신 불명'으로 남기고 다시
+# 보내지 않는다.
+_RETRYABLE_TRANSPORT = (httpx.ConnectError, httpx.ConnectTimeout)
+_RETRYABLE_STATUS = frozenset({429})
+INQUIRY_SMS_RETRY_DELAY_SECONDS = 0.5
+
+# 발송됐는지 모르는 실패를 리드 행(`ack_sms_error`)에 남기는 머리말. 사고 문구가 이 표시로 갈린다.
+SMS_DELIVERY_UNCONFIRMED = "delivery unconfirmed, not resent"
+
 _MOBILE = re.compile(r"^01[016789]\d{7,8}$")
 
 
@@ -58,10 +73,22 @@ class AckSmsOutcome:
     status: str  # SENT | FAILED | SKIPPED
     detail: str | None = None
     request_id: str | None = None
+    # FAILED 중 사업자가 받았을 수 있는 실패(응답 유실·5xx). 다시 보내지 않았다.
+    unconfirmed: bool = False
 
     @property
     def sent(self) -> bool:
         return self.status == SMS_SENT
+
+
+def unconfirmed_detail(cause: str) -> str:
+    """수신 불명 실패의 `ack_sms_error` 문구(원인 포함)."""
+    return f"{SMS_DELIVERY_UNCONFIRMED} ({cause})"
+
+
+def delivery_unconfirmed(error: str | None) -> bool:
+    """리드 행의 `ack_sms_error`가 수신 불명 실패를 말한다."""
+    return (error or "").startswith(SMS_DELIVERY_UNCONFIRMED)
 
 
 def normalize_korean_mobile(value: str | None) -> str | None:
@@ -132,8 +159,8 @@ def parse_nhn_response(status_code: int, payload: object) -> AckSmsOutcome:
     return AckSmsOutcome(SMS_SENT, None, request_id)
 
 
-async def deliver(to: str) -> AckSmsOutcome:
-    """NHN Cloud에 1건 발송. 예외를 밖으로 내지 않는다."""
+async def _deliver_once(to: str) -> tuple[AckSmsOutcome, bool]:
+    """(결과, 다시 보내도 안전한가)."""
     url, headers, payload = build_nhn_request(to=to)
     try:
         async with httpx.AsyncClient(timeout=settings.INQUIRY_SMS_TIMEOUT_SECONDS) as client:
@@ -141,7 +168,10 @@ async def deliver(to: str) -> AckSmsOutcome:
     except httpx.HTTPError as exc:
         # 시크릿이 섞일 수 있는 URL·본문은 기록하지 않는다. 예외 종류만으로 원인 분류는 된다.
         logger.error("inquiry SMS to %s failed: %s", mask_mobile(to), exc.__class__.__name__)
-        return AckSmsOutcome(SMS_FAILED, exc.__class__.__name__)
+        if isinstance(exc, _RETRYABLE_TRANSPORT):
+            return AckSmsOutcome(SMS_FAILED, exc.__class__.__name__), True
+        # 요청이 나간 뒤의 실패(읽기 시간 초과·연결 끊김) — 문자가 이미 나갔을 수 있다.
+        return _unconfirmed(exc.__class__.__name__), False
     try:
         body = response.json()
     except ValueError:
@@ -151,6 +181,22 @@ async def deliver(to: str) -> AckSmsOutcome:
         logger.info("inquiry SMS sent to %s request_id=%s", mask_mobile(to), outcome.request_id)
     else:
         logger.error("inquiry SMS to %s rejected: %s", mask_mobile(to), outcome.detail)
+    if response.status_code >= 500:
+        return _unconfirmed(outcome.detail or f"HTTP {response.status_code}"), False
+    return outcome, response.status_code in _RETRYABLE_STATUS
+
+
+def _unconfirmed(cause: str) -> AckSmsOutcome:
+    return AckSmsOutcome(SMS_FAILED, unconfirmed_detail(cause), unconfirmed=True)
+
+
+async def deliver(to: str) -> AckSmsOutcome:
+    """NHN Cloud에 1건 발송. 닿지 않은 실패만 한 번 다시 보낸다. 예외를 밖으로 내지 않는다."""
+    outcome, retryable = await _deliver_once(to)
+    if outcome.sent or not retryable:
+        return outcome
+    await asyncio.sleep(INQUIRY_SMS_RETRY_DELAY_SECONDS)
+    outcome, _ = await _deliver_once(to)
     return outcome
 
 
@@ -191,3 +237,61 @@ async def acknowledge_inquiry(db: AsyncSession, lead: SalesLead) -> AckSmsOutcom
     lead.ack_sms_error = None if outcome.sent else outcome.detail
     lead.ack_sms_sent_at = datetime.now(timezone.utc) if outcome.sent else None
     return outcome
+
+
+async def open_failure_incident(
+    db: AsyncSession, lead_id, *, actor: str, unconfirmed: bool = False
+) -> None:
+    """안내 문자가 끝내 나가지 못했다(또는 나갔는지 모른다) — 원장님께 사람이 직접 연락해야 한다.
+
+    호출자의 트랜잭션에 사고와 열림 알림을 쓰고 커밋하지 않는다. 접수 응답과 drain의 메우기가 같이 쓴다.
+    `unconfirmed`는 사업자가 받았을 수 있는 실패다 — 못 보냈다고 단정하지 않고 재발송하지 않았다고 말한다.
+    """
+    if unconfirmed:
+        problem = "도입문의 접수 안내 문자가 원장님께 도착했는지 확인하지 못했습니다."
+        customer_impact = (
+            "원장님이 접수 안내 문자를 받지 못했을 수 있습니다. "
+            "중복 문자를 막기 위해 재발송하지 않았습니다."
+        )
+    else:
+        problem = "도입문의 접수 안내 문자를 보내지 못했습니다."
+        customer_impact = "원장님이 접수 안내 문자를 받지 못했습니다."
+    await open_ops_incident_in(
+        db,
+        pipeline="inquiry_sms",
+        object_type="lead",
+        object_id=str(lead_id),
+        incident_type=SMS_FAILURE_INCIDENT_TYPE,
+        safe_error_code=SMS_FAILURE_INCIDENT_TYPE,
+        problem=problem,
+        customer_impact=customer_impact,
+        next_action="상담 요청 화면에서 원장님께 직접 연락하세요. 처리를 시작하면 자동으로 닫힙니다.",
+        source_type="SALES_LEAD",
+        # 병원명·연락처를 사고 제목·Slack에 새로 싣지 않는다(처리방침 고지 범위 유지).
+        hospital_name="도입문의",
+        admin_path="/leads",
+        actor=actor,
+    )
+
+
+async def repair_failure_incident(db: AsyncSession, lead_id, *, actor: str) -> None:
+    """사고 없이 FAILED로 남은 리드에 사고를 연다. 수신 불명 여부는 리드 행의 기록으로 고른다."""
+    error = await db.scalar(select(SalesLead.ack_sms_error).where(SalesLead.id == lead_id))
+    await open_failure_incident(db, lead_id, actor=actor, unconfirmed=delivery_unconfirmed(error))
+
+
+async def record_failure_incident(db: AsyncSession, lead_id, *, unconfirmed: bool = False) -> bool:
+    """접수 응답 안에서 실패 상태와 같은 커밋에 사고를 싣는다. 실패해도 접수를 바꾸지 않는다.
+
+    savepoint 안에서 쓰므로 사고 쓰기가 실패해도 상태 쓰기는 살아남고, 사고 없는 FAILED는
+    drain(`_repair_missing_lead_incidents`)이 다음 tick에 메운다.
+    """
+    try:
+        async with db.begin_nested():
+            await open_failure_incident(
+                db, lead_id, actor="public-inquiry", unconfirmed=unconfirmed
+            )
+        return True
+    except Exception:  # noqa: BLE001 - 사고 기록 실패가 접수 응답을 바꾸지 않는다.
+        logger.warning("inquiry SMS failure incident could not be recorded for lead %s", lead_id)
+        return False
