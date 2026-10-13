@@ -1,13 +1,15 @@
 # Re:putation — 현재 프로젝트 개발 안내
 
-## 최신 운영 배포 — 2026-10-11 Phase 0 자율성 보완 (배포 전)
+## 최신 운영 배포 — 2026-10-13 Phase 0 자율성 보완
 
-**이 절은 배포 기록이 아니다.** 현재 운영은 아래 2026-10-10 절 그대로이고, 배포는 [운영 배포 절차](docs/ops/deployment-runbook.md)의
-별도 검증으로 기록한다. 브랜치 `claude/autonomy-p0`(main `8c8f6e60` 기준)가 [자율 운영 보완 MasterPlan](docs/plans/2026-10-11-autonomy-masterplan.md)의
-Phase 0을 구현했다 — 주제 교체 뒤 새 예산과 즉시 교체(P0-A), 공급자 장애 일일 예산·3일 창·원고 미생성 재분류·교체 계단 확대(P0-B),
-봉투 서명 6시간·재배달 예산 3회·lease 인수 확대·10일 잔재 정리·읽기 전용 운영 조회 CLI(P0-C). 새 DB head는
-`0087_add_operation_run_redispatch_count`(추가형). 아래 계약 문장은 이 브랜치 기준이며, 배포 전 확인과 배포 뒤 1회 조치는 배포 안내의
-"Phase 0" 항목을 따른다. 근거는 [감사·개선 계획](docs/plans/2026-10-11-autonomy-audit-and-improvement-plan.md).
+main `31751a88`(PR #239)을 API·Worker·Beat·Admin에 배포했다(2026-10-13 09:55~10:03 KST). 현재 리비전은 api `00241-lhd`,
+worker `00231-4rx`, beat `00226-gpw`, admin `00105-x4r`이고 Site는 그대로, **DB head는 `0087_add_operation_run_redispatch_count`**(추가형)다.
+[자율 운영 보완 MasterPlan](docs/plans/2026-10-11-autonomy-masterplan.md)의 Phase 0 — 주제 교체 뒤 새 예산과 즉시 교체(P0-A), 공급자 장애
+일일 예산·3일 창·원고 미생성 재분류·교체 계단 확대(P0-B), 봉투 서명 6시간·재배달 예산 3회·lease 인수 확대·10일 잔재 정리·읽기 전용 운영
+조회 CLI(P0-C)다. readiness 17개 검사 통과, 병원 11곳 헬스 200, 새 리비전 ERROR 0건. 35일 RUNNING 잔재 1건이 첫 자율 복구에서
+`OPERATION_RUN_ABANDONED`로 종료돼 예상한 개발 대상 사고·Slack 1건이 나갔다. **이후 Worker를 `00223` 이하로 롤백하지 않는다.**
+배포 뒤 1회 조치(원고 미생성 동결 슬롯 "작업 다시 시도")와 10/14 지표는 남아 있다. 상세는
+[Phase 0 배포 기록](docs/releases/2026-10-13-autonomy-phase0-production.md), 근거는 [감사·개선 계획](docs/plans/2026-10-11-autonomy-audit-and-improvement-plan.md).
 
 ## 최신 운영 배포 — 2026-10-10 반복 Slack 알림 근본 수정
 
@@ -162,7 +164,7 @@ BaseEssence의 일반 자료 추가 drift는 재합성하지 않는다. 명시�
 Site/Admin IAM 분리는 단계적으로 적용한다. 구 revision 종료 전 legacy grants를 회수하지 않는다.
 
 
-문서 버전: **2.21** · 갱신일: **2026-10-11 (Asia/Seoul)**
+문서 버전: **2.22** · 갱신일: **2026-10-13 (Asia/Seoul)**
 소스 기준선: **`4db1b69` 이후 커밋 이력 정합성 보완**
 구현 상태: **체크포인트 2(`a774851`) 운영 배포 완료. 그 뒤 main의 stable-base Essence(`8c59141`) 등 31개 커밋과 콘텐츠 수율 버전업 v2.7(`claude/system-performance-review-x6vtn4`, [계획](docs/plans/2026-09-12-content-yield-versionup-plan.md))은 미배포**
 
