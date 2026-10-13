@@ -16,7 +16,7 @@ from sqlalchemy import (
     func,
     text,
 )
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
@@ -207,6 +207,14 @@ class Hospital(Base):
 
     # ── 진행 상태 플래그 ─────────────────────────────────────────────
     profile_complete: Mapped[bool] = mapped_column(Boolean, default=False)
+    # 프로필 필드별 출처 원장(0091). {field: {"origin": "OPERATOR"|"AUTOFILL"|"LEGACY", ...}}.
+    # 자동 입력은 OPERATOR 필드를 값이 비어 있어도 덮지 않는다(D30·D34, services/profile_provenance.py).
+    profile_field_provenance: Mapped[dict] = mapped_column(
+        JSON().with_variant(JSONB, "postgresql"),
+        default=dict,
+        server_default=text("'{}'"),
+        nullable=False,
+    )
     v0_report_done: Mapped[bool] = mapped_column(Boolean, default=False)
     site_built: Mapped[bool] = mapped_column(Boolean, default=False)
     site_live: Mapped[bool] = mapped_column(Boolean, default=False)
