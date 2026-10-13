@@ -440,10 +440,10 @@ def _ops_email_marker(incident: Incident) -> str:
 
 
 def _ops_email_lines(incident: Incident) -> tuple[str, ...]:
-    # 본문은 결정적이어야 한다(같은 키에 다른 본문이면 Resend 409). 시각·건수를 넣지 않는다.
+    # 본문은 사고 episode 동안 고정이어야 한다(같은 키에 다른 본문이면 Resend 409 — 전달 확인이 아니라
+    # 결과 불명이다). 시각·건수, 같은 episode 안에서 바뀔 수 있는 원인 코드를 넣지 않는다.
     return (
         "운영 Slack 웹훅이 알림을 받지 않습니다. Re:putation 운영 알림이 Slack에 전달되지 않고 보류되고 있습니다.",
-        f"원인 코드: {incident.safe_error_code or '확인 필요'}",
         "Slack 웹훅 주소를 확인해 주세요. 주소가 살아나면 한 시간 안에 자동으로 복구되고, 보류된 알림을 다시 보냅니다.",
         f"운영센터: {settings.ADMIN_BASE_URL.rstrip('/')}/operations",
     )
@@ -460,7 +460,8 @@ async def email_dead_operator_channel(
 
     단일 채널 운영에서 운영 웹훅이 죽으면 채널 사고의 열림 알림조차 보낼 곳이 없어 보류된다.
     그 사실을 Slack 밖으로 알리는 경로다(2026-10 자율 운영 감사 F8). 사고 episode당 한 번 보내고
-    보낸 사실은 감사 기록으로 남긴다. 실패하면 15분 뒤 같은 키로 다시 시도한다. outbox·사고
+    보낸 사실은 Resend가 받았을 때(2xx)만 감사 기록으로 남긴다. 실패·결과 불명(409)이면 15분 뒤 같은
+    키·같은 본문으로 다시 시도한다. outbox·사고
     상태는 바꾸지 않는다(알림 성공과 저장 성공을 섞지 않는다).
     """
 
@@ -491,12 +492,12 @@ async def email_dead_operator_channel(
     if last is not None and now - last < _OPS_EMAIL_RETRY_AFTER:
         return False
     _last_ops_email_attempt[key] = now
-    sent = await ops_alert_email.send_ops_alert(
+    result = await ops_alert_email.send_ops_alert(
         idempotency_key=key,
         title="운영 Slack 채널에 알림이 전달되지 않습니다",
         lines=lines,
     )
-    if not sent:
+    if not result.delivered:
         return False
     async with sessions() as db:
         await write_audit_log(

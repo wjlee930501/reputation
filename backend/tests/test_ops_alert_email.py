@@ -29,7 +29,7 @@ async def test_sends_one_mail_with_the_given_idempotency_key(configured):
             client=client,
         )
 
-    assert sent is True
+    assert sent is ops_alert_email.OpsAlertResult.SENT and sent.delivered
     assert len(seen) == 1
     assert seen[0].headers["Idempotency-Key"] == "watchdog:operator:2026-10-11T00:00:00+00:00"
     body = seen[0].content.decode()
@@ -38,14 +38,21 @@ async def test_sends_one_mail_with_the_given_idempotency_key(configured):
     assert "<b>escape</b>" not in body
 
 
-async def test_conflict_means_the_key_was_already_used(configured):
+@pytest.mark.parametrize(
+    "body", ["concurrent_idempotent_requests", "invalid_idempotent_request"]
+)
+async def test_an_idempotency_conflict_is_unknown_not_sent(configured, caplog, body):
+    """409는 같은 키가 처리 중이거나 다른 본문으로 쓰였다는 뜻이다 — 이 요청이 메일을 보냈다는 확인이 아니다."""
     async with httpx.AsyncClient(
-        transport=httpx.MockTransport(lambda _r: httpx.Response(409, text="invalid_idempotent_request"))
+        transport=httpx.MockTransport(lambda _r: httpx.Response(409, text=body))
     ) as client:
         sent = await ops_alert_email.send_ops_alert(
             idempotency_key="k", title="t", lines=("a",), client=client
         )
-    assert sent is True
+    assert sent is ops_alert_email.OpsAlertResult.UNKNOWN
+    assert sent.delivered is False
+    # 결과 불명은 오류 경보(ERROR)가 아니라 재시도할 일이다.
+    assert not any(record.levelname == "ERROR" for record in caplog.records)
 
 
 async def test_server_error_is_reported_as_not_sent(configured, caplog):
@@ -55,14 +62,14 @@ async def test_server_error_is_reported_as_not_sent(configured, caplog):
         sent = await ops_alert_email.send_ops_alert(
             idempotency_key="k", title="t", lines=("a",), client=client
         )
-    assert sent is False
+    assert sent is ops_alert_email.OpsAlertResult.FAILED
     assert any(record.levelname == "ERROR" for record in caplog.records)
 
 
 async def test_missing_address_is_not_sent_and_logged_for_the_gcp_alert(monkeypatch, caplog):
     monkeypatch.setattr(ops_alert_email.settings, "OPS_ALERT_EMAIL", "")
     sent = await ops_alert_email.send_ops_alert(idempotency_key="k", title="t", lines=("a",))
-    assert sent is False
+    assert sent is ops_alert_email.OpsAlertResult.FAILED
     errors = [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
     # API에서는 GCP 경보 slack_path_failures("ops alert email"), Worker에서는 worker_beat_errors가 이 줄을 잡는다.
     assert errors and errors[0].startswith("ops alert email: not configured")

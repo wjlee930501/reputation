@@ -1182,9 +1182,10 @@ async def test_undelivered_alerts_are_emailed_once_per_episode(monkeypatch):
 
     async def fake_send(**kwargs):
         calls.append(kwargs)
-        return True
+        return pipeline_watchdog.ops_alert_email.OpsAlertResult.SENT
 
     monkeypatch.setattr(pipeline_watchdog.ops_alert_email, "send_ops_alert", fake_send)
+    monkeypatch.setattr(pipeline_watchdog, "_connect_redis", lambda: FakeRedis())
     now = datetime(2026, 10, 11, 0, 5, tzinfo=UTC)
     decisions = (
         pipeline_watchdog.AlertDecision(
@@ -1226,3 +1227,66 @@ async def test_delivered_alerts_are_not_emailed(monkeypatch):
     assert await pipeline_watchdog.email_undelivered(
         (decision,), (True,), now=datetime(2026, 10, 11, tzinfo=UTC)
     ) == (False,)
+
+
+def _undelivered_alert(text: str, episode: str = "2026-10-11T00:00:00+00:00"):
+    return pipeline_watchdog.AlertDecision(
+        True, "ALERT", "operator", text, "new_condition_set",
+        "https://hooks.slack.com/ops", ("publish_missing",), episode,
+    )
+
+
+async def test_an_emailed_episode_is_not_re_sent_while_slack_stays_down(monkeypatch):
+    """Slack 장애가 Resend의 24시간 멱등 창보다 길어져도 같은 에피소드 메일은 한 통이다."""
+    client = FakeRedis()
+    monkeypatch.setattr(pipeline_watchdog, "_connect_redis", lambda: client)
+    calls: list[dict] = []
+
+    async def fake_send(**kwargs):
+        calls.append(kwargs)
+        return pipeline_watchdog.ops_alert_email.OpsAlertResult.SENT
+
+    monkeypatch.setattr(pipeline_watchdog.ops_alert_email, "send_ops_alert", fake_send)
+    now = datetime(2026, 10, 11, 0, 5, tzinfo=UTC)
+
+    first = await pipeline_watchdog.email_undelivered((_undelivered_alert("발행 경보"),), (False,), now=now)
+    # 25시간 뒤(Resend가 키를 잊은 뒤)에도 Slack이 여전히 받지 않는다.
+    client.clock += 25 * 3600
+    later = await pipeline_watchdog.email_undelivered(
+        (_undelivered_alert("발행 경보"),), (False,), now=now + timedelta(hours=25)
+    )
+
+    assert first == (True,) and later == (False,)
+    assert len(calls) == 1
+
+
+async def test_an_unconfirmed_email_retries_with_the_first_body_of_the_episode(monkeypatch):
+    """409·실패는 '보냈음'이 아니다. 다음 판정이 같은 키와 에피소드의 첫 본문으로 다시 보낸다."""
+    client = FakeRedis()
+    monkeypatch.setattr(pipeline_watchdog, "_connect_redis", lambda: client)
+    calls: list[dict] = []
+    results = [
+        pipeline_watchdog.ops_alert_email.OpsAlertResult.UNKNOWN,
+        pipeline_watchdog.ops_alert_email.OpsAlertResult.SENT,
+    ]
+
+    async def fake_send(**kwargs):
+        calls.append(kwargs)
+        return results.pop(0)
+
+    monkeypatch.setattr(pipeline_watchdog.ops_alert_email, "send_ops_alert", fake_send)
+    now = datetime(2026, 10, 11, 0, 5, tzinfo=UTC)
+
+    first = await pipeline_watchdog.email_undelivered(
+        (_undelivered_alert("발행 경보 1건"),), (False,), now=now
+    )
+    # 다음 판정의 문구가 바뀌어도(건수 등) 같은 에피소드는 첫 본문으로 다시 보낸다.
+    second = await pipeline_watchdog.email_undelivered(
+        (_undelivered_alert("발행 경보 3건"),), (False,), now=now + timedelta(minutes=15)
+    )
+
+    assert first == (False,) and second == (True,)
+    assert [call["idempotency_key"] for call in calls] == [
+        "watchdog:operator:2026-10-11T00:00:00+00:00"
+    ] * 2
+    assert calls[0]["lines"] == calls[1]["lines"] == ("발행 경보 1건",)

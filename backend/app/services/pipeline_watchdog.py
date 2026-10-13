@@ -28,6 +28,7 @@ from datetime import UTC, datetime, time, timedelta, timezone
 from typing import Any, Final, Literal
 from zoneinfo import ZoneInfo
 
+import anyio
 import httpx
 import redis
 from redis.exceptions import RedisError
@@ -1309,25 +1310,78 @@ def _email_key(decision: AlertDecision, *, now: datetime) -> str:
     return f"watchdog:{decision.audience}:{kst_date}:{_signature(decision.conditions)}"
 
 
+# 메일 전달 기록·고정 본문의 보관 기간. Slack 장애가 Resend의 24시간 멱등 창보다 길게 이어져도
+# 같은 에피소드의 메일을 다시 보내지 않도록 그보다 길게 두고, 다시 볼 때마다 연장한다.
+_EMAIL_RECORD_TTL_SECONDS: Final = 7 * 24 * 3600
+
+
+def _emailed_key(mail_key: str) -> str:
+    return f"{_KEY_NAMESPACE}:emailed:{mail_key}"
+
+
+def _email_body_key(mail_key: str) -> str:
+    return f"{_KEY_NAMESPACE}:email_body:{mail_key}"
+
+
+def _email_plan(mail_key: str, lines: tuple[str, ...]) -> tuple[bool, tuple[str, ...]]:
+    """(이 에피소드의 메일이 이미 전달됐는가, 이 에피소드에 고정한 본문).
+
+    Slack 상태(`record_deliveries`)와 별개의 키다. 본문은 에피소드의 첫 시도 것을 고정한다 —
+    재시도 본문이 바뀌면 Resend가 같은 키에 409를 주고 전달을 확인할 수 없다. Redis가 없으면
+    기억할 곳이 없으므로 이번 본문으로 보낸다(fail-open 키는 KST 날짜에 묶인다).
+    """
+    try:
+        with _connect_redis() as client:
+            if client.get(_emailed_key(mail_key)):
+                client.set(_emailed_key(mail_key), "1", ex=_EMAIL_RECORD_TTL_SECONDS)
+                return True, lines
+            body_key = _email_body_key(mail_key)
+            client.set(body_key, "\n".join(lines), nx=True, ex=_EMAIL_RECORD_TTL_SECONDS)
+            stored = client.get(body_key)
+    except RedisError:
+        logger.warning("pipeline watchdog: Redis unavailable while reading email state")
+        return False, lines
+    if stored is None:
+        return False, lines
+    text = stored.decode("utf-8") if isinstance(stored, bytes) else str(stored)
+    return False, tuple(text.split("\n"))
+
+
+def _record_email_delivered(mail_key: str) -> None:
+    try:
+        with _connect_redis() as client:
+            client.set(_emailed_key(mail_key), "1", ex=_EMAIL_RECORD_TTL_SECONDS)
+    except RedisError:
+        logger.warning("pipeline watchdog: Redis unavailable while recording email delivery")
+
+
 async def email_undelivered(
     decisions: tuple[AlertDecision, ...], delivered: tuple[bool, ...], *, now: datetime
 ) -> tuple[bool, ...]:
     """Slack이 받지 않은 ALERT를 운영 경보 메일로 보낸다(2차 경로).
 
-    전달되지 않은 ALERT는 15분마다 다시 판정되므로 이 함수도 다시 불린다. 키가 에피소드에
-    묶여 있어 Resend가 24시간 동안 한 통으로 묶는다. RECOVERY는 메일로 보내지 않는다.
-    메일은 판정·에피소드 기록을 바꾸지 않는다(알림 성공과 저장 성공을 섞지 않는다).
+    전달되지 않은 ALERT는 15분마다 다시 판정되므로 이 함수도 다시 불린다. 메일 전달(Resend 2xx)은
+    Slack 상태와 별개로 에피소드마다 기록해, Slack 장애가 24시간 멱등 창보다 길게 이어져도 같은
+    에피소드의 메일을 다시 보내지 않는다. 결과 불명(409)·실패는 기록하지 않고 다음 판정이 같은
+    키·고정 본문으로 다시 보낸다. RECOVERY는 메일로 보내지 않는다. 메일은 판정·에피소드 기록을
+    바꾸지 않는다(알림 성공과 저장 성공을 섞지 않는다).
     """
     results: list[bool] = []
     for decision, ok in zip(decisions, delivered, strict=True):
         if ok or not (decision.send and decision.kind == "ALERT" and decision.text):
             results.append(False)
             continue
-        results.append(
-            await ops_alert_email.send_ops_alert(
-                idempotency_key=_email_key(decision, now=now),
-                title=_EMAIL_TITLE,
-                lines=tuple(decision.text.splitlines()),
-            )
+        mail_key = _email_key(decision, now=now)
+        already, lines = await anyio.to_thread.run_sync(
+            _email_plan, mail_key, tuple(decision.text.splitlines())
         )
+        if already:
+            results.append(False)
+            continue
+        result = await ops_alert_email.send_ops_alert(
+            idempotency_key=mail_key, title=_EMAIL_TITLE, lines=lines
+        )
+        if result.delivered:
+            await anyio.to_thread.run_sync(_record_email_delivered, mail_key)
+        results.append(result.delivered)
     return tuple(results)

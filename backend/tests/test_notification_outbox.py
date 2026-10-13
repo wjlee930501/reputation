@@ -1639,7 +1639,7 @@ async def test_dead_operator_channel_without_alternate_is_emailed_once_per_episo
 
     async def fake_send(**kwargs):
         sent.append(kwargs)
-        return True
+        return notification_channel_health.ops_alert_email.OpsAlertResult.SENT
 
     monkeypatch.setattr(notification_channel_health.ops_alert_email, "send_ops_alert", fake_send)
     notification_channel_health._last_ops_email_attempt.clear()
@@ -1671,7 +1671,7 @@ async def test_failed_ops_email_is_retried_after_fifteen_minutes(outbox_sessions
 
     async def failing_send(**kwargs):
         attempts.append(kwargs["idempotency_key"])
-        return False
+        return notification_channel_health.ops_alert_email.OpsAlertResult.FAILED
 
     monkeypatch.setattr(notification_channel_health.ops_alert_email, "send_ops_alert", failing_send)
     notification_channel_health._last_ops_email_attempt.clear()
@@ -1686,6 +1686,51 @@ async def test_failed_ops_email_is_retried_after_fifteen_minutes(outbox_sessions
     # 첫 시도(5분)와 15분이 지난 뒤(21분)에만 시도한다. 같은 키라 Resend가 중복을 막는다.
     assert len(attempts) == 2
     assert attempts[0] == attempts[1]
+
+
+@pytest.mark.asyncio
+async def test_an_idempotency_conflict_is_not_recorded_as_sent(outbox_sessions, monkeypatch) -> None:
+    """409(같은 키가 처리 중이거나 다른 본문)는 전달 확인이 아니다 — 감사 기록 없이 같은 키·본문으로 다시 보낸다."""
+    calls: list[dict] = []
+    results = [
+        notification_channel_health.ops_alert_email.OpsAlertResult.UNKNOWN,
+        notification_channel_health.ops_alert_email.OpsAlertResult.SENT,
+    ]
+
+    async def conflicted_then_sent(**kwargs):
+        calls.append(kwargs)
+        return results.pop(0)
+
+    monkeypatch.setattr(
+        notification_channel_health.ops_alert_email, "send_ops_alert", conflicted_then_sent
+    )
+    notification_channel_health._last_ops_email_attempt.clear()
+    dead = lambda _request: httpx.Response(404, text="no_service")  # noqa: E731
+
+    await _dispatch_once(outbox_sessions, "OPS-QA-T10-EMAIL-3", dead)
+    await _dispatch_once(outbox_sessions, "OPS-QA-T10-EMAIL-3", dead, now=_NOW + timedelta(minutes=5))
+
+    async def sent_audits() -> int:
+        async with outbox_sessions() as verify:
+            incident = await _channel_incident(verify, "SLACK")
+            marker = f"{incident.id}:e{incident.episode_seq}"
+            return len(
+                (
+                    await verify.execute(
+                        select(AdminAuditLog).where(
+                            AdminAuditLog.action == "ops_alert_email_sent",
+                            AdminAuditLog.target_id == marker,
+                        )
+                    )
+                ).scalars().all()
+            )
+
+    assert len(calls) == 1 and await sent_audits() == 0
+    await _dispatch_once(outbox_sessions, "OPS-QA-T10-EMAIL-3", dead, now=_NOW + timedelta(minutes=21))
+    assert len(calls) == 2 and await sent_audits() == 1
+    # 재시도는 같은 키·같은 본문이다(Resend가 원래 응답을 돌려줄 수 있게).
+    assert calls[0]["idempotency_key"] == calls[1]["idempotency_key"]
+    assert calls[0]["lines"] == calls[1]["lines"]
 
 
 @pytest.mark.asyncio

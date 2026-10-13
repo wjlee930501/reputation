@@ -151,10 +151,14 @@ Celery 밖 pipeline watchdog은 **조건 집합 에피소드당 한 번** 알린
 (`ops_alert_email.send_ops_alert`, 결정적 `idempotency_key`). 값이 비어 있으면 보내지 않고 ERROR 로그(`ops alert email: …`)만
 남긴다. 운영 값은 Terraform `alert_email`(GCP 경보 이메일 채널)과 같은 주소이며 주소를 코드에 두지 않는다. 보내는 경우는 둘뿐이다.
 (1) 외부 감시의 경보가 Slack에 전달되지 않았을 때 — 에피소드당 한 통(`watchdog:{audience}:{episode_id}`, 에피소드가 없으면 KST
-날짜+조건 서명). 복구는 메일로 보내지 않으며 감시의 판정·에피소드 기록을 바꾸지 않는다. (2) 운영 채널 전송 사고가 열렸는데 대신
+날짜+조건 서명). 메일 전달(Resend 2xx)은 Slack 상태와 별개로 Redis에 7일 기록해(다시 볼 때마다 연장) Slack 장애가 Resend의 24시간
+멱등 창보다 길어져도 같은 에피소드 메일을 다시 보내지 않고, 재시도 본문은 에피소드의 첫 본문으로 고정한다. 복구는 메일로 보내지
+않으며 감시의 판정·에피소드 기록을 바꾸지 않는다. (2) 운영 채널 전송 사고가 열렸는데 대신
 받을 살아 있는 개발 채널도 없을 때 — 사고 episode당 한 통(`ops-channel-down:{incident_id}:e{episode_seq}`, 감사
 `ops_alert_email_sent`로 중복 방지). 실패하면 프로세스 안에서 15분 뒤 같은 키로 다시 시도하며 outbox·사고 상태는 바꾸지 않는다.
-정상 경로가 아니므로 Slack 알림을 메일로 복제하지 않는다. Slack을 거치지 않는 GCP 이메일 경보도 둘 더 있다(시간당 1회, 24시간
+Resend 409(같은 키가 처리 중이거나 다른 본문으로 쓰였다)는 전달 확인이 아니라 **결과 불명**이다 — '보냈음'을 기록하지 않고 같은
+키·같은 본문으로 다시 보낸다(처리 중이던 원래 요청이 끝났으면 재요청이 원래 응답을 받는다). 그래서 두 경로 모두 본문에 시각·건수·원인
+코드처럼 같은 사건 안에서 바뀌는 값을 넣지 않는다. 정상 경로가 아니므로 Slack 알림을 메일로 복제하지 않는다. Slack을 거치지 않는 GCP 이메일 경보도 둘 더 있다(시간당 1회, 24시간
 자동 종료, `terraform/monitoring.tf`): Cloud Scheduler 감시 호출(`watchdog-heartbeat`·`watchdog-publish-check`)의 ERROR 로그(토큰
 공백 401·LB·API 장애)와 API 서비스의 `pipeline watchdog`·`ops alert email` ERROR 로그. Worker 쪽 Slack 경로 실패는 기존 worker
 ERROR 경보가 이메일로 보낸다.
