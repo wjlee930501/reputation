@@ -1627,3 +1627,72 @@ async def test_operations_center_and_retry_target_the_row_a_delivery_incident_de
         with pytest.raises(HTTPException):
             await _authorize_notification_retry(db, stranger, failed)
         await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_a_settle_candidate_locked_elsewhere_does_not_stall_the_claim(outbox_sessions) -> None:
+    """발송 전 종결 후보가 다른 트랜잭션에 잠겨 있어도 다른 알림의 claim은 기다리지 않는다(Codex R2-4)."""
+
+    import time
+
+    # Given: a recovered incident whose unsent OPEN notice is a settle candidate, and an unrelated due row
+    async with outbox_sessions() as db:
+        incident = Incident(
+            dedupe_key="OPS-QA-T10-SETTLE-LOCK",
+            incident_type="CONTENT_GENERATION_FAILED",
+            state=IncidentState.RECOVERED.value,
+            severity="HIGH",
+            customer_impact="테스트",
+            source_type="TEST",
+            next_action="테스트",
+            admin_path="/operations",
+            first_seen_at=_NOW - timedelta(hours=1),
+            last_seen_at=_NOW - timedelta(hours=1),
+            recovered_at=_NOW - timedelta(minutes=30),
+        )
+        db.add(incident)
+        await db.flush()
+        stale_open = NotificationOutbox(
+            dedupe_key="OPS-QA-T10-SETTLE-LOCKED",
+            notification_type="INCIDENT_OPEN",
+            channel="SLACK",
+            state=NotificationOutboxState.PENDING.value,
+            incident_id=incident.id,
+            payload=_intent("ignored").message.payload(),
+            fallback_text="운영 알림",
+            next_attempt_at=_NOW - timedelta(minutes=5),
+        )
+        db.add(stale_open)
+        free = await enqueue_notification(db, _intent("OPS-QA-T10-SETTLE-FREE"), now=_NOW)
+        await db.commit()
+
+    # When: another transaction holds the candidate's row lock while a worker claims
+    async with outbox_sessions() as holder:
+        await holder.execute(
+            select(NotificationOutbox.id)
+            .where(NotificationOutbox.id == stale_open.id)
+            .with_for_update()
+        )
+        async with outbox_sessions() as claimer:
+            # 예전 무제한 UPDATE는 잠긴 행을 기다려 이 제한에 걸린다.
+            await claimer.execute(text("SET lock_timeout = '3s'"))
+            started = time.monotonic()
+            claimed = await claim_notification_batch(claimer, "worker-settle", now=_NOW, limit=50)
+            elapsed = time.monotonic() - started
+        await holder.rollback()
+
+    # Then: the unrelated row is leased at once; the locked candidate waits for the next tick
+    assert elapsed < 2
+    assert free.id in {row.id for row in claimed}
+    assert stale_open.id not in {row.id for row in claimed}
+    async with outbox_sessions() as verify:
+        row = await verify.get(NotificationOutbox, stale_open.id)
+        assert row.state == NotificationOutboxState.PENDING.value
+
+    # And: the next tick settles it once the lock is gone
+    async with outbox_sessions() as db:
+        await claim_notification_batch(db, "worker-settle", now=_NOW, limit=50)
+    async with outbox_sessions() as verify:
+        row = await verify.get(NotificationOutbox, stale_open.id)
+        assert row.state == NotificationOutboxState.FAILED.value
+        assert row.safe_error_code == "INCIDENT_RESOLVED_BEFORE_SEND"

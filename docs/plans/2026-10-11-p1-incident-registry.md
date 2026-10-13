@@ -360,7 +360,7 @@ def _monthly_sov_window(
         return None
     year, month = period
     next_start = datetime(year + (month == 12), month % 12 + 1, 1, tzinfo=_KST)
-    return next_start + timedelta(days=7) - timedelta(seconds=1)
+    return next_start + timedelta(days=7, hours=9)
 
 
 _DEVELOPER = IncidentTypePolicy(audience=IncidentAudience.DEVELOPER)

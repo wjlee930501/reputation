@@ -250,3 +250,59 @@ async def test_a_legacy_recovery_key_without_an_episode_keeps_the_time_ordered_r
     await db.flush()
 
     assert legacy.id in await _claimed_ids(db)
+
+
+async def test_an_episode_recovery_never_pairs_with_a_legacy_open(pg_async_session):
+    """옛 키의 나간 열림이 에피소드 키 복구를 내보내는 근거가 되지 않는다(Codex R2-2).
+
+    옛 OPEN=SENT → e2 OPEN=발송 전 종결 → e2 RECOVERED. e2의 짝은 e2 열림뿐이다.
+    """
+
+    db = pg_async_session
+    incident = _incident("CONTENT_GENERATION_FAILED", "RECOVERED")
+    incident.episode_seq = 2
+    db.add(incident)
+    await db.flush()
+    legacy_open = _notice(incident, state="SENT", created_at=NOW - timedelta(hours=5))
+    legacy_open.dedupe_key = f"INCIDENT_OPEN:{incident.id}:v1"
+    e2_open = _notice(
+        incident, state="FAILED", episode=2, created_at=NOW - timedelta(minutes=50),
+        safe_error_code=RESOLVED_BEFORE_SEND_CODE,
+    )
+    e2_recovered = _notice(
+        incident, "INCIDENT_RECOVERED", episode=2, created_at=NOW - timedelta(minutes=20)
+    )
+    db.add_all([legacy_open, e2_open, e2_recovered])
+    await db.flush()
+
+    assert e2_recovered.id not in await _claimed_ids(db)
+    row = await _row(db, e2_recovered)
+    assert row.state == "FAILED" and row.safe_error_code == RESOLVED_BEFORE_SEND_CODE
+
+
+async def test_both_legacy_keys_keep_the_time_ordered_pairing(pg_async_session):
+    db = pg_async_session
+    reached = _incident("CONTENT_GENERATION_FAILED", "RECOVERED")
+    unreached = _incident("CONTENT_GENERATION_FAILED", "RECOVERED")
+    db.add_all([reached, unreached])
+    await db.flush()
+    rows = []
+    for incident, open_state in ((reached, "SENT"), (unreached, "FAILED")):
+        legacy_open = _notice(
+            incident, state=open_state, created_at=NOW - timedelta(hours=2),
+            safe_error_code="SLACK_HTTP_ERROR" if open_state == "FAILED" else None,
+        )
+        legacy_open.dedupe_key = f"INCIDENT_OPEN:{incident.id}:v1"
+        legacy_recovered = _notice(
+            incident, "INCIDENT_RECOVERED", created_at=NOW - timedelta(minutes=20)
+        )
+        legacy_recovered.dedupe_key = f"INCIDENT_RECOVERED:{incident.id}:v3"
+        rows.append(legacy_recovered)
+        db.add_all([legacy_open, legacy_recovered])
+    await db.flush()
+
+    claimed = await _claimed_ids(db)
+
+    assert rows[0].id in claimed
+    assert rows[1].id not in claimed
+    assert (await _row(db, rows[1])).safe_error_code == RESOLVED_BEFORE_SEND_CODE

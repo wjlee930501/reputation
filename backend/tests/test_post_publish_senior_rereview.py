@@ -132,7 +132,7 @@ def test_senior_rereview_marker_keeps_the_item_out_of_tomorrows_selection(monkey
     # 같은 본문을 매일 다시 사지 않는다 — 선택 SQL은 이 키가 있는 표시를 거른다.
     marker = item.essence_check_summary["post_publish_ai_review"]
     assert marker[sweep.POST_PUBLISH_SENIOR_REREVIEW_KEY]["at"] == NOW.isoformat()
-    params = sweep._uncertain_settled_stmt(5, now=NOW, days=3).compile().params.values()
+    params = sweep._uncertain_only_stmt(5).compile().params.values()
     assert sweep.POST_PUBLISH_SENIOR_REREVIEW_KEY in params
 
 

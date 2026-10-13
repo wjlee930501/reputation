@@ -405,20 +405,17 @@ _EPISODE_SUFFIX = r":e([0-9]+)$"
 def _same_episode_open(open_row):
     """이 복구 알림(`NotificationOutbox`)의 짝이 될 수 있는 열림 알림.
 
-    두 키에 모두 에피소드가 있으면 같은 에피소드만 짝이다 — 1회차의 나간 열림이 2회차 복구를
-    내보내는 근거가 되면, 2회차 열림이 발송 전에 종결됐는데도 채널에 짝 없는 복구 줄이 남는다.
-    에피소드가 없는 옛 키는 종전 규칙(복구보다 먼저 만든 열림)을 따른다.
+    복구 키에 에피소드가 있으면 같은 에피소드 키의 열림만 짝이다 — 다른 에피소드의 열림도, 에피소드
+    없는 옛 열림도 아니다. 1회차(또는 옛 키)의 나간 열림이 2회차 복구를 내보내는 근거가 되면, 2회차
+    열림이 발송 전에 종결됐는데도 채널에 짝 없는 복구 줄이 남는다. 에피소드가 없는 옛 복구 키만
+    종전 규칙(복구보다 먼저 만든 열림)을 따른다.
     """
     recovered_episode = func.substring(NotificationOutbox.dedupe_key, _EPISODE_SUFFIX)
     open_episode = func.substring(open_row.dedupe_key, _EPISODE_SUFFIX)
     return or_(
+        and_(recovered_episode.isnot(None), open_episode == recovered_episode),
         and_(
-            recovered_episode.isnot(None),
-            open_episode.isnot(None),
-            open_episode == recovered_episode,
-        ),
-        and_(
-            or_(recovered_episode.is_(None), open_episode.is_(None)),
+            recovered_episode.is_(None),
             open_row.created_at <= NotificationOutbox.created_at,
         ),
     )
@@ -464,15 +461,12 @@ async def settle_incident_notices(db: AsyncSession, *, now: datetime) -> None:
         )
         .exists()
     )
-    await db.execute(
-        update(NotificationOutbox)
-        .where(
-            NotificationOutbox.notification_type == "INCIDENT_OPEN",
-            NotificationOutbox.state.in_(_SENDABLE_STATES),
-            resolved_or_superseded,
-        )
-        .values(**settled)
-        .execution_options(synchronize_session=False)
+    await _settle_locked(
+        db,
+        settled,
+        NotificationOutbox.notification_type == "INCIDENT_OPEN",
+        NotificationOutbox.state.in_(_SENDABLE_STATES),
+        resolved_or_superseded,
     )
     unreached = aliased(NotificationOutbox)
     reached = aliased(NotificationOutbox)
@@ -496,14 +490,43 @@ async def settle_incident_notices(db: AsyncSession, *, now: datetime) -> None:
         )
         .exists()
     )
+    await _settle_locked(
+        db,
+        settled,
+        NotificationOutbox.notification_type == "INCIDENT_RECOVERED",
+        NotificationOutbox.state.in_(_SENDABLE_STATES),
+        open_never_reached,
+        ~open_may_have_reached,
+    )
+
+
+# 한 번의 claim이 종결하는 짝의 상한. 남은 것은 다음 tick(매분)이 마저 한다.
+_SETTLE_BATCH_LIMIT = 200
+
+
+async def _settle_locked(db: AsyncSession, settled: dict, *predicates) -> None:
+    """종결 후보를 claim 트랜잭션 안에서 `FOR UPDATE SKIP LOCKED`로 잠근 뒤 id로 종결한다.
+
+    무제한 UPDATE는 다른 트랜잭션(발송 중인 워커·수동 재시도)이 잡은 행 하나를 기다리느라 그 뒤의
+    무관한 claim까지 멈춘다. 잠긴 후보는 이번 tick에 건너뛰고 다음 tick이 다시 본다.
+    """
+
+    candidate_ids = list(
+        (
+            await db.execute(
+                select(NotificationOutbox.id)
+                .where(*predicates)
+                .order_by(NotificationOutbox.created_at, NotificationOutbox.id)
+                .limit(_SETTLE_BATCH_LIMIT)
+                .with_for_update(of=NotificationOutbox, skip_locked=True)
+            )
+        ).scalars()
+    )
+    if not candidate_ids:
+        return
     await db.execute(
         update(NotificationOutbox)
-        .where(
-            NotificationOutbox.notification_type == "INCIDENT_RECOVERED",
-            NotificationOutbox.state.in_(_SENDABLE_STATES),
-            open_never_reached,
-            ~open_may_have_reached,
-        )
+        .where(NotificationOutbox.id.in_(candidate_ids))
         .values(**settled)
         .execution_options(synchronize_session=False)
     )

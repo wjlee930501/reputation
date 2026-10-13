@@ -9,7 +9,8 @@ from sqlalchemy.orm import Session
 
 from app.models.content import ContentItem, ContentSchedule, ContentStatus, ContentType
 from app.models.hospital import Hospital, HospitalStatus
-from app.workers.post_publish_ai_review import _uncertain_settled_stmt
+from app.workers import post_publish_ai_review as sweep
+from app.workers.post_publish_ai_review import _uncertain_settled_items
 
 NOW = datetime(2026, 10, 13, tzinfo=UTC)
 
@@ -75,7 +76,7 @@ def test_only_finished_flags_without_a_senior_rereview_are_selected(pg_conn):
 
     selected = {
         item.id
-        for item in db.execute(_uncertain_settled_stmt(50, now=NOW, days=3)).unique().scalars().all()
+        for item in _uncertain_settled_items(db, 50, now=NOW, days=3)
         if item.hospital_id == hospital.id
     }
 
@@ -121,10 +122,60 @@ def test_older_hard_flags_cannot_starve_an_eligible_uncertain_flag(pg_conn):
 
     selected = [
         item.id
-        for item in db.execute(_uncertain_settled_stmt(limit, now=NOW, days=3)).unique().scalars()
+        for item in _uncertain_settled_items(db, limit, now=NOW, days=3)
     ]
 
     assert eligible.id in selected
     for excluded in (mixed, fresh, malformed, not_a_list):
         assert excluded.id not in selected
+    db.close()
+
+
+def test_an_impossible_checked_at_date_does_not_break_the_selection(pg_conn):
+    """정규식은 통과하지만 달력에 없는 시각(2월 30일·13월)이 SQL 형 변환으로 스윕 전체를 깨지 않는다(R2-3)."""
+    db = Session(bind=pg_conn, expire_on_commit=False, join_transaction_mode="create_savepoint")
+    hospital, schedule = _hospital_and_schedule(db)
+    _post = _poster(db, hospital, schedule)
+    finished = {"correction": {"finished": True, "passes": 2}}
+    feb_30 = _post(1, _marker(checked_at="2026-02-30T00:00:00+00:00", **finished))
+    month_13 = _post(2, _marker(checked_at="2026-13-01T00:00:00+00:00", **finished))
+    eligible = _post(3, _marker(**finished))
+
+    selected = [item.id for item in _uncertain_settled_items(db, 50, now=NOW, days=3)]
+
+    assert eligible.id in selected
+    assert feb_30.id not in selected and month_13.id not in selected
+    db.close()
+
+
+def test_young_uncertain_flags_cannot_starve_a_settled_one_across_pages(pg_conn, monkeypatch):
+    """아직 묵지 않은 UNCERTAIN 글이 앞쪽 페이지를 다 채워도 뒤쪽의 묵은 글을 찾는다(키셋 페이지)."""
+    monkeypatch.setattr(sweep, "_UNCERTAIN_SCAN_PAGE_SIZE", 2)
+    db = Session(bind=pg_conn, expire_on_commit=False, join_transaction_mode="create_savepoint")
+    hospital, schedule = _hospital_and_schedule(db)
+    finished = {"correction": {"finished": True, "passes": 2}}
+    young = (NOW - timedelta(days=1)).isoformat()
+
+    def _post(sequence_no, item_id, summary):
+        item = ContentItem(
+            id=item_id, hospital_id=hospital.id, schedule_id=schedule.id,
+            content_type=ContentType.DISEASE, sequence_no=sequence_no, total_count=12,
+            scheduled_date=date(2026, 9, sequence_no), title="가상 글", body="본문",
+            status=ContentStatus.PUBLISHED, published_at=datetime(2026, 9, sequence_no, tzinfo=UTC),
+            essence_check_summary=summary,
+        )
+        db.add(item)
+        db.flush()
+        return item
+
+    # 키셋은 id 순서다 — 묵지 않은 글이 가장 앞 id들을 차지한다.
+    youngs = [
+        _post(n, uuid.UUID(int=n), _marker(checked_at=young, **finished)) for n in range(1, 6)
+    ]
+    eligible = _post(9, uuid.UUID(int=2**128 - 1), _marker(**finished))
+
+    selected = [item.id for item in _uncertain_settled_items(db, 50, now=NOW, days=3)]
+
+    assert eligible.id in selected
+    assert not {item.id for item in youngs} & set(selected)
     db.close()
