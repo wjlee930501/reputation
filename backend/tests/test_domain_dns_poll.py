@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 
+from app.workers import domain_dns_poll
 from app.workers.domain_dns_poll import (
     PendingDomain,
     poll_pending_domains,
@@ -276,3 +277,20 @@ async def test_an_observed_dns_mismatch_after_the_window_opens_the_incident() ->
     summary, escalated = await _poll_one_expired(SimpleNamespace(dns_verified=False))
     assert len(escalated) == 1
     assert (summary.not_ready, summary.expired) == (1, 1)
+
+
+def test_an_acknowledged_dns_incident_reopens_only_for_a_new_window() -> None:
+    from app.models.operations import IncidentState
+
+    acked = datetime(2026, 10, 1, tzinfo=UTC)
+    before, after = acked - timedelta(days=1), acked + timedelta(days=1)
+    open_ = domain_dns_poll.should_open_dns_incident
+    assert open_(None, None, None) is True
+    assert open_(IncidentState.RECOVERED.value, None, None) is True
+    assert open_(IncidentState.OPEN.value, None, after) is False
+    assert open_(IncidentState.RETRYING.value, None, after) is False
+    # 도메인을 다시 저장해 새 창이 시작된 뒤의 실패는 새 에피소드다.
+    assert open_(IncidentState.ACKNOWLEDGED.value, acked, after) is True
+    # 같은 창 안에서 확인한 사고는 폴링마다 다시 열지 않는다.
+    assert open_(IncidentState.ACKNOWLEDGED.value, acked, before) is False
+    assert open_(IncidentState.ACKNOWLEDGED.value, acked, None) is False

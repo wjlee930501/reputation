@@ -180,15 +180,43 @@ def _dedupe_key(target: PendingDomain) -> str:
     )
 
 
-async def _incident_state(target: PendingDomain) -> str | None:
-    async with get_async_sessionmaker()() as db:
-        return await db.scalar(
-            select(Incident.state).where(Incident.dedupe_key == _dedupe_key(target))
-        )
+def should_open_dns_incident(
+    state: str | None, acknowledged_at: datetime | None, window_started_at: datetime | None
+) -> bool:
+    """창이 지난 DNS 불일치에 사고를 (다시) 열지 정한다.
+
+    없거나 RECOVERED면 연다. 확인 처리(ACKNOWLEDGED)된 사고는 그 뒤에 도메인을 다시 저장해 새 창이
+    시작된 경우에만 다시 연다(공통 `open_or_touch_incident`가 episode_seq+1로 연다) — 도메인을 바꿨다가
+    (옛 쌍 정리가 닫음) 같은 도메인으로 되돌린 뒤 다시 14일이 지난 것은 새 실패다. 같은 창 안에서 사람이
+    확인한 사고는 폴링마다 다시 열지 않는다. 열려 있는(OPEN·RETRYING) 사고는 건드리지 않는다.
+    """
+    if state is None or state == IncidentState.RECOVERED.value:
+        return True
+    if state != IncidentState.ACKNOWLEDGED.value:
+        return False
+    return (
+        acknowledged_at is not None
+        and window_started_at is not None
+        and window_started_at > acknowledged_at
+    )
 
 
 async def _escalate(target: PendingDomain) -> None:
-    if await _incident_state(target) not in {None, IncidentState.RECOVERED.value}:
+    async with get_async_sessionmaker()() as db:
+        row = (
+            await db.execute(
+                select(Incident.state, Incident.acknowledged_at).where(
+                    Incident.dedupe_key == _dedupe_key(target)
+                )
+            )
+        ).first()
+        state, acknowledged_at = row if row is not None else (None, None)
+        window_started_at = (
+            await _poll_started_at_in(db, target)
+            if state == IncidentState.ACKNOWLEDGED.value
+            else None
+        )
+    if not should_open_dns_incident(state, acknowledged_at, window_started_at):
         return
     await open_ops_incident(
         pipeline=DOMAIN_DNS_POLL_PIPELINE,

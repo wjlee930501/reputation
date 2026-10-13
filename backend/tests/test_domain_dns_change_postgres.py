@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.models.hospital import Hospital, HospitalStatus, Plan
 from app.models.operations import Incident, IncidentState, NotificationOutbox
+from app.services import incidents as incidents_service
 from app.services import ops_incident_alerts
 from app.workers import domain_dns_poll
 from tests.db_env import require_db_url
@@ -116,6 +117,41 @@ async def test_a_domain_change_closes_the_old_domains_dns_incident_through_the_r
         await domain_dns_poll.poll_pending_custom_domains_once(datetime.now(UTC))
         again = {row.id: row for row in await incidents()}
         assert again[new_incident.id].state == IncidentState.OPEN.value
+        # 다시 A로 되돌린다(A 사고는 옛 쌍 정리가 닫았고 시스템이 확인 처리했다). 되돌린 뒤 다시 14일이
+        # 지나 DNS가 여전히 틀리면 새 실패다 — 같은 사고 행이 다음 에피소드로 다시 열린다. 시각은 과거로
+        # 옮긴다(확인 20일 전, A 재저장 15일 전).
+        async with sessions() as db:
+            row = await db.get(Incident, old_incident.id)
+            if row.state == IncidentState.RECOVERED.value:
+                result = await incidents_service.auto_acknowledge_incident(
+                    db, row.id, expected_version=row.version
+                )
+                assert isinstance(result, Incident)
+            await db.execute(
+                update(Incident)
+                .where(Incident.id == old_incident.id)
+                .values(acknowledged_at=datetime.now(UTC) - timedelta(days=20))
+            )
+            await db.commit()
+        async with sessions() as db:
+            await db.execute(
+                update(Hospital)
+                .where(Hospital.id == hospital_id)
+                .values(aeo_domain=old_domain, updated_at=datetime.now(UTC) - timedelta(days=15))
+            )
+            await db.commit()
+        acked = {row.id: row for row in await incidents()}[old_incident.id]
+        assert acked.state == IncidentState.ACKNOWLEDGED.value
+
+        await domain_dns_poll.poll_pending_custom_domains_once(datetime.now(UTC))
+        reopened = {row.id: row for row in await incidents()}
+        assert reopened[old_incident.id].state == IncidentState.OPEN.value
+        assert reopened[old_incident.id].episode_seq == acked.episode_seq + 1
+        # 그동안 B 사고는 옛 쌍이 됐다.
+        assert reopened[new_incident.id].state in {
+            IncidentState.RECOVERED.value,
+            IncidentState.ACKNOWLEDGED.value,
+        }
     finally:
         async with sessions() as db:
             await db.execute(
