@@ -1074,6 +1074,9 @@ async def run_minimal_correction(
     current_review: Mapping[str, Any] | None = review
     last_review: ContentAiReview | None = None
     history: list[dict[str, Any]] = []
+    # 재검수에 넘기는 "직전 지적과 그 교정" — 새 표본이 교정하지 않은 문장을 같은 기준으로
+    # 다시 뒤져 매 회차 다른 문장을 지적하는 일(2026-10 운영 '두더지 잡기')을 줄인다.
+    addressed: list[dict[str, str]] = []
     status = "NOT_APPLICABLE"
     while True:
         plan = plan_corrections(
@@ -1122,11 +1125,24 @@ async def run_minimal_correction(
                 break
         passes += 1
         rereviews += 1
+        addressed.extend(
+            {
+                "finding": " / ".join(target.messages),
+                "before": target.sentence,
+                "after": decisions[target.key].replacement or "",
+            }
+            for target in plan.targets
+        )
+        addressed.extend(
+            {"finding": "응급 안내 누락", "before": "", "after": insertion.text}
+            for insertion in plan.insertions
+        )
         last_review = await dependencies.review(
             hospital=hospital,
             philosophy=philosophy,
             content=corrected,
             content_brief=content_brief,
+            correction_context={"addressed": list(addressed)},
         )
         history.append(
             {

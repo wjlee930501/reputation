@@ -1907,6 +1907,11 @@ def test_quoted_uncertain_next_to_a_hard_is_corrected_in_the_same_pass(worker, m
     assert (state, code) == (tasks.GenerationItemState.SUCCEEDED, None)
     assert WRONG_TRAINING not in item.body and UNAPPROVED_PHILOSOPHY not in item.body
     assert calls["llm"] == 1 and len(calls["reviews"]) == 1, "한 패스·한 재검수로 끝난다"
+    [context] = seen_contexts
+    assert {entry["before"] for entry in context["addressed"]} == {
+        WRONG_TRAINING,
+        UNAPPROVED_PHILOSOPHY,
+    }
 
 
 def test_uncertain_only_block_is_left_to_the_rereview_ladder(worker, monkeypatch):
