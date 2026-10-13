@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -287,7 +287,7 @@ def test_escalation_with_recovery_budget_left_is_not_operator_work(monkeypatch) 
     """자동 재검수가 아직 소유한 보류는 인시던트를 RETRYING으로 둔다(사람의 큐에 없다)."""
 
     hospital_id = uuid.uuid4()
-    retry_at = datetime(2026, 9, 13, tzinfo=timezone.utc)
+    retry_at = datetime.now(timezone.utc) + timedelta(hours=24)
     result = EssenceRefreshResult(
         status=EssenceRefreshStatus.ESCALATED,
         hospital_id=hospital_id,
@@ -304,7 +304,8 @@ def test_escalation_with_recovery_budget_left_is_not_operator_work(monkeypatch) 
     assert len(opened) == 1
     assert opened[0]["object_id"] == f"{hospital_id}:current-snapshot"
     # 처음부터 RETRYING+다음 자동 재검수 시각으로 연다(OPEN→Slack→RETRYING 경합 없음).
-    assert opened[0]["retry_until"] == retry_at
+    # 재검수는 15분 재조정이 집는다 — 그 주기와 여유만큼 늦춰 보류된 열림이 먼저 나가지 않게 한다.
+    assert opened[0]["retry_until"] == retry_at + tasks.ESSENCE_ESCALATION_RETRY_MARGIN
     assert opened[0]["severity"] == IncidentSeverity.MEDIUM
     assert deferred == []
 
@@ -377,3 +378,36 @@ def test_system_owned_essence_refresh_never_opens_human_incident(monkeypatch, st
     response, opened, _recovered, _deferred = _run_essence_task(monkeypatch, result)
     assert response["status"] == status.value
     assert opened == []
+
+
+def _escalated(next_attempt_at):
+    return EssenceRefreshResult(
+        status=EssenceRefreshStatus.ESCALATED,
+        hospital_id=uuid.uuid4(),
+        snapshot_hash="s",
+        previous_philosophy_id=None,
+        next_automatic_attempt_at=next_attempt_at,
+    )
+
+
+def test_essence_retry_window_covers_the_reconcile_interval() -> None:
+    now = datetime(2026, 10, 12, 3, 0, tzinfo=timezone.utc)
+    due = now + timedelta(hours=48)
+
+    assert tasks.ESSENCE_ESCALATION_RETRY_MARGIN >= timedelta(minutes=30)
+    assert tasks._essence_escalation_retry_until(_escalated(due), now) == (
+        due + tasks.ESSENCE_ESCALATION_RETRY_MARGIN
+    )
+    # 예산 소진은 기한이 없다 — 곧바로 사람의 일이다.
+    assert tasks._essence_escalation_retry_until(_escalated(None), now) is None
+
+
+def test_essence_retry_due_now_marker_never_opens_immediately() -> None:
+    """옛 초안·마지막 시도 시각 없음(`datetime.min`)은 '지금 바로' 재검수다 — 즉시 OPEN이 아니다."""
+
+    now = datetime(2026, 10, 12, 3, 0, tzinfo=timezone.utc)
+    marker = datetime.min.replace(tzinfo=timezone.utc)
+
+    for due in (marker, now - timedelta(hours=2)):
+        retry_until = tasks._essence_escalation_retry_until(_escalated(due), now)
+        assert retry_until == now + tasks.ESSENCE_ESCALATION_RETRY_MARGIN

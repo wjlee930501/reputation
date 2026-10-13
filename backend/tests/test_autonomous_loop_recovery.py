@@ -395,9 +395,8 @@ def test_site_build_recovery_hands_a_spent_budget_to_one_incident(monkeypatch) -
     assert incident.hospital_id == hospital.id
     assert incident.operation_run_id == failures[0].id
     assert incident.admin_path == f"/hospitals/{hospital.id}"
-    assert incident.next_action == (
-        "병원 기본 정보와 공개 준비 오류를 확인하고 운영센터에서 다시 시도하세요."
-    )
+    assert incident.next_action == autonomous_recovery.SITE_BUILD_EXHAUSTED_NEXT_ACTION
+    assert "‘작업 다시 시도’" in incident.next_action
     assert incident.dedupe_key == autonomous_recovery.build_incident_key(
         "site_build",
         "hospital",

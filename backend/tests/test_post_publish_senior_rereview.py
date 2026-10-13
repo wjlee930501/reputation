@@ -146,3 +146,42 @@ def test_unavailable_senior_review_changes_nothing(monkeypatch):
     assert result == "UNAVAILABLE"
     assert item.essence_check_summary["post_publish_ai_review"] == before
     assert calls["recovered"] == 0 and calls["needs_human"] == []
+
+
+def test_unavailable_rereview_does_not_spend_the_daily_cap(monkeypatch):
+    """1a처럼 검수를 끝내지 못한 시도(UNAVAILABLE·SKIPPED)는 하루 상한을 쓰지 않는다."""
+
+    import app.workers.tasks as tasks_module
+    from tests.test_published_auto_correction import _hospital
+    from tests.test_published_auto_correction_sweep import _SweepDb
+
+    first, second = _flagged(), _flagged()
+    for item in (first, second):
+        item.hospital = _hospital()
+        # 실행은 실제 시계를 쓴다 — 대기 일수가 넉넉히 지난 검수 시각으로 둔다.
+        item.essence_check_summary["post_publish_ai_review"]["checked_at"] = (
+            "2026-01-01T00:00:00+00:00"
+        )
+
+    class _Db(_SweepDb):
+        def __init__(self):
+            # FLAGGED 조회(없음) → 상위 재검수 대상 → 비공개 → 표본
+            self._batches = [[], [first, second], [], []]
+
+    seen: list = []
+
+    def fake_senior(_db, item, *_args):
+        seen.append(item.id)
+        return "UNAVAILABLE" if item is first else "REVIEWED"
+
+    monkeypatch.setattr(sweep, "require_dispatch", lambda *_a, **_k: None)
+    monkeypatch.setattr(sweep, "SyncSessionLocal", _Db)
+    monkeypatch.setattr(tasks_module, "_generation_philosophy_sync", lambda *_a: object())
+    monkeypatch.setattr(sweep, "senior_rereview_flagged", fake_senior)
+    monkeypatch.setattr(settings, "POST_PUBLISH_AUTO_CORRECTION_DAILY_CAP", 1)
+    monkeypatch.setattr(settings, "POST_PUBLISH_AI_REVIEW_DAILY_CAP", 0)
+    monkeypatch.setattr(settings, "POST_PUBLISH_UNCERTAIN_REREVIEW_DAYS", 7)
+
+    sweep.review_post_publish_samples.run()
+
+    assert seen == [first.id, second.id]

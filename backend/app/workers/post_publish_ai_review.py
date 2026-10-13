@@ -852,7 +852,9 @@ def review_post_publish_samples() -> dict[str, int]:
                 result = senior_rereview_flagged(
                     db, item, hospital, philosophies[hospital.id], _run_async, rereview_now
                 )
-                corrections += 1
+                # 검수를 끝내지 못한 시도는 하루 상한을 쓰지 않는다(연속 불가는 out_of_budget이 끊는다).
+                if result not in ("UNAVAILABLE", "SKIPPED"):
+                    corrections += 1
                 tally(result)
                 _bump(counts, f"senior_rereview_{result.lower()}")
         if cap <= 0:

@@ -829,6 +829,13 @@ def _failures_since_last_success(recent: list[OperationRun]) -> list[OperationRu
     ]
 
 
+# 개발 담당의 사고다(`incident_types`). 원인을 고친 뒤 할 수 있는 일은 운영센터의 재시도 버튼 하나다.
+SITE_BUILD_EXHAUSTED_NEXT_ACTION = (
+    "사이트 준비 오류를 확인해 원인을 고친 뒤, 운영센터에서 이 사고에 연결된 작업의 "
+    "‘작업 다시 시도’를 눌러 주세요."
+)
+
+
 def _open_rebuild_site_incident(
     db, hospital: Hospital, newest_failed_run: OperationRun, observed_at: datetime
 ) -> None:
@@ -850,9 +857,7 @@ def _open_rebuild_site_incident(
             failed_run_id=newest_failed_run.id,
             safe_error_code="SITE_BUILD_RETRIES_EXHAUSTED",
             safe_error_message="사이트 준비 자동 재실행이 하루치 예산을 모두 사용했습니다.",
-            next_action=(
-                "병원 기본 정보와 공개 준비 오류를 확인하고 운영센터에서 다시 시도하세요."
-            ),
+            next_action=SITE_BUILD_EXHAUSTED_NEXT_ACTION,
             observed_at=observed_at,
         )
         if created is not None:

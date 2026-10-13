@@ -168,6 +168,19 @@ def test_pure_infrastructure_incidents_leave_the_ae_channel(incident_type: str) 
     assert intent.channel == SLACK_DEVELOPER_CHANNEL
 
 
+def test_spent_site_build_budget_tells_the_developer_which_button_to_press() -> None:
+    """유일한 조치가 운영센터의 '작업 다시 시도'다 — 개발 담당 알림이 그 경로를 말한다."""
+
+    intent = build_open_incident_notification(
+        replace(_projection(), incident_type="SITE_BUILD_RETRIES_EXHAUSTED"),
+        "https://admin.example.test",
+    )
+
+    assert intent.channel == SLACK_DEVELOPER_CHANNEL
+    assert "운영센터" in intent.message.fallback_text
+    assert "‘작업 다시 시도’" in intent.message.fallback_text
+
+
 @pytest.mark.parametrize(
     "incident_type", ["CONTENT_GENERATION_FAILED", "MONTHLY_REPORT_BLOCKED", "", "BRAND_NEW_TYPE"]
 )

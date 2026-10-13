@@ -4094,6 +4094,23 @@ def _cost_guarded_essence_review(
     return _run_async(_call())
 
 
+# 다음 자동 재검수는 15분 재조정(`reconcile-essence-snapshots`)이 집는다. 기한을 재검수 시각에 딱
+# 맞추면 재조정이 집기 전(최대 15분)에 보류된 열림 알림이 먼저 나간다 — 주기 + 여유만큼 늦춘다.
+ESSENCE_ESCALATION_RETRY_MARGIN = timedelta(minutes=30)
+
+
+def _essence_escalation_retry_until(result, now: datetime) -> datetime | None:
+    """Essence 보류 사고의 스윕 소유 기한. 예산이 끝났으면 None(곧바로 사람의 일).
+
+    다음 시도 시각이 이미 지났거나 '지금 바로' 표식(`automatic_recovery_due_at`의 datetime.min — 옛
+    초안·마지막 시도 시각 없음)이면 지금 재검수 대상이다. 즉시 OPEN으로 열지 않고 지금 + 여유로 둔다.
+    """
+
+    if result.automatic_recovery_exhausted:
+        return None
+    return max(result.next_automatic_attempt_at, now) + ESSENCE_ESCALATION_RETRY_MARGIN
+
+
 @celery_app.task(
     name="app.workers.tasks.auto_review_essence_snapshot",
     bind=True,
@@ -4211,11 +4228,7 @@ def auto_review_essence_snapshot(self, hospital_id: str) -> dict[str, object]:
         # 예산이 남은 보류는 처음부터 RETRYING+다음 자동 재검수 시각으로 연다 — 시도마다 새로
         # 열지 않고 같은 병원·snapshot 한 건을 만진다. 열림 알림은 발송기가 그 시각까지 보류하고,
         # 그 안에 승인되면 보내지 않는다. 소진되면 OPEN이며 그때 사람의 일이 된다.
-        retry_until = (
-            None
-            if result.automatic_recovery_exhausted
-            else result.next_automatic_attempt_at
-        )
+        retry_until = _essence_escalation_retry_until(result, datetime.now(timezone.utc))
         _run_async(
             open_ops_incident(
                 pipeline="essence_auto_review",
