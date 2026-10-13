@@ -332,6 +332,7 @@ const UNKNOWN_SAFE_CAUSE = '원인 설명을 확인할 수 없습니다. 아래 
 export const SAFE_CAUSE_CODE_MESSAGES: Record<string, string> = {
   // 초기 진단(V0) 측정
   V0_REPORT_RETRIES_EXHAUSTED: '외부 답변 측정 재시도를 모두 사용했지만 초기 진단을 완료하지 못했습니다.',
+  V0_REPORT_FAILED: '초기 노출 진단이 자동 재실행 3회 뒤에도 끝나지 않았습니다. 운영센터에서 "작업 다시 시도"로 다시 돌리거나 측정 기준 변경 여부를 확인하세요.',
   V0_COST_DEFERRED: '비용·자동 작업 안전장치가 이번 초기 진단 측정을 다음 실행으로 미뤘습니다.',
   V0_PROVIDER_AUTH_OR_MODEL: '답변 측정 서비스의 인증 또는 모델 설정을 확인해야 합니다.',
   V0_PROVIDER_UNAVAILABLE: '외부 답변 측정 서비스가 응답하지 않거나 일시적으로 제한되었습니다.',
