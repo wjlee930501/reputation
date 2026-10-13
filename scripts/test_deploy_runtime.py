@@ -2156,14 +2156,30 @@ def test_backend_deploy_runs_outside_batch_windows(tmp_path: Path, clock: str) -
     assert commands.index("storage cp") < commands.index("docker build")
 
 
-def test_second_release_on_the_same_day_is_refused(tmp_path: Path) -> None:
+def test_second_release_on_the_same_day_warns_and_asks_for_a_reason(tmp_path: Path) -> None:
+    # 배치 시간대 밖이면 하루 여러 번 배포할 수 있다(2026-10-13) — 잠금은 경고하고 사유를 요구할 뿐이다.
     result, commands = _run_target(
         tmp_path, "api", FAKE_LOCK_HELD="1",
         FAKE_LOCK_CONTENT='{"day": "2026-10-11", "revision": "another-release"}',
     )
     assert result.returncode != 0
-    assert "하루 한 번" in result.stderr
+    assert "another-release" in result.stderr
+    assert "하루 여러 번 배포할 수 있습니다" in result.stderr
+    assert "--override-reason" in result.stderr
+    assert "하루 한 번" not in result.stderr
     assert "docker build" not in commands
+
+
+def test_second_release_with_a_reason_deploys_outside_batch_windows(tmp_path: Path) -> None:
+    result, commands = _run_target(
+        tmp_path, "api", "--override-reason=당일 후속 수정",
+        DEPLOY_CLOCK_KST="2026-10-11T14:30", FAKE_LOCK_HELD="1",
+        FAKE_LOCK_CONTENT='{"day": "2026-10-11", "revision": "another-release"}',
+    )
+    assert result.returncode == 0, result.stderr
+    assert "ops/deploy-lock/2026-10-11-override-1430" in commands
+    assert "배치 시간대" not in result.stderr
+    assert "docker build" in commands
 
 
 def test_retrying_the_same_release_on_the_same_day_is_allowed(tmp_path: Path) -> None:
@@ -2183,6 +2199,8 @@ def test_override_reason_passes_the_rules_and_is_recorded(tmp_path: Path) -> Non
     assert result.returncode == 0, result.stderr
     assert "배포 규칙 예외: 발행 장애 긴급 수정" in result.stderr
     assert "ops/deploy-lock/2026-10-11-override-2250" in commands
+    # 사유가 배치 시간대까지 넘는 경우는 경고로 드러난다.
+    assert "사유로 배치 시간대 규칙도 넘습니다" in result.stderr
 
 
 def test_site_deploy_is_not_bound_by_the_backend_rules(tmp_path: Path) -> None:

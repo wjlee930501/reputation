@@ -104,6 +104,14 @@ LLM 검수 원문·JSON 필드명·예외 본문은 Slack에 옮기지 않는다
   (`notification_store.claimable_notifications_stmt`) — 기한이 지나 사람에게 넘어가는 순간에 나간다. 기한 전에 사고가
   복구·확인되면 그 열림 알림은 `INCIDENT_RESOLVED_BEFORE_SEND`로 종결되고, 열림 알림이 나가지 않은 사고는 복구 알림도
   보내지 않는다(`settle_incident_notices`). 열림 알림이 나간 사고는 근거·연결 실행 성공 어느 쪽으로 닫혀도 복구 알림이 따른다.
+- 온보딩 정체(`ONBOARDING_PROFILE_INCOMPLETE`·`ONBOARDING_SCHEDULE_MISSING`·`ONBOARDING_NO_PUBLICATION`, 플래그가 켜졌을 때만
+  `ONBOARDING_SOURCES_UNREACHABLE`)와 자기 도메인 DNS 미설정(`CUSTOM_DOMAIN_DNS_NOT_CONFIGURED`, 저장 뒤 14일)은 운영 대상이며
+  처음부터 OPEN이다(스윕 소유 아님). 병원·원인당 사고 하나로 열 때 알리고, 풀리면 복구 알림 없이 조용히 닫는다. 이미 열린·확인된
+  사고는 다시 열지 않는다. DNS 확인은 사고가 열린 뒤에도 15분마다 계속하며 맞으면 같은 경로로 공개를 연다.
+- 비용 가드 fail-open(`COST_GUARD_FAIL_OPEN`)과 사용량 spool 잘림(`PROVIDER_USAGE_SPOOL_TRUNCATED`)은 **개발 대상**이다. 비용 한도
+  도달(`COST_GUARD_LIMIT_REACHED`)은 대표 결정이라 운영 대상으로 남지만 fail-open은 AE가 고칠 수 없는 인프라 사실이다(MasterPlan D25).
+  fail-open은 프로세스·카테고리마다 첫 발생에 한 번 열고, 가드가 다시 Redis로 판정하면 복구하며, 복구 뒤 10분 안의 재발은 다시
+  열지 않는다. spool 잘림은 KST 하루 한 건이고 자동 복구하지 않는다(유실은 되살릴 수 없다). 정상 spool 복구는 알리지 않는다.
 
 일일 요약은 `병원 / 이유 / 건수 / 운영 또는 개발 담당 / 구체적인 할 일`을 먼저 보여준다.
 사람의 일 건수는 `operator_action.is_operator_todo` 하나로 센다 — 기한이 지난 사람의 일이면서 운영 담당 몫이고
@@ -139,6 +147,18 @@ Celery 밖 pipeline watchdog은 **조건 집합 에피소드당 한 번** 알린
 그 보류는 07:45·08:00 보류 요약·사고·18:00 일일 요약이 소유한다. 운영 복구 문구는 실제 공개가 있었을 때만 "다시 공개되고
 있습니다"라고 쓴다. Redis 장애 중 fail-open 경보는 20분에 한 번(정각·20분·40분 뒤 5분 안)만 보낸다.
 
+**운영 경보 메일(2차 경로, 2026-10 Phase 2).** Slack이 닿지 않을 때만 `OPS_ALERT_EMAIL`로 Resend 메일을 보낸다
+(`ops_alert_email.send_ops_alert`, 결정적 `idempotency_key`). 값이 비어 있으면 보내지 않고 ERROR 로그(`ops alert email: …`)만
+남긴다. 운영 값은 Terraform `alert_email`(GCP 경보 이메일 채널)과 같은 주소이며 주소를 코드에 두지 않는다. 보내는 경우는 둘뿐이다.
+(1) 외부 감시의 경보가 Slack에 전달되지 않았을 때 — 에피소드당 한 통(`watchdog:{audience}:{episode_id}`, 에피소드가 없으면 KST
+날짜+조건 서명). 복구는 메일로 보내지 않으며 감시의 판정·에피소드 기록을 바꾸지 않는다. (2) 운영 채널 전송 사고가 열렸는데 대신
+받을 살아 있는 개발 채널도 없을 때 — 사고 episode당 한 통(`ops-channel-down:{incident_id}:e{episode_seq}`, 감사
+`ops_alert_email_sent`로 중복 방지). 실패하면 프로세스 안에서 15분 뒤 같은 키로 다시 시도하며 outbox·사고 상태는 바꾸지 않는다.
+정상 경로가 아니므로 Slack 알림을 메일로 복제하지 않는다. Slack을 거치지 않는 GCP 이메일 경보도 둘 더 있다(시간당 1회, 24시간
+자동 종료, `terraform/monitoring.tf`): Cloud Scheduler 감시 호출(`watchdog-heartbeat`·`watchdog-publish-check`)의 ERROR 로그(토큰
+공백 401·LB·API 장애)와 API 서비스의 `pipeline watchdog`·`ops alert email` ERROR 로그. Worker 쪽 Slack 경로 실패는 기존 worker
+ERROR 경보가 이메일로 보낸다.
+
 공개 주소 점검은 같은 도메인이 **연속 두 번** 실패해야 병원 사고를 연다(한 번의 일시 503은 기록만 남긴다). 한 점검 회차에서
 두 병원 이상이 공용 사이트의 HTTP 5xx를 받으면 병원별 사고 대신 개발 대상 사고 `PUBLIC_SITE_UNAVAILABLE` 하나로 묶고, 그것도
 연속 두 회차에서 보여야 연다. 시간 초과·TLS·마커 불일치는 병원별 원인일 수 있어 종전처럼 병원 사고다. 복구는 연속 세 번 정상이다. 전송 실패는 outbox 행의 `incident_id`(그 알림이 말하는 사고)를
@@ -170,6 +190,8 @@ OPEN/RECOVERED의 episode 중복 키, outbox lease/CAS, 전송 재시도 상한�
 발송 선택: `milestone_event_tasks.should_notify_milestone`, `latest_report_facts`,
 `enqueue_generation_blocked_digest_sync`. 사람의 일 술어: `operator_action.is_operator_todo`, 원인 묶음:
 `incident_cause_group`. 채널 상태와 대체 전송: `notification_channel_health`, `notification_delivery`.
+2차 경로 메일: `ops_alert_email`(호출: `pipeline_watchdog`, `notification_channel_health.email_dead_operator_channel`).
+Phase 2 사고: `onboarding_stalls`, `workers/domain_dns_poll`, `cost_guard_health`, `provider_usage.report_dropped_usage`.
 `monthly_report_gap_notifications`는 최종 LIMITED 결과도 공유 전달 게이트로 판단한다.
 
 검증에는 실제 업무 DB와 분리한 PostgreSQL/Redis, mock Slack 응답을 쓴다.

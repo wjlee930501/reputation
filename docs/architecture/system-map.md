@@ -74,8 +74,8 @@ Backend는 Python 3.11, FastAPI, SQLAlchemy, Alembic, Celery, Jinja2/WeasyPrint�
 1. 계약 인수와 운영 담당자를 기록한다. 최초 `profile_complete=True` 전환에는 승인된 인수와 필수 프로파일 항목이 필요하다. 현재 필수 항목에는 공식 병원 식별 정보·좌표·진료 항목 등이 포함되므로 옛 입력 목록을 복사해서 검증하지 않는다.
 2. 프로파일 완료를 저장하면 V0 초기 진단과 사이트 준비를 서로 독립적으로 등록한다. V0는 측정·PDF를 저장하고 `v0_report_done`을 올리는 백그라운드 산출물이며, 진행 중이거나 늦게 끝난다는 이유로 사이트 준비와 공개 시작을 막지 않는다.
 3. `build_aeo_site`는 이름과 달리 병원별 HTML/CSS 파일 생성기가 아니다. 프로파일이 완료된 병원의 `site_built` 상태를 준비하고 공통 Site에서 제공할 병원을 활성화한다.
-4. 공개 활성화 공통 선행조건은 **`profile_complete && site_built`**다. 일정·Essence 승인·V0 완료를 여기에 추가하지 않는다. 기본 플랫폼 주소는 조건 충족 시 자동 활성화하며, 자기 도메인은 별도 연결·DNS/TLS 검증 경로를 따른다. 자동 작업은 PAUSED 병원을 임의로 재개하지 않는다. 늦게 끝난 V0도 이미 결정된 ACTIVE·PAUSED·PENDING_DOMAIN 상태를 되돌리지 않는다.
-5. 콘텐츠 운영 준비는 별도다. 일정 설정과 최신 전체 자료 기반의 유효한 Essence가 필요하다. 병원 기본 화면 공개와 콘텐츠 신규 생성 준비를 같은 단계로 묶지 않는다.
+4. 공개 활성화 공통 선행조건은 **`profile_complete && site_built`**다. 일정·Essence 승인·V0 완료를 여기에 추가하지 않는다. 기본 플랫폼 주소는 조건 충족 시 자동 활성화하며, 자기 도메인은 별도 연결·DNS/TLS 검증 경로를 따른다(`PENDING_DOMAIN`이면 15분 도메인 감시가 수동 확인과 같은 경로로 DNS를 다시 확인하고, 저장 뒤 14일이 지나면 사람의 일 `CUSTOM_DOMAIN_DNS_NOT_CONFIGURED` 하나를 열되 확인은 계속한다 — [DNS 폴링](../../backend/app/workers/domain_dns_poll.py)). 자동 작업은 PAUSED 병원을 임의로 재개하지 않는다. 늦게 끝난 V0도 이미 결정된 ACTIVE·PAUSED·PENDING_DOMAIN 상태를 되돌리지 않는다.
+5. 콘텐츠 운영 준비는 별도다. 일정 설정과 최신 전체 자료 기반의 유효한 Essence가 필요하다. 첫 일정은 Essence 자동 승인 직후(또는 15분 조정이 일정이 한 번도 없던 공개 병원을 회수할 때) 시스템이 계약 요금제로 만들고 첫 달은 남은 게시 요일로 안분한다([첫 일정](../../backend/app/services/initial_schedule.py)). 시간만 흐르고 다음 단계로 가지 않는 온보딩은 병원·원인당 사고 하나로 올린다([온보딩 정체](../../backend/app/services/onboarding_stalls.py)). 병원 기본 화면 공개와 콘텐츠 신규 생성 준비를 같은 단계로 묶지 않는다.
 
 `HospitalStatus`는 ONBOARDING, ANALYZING, BUILDING, PENDING_DOMAIN, ACTIVE, PAUSED를 가지지만 모든 변경이 하나의 엄격한 상태 전이 그래프에 모인 것은 아니다. 일시중지는 서비스 구간을 닫고 공개 API는 ACTIVE를 요구한다. `site_live`는 중지 시에도 남을 수 있다. 재개 경로의 도메인 검사는 신규 연결의 모든 DNS/TLS 검사와 동일하다고 단정하지 않는다.
 
@@ -101,7 +101,7 @@ flowchart LR
 
 일반 텍스트 자료가 생성되거나 실질적으로 바뀌면 `SOURCE_EVIDENCE_PROCESSING` 실행이 전체 대상 ID와 입력 hash를 snapshot으로 저장하고 cursor를 전진시킨다. 한 병원에는 한 실행만 진행하며, 한 번에 일부만 처리해도 다음 dispatch가 남은 자료를 잇는다. 같은 정규화 값의 PATCH는 처리 상태와 근거를 바꾸지 않는다. claim한 입력은 짧게 commit한 뒤 외부 호출하고, 저장 시 claim·입력 hash·현재 자료 상태를 다시 확인한다. 긴 원문은 24,000자와 800자 중첩 범위로 나누고 coverage를 남긴다. 사진, EXCLUDED 자료, 추출 원문이 없는 URL은 필수 텍스트 처리 집합과 구분한다.
 
-자동 검토는 최초 승인 또는 명시적 근거 변경의 재승인에서만 합성·안전 검사·독립 검토를 수행한다. 일반 자료 추가만으로 기존 승인본을 다시 합성하지 않는다. APPROVE, 신뢰도 0.90 이상, 발견 사항 없음, 연결된 근거 전체의 검토 범위를 요구한다. 근거가 80개를 넘으면 모든 근거를 shard로 나눠 검토하고, 어느 shard라도 확인되지 않으면 전체 승인하지 않는다. 승인 직전 snapshot과 경쟁 초안을 다시 확인하고 이전 승인을 보관한 뒤 새 기준을 승격한다. 사람이 맡은 경쟁 초안이나 해결되지 않은 충돌은 자동으로 덮어쓰지 않는다. 자동 검수가 보류(ESCALATE)하면 초안에 복구 사이클과 시각을 남기고 24h × 2^(cycle-1) 백오프로 최대 4회 자동 재검수한다(v2.7). 옛 마커(사이클 8, 시각 없음)는 사이클 1로 읽어 한 번 더 예산을 준다. 사람이 손댄 초안은 자동 재시도하지 않으며, 예산 안의 보류는 RETRYING 인시던트 하나로만 남고 소진 뒤 OPEN이 된다. 72시간 넘게 ERROR인 필수 자료는 상태를 바꾸지 않고 이번 합성 입력·완전성 검사·snapshot에서 제외하며 `excluded_error_source` gap으로 기록한다. 샤드 검수 프롬프트는 부분 근거임을 알리고 다른 샤드의 근거 ID를 `evidence_elsewhere`로 넘긴다. 합성·검수는 `essence` 비용 카테고리(일 60·월 600 기본)를 쓰고, 반복 실패한 claim은 `min(15분 × 2^attempt, 24h)`로 지연한다. 재조정은 15분마다 orphan PENDING 자료와 유실된 처리·검토 실행을 회수하되 병원 200곳씩 순환한다. 450곳이면 전체를 한 번 보는 데 최대 세 번, 약 45분이 걸릴 수 있으므로 15분을 개별 작업 완료 기한으로 해석하지 않는다.
+자동 검토는 최초 승인 또는 명시적 근거 변경의 재승인에서만 합성·안전 검사·독립 검토를 수행한다. 일반 자료 추가만으로 기존 승인본을 다시 합성하지 않는다. APPROVE, 신뢰도 0.90 이상, 발견 사항 없음, 연결된 근거 전체의 검토 범위를 요구한다. 근거가 80개를 넘으면 모든 근거를 shard로 나눠 검토하고, 어느 shard라도 확인되지 않으면 전체 승인하지 않는다. 승인 직전 snapshot과 경쟁 초안을 다시 확인하고 이전 승인을 보관한 뒤 새 기준을 승격한다. 사람이 맡은 경쟁 초안이나 해결되지 않은 충돌은 자동으로 덮어쓰지 않는다. 자동 검수가 보류(ESCALATE)하면 초안에 복구 사이클과 시각을 남기고 1h → 4h → 12h 백오프로 자동 재검수하며 4번째 보류에서 예산이 끝난다(`AUTO_ESSENCE_RECOVERY_BACKOFFS`, 2026-10 Phase 2; 이전 24h × 2^(cycle-1)). 자료 간 상충·프롬프트 주입 의심 보류는 사다리 없이 곧바로 사람에게 넘긴다(`automatic_recovery_terminal`). 옛 마커(사이클 8, 시각 없음)는 사이클 1로 읽어 한 번 더 예산을 준다. 사람이 손댄 초안은 자동 재시도하지 않으며, 예산 안의 보류는 RETRYING 인시던트 하나로만 남고 소진 뒤 OPEN이 된다. 처리 ERROR인 필수 자료는 상태를 바꾸지 않고 이번 합성 입력·완전성 검사·snapshot에서 제외하며 `excluded_error_source` gap으로 기록한다 — 다른 필수 자료가 PROCESSED면 1시간, ERROR뿐이면 6시간 뒤에 뺀다. 샤드 검수 프롬프트는 부분 근거임을 알리고 다른 샤드의 근거 ID를 `evidence_elsewhere`로 넘긴다. 합성·검수는 `essence` 비용 카테고리(일 60·월 600 기본)를 쓰고, 반복 실패한 claim은 `min(15분 × 2^attempt, 24h)`로 지연한다. 재조정은 15분마다 orphan PENDING 자료와 유실된 처리·검토 실행을 회수하되 병원 200곳씩 순환한다. 450곳이면 전체를 한 번 보는 데 최대 세 번, 약 45분이 걸릴 수 있으므로 15분을 개별 작업 완료 기한으로 해석하지 않는다.
 
 근거: [readiness](../../backend/app/services/essence_readiness.py), [snapshot·근거 검사](../../backend/app/services/essence_engine.py), [자료 처리 실행](../../backend/app/services/source_processing_runs.py), [자동 검토](../../backend/app/services/essence_auto_review.py), [자료 API](../../backend/app/api/admin/essence.py), [네이버 동기화](../../backend/app/workers/naver_sync.py).
 
@@ -121,7 +121,7 @@ flowchart LR
 
 기본 요금은 월 60/90/120만원, 부가세 별도다. 위 배분은 기본값이며 노출 부족을 반영해 FAQ/DISEASE/TREATMENT/LOCAL 간 일부 슬롯을 조정할 수 있다. 총편수와 COLUMN/HEALTH/NOTICE는 유지한다. 코드의 [배분](../../backend/app/models/content.py)과 [노출 기반 조정](../../backend/app/services/gap_driven_slots.py)을 함께 본다.
 
-일정 API는 유효한 Essence를 요구하고 새 스케줄을 저장하면서 슬롯을 만든다. 과거 시작일이나 허용 날짜가 부족한 최초 설정은 거부한다. 반복 월간 생성은 `ensure_quota=True`로 계약 편수를 우선하므로 지정 요일 밖이나 하루 복수 슬롯이 생길 수 있다. 스케줄 교체 시 공개 이력·이월 슬롯을 보존한다. 월간 복구는 병원 advisory lock 아래 빠진 순번을 채운다. [일정 API](../../backend/app/api/admin/content.py), [캘린더](../../backend/app/services/content_calendar.py), [월간 슬롯](../../backend/app/workers/monthly_slots.py)
+일정 API는 유효한 Essence를 요구하고 새 스케줄을 저장하면서 슬롯을 만든다. 첫 일정은 Essence 자동 승인 뒤 시스템이 같은 슬롯 생성기와 같은 감사행(`set_schedule`, actor `system:essence-auto-approval`)으로 만들며, 이 시스템 첫 일정만 첫 달 약속 편수를 남은 게시 요일로 안분한다(남은 요일이 없으면 0편, `content_month_target`). 과거 시작일이나 허용 날짜가 부족한 최초 설정은 거부한다. 반복 월간 생성은 `ensure_quota=True`로 계약 편수를 우선하므로 지정 요일 밖이나 하루 복수 슬롯이 생길 수 있다. 스케줄 교체 시 공개 이력·이월 슬롯을 보존한다. 월간 복구는 병원 advisory lock 아래 빠진 순번을 채운다. [일정 API](../../backend/app/api/admin/content.py), [캘린더](../../backend/app/services/content_calendar.py), [월간 슬롯](../../backend/app/workers/monthly_slots.py)
 
 ### 생성과 검증
 
@@ -235,7 +235,7 @@ Backend 최종 인증 경계는 공유 Admin key다. BFF 세션과 actor만으�
 | 화요일 03:00 | 네이버 자료 동기화 |
 | 매일 04:00 | 무료 진단 보존 정책에 따른 파기 |
 | 매 1분 | 무료 진단·IndexNow·공급자 사용량 spool drain, 알림 outbox, 월간 artifact, 유실된 자율 작업 복구 |
-| 매 15분 | Essence 재조정, 온보딩·월간 milestone 투영, 도메인 상태 확인. Essence orphan 회수는 병원 200곳씩 순환 |
+| 매 15분 | Essence 재조정(첫 일정 회수 포함), 온보딩·월간 milestone 투영과 온보딩 정체 스캔, 도메인 상태 확인과 대기 자기 도메인 DNS 확인. Essence orphan 회수는 병원 200곳씩 순환 |
 | 매 5분 | 서명된 7개 큐 canary |
 
 큐는 control/default/content/sov/reports/leadgen/certificates다. 발행·공개 캐시 복구·자율 복구는 높은 우선순위의 control로, IndexNow와 공급자 usage 복구는 낮은 우선순위 배경 작업으로 라우팅한다. 현재 Worker 서비스 하나가 7개 큐를 모두 소비하며 prefork 기본 동시성은 2다. 야간 생성은 슬롯 하나짜리 태스크로 팬아웃하므로 하룻밤 처리 편수는 `동시성 × (8시간 ÷ 한 편 6분)`으로 늘어난다(동시성 2면 약 80편). control은 다음 빈 슬롯을 먼저 받지만 이미 실행 중인 긴 작업을 선점하거나 전용 용량을 보장하지 않는다. 태스크 enqueue 시각을 header에 넣고 control 30초, 배경 5분을 기준으로 queue wait 로그를 남긴다. Beat는 Redis 기반 RedBeat 락과 영속 스케줄을 사용하므로 배포 시 저장 스케줄도 재조정해야 한다. [entrypoint](../../backend/docker-entrypoint.sh)
@@ -271,7 +271,7 @@ Backend 최종 인증 경계는 공유 Admin key다. BFF 세션과 actor만으�
 | 콘텐츠 필드·유형·프롬프트 | 생성 파싱, 편집, 발행, 공개 필터, 참고자료·JSON-LD, 이미지 검토 |
 | 일정·요금제·이월 | 최초 설정, 월간 슬롯 복구, 노출 기반 배분, 실제 발행일, 계약 월 집계 |
 | 측정 질문·모델·반복 | 고정 manifest, 실패 분모, 전월 비교 가능성, PDF, 비용 예약·실제 호출 |
-| 활성화·도메인 | Admin/Worker/Public 게이트, PAUSED 보호, 서비스 구간, DNS/TLS, 호스트 캐시 |
+| 활성화·도메인 | Admin/Worker/Public 게이트, PAUSED 보호, 서비스 구간, DNS/TLS(대기 도메인 15분 자동 확인 포함), 호스트 캐시 |
 | 작업·알림 | commit 경계, dispatch 서명·복구 allowlist, 멱등성, outbox, canary, RedBeat |
 | 리포트 | 내부/원장 artifact, hash 검증, customer-ready, 전달·정정·철회, 재조정 |
 

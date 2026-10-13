@@ -15,7 +15,7 @@
 #
 # 옵션(대상 뒤에 붙인다):
 #   --accept-env-diff         로컬 .env.production이 운영 env와 다를 때 로컬 값으로 배포
-#   --override-reason="사유"  배치 시간대·하루 한 번 규칙을 이번만 넘김(사유 기록)
+#   --override-reason="사유"  배치 시간대 규칙을 이번만 넘기거나 같은 날 두 번째 릴리스를 배포(사유 기록)
 #   --unpin                   특정 리비전에 고정된 트래픽을 새 리비전 배포 뒤 옮김
 # 환경변수:
 #   AUTO_ROLLBACK=0           배포 뒤 확인(readiness 등)이 실패해도 자동 롤백하지 않고 멈춤
@@ -37,11 +37,12 @@
 # ═══════════════════════════════════════════════════════════════════
 set -euo pipefail
 
-RED='\033[0;31m'; GREEN='\033[0;32m'; BLUE='\033[0;34m'; BOLD='\033[1m'; RESET='\033[0m'
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; BLUE='\033[0;34m'; BOLD='\033[1m'; RESET='\033[0m'
 # 로그는 전부 stderr로 — build_and_push 류 함수가 command substitution으로
 # 캡처될 때 이미지 URL(stdout) 외의 출력이 섞이지 않도록 한다.
 info()  { echo -e "${BLUE}ℹ${RESET}  $1" >&2; }
 ok()    { echo -e "${GREEN}✓${RESET} $1" >&2; }
+warn()  { echo -e "${YELLOW}⚠${RESET}  $1" >&2; }
 fail()  { echo -e "${RED}✗${RESET} $1" >&2; exit 1; }
 
 # ─── 설정 ─────────────────────────────────────────────────────────
@@ -1372,10 +1373,12 @@ run_production_readiness_gate() {
   ok "현재 배포 버전의 모든 작업 큐 준비 확인 완료"
 }
 
-# ─── 배포 시간대·하루 한 번 ─────────────────────────────────────────
-# 배포는 하루 한 번, 콘텐츠 배치 시간대 밖에서 한다(2026-10-08). Worker 교체가 실행 중 메시지를 끊어 10/6~10/8
+# ─── 배포 시간대·하루 잠금 ─────────────────────────────────────────
+# 배포는 콘텐츠 배치 시간대 밖에서 한다(2026-10-08). Worker 교체가 실행 중 메시지를 끊어 10/6~10/8
 # V0 보고서 2건이 유실됐다. Worker·Beat를 바꾸는 대상만 적용한다(backend·api·worker·beat·all).
 # site·admin·migrate·rollback은 막지 않는다(롤백은 장애 복구 경로).
+# 배치 시간대 밖이면 하루 여러 번 배포할 수 있다(2026-10-13 대표 결정). 하루 잠금은 막는 규칙이 아니라
+# 기록이다 — 같은 날 다른 릴리스가 이미 나갔으면 경고하고 --override-reason으로 사유를 남겨야 진행한다.
 #
 # 막는 시간(KST): 22:15~02:00 전체(23:00 야간 생성이 몇 시간 이어지고 01시 복구 스윕이 뒤따른다)와
 # 04·07·08·12·18·22시 앞뒤 45분(08시는 07:45·08:00 발행 게이트와 08:30 외부 감시).
@@ -1471,6 +1474,11 @@ require_deploy_slot() {
 
   if [[ -n "$OVERRIDE_REASON" ]]; then
     info "배포 규칙 예외: ${OVERRIDE_REASON}"
+    # 같은 날 두 번째 릴리스도 이 사유로 넘기므로, 배치 시간대까지 넘는 경우는 따로 드러내고 기록한다.
+    if batch="$(batch_window_conflict "$hhmm")"; then
+      warn "지금(KST ${hhmm})은 콘텐츠 배치 시간대(${batch})입니다 — 사유로 배치 시간대 규칙도 넘습니다."
+      record_fields+=(batch_window "$batch")
+    fi
     write_deploy_record "${day}-override-${hhmm/:/}" "" \
       "${record_fields[@]}" override_reason "$OVERRIDE_REASON" \
       || fail "배포 예외 기록을 남기지 못했습니다(gs://${DEPLOY_LOCK_BUCKET}). 기록 없이 규칙을 넘지 않습니다."
@@ -1499,7 +1507,9 @@ require_deploy_slot() {
       info "같은 릴리스(${RELEASE_REVISION})의 오늘 재시도입니다 — 계속합니다."
       return
     fi
-    fail "오늘(${day}) 이미 다른 릴리스를 배포했습니다(하루 한 번 규칙). 내일 배포하거나, 꼭 필요하면 --override-reason=\"사유\"를 붙이세요."
+    # 하루 잠금은 권고다 — 배치 시간대 밖의 두 번째 릴리스는 사유만 남기면 된다(2026-10-13).
+    warn "오늘(${day}) 이미 다른 릴리스(${existing:-알 수 없음})를 배포했습니다. 배치 시간대 밖이면 하루 여러 번 배포할 수 있습니다."
+    fail "같은 날 두 번째 릴리스는 사유를 남깁니다 — --override-reason=\"사유\"를 붙여 다시 실행하세요."
   fi
   cat "$err" >&2
   fail "배포 잠금을 확인하지 못했습니다(gs://${DEPLOY_LOCK_BUCKET}). 버킷과 권한을 확인하세요."

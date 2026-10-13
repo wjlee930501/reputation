@@ -187,7 +187,7 @@ readiness gate는 아래 절차를 따랐다. Site/Admin SA는 분리됐으며 l
 **`deploy.sh`가 스스로 지키는 규칙(2026-10 자율 운영 P2).** 사람이 배포 전후에 하던 확인 몇 가지를 스크립트가 맡는다.
 
 - **env 정본은 운영 서비스다.** backend 대상(`backend·api·worker·beat·all·migrate`)은 운영 `reputation-api`의 현재 env(비밀 아닌 값)를 배포 입력으로 쓴다. 로컬 `.env.production`이 다르면 바뀌는 키 이름만(값은 출력하지 않음) 보여 주고 멈춘다. 로컬 값으로 바꾸려는 것이 맞으면 `--accept-env-diff`를 붙인다. 서비스가 없는 신규 환경은 `.env.production`으로 시작한다. 운영 env를 읽지 못하면(권한 등) 로컬 파일로 대신 배포하지 않는다.
-- **시간대와 하루 한 번.** Worker·Beat를 바꾸는 대상(`backend·api·worker·beat·all`)은 콘텐츠 배치 시간대 — KST 22:15~02:00 전체(23:00 야간 생성이 몇 시간 이어지고 01시 복구 스윕이 뒤따른다)와 04·07·08·12·18·22시 앞뒤 45분(08시는 07:45·08:00 발행 게이트와 08:30 외부 감시) — 이면 멈추고, KST 하루 한 릴리스만 배포한다(`gs://reputation-reports-<project>/ops/deploy-lock/<KST 날짜>.json`, 같은 릴리스의 재시도는 허용). 이 확인은 legacy publish 사전 확인보다 먼저 돈다. **운영 변경(마이그레이션·서비스 교체) 전에 실패하면 이 실행이 만든 잠금을 되돌린다** — 사전 확인·이미지 빌드 실패 뒤 고친 릴리스를 같은 날 다시 배포할 수 있다. 예외는 `--override-reason="사유"`로만 하고 사유는 같은 경로의 `<날짜>-override-<HHMM>.json`에 남는다. `DEPLOY_CLOCK_KST`는 테스트 전용이며 운영에서는 사유 없이는 멈추고, 사유가 있으면 실제 시각으로 기록하고 `clock_override: true`를 남긴다. `site·admin·migrate·rollback`은 막지 않는다.
+- **시간대와 하루 잠금.** Worker·Beat를 바꾸는 대상(`backend·api·worker·beat·all`)은 콘텐츠 배치 시간대 — KST 22:15~02:00 전체(23:00 야간 생성이 몇 시간 이어지고 01시 복구 스윕이 뒤따른다)와 04·07·08·12·18·22시 앞뒤 45분(08시는 07:45·08:00 발행 게이트와 08:30 외부 감시) — 이면 멈춘다. 배치 시간대 밖이면 하루 여러 번 배포할 수 있다(2026-10-13 대표 결정). 하루 잠금(`gs://reputation-reports-<project>/ops/deploy-lock/<KST 날짜>.json`)은 권고다 — 같은 날 다른 릴리스가 이미 나갔으면 경고하고 `--override-reason="사유"`로 사유를 남겨야 진행한다(같은 릴리스의 재시도는 그대로 허용). 사유는 배치 시간대 규칙도 넘으므로, 배치 시간대 안에서 사유를 쓰면 따로 경고하고 기록(`batch_window`)에 남긴다. 이 확인은 legacy publish 사전 확인보다 먼저 돈다. **운영 변경(마이그레이션·서비스 교체) 전에 실패하면 이 실행이 만든 잠금을 되돌린다** — 사전 확인·이미지 빌드 실패 뒤 고친 릴리스를 같은 날 다시 배포할 수 있다. 사유는 같은 경로의 `<날짜>-override-<HHMM>.json`에 남는다. `DEPLOY_CLOCK_KST`는 테스트 전용이며 운영에서는 사유 없이는 멈추고, 사유가 있으면 실제 시각으로 기록하고 `clock_override: true`를 남긴다. `site·admin·migrate·rollback`은 막지 않는다.
 - **자동 롤백.** readiness Job이 실패하거나, API 배포 뒤 공개 표면 확인(`/api/v1/health/live`의 `release`가 이번 배포 SHA인지, 배포 전 정상이던 병원 헬스의 `slug`·`canonical_host`·Site 리비전이 그대로인지 — `scripts/deploy_smoke.py`)에서 API `release`가 다르거나 기준선 병원의 절반 이상이 실패하면 `.deploy-rollback`의 배포 시작 전 리비전으로 트래픽을 자동으로 되돌린다. 일부(절반 미만) 병원만 실패하면 경고와 함께 실패로 끝나되 롤백하지 않는다(그 병원 공개 주소를 확인한다). DB 마이그레이션은 되돌리지 않는다. 0084 같은 비호환 릴리스는 `AUTO_ROLLBACK=0`으로 끄고(멈추기만 한다) 아래 롤백 절을 따른다. 공개 표면 확인은 `SKIP_POST_DEPLOY_SMOKE=1`로 건너뛸 수 있다(로그에 남는다).
 - **고정 트래픽.** 서비스 트래픽이 특정 리비전에 고정돼 있으면 배포 전에 멈춘다. 고정이 의도한 것이 아니면 `--unpin`을 붙인다 — 새 리비전이 Ready가 된 뒤 `update-traffic --to-latest`로 옮기고, 롤백 좌표는 지금 트래픽을 받는 리비전으로 남긴다(배포 전에 `--to-latest`를 먼저 치면 고정의 이유였을 리비전으로 트래픽이 간다).
 
@@ -222,8 +222,9 @@ bash scripts/deploy.sh all
 7. API, Site, Admin을 배포한다.
 8. 실제 트래픽·리비전과 외부 공개 표면을 별도로 검사한다. 앞선 readiness만으로 이후 프론트엔드까지 검증되었다고 보지 않는다.
 
-**배포 횟수와 시간대(2026-10-08).** 배포는 하루 한 번으로 묶고, 콘텐츠 배치 시간대(23:00과 01·04·07·12·18·22시 KST 전후)를
-피한다. 10/6~10/8의 V0 보고서 2건 유실과 `expired authenticated dispatch envelope` 폭주는 잦은 배포가 원인이었다 —
+**배포 횟수와 시간대(2026-10-08, 2026-10-13 완화).** 배포는 콘텐츠 배치 시간대(23:00과 01·04·07·12·18·22시 KST 전후)를
+피한다. 배치 시간대 밖이면 하루 여러 번 배포할 수 있다(2026-10-13 대표 결정 — 10/8에는 하루 한 번으로 묶었다).
+`deploy.sh`가 배치 시간대를 막고, 하루 1회 잠금은 `--override-reason`으로 넘긴다(위 "`deploy.sh`가 스스로 지키는 규칙"). 10/6~10/8의 V0 보고서 2건 유실과 `expired authenticated dispatch envelope` 폭주는 잦은 배포가 원인이었다 —
 Cloud Run이 옛 워커를 10초 뒤 SIGKILL하면 kombu가 미확인 메시지를 3600초 뒤 되돌려 봉투가 만료됐다. PR #226 뒤의
 워커는 `REMAP_SIGTERM=SIGQUIT`(cold shutdown)으로 실행 중 메시지를 즉시 큐에 반납하고, 반납된 사본은 새 워커가
 몇 초 안에 다시 받는다. 봉투 수명은 2단계로 올린다 — 이번 릴리스는 수락 상한만 6시간(`DISPATCH_MAX_LIFETIME_SECONDS`)으로
@@ -282,6 +283,54 @@ gcloud run jobs execute reputation-migrate --project mso-platform-481505 --regio
 `outbox_rows`가 **약 100만 행 이하**면 표준 `deploy.sh`(migrate 선행)로 진행한다. 넘으면 배포 전에 읽기 전용이 아닌 세션에서
 `CREATE INDEX CONCURRENTLY ix_notification_outbox_open_pairing ON notification_outbox (incident_id, state, created_at)
 WHERE notification_type = 'INCIDENT_OPEN';`을 먼저 실행한다 — 0088은 인덱스가 이미 있으면 생성을 건너뛴다.
+
+**Phase 2(마이그레이션 없음, DB head `0088` 그대로) — 배포일 절차.** 대상은 API·Worker·Beat(`bash scripts/deploy.sh backend`)와
+Admin(`bash scripts/deploy.sh admin` — 병원 정보 화면의 자동 입력 초안, 시간대 규칙 없음)이다. Site 변경은 없다. Phase 1이 먼저
+배포됐는지, 운영 DB head가 `0088_add_outbox_open_pairing_index`인지 먼저 확인한다.
+
+1. **시각.** `deploy.sh`(backend·api·worker·beat·all)가 막는 KST 구간은 21:15~02:00(22시 앞뒤 45분 + 22:15~02:00 야간), 03:15~04:45,
+   06:15~08:45, 11:15~12:45, 17:15~18:45다. 배포 가능 구간은 02:00~03:14, 04:46~06:14, 08:46~11:14, 12:46~17:14, 18:46~21:14.
+2. **Terraform 경보 2종(배포 코드와 독립, 먼저 적용해도 된다).** `terraform plan`이 아래 두 정책의 **추가 2건만** 보이는지 확인한 뒤
+   그 둘만 적용한다. 둘 다 기존 이메일 채널(`google_monitoring_notification_channel.email[0]`)과 감시 스케줄러 잡을 참조하므로 다른
+   리소스 변경이 나오면 멈추고 원인을 본다.
+
+   ```bash
+   terraform -chdir=terraform apply \
+     -target='google_monitoring_alert_policy.watchdog_scheduler_failures[0]' \
+     -target='google_monitoring_alert_policy.slack_path_failures[0]'
+   ```
+3. **`PIPELINE_WATCHDOG_TOKEN`.** 이번 릴리스부터 readiness가 운영에서 이 토큰이 비면 실패하고(`pipeline_watchdog_token_configured`)
+   자동 롤백된다. 활성 버전이 있는지 확인하고, Cloud Scheduler 감시 잡의 헤더 값과 같은지 본다(다르면 감시 호출이 401이고 새 경보
+   `watchdog_scheduler_failures`가 울린다 — 값 일치는 코드로 검증되지 않는다).
+
+   ```bash
+   gcloud secrets versions list PIPELINE_WATCHDOG_TOKEN --project=mso-platform-481505 --filter=state=enabled
+   ```
+4. **`OPS_ALERT_EMAIL` 값 = Terraform `alert_email`.** 저장소에는 실제 값이 없다(`terraform.tfvars` 비추적, 예시만 있음). 운영의 이메일
+   경보 채널 주소를 읽어 같은 주소를 `.env.production`에 `OPS_ALERT_EMAIL=<주소>`로 넣는다(비밀이 아닌 env). `RESEND_API_KEY`는 이미
+   필수 시크릿이라 메일은 바로 보낼 수 있다.
+
+   ```bash
+   gcloud monitoring channels list --project=mso-platform-481505 --filter='type=email' --format='value(labels.email_address)'
+   ```
+5. **하루 잠금 버킷.** 잠금 경로 `gs://reputation-reports-mso-platform-481505/ops/deploy-lock/`는 Phase 2 첫 배포가 처음 만든다. 작업 PC
+   계정이 그 버킷에 객체를 만들고 지울 수 있는지 미리 본다(못 하면 첫 실행이 "배포 잠금을 확인하지 못했습니다"로 멈춘다).
+
+   ```bash
+   echo '{}' | gcloud storage cp - gs://reputation-reports-mso-platform-481505/ops/deploy-lock/probe.json
+   gcloud storage rm gs://reputation-reports-mso-platform-481505/ops/deploy-lock/probe.json
+   ```
+6. **첫 실행과 `--accept-env-diff`.** 배포 정본이 로컬 파일에서 운영 env로 바뀌었다. 먼저 옵션 없이 `bash scripts/deploy.sh backend`를
+   실행하면 차이 키 목록(값은 출력하지 않는다)만 보여 주고 멈춘다. 목록이 **정확히 `added: OPS_ALERT_EMAIL` 하나**일 때만
+   `bash scripts/deploy.sh backend --accept-env-diff`로 다시 실행한다. `removed:`·`changed:`나 다른 `added:` 키가 하나라도 있으면
+   `--accept-env-diff`를 붙이지 않는다 — 로컬 파일이 낡은 것이고, 붙이면 로컬 파일이 서비스 env를 통째로 바꿔 `removed` 키가 운영에서
+   사라진다(9/23·10/1 사고의 원인). 로컬 파일을 운영 env에 맞춰 고친 뒤 다시 본다(Phase 1이 지우게 한 `SOV_MONTHLY_COHORT_LIMIT`이
+   운영에 남아 있으면 `removed:`로 나온다 — Phase 1 배포 기록부터 확인한다). 이후 배포부터는 운영 env가 정본이다.
+7. **배포 뒤 확인.** readiness 18개 검사 전부 통과(`checks.pipeline_watchdog_token_configured: true`, `facts.ops_alert_email_configured:
+   true`), `/api/v1/health/live`의 `release`가 이번 릴리스(`deploy.sh`가 자동 확인), Beat `/live` 정상(`beat_liveness_failed` 로그 없음,
+   기동 뒤 15분 유예), 새 리비전 ERROR 0건, 15분 뒤 `project_milestone_events` 결과에 `onboarding_stalls_*` 키와
+   `monitor_live_custom_domains` 결과에 `pending_domains_*` 키, GCP 경보 정책 2개 존재. 트래픽이 고정돼 있으면 `--unpin`을 붙인다.
+8. **롤백.** 자동 롤백은 트래픽만 되돌리며 마이그레이션이 없어 안전하다. Phase 0의 롤백 금지(Worker `00223` 이하)는 그대로다.
 
 **10/8 배치(PR #226, `0083_add_operation_run_not_before`) — 0083 migrate Job을 먼저 끝내고, 코드는 그 다음 배포한다.**
 새 ORM이 `operation_runs.not_before_at`을 SELECT한다. 추가형·NULL 허용이라 0083 위의 옛 코드는 안전하다.
