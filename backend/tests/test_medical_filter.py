@@ -378,6 +378,25 @@ def test_forbidden_vocabulary_for_prompt_covers_pattern_only_expressions():
         "본인부담금 면제로 모십니다.",
         "본인부담금 할인",
         "본인부담금 대납",
+        # 2026-10-13 교차 검토 — 공적 근거 없는 면제·'대상'만 붙은 무료, 혜택 제공의 활용형.
+        "본인부담금 면제! 지금 예약하세요.",
+        "본인부담금 면제 대상입니다.",
+        "본인부담금 환급 대상입니다.",
+        "신규 고객 대상 무료 검사 예약을 받습니다.",
+        "할인해 드립니다.",
+        "할인을 제공합니다.",
+        "할인 적용됩니다.",
+        "할인이 적용됩니다.",
+        "할인을 받으실 수 있습니다.",
+        "무료로 상담해 드립니다.",
+        "무료로 제공합니다.",
+        "무료 상담을 드립니다.",
+        "무료 검사를 제공합니다.",
+        "보건소 무료 검진은 미리 예약하세요.",
+        # 공적 기관과 함께여도 병원이 스스로 제공한다고 하면 유인이다.
+        "국가 무료 검진을 본원에서 제공합니다.",
+        "본원은 보건소와 함께 무료 검사를 제공합니다.",
+        "1.5% 할인",
     ],
 )
 def test_price_discount_and_inducement_claims_are_blocked(text):
@@ -405,6 +424,12 @@ def test_price_discount_and_inducement_claims_are_blocked(text):
         "금연 상담 무료 (보건소)",
         "혈당이 최저가 되는 새벽",
         "타 병원보다 비싸다고 느낄 수 있습니다.",
+        # '제공'의 주체가 공적 기관이면 유인이 아니다.
+        "보건소에서 무료 검사를 제공합니다.",
+        "보건소 무료 검사 대상입니다.",
+        "무료 검사는 보건소에서 받을 수 있습니다.",
+        "건강보험 보장성 강화로 본인부담금 0원인 산정특례 항목이 있습니다.",
+        "무료 주차가 가능하니 예약하세요.",
     ],
 )
 def test_public_programs_and_clinical_terms_are_not_inducement(text):
@@ -489,3 +514,121 @@ def test_confirmed_false_positives_are_not_medical_ads(text):
 )
 def test_the_same_words_stay_blocked_as_claims(text, expected):
     assert expected in check_forbidden(text)
+
+
+# ── 결과 보장은 어떤 문맥 예외보다 먼저 본다(2026-10-13 교차 검토) ──────────────────────
+# 예외의 양성 근거(기간·질환 주어·공적 제도)를 갖춰도 같은 문장이 결과를 보장하면 광고다.
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("완전 회복까지 1주를 보장합니다.", "완치"),
+        ("증상은 통증 없이 사라짐을 보장합니다.", "통증 없는"),
+        ("완전 회복까지 2주면 된다고 약속드립니다.", "완치"),
+        ("완전 회복까지 3개월이면 무조건 됩니다.", "완치"),
+        ("완전 회복까지 1주라고 장담합니다.", "완치"),
+        ("고혈압은 초기에 통증 없이 반드시 낫습니다.", "통증 없는"),
+        ("결절은 대부분 통증 없는 혹으로 확실히 사라집니다.", "통증 없는"),
+        ("임상시험에서 확인된 효과가 틀림없이 나타납니다.", "검증된"),
+        ("보건소에서 무료 검사를 받으면 100% 낫습니다.", "할인·유인"),
+    ],
+)
+def test_an_outcome_guarantee_overrides_every_context_exemption(text, expected):
+    assert expected in check_forbidden(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # 보장을 부정하는 말, 보험 용어 '보장성', 권고형 '반드시 …하세요'는 보장 표지가 아니다.
+        "완치를 보장할 수 없습니다.",
+        "완전 회복까지 3개월이 걸리며 결과를 보장할 수는 없습니다.",
+        "원인이 확실하지 않은 경우 완전 회복까지 수개월이 걸립니다.",
+        "고혈압은 초기에 통증 없이 진행하므로 반드시 정기 검진을 받으세요.",
+        "비급여 항목은 100% 본인부담입니다.",
+    ],
+)
+def test_negated_guarantees_and_advice_do_not_revoke_an_exemption(text):
+    assert check_forbidden(text) == []
+
+
+# 예외마다 통과해야 하는 표본 하나. 새 예외는 여기에 표본을 더해야 이 검사를 통과한다.
+_EXEMPTION_SAMPLES = {
+    "역학 통계 문맥의 순위 인용": ("1등", "위암은 국내 발생률 1위 암입니다."),
+    "정점을 뜻하는 최고조·최고치": ("최고", "증상이 최고조에 이릅니다."),
+    "수치 상한(체온·용량·연령·횟수)": ("최고", "체온이 최고 39도까지 오릅니다."),
+    "연구·문헌 결과의 인용": ("검증된", "임상시험에서 확인된 효과는 아직 제한적입니다."),
+    "우월 주장을 부정하는 문장": ("최우수", "탁월한 효과를 기대하기 어렵습니다."),
+    "완전 회복까지 걸리는 기간 안내": ("완치", "수술 후 완전 회복까지 3개월이 걸립니다."),
+    "완치 주장을 바로 부정·한정": ("완치", "완치가 어렵습니다."),
+    "본인부담 비율 안내": ("100%", "비급여 항목은 100% 본인부담입니다."),
+    "100% 주장을 바로 부정": ("100%", "정확도가 100%는 아닙니다."),
+    "성공률을 개인차·불확실성으로 한정": ("성공률", "성공률은 개인차가 커 단정할 수 없습니다."),
+    "무부작용 주장을 존재 부정으로 반박": ("부작용 없는", "부작용 없는 약은 없습니다."),
+    "촬영·판독 과정의 장비 설명": ("최첨단", "첨단 장비로 정밀하게 촬영합니다."),
+    "첨단 기술 주장을 부정": ("최첨단", "첨단 기술이 효과를 기대하기 어렵습니다."),
+    "공적 제도의 무료 검진·검사·상담 안내": ("할인·유인", "보건소에서 무료 검사를 받을 수 있습니다."),
+    "공적 제도의 무료 검진·검사·상담 안내(제도가 뒤에 오는 문장)": (
+        "할인·유인",
+        "무료 검사는 보건소에서 받을 수 있습니다.",
+    ),
+    "연령·주기로 정한 정기 검진 대상 안내": ("할인·유인", "만 40세 이상은 2년마다 무료 검진 대상입니다."),
+    "건강보험 제도의 본인부담 면제·환급 안내": ("할인·유인", "차상위 계층은 본인부담금 면제 대상입니다."),
+    "무증상 질환의 경과 설명": ("통증 없는", "고혈압은 초기에 통증 없이 진행합니다."),
+    "환자의 의문·걱정 표현": ("통증 없는", "시술이 아프지 않을까 걱정하는 분이 많습니다."),
+}
+
+# 기준 커밋(7a1e2174)의 필터가 '… 보장합니다' 변형을 막던 표본 — 이 표본들은 회귀하면 안 된다.
+_BLOCKED_BY_BASE_WITH_GUARANTEE = frozenset(
+    {
+        "정점을 뜻하는 최고조·최고치",
+        "연구·문헌 결과의 인용",
+        "완전 회복까지 걸리는 기간 안내",
+        "본인부담 비율 안내",
+        "촬영·판독 과정의 장비 설명",
+        "무증상 질환의 경과 설명",
+    }
+)
+
+
+def test_every_context_exemption_has_a_sample():
+    from app.utils.medical_filter import _ALLOWED_CONTEXTS
+
+    reasons = {exemption.reason for group in _ALLOWED_CONTEXTS.values() for exemption in group}
+    assert reasons == set(_EXEMPTION_SAMPLES)
+    assert _BLOCKED_BY_BASE_WITH_GUARANTEE <= reasons
+
+
+@pytest.mark.parametrize(("reason", "label_and_sample"), sorted(_EXEMPTION_SAMPLES.items()))
+def test_every_exemption_sample_passes_but_its_guarantee_variant_is_blocked(reason, label_and_sample):
+    label, sample = label_and_sample
+    assert check_forbidden(sample) == [], reason
+    variant = sample.rstrip(".") + " 보장합니다."
+    assert label in check_forbidden(variant), reason
+
+
+# ── 정규식 실행 시간(2026-10-13 교차 검토) ───────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "9" * 16000 + " 할인",
+        "9" * 16000 + "% 할인",
+        "9." * 8000 + "% 할인",
+        "무료 " * 5000,
+        "면제 " * 5000,
+        "할인을 " * 5000,
+        "보건소 무료 검사 " * 2000,
+        "다른 병원보다 " * 3000,
+        "최고 39도 " * 3000,
+        "완전 회복까지 3개월 " * 1500 + "보장",
+    ],
+)
+def test_long_adversarial_inputs_finish_quickly(text):
+    import time
+
+    started = time.perf_counter()
+    check_forbidden(text)
+    assert time.perf_counter() - started < 0.1
