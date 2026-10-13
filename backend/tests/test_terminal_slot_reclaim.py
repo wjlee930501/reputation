@@ -197,3 +197,55 @@ def test_topic_swap_budget_is_one_function(monkeypatch):
         SimpleNamespace(topic_swap_history=None, essence_check_summary=None)
     ) is False
     assert tasks.topic_swap_budget_left is topic_swap_budget_left
+
+
+# ── E1(2026-10-13): 아무것도 맡지 못한 HARD 차단은 입력이 바뀔 때까지 다시 집지 않는다 ─────
+# 배포 전 측정(계획 3-5 Step 0)이 공회전을 보여 줄 때만 켜는 플래그 뒤에 있다(기본 꺼짐).
+
+
+_IDLE_HARD = {
+    "reason": "CONTENT_AI_HARD_FINDING",
+    "retry_class": "INPUT_CHANGE_REQUIRED",
+    "hard_finding_idle": True,
+    "approved_facts": "facts-v1",
+}
+
+
+def _idle_terminal(monkeypatch, enabled: bool) -> None:
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "CONTENT_HARD_FINDING_IDLE_TERMINAL", enabled)
+
+
+def test_idle_model_declared_hard_is_terminal_until_its_input_changes(monkeypatch):
+    _idle_terminal(monkeypatch, True)
+    philosophy = _philosophy()
+    item = _item(_IDLE_HARD, philosophy=philosophy)
+    monkeypatch.setattr(tasks, "_hospital_review_facts", lambda *_a: "facts-v1")
+
+    assert attempt_is_terminal(_IDLE_HARD) is True
+    assert _eligible(monkeypatch, item, philosophy) is False
+    # 사람이 승인 자료(병원 사실)를 채우면 다시 집는다.
+    monkeypatch.setattr(tasks, "_hospital_review_facts", lambda *_a: "facts-v2")
+    assert _eligible(monkeypatch, item, philosophy) is True
+    # 운영 기준이 새로 승인돼도 다시 집는다.
+    monkeypatch.setattr(tasks, "_hospital_review_facts", lambda *_a: "facts-v1")
+    assert _eligible(monkeypatch, item, _philosophy("p2")) is True
+
+
+def test_idle_mark_is_ignored_while_the_flag_is_off(monkeypatch):
+    """플래그를 끄면(기본) 남아 있던 표시도 종착으로 읽지 않는다 — 끄는 것이 곧 롤백이다."""
+
+    _idle_terminal(monkeypatch, False)
+    philosophy = _philosophy()
+    monkeypatch.setattr(tasks, "_hospital_review_facts", lambda *_a: "facts-v1")
+    assert attempt_is_terminal(_IDLE_HARD) is False
+    assert _eligible(monkeypatch, _item(_IDLE_HARD, philosophy=philosophy), philosophy) is True
+
+
+def test_hard_without_the_idle_mark_is_still_picked_for_correction(monkeypatch):
+    _idle_terminal(monkeypatch, True)
+    philosophy = _philosophy()
+    attempt = {k: v for k, v in _IDLE_HARD.items() if k != "hard_finding_idle"}
+    assert attempt_is_terminal(attempt) is False
+    assert _eligible(monkeypatch, _item(attempt, philosophy=philosophy), philosophy) is True

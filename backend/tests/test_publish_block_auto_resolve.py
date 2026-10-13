@@ -1930,3 +1930,48 @@ def test_uncertain_only_block_is_left_to_the_rereview_ladder(worker, monkeypatch
     )
     assert not plan.applicable
 
+
+
+def test_human_edited_hard_block_is_marked_idle_and_skipped_next_sweep(worker, monkeypatch):
+    """교정할 수 없는(사람이 편집한) HARD 차단은 돈을 쓰지 않고 종착 표시만 남긴다(플래그 켜짐)."""
+
+    monkeypatch.setattr(settings, "CONTENT_HARD_FINDING_IDLE_TERMINAL", True)
+    philosophy, calls = worker
+    body = _body(NEUTRAL_A, WRONG_TRAINING)
+    finding = _finding("HARD", "HOSPITAL_FACT", "수련기관이 프로필과 다릅니다.", WRONG_TRAINING)
+    item = _blocked_item(philosophy, body, finding)
+    item.human_edited_at = datetime.now(UTC) - timedelta(days=1)
+    calls["item"] = item
+    _install(monkeypatch, calls, propose=_no_provider, review=_no_provider)
+
+    state, code, _message = tasks._generate_single_content_item(
+        _DB(), item, _hospital(id=item.hospital_id)
+    )
+
+    assert (state, code) == (tasks.GenerationItemState.FAILED, "CONTENT_AI_HARD_FINDING")
+    attempt = tasks._stored_generation_attempt(item)
+    assert attempt["hard_finding_idle"] is True
+    assert attempt["retry_class"] == GenerationRetryClass.INPUT_CHANGE_REQUIRED.value
+    assert tasks._terminal_attempt_is_unchanged(item, philosophy) is True
+    assert calls["llm"] == 0 and calls["reviews"] == [] and calls["writes"] == []
+
+
+def test_human_edited_hard_block_is_not_marked_while_the_flag_is_off(worker, monkeypatch):
+    """기본(플래그 꺼짐)은 종전 동작 — 표시를 남기지 않아 다음 스윕이 다시 집는다."""
+
+    monkeypatch.setattr(settings, "CONTENT_HARD_FINDING_IDLE_TERMINAL", False)
+    philosophy, calls = worker
+    body = _body(NEUTRAL_A, WRONG_TRAINING)
+    finding = _finding("HARD", "HOSPITAL_FACT", "수련기관이 프로필과 다릅니다.", WRONG_TRAINING)
+    item = _blocked_item(philosophy, body, finding)
+    item.human_edited_at = datetime.now(UTC) - timedelta(days=1)
+    calls["item"] = item
+    _install(monkeypatch, calls, propose=_no_provider, review=_no_provider)
+
+    state, code, _message = tasks._generate_single_content_item(
+        _DB(), item, _hospital(id=item.hospital_id)
+    )
+
+    assert (state, code) == (tasks.GenerationItemState.FAILED, "CONTENT_AI_HARD_FINDING")
+    assert not (tasks._stored_generation_attempt(item) or {}).get("hard_finding_idle")
+    assert calls["llm"] == 0 and calls["reviews"] == [] and calls["writes"] == []

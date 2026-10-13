@@ -525,6 +525,7 @@ from app.workers.generation_retry_policy import (
     BODY_REPAIR_STATE_KEY,
     DAILY_RESET_ENVIRONMENT_CODES,
     ENVIRONMENT_SINCE_KEY,
+    HARD_FINDING_IDLE_KEY,
     OPERATOR_DECIDES_KEY,
     REVIEW_UNAVAILABLE_CODE,
     SAMPLE_EXHAUSTED_DAY_LIMIT,
@@ -1244,7 +1245,9 @@ def _generation_attempt_is_unchanged(
 
 
 def _terminal_attempt_is_unchanged(
-    item: ContentItem, philosophy: HospitalContentPhilosophy | None
+    item: ContentItem,
+    philosophy: HospitalContentPhilosophy | None,
+    hospital: Hospital | None = None,
 ) -> bool:
     """종착 기록(`attempt_is_terminal`)이 그 판정 때의 입력 그대로인가.
 
@@ -1257,6 +1260,9 @@ def _terminal_attempt_is_unchanged(
     if not attempt_is_terminal(previous):
         return False
     if previous.get("context") != _generation_attempt_context(item, philosophy):
+        return False
+    if previous.get(HARD_FINDING_IDLE_KEY) and _approved_facts_changed_since_block(item, hospital):
+        # 사실·안전 HARD는 승인 자료가 풀므로, 사람이 그 자료를 채웠으면 다시 집는다.
         return False
     edited_at = getattr(item, "human_edited_at", None)
     observed_raw = previous.get("observed_at")
@@ -5699,7 +5705,9 @@ def _run_generation_item(
     philosophy = None
 
     try:
-        if _terminal_attempt_is_unchanged(item, _generation_philosophy_sync(db, hospital.id)):
+        if _terminal_attempt_is_unchanged(
+            item, _generation_philosophy_sync(db, hospital.id), hospital
+        ):
             # 로더가 claim 전에 거르는 규칙(`_generation_retry_is_eligible`)과 같다. 재배달·직접
             # 호출로 이 자리에 와도 종착 판정을 같은 입력으로 다시 돌리지 않는다.
             previous = _stored_generation_attempt(item)
@@ -7026,6 +7034,7 @@ def _generate_single_content_item(
                     stored_assessment.code,
                     stored_assessment.message,
                 )
+        correction_ran = False
         if (
             stored_assessment.code == "CONTENT_AI_HARD_FINDING"
             # 운영자 재검수 전용 실행은 교정(공급자 호출)을 하지 않는다. 교정은 자동 스윕이 맡는다.
@@ -7040,6 +7049,7 @@ def _generate_single_content_item(
             if isinstance(corrected, tuple):
                 return corrected
             if corrected is not None:
+                correction_ran = True
                 stored_assessment = assess_content_publication(item, philosophy)
         repairable_body = (
             stored_assessment.code in _AUTOMATIC_BODY_REPAIR_CODES
@@ -7080,6 +7090,24 @@ def _generate_single_content_item(
         }:
             # Fact/medical-safety findings remain fail-closed with their concrete
             # finding and approved-data gap; no writer or image budget is spent.
+            if (
+                stored_assessment.code == "CONTENT_AI_HARD_FINDING"
+                and not review_only
+                and not correction_ran
+                and _stored_model_declared_hard(item)
+                and settings.CONTENT_HARD_FINDING_IDLE_TERMINAL
+            ):
+                # 이번 실행은 아무것도 맡지 못했다(사람 편집으로 교정 불가 등). 같은 입력으로는
+                # 다음 스윕도 같은 결과이므로 종착으로 표시한다 — 입력·사람 편집·승인 사실이
+                # 바뀌면 로더가 다시 집는다(`_terminal_attempt_is_unchanged`).
+                _remember_generation_attempt(
+                    db,
+                    item,
+                    philosophy,
+                    stored_assessment.code,
+                    count_attempt=False,
+                    extra={HARD_FINDING_IDLE_KEY: True},
+                )
             return (
                 GenerationItemState.FAILED,
                 stored_assessment.code,

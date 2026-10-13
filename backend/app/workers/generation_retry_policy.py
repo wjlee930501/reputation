@@ -7,6 +7,8 @@ from datetime import UTC, date, datetime, timedelta
 from enum import StrEnum
 from zoneinfo import ZoneInfo
 
+from app.core.config import settings
+
 KST = ZoneInfo("Asia/Seoul")
 OVERNIGHT_RECOVERY_HOURS = (1, 4, 7)
 DAYTIME_RECOVERY_HOURS = (12, 18, 22)
@@ -88,6 +90,12 @@ OPERATOR_DECIDES_KEY = "operator_decides"
 # 거쳤으므로 승인 자료 변경을 기다리지 않고 같은 슬롯·예정일로 다른 질문을 한 번 답하게 한다
 # (`topic_swap_fallback.exhausted_body_sample_reason`). 교체 상한까지 쓰면 사람의 일이다.
 AUTO_CORRECTION_EXHAUSTED_KEY = "auto_correction_exhausted"
+
+# 모델이 HARD로 단정한 차단(`INPUT_CHANGE_REQUIRED`)인데 이번 실행에서 교정·재작성 어느 것도
+# 맡지 못해 돈을 쓰지 않고 끝난 표시. 같은 입력으로 다시 집어도 같은 결과뿐이라 종착으로
+# 본다 — 입력(지문)·사람 편집·승인된 병원 사실이 바뀌면 호출부가 다시 집는다. 쓰기와 읽기
+# 모두 `CONTENT_HARD_FINDING_IDLE_TERMINAL`(기본 꺼짐) 뒤에 있다.
+HARD_FINDING_IDLE_KEY = "hard_finding_idle"
 
 
 class GenerationRetryClass(StrEnum):
@@ -683,8 +691,10 @@ def attempt_is_terminal(attempt: Mapping | None) -> bool:
     - 사람이 정하는 참고자료 보류(`OPERATOR_DECIDES_KEY`).
     - 승인된 Essence가 없는 `MISSING_APPROVED_ESSENCE`(입력 지문이 바뀌어야 풀린다).
 
-    `INPUT_CHANGE_REQUIRED`인 `CONTENT_AI_HARD_FINDING`은 일부러 뺀다 — 최소 교정 패스가 아직
-    그 지적을 풀 수 있는 단계이고, 본문 수리 코드(`BODY_REPAIR_CODES`)·이미지 코드는 재집기가
+    `INPUT_CHANGE_REQUIRED`인 `CONTENT_AI_HARD_FINDING`은 뺀다 — 최소 교정 패스가 아직 그 지적을
+    풀 수 있는 단계다. 단 직전 실행이 아무것도 맡지 못하고 끝났다는 표시(`HARD_FINDING_IDLE_KEY`)가
+    있고 `CONTENT_HARD_FINDING_IDLE_TERMINAL`이 켜져 있으면 종착이다. 그 밖에 본문 수리 코드
+    (`BODY_REPAIR_CODES`)·이미지 코드는 재집기가
     실제로 일을 한다. 입력이 그대로인지는 호출부가 지문(`context`)으로 따로 확인한다.
     """
 
@@ -696,9 +706,12 @@ def attempt_is_terminal(attempt: Mapping | None) -> bool:
         return reason in SAMPLE_BODY_CODES or (
             reason == "MISSING_REFERENCES" and bool(attempt.get(OPERATOR_DECIDES_KEY))
         )
-    return (
-        retry_class == GenerationRetryClass.INPUT_CHANGE_REQUIRED.value
-        and reason == "MISSING_APPROVED_ESSENCE"
+    if retry_class != GenerationRetryClass.INPUT_CHANGE_REQUIRED.value:
+        return False
+    return reason == "MISSING_APPROVED_ESSENCE" or (
+        reason == "CONTENT_AI_HARD_FINDING"
+        and bool(attempt.get(HARD_FINDING_IDLE_KEY))
+        and settings.CONTENT_HARD_FINDING_IDLE_TERMINAL
     )
 
 
