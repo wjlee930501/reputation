@@ -339,7 +339,8 @@ __MANDATORY_SAFETY_RULES__
 _BODY_LENGTH_TARGETS = (
     f"목표는 {_BODY_LENGTH_BAND}이고 H2는 4~6개입니다.\n"
     f"   순수 글자 수 {CONTENT_BODY_MIN_CHARS:,}자 미만이거나 "
-    f"{CONTENT_BODY_MAX_CHARS:,}자를 넘으면 저장되지 않습니다.\n"
+    f"{CONTENT_BODY_MAX_CHARS:,}자를 넘으면 분량 기준을 벗어난 글로 기록됩니다 — "
+    "반드시 이 범위 안에서 쓰세요.\n"
     f"   합계를 눈대중하지 말고 H2 한 절을 순수 {CONTENT_BODY_SECTION_MIN_CHARS:,}자"
     f"(공백 포함 {_visible_chars(CONTENT_BODY_SECTION_MIN_CHARS):,}자) 이상으로 채우세요 — "
     "절을 두세 문장으로 끝내면 네 절을 다 써도 하한에 닿지 못합니다."
@@ -377,7 +378,7 @@ ARTICLE_TOOL = {
                     "본문 마크다운(참고 자료 섹션 제외). 공백·마크다운 기호를 제외한 "
                     f"{_BODY_LENGTH_BAND}. 순수 글자 수 "
                     f"{CONTENT_BODY_MIN_CHARS:,}자 미만이거나 "
-                    f"{CONTENT_BODY_MAX_CHARS:,}자를 넘으면 저장되지 않는다."
+                    f"{CONTENT_BODY_MAX_CHARS:,}자를 넘으면 분량 기준을 벗어난 글로 기록된다."
                 ),
             },
             "meta_description": {"type": "string"},
@@ -525,7 +526,7 @@ EXISTING_TITLE_PROMPT_LIMIT = 60
 # 단위·같은 상수를 쓴다.
 TYPE_PROMPT_BODY_LENGTH_RULE = (
     f"본문 분량은 공백·마크다운 기호를 제외한 **{_BODY_LENGTH_BAND}**입니다. 순수 글자 수 "
-    f"{CONTENT_BODY_MIN_CHARS:,}자 미만은 저장되지 않으므로 각 H2 절을 고르게 채우세요."
+    f"{CONTENT_BODY_MIN_CHARS:,}자 미만은 분량 기준 미달로 기록되므로 각 H2 절을 고르게 채우세요."
 )
 # 같은 이유로 참고자료도 유형 템플릿이 검증기와 같은 말을 해야 한다. 2026-09-29 점검 뒤로
 # 그 말은 "검증된 문서를 그대로 쓰고, 추측한 URL은 넣지 말라"다 — "최소 1개·비면 저장되지
@@ -1944,7 +1945,7 @@ def _build_remediation_context(findings: list[str] | None) -> str:
         # 삭제한 회차에만 붙이면 나머지 회차는 분량 요구를 듣지 못한 채 재작성한다 —
         # 분량은 어떤 지적을 받았든 모든 회차가 지켜야 하는 저장 조건이다.
         f"재작성한 본문도 {_BODY_LENGTH_BAND} 안에 있어야 합니다"
-        f"(순수 글자 수 {CONTENT_BODY_MIN_CHARS:,}자 미만은 저장되지 않습니다). 지적된 "
+        f"(순수 글자 수 {CONTENT_BODY_MIN_CHARS:,}자 미만은 분량 기준 미달로 기록됩니다). 지적된 "
         "주장을 삭제하거나 완화했다면 그만큼 남은 절의 설명을 더 풀어 써서 채우세요.\n"
         f"{bullets}"
     )

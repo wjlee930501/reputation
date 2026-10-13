@@ -1467,7 +1467,7 @@ def test_remediation_context_keeps_deletions_from_shrinking_the_body():
     context = _build_remediation_context(["지적된 주장을 삭제하세요."])
 
     assert "삭제하거나 완화했다면" in context
-    assert f"{content_engine.CONTENT_BODY_MIN_CHARS:,}자 미만은 저장되지 않습니다" in context
+    assert f"{content_engine.CONTENT_BODY_MIN_CHARS:,}자 미만은 분량 기준 미달로 기록됩니다" in context
 
 
 # ── 분량이 하한 바로 아래(평문 1,567~1,680자)에서 멈추던 FAQ (2026-09-20 due5) ──
@@ -1517,14 +1517,14 @@ def test_the_too_short_advice_reports_the_measured_length():
 
 
 def test_every_rewrite_round_carries_the_length_requirement_not_just_deletions():
-    """분량은 어떤 지적을 받았든 모든 회차가 지켜야 하는 저장 조건이다.
+    """분량은 어떤 지적을 받았든 모든 회차가 지켜야 하는 품질 기준이다(SOFT — 저장은 막지 않는다).
 
     삭제 지적이 있을 때만 분량을 말하면, 다른 지적으로 도는 회차는 분량 요구를 듣지
     못한 채 재작성한다 — 하한 바로 아래에서 맴도는 슬롯이 그렇게 만들어진다.
     """
     context = _build_remediation_context(["참고자료 URL이 주제와 맞지 않습니다."])
 
-    assert f"{content_engine.CONTENT_BODY_MIN_CHARS:,}자 미만은 저장되지 않습니다" in context
+    assert f"{content_engine.CONTENT_BODY_MIN_CHARS:,}자 미만은 분량 기준 미달로 기록됩니다" in context
     # 목표 구간이 "삭제했다면"이라는 조건 **뒤에** 붙어 있으면, 삭제를 요구하지 않은
     # 회차는 그 문장을 자기 것으로 읽지 않는다. 조건 앞에서 무조건 요구해야 한다.
     assert context.index(f"{content_engine.CONTENT_BODY_TARGET_MAX_CHARS:,}자") < context.index(
@@ -1957,3 +1957,21 @@ async def test_a_dropped_reference_reaches_the_next_round_as_a_named_cause(monke
     assert "sleep-blog.example.com" in messages[1], (
         "다음 회차 프롬프트가 어떤 출처가 왜 빠졌는지 말해야 같은 URL이 반복되지 않는다"
     )
+
+
+def test_length_wording_matches_the_soft_gate():
+    """분량은 SOFT 지적이다(`_validate_body_length`가 목록만 돌려준다). 프롬프트가 "저장되지
+    않는다"고 말하면 작가·운영자 모두 틀린 계약을 읽는다(2026-10-13 E3)."""
+
+    surfaces = (
+        content_engine.SYSTEM_PROMPT,
+        content_engine.TYPE_PROMPT_BODY_LENGTH_RULE,
+        content_engine.ARTICLE_TOOL["input_schema"]["properties"]["body"]["description"],
+        _build_remediation_context(["지적"]),
+    )
+    for surface in surfaces:
+        assert "분량 기준" in surface
+        assert f"{content_engine.CONTENT_BODY_MIN_CHARS:,}자 미만은 저장되지 않" not in surface
+        assert "넘으면 저장되지 않" not in surface
+    body = "## 안내\n" + "짧은 본문입니다. " * 20
+    assert _validate_body_length(body)  # 지적만 돌려주고 예외를 던지지 않는다
