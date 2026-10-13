@@ -254,8 +254,12 @@ def test_a_post_whose_references_are_not_required_is_never_left_to_the_operator(
 
 
 @pytest.mark.parametrize("title", [COST_TITLE, CHOICE_TITLE], ids=["cost", "provider_choice"])
-def test_scheduled_post_is_held_for_the_operator_without_a_curated_fill(monkeypatch, title):
-    item, _db, effects = _publish_setup(monkeypatch, references=[], checks=None, title=title)
+def test_scheduled_post_is_published_without_references_and_without_a_curated_fill(
+    monkeypatch, title
+):
+    """D23(2026-10-13 대표 결정): 진료비·병원 선택 글은 참고자료가 선택이다 — 0개로 발행한다."""
+
+    item, _db, _effects = _publish_setup(monkeypatch, references=[], checks=None, title=title)
     fetcher = _hemorrhoid_fetcher()
     _freeze(monkeypatch, _kst(2026, 6, 10, 8, 0))
 
@@ -263,19 +267,10 @@ def test_scheduled_post_is_held_for_the_operator_without_a_curated_fill(monkeypa
         item.id, reference_verifier=ReferenceVerifier(fetcher, domain_spacing=0)
     )
 
-    assert payload["kind"] == "blocked"
-    assert payload["code"] == "MISSING_REFERENCES"
+    assert payload is not None and payload.get("kind") != "blocked"
+    assert item.status is tasks.ContentStatus.PUBLISHED
     assert item.references_list == []  # 수기 목록으로 채우지 않는다
     assert fetcher.calls == []  # 치유 후보를 열지도 않는다
-    assert item.status is tasks.ContentStatus.DRAFT
-    assert effects == {"revalidate": [], "indexnow": []}
-    # 발행기가 남긴 정본 시도 기록 — 사람의 결정이며 다음 자동 시도 시각이 없다.
-    attempt = item.essence_check_summary["generation_attempt"]
-    assert attempt["reason"] == "MISSING_REFERENCES"
-    assert attempt["retry_class"] == GenerationRetryClass.OPERATOR_REQUIRED.value
-    assert attempt[OPERATOR_DECIDES_KEY] is True
-    assert attempt["next_retry_at"] is None
-    assert not retry_is_due(attempt)
 
 
 @pytest.mark.parametrize("title", [COST_TITLE, CHOICE_TITLE], ids=["cost", "provider_choice"])
@@ -290,8 +285,8 @@ def test_seven_forty_five_removes_a_dead_reference_but_never_fills_it(monkeypatc
     with override_reference_fetcher(fetcher):
         paged = tasks._page_morning_stored_publication_gates(_GateDB(item), now_kst=_SEVEN_FORTY_FIVE)
 
-    assert paged == 1
-    assert incidents[0]["code"] == "MISSING_REFERENCES"
+    # 죽은 주소는 빼지만 참고자료가 비어도 보류가 아니다(D23) — 알릴 것이 없다.
+    assert (paged, incidents) == (0, [])
     assert item.references_list == []
     assert fetcher.calls == [GUESSED]  # 죽은 주소만 확인했고 수기 목록 후보는 열지 않았다
 
@@ -614,24 +609,18 @@ def _cited_curated_setup(monkeypatch, title, *, fresh):
 def test_scheduled_post_drops_a_cited_curated_document_even_when_it_passes(
     monkeypatch, title, fresh
 ):
-    item, effects, fetcher, _url = _cited_curated_setup(monkeypatch, title, fresh=fresh)
+    item, _effects, fetcher, _url = _cited_curated_setup(monkeypatch, title, fresh=fresh)
     _freeze(monkeypatch, _kst(2026, 6, 10, 8, 0))
 
     payload = tasks._auto_publish_one(
         item.id, reference_verifier=ReferenceVerifier(fetcher, domain_spacing=0)
     )
 
-    assert payload["kind"] == "blocked"
-    assert payload["code"] == "MISSING_REFERENCES"
-    assert item.references_list == []  # 빼고, 수기 목록으로 다시 채우지도 않는다
+    # 빼고, 수기 목록으로 다시 채우지도 않는다. 참고자료 0개로 발행한다(D23).
+    assert payload is not None and payload.get("kind") != "blocked"
+    assert item.references_list == []
     assert fetcher.calls == []  # 뺄 문서도, 치유 후보도 열지 않는다
-    assert item.status is tasks.ContentStatus.DRAFT
-    assert effects == {"revalidate": [], "indexnow": []}
-    attempt = item.essence_check_summary["generation_attempt"]
-    assert attempt["reason"] == "MISSING_REFERENCES"
-    assert attempt["retry_class"] == GenerationRetryClass.OPERATOR_REQUIRED.value
-    assert attempt[OPERATOR_DECIDES_KEY] is True
-    assert attempt["next_retry_at"] is None
+    assert item.status is tasks.ContentStatus.PUBLISHED
 
 
 @pytest.mark.parametrize("fresh", [False, True], ids=["unchecked", "fresh_pass"])
@@ -766,17 +755,13 @@ async def test_generation_does_not_accept_a_cited_curated_document(monkeypatch, 
     _calls, fetcher, url = _curated_generation(monkeypatch, title)
 
     with override_reference_fetcher(fetcher):
-        with pytest.raises(content_engine.MissingCitableReferencesError) as raised:
-            await content_engine.generate_content(
-                _mapo_hospital(), ContentType.NOTICE, content_brief=_brief_hypertension()
-            )
+        result = await content_engine.generate_content(
+            _mapo_hospital(), ContentType.NOTICE, content_brief=_brief_hypertension()
+        )
 
-    assert raised.value.result["references"] == []
+    # 인용한 수기 목록 문서는 저장하지 않고, 참고자료 0개로도 저장한다(D23).
+    assert result["references"] == []
     assert fetcher.calls == []  # 인용한 수기 목록 문서도, 치유 후보도 열지 않는다
-    assert "수기 목록 문서를 쓰지 않음" in str(raised.value)  # 작가에게 이유가 간다
-    # 쓰이지 않은 슬롯이면 이 거절이 곧바로 사람의 결정이 된다(작가가 만든 제목으로 판정).
-    slot = _unwritten_slot()
-    assert tasks._generation_left_references_to_operator(raised.value, slot)
 
 
 @pytest.mark.parametrize(
@@ -797,44 +782,6 @@ async def test_generation_would_keep_the_cited_curated_document_without_the_rule
 
     assert [ref["url"] for ref in result["references"]] == [url]
     assert result["reference_checks"][-1]["reason"] == "curated_verified"
-
-
-@pytest.mark.parametrize(
-    "title", [GENERATION_COST_TITLE, GENERATION_CHOICE_TITLE], ids=["cost", "provider_choice"]
-)
-def test_unwritten_slot_whose_writer_cited_a_curated_document_goes_to_the_operator(
-    monkeypatch, title
-):
-    """생성 경로 끝까지: 작가가 인용한 수기 목록 문서는 저장되지 않고 슬롯은 사람의 결정이 된다."""
-
-    _calls, fetcher, _url = _curated_generation(monkeypatch, title)
-    with override_reference_fetcher(fetcher):
-        with pytest.raises(content_engine.MissingCitableReferencesError) as raised:
-            asyncio.run(
-                content_engine.generate_content(
-                    _mapo_hospital(), ContentType.NOTICE, content_brief=_brief_hypertension()
-                )
-            )
-    slot = _unwritten_slot()
-    philosophy, writer_calls, incidents = _refless_generation(monkeypatch, slot, title)
-
-    async def real_rejection(*, item, **_kwargs):
-        writer_calls.append(item.id)
-        raise raised.value
-
-    monkeypatch.setattr(tasks, "_generate_with_auto_review", real_rejection)
-    state, code, message = swap_tests._generate_once(monkeypatch, slot, _LADDER_SWEEPS[0])
-
-    assert (state, code, message) == (
-        tasks.GenerationItemState.FAILED,
-        "MISSING_REFERENCES",
-        REFERENCES_OPERATOR_DECIDES_CAUSE,
-    )
-    assert slot.body is None and slot.title is None
-    assert not getattr(slot, "references_list", None)  # 수기 목록 문서를 저장하지 않았다
-    attempt = _attempt_of(slot)
-    assert attempt[OPERATOR_DECIDES_KEY] is True and attempt["next_retry_at"] is None
-    assert [call["code"] for call in incidents] == ["MISSING_REFERENCES"]
 
 
 # ── 쓰이지 않은 슬롯: 생성이 통과한 참고자료를 못 만들면 곧바로 사람의 결정 ──────────────

@@ -570,3 +570,45 @@ async def test_pure_operational_notice_generation_still_saves_without_references
         )
 
     assert result["references"] == []
+
+
+# ── D23(2026-10-13 대표 결정): 진료비·병원 선택 글은 참고자료가 선택이다 ─────────────────
+
+
+@pytest.mark.parametrize(
+    ("content_type", "title", "blocks"),
+    [
+        (ContentType.FAQ, "허리 디스크 초기 증상과 진료 시점", True),
+        (ContentType.FAQ, "도수치료 비용 — 시간·횟수·보험에 따라 어떻게 달라지나요?", False),
+        (ContentType.DISEASE, "경산 내과 병원 추천 — 증상별 진료 흐름과 판단 기준", False),
+        (ContentType.FAQ, "경산 경동맥초음파 검사, 어느 병원에서 받아야 할까요?", True),
+        (ContentType.FAQ, None, True),  # 아직 쓰이지 않은 슬롯은 유형대로 필수
+        (ContentType.NOTICE, "추석 연휴 휴진 안내", False),  # 순수 운영 공지는 종전대로 면제
+    ],
+)
+def test_empty_references_block_only_articles_that_have_an_authoritative_source(
+    content_type, title, blocks
+):
+    from app.services.reference_requirement import references_block_when_empty_for
+
+    assert references_block_when_empty_for(content_type, title=title) is blocks
+
+
+def test_a_published_cost_post_without_references_stays_visible():
+    from app.services.content_publication import (
+        has_required_references,
+        public_surface_has_required_references,
+    )
+
+    cost = SimpleNamespace(
+        content_type=ContentType.FAQ,
+        title="도수치료 비용 — 시간·횟수·보험에 따라 어떻게 달라지나요?",
+        content_brief=None,
+        query_target_id=None,
+        references_list=[],
+    )
+    medical = SimpleNamespace(**{**vars(cost), "title": "허리 디스크 초기 증상과 진료 시점"})
+
+    assert has_required_references(cost) and public_surface_has_required_references(cost)
+    assert not has_required_references(medical)
+    assert not public_surface_has_required_references(medical)

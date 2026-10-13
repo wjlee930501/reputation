@@ -6902,33 +6902,18 @@ def _od_digest_text(row) -> str:
     )
 
 
-def test_seven_forty_five_names_a_same_day_cost_post_left_to_the_operator(monkeypatch):
+def test_seven_forty_five_does_not_hold_a_cost_post_whose_references_drop_out(monkeypatch):
+    """D23(2026-10-13): 진료비·병원 선택 글은 참고자료가 선택이다 — 죽은 주소를 빼도 보류가 아니다."""
+
     hospital = _publication_hospital()
     item = _od_written(hospital, title=_OD_COST_TITLE)
     incidents = _od_gate(monkeypatch)
     db = _DigestGateDB(item)
 
-    assert _od_run(db) == 1
+    assert _od_run(db) == 0
 
     assert item.references_list == []  # 죽은 주소만 빠졌고 수기 목록으로 채우지 않았다
-    # 인시던트·시도 기록은 종전 그대로 — 코드는 MISSING_REFERENCES, 사람의 결정(기한 없음).
-    assert [call["code"] for call in incidents] == ["MISSING_REFERENCES"]
-    assert incidents[0]["notify"] is False
-    attempt = item.essence_check_summary["generation_attempt"]
-    assert attempt["reason"] == "MISSING_REFERENCES"
-    assert attempt["retry_class"] == GenerationRetryClass.OPERATOR_REQUIRED.value
-    assert attempt[OPERATOR_DECIDES_KEY] is True
-    assert attempt["next_retry_at"] is None
-    [row] = db.outbox()
-    assert row.notification_type == "GENERATION_BLOCKED_DIGEST"
-    text = _od_digest_text(row)
-    assert text.count(_OD_LINE_TITLE) == 1
-    assert f"{_OD_LINE_TITLE} 1편" in text
-    assert "이 글을 다시 쓰지 않습니다." in text
-    assert _od_action(written=True) in text
-    assert "발행 보류 1편" in text
-    # 주간 요약의 평범한 참고자료 보류 문구로 떨어지지 않는다.
-    assert "본문·근거 확인 필요" not in text
+    assert incidents == [] and db.outbox() == []
 
 
 def test_seven_forty_five_names_a_same_day_unwritten_slot_left_to_the_operator(monkeypatch):
@@ -6958,12 +6943,6 @@ def test_seven_forty_five_names_a_same_day_unwritten_slot_left_to_the_operator(m
 @pytest.mark.parametrize(
     ("build", "line", "copy_code"),
     [
-        pytest.param(
-            lambda hospital: _od_written(hospital, title=_OD_COST_TITLE),
-            True,
-            notification_copy.REFERENCES_OPERATOR_DECIDES_COPY_CODE,
-            id="written_cost_post",
-        ),
         pytest.param(
             _od_unwritten,
             True,
@@ -7035,7 +7014,7 @@ def test_seven_forty_five_does_not_repeat_a_past_day_operator_hold(monkeypatch):
     """catch-up(지난 예정일) 글은 예정일 07:45에 이미 알렸다 — 매일 다시 싣지 않는다."""
 
     hospital = _publication_hospital()
-    written = _od_written(hospital, title=_OD_COST_TITLE, scheduled_date=_OD_TODAY - timedelta(days=1))
+    written = _od_unwritten(hospital, scheduled_date=_OD_TODAY - timedelta(days=1))
     unwritten = _od_unwritten(hospital, scheduled_date=_OD_TODAY - timedelta(days=3))
     incidents = _od_gate(monkeypatch)
     db = _DigestGateDB(written, unwritten)
@@ -7054,7 +7033,7 @@ def test_seven_forty_five_operator_line_lives_beside_other_blockers_once(monkeyp
     """같은 병원의 다른 차단(원고 미생성)과 한 메시지에 섞이되 보류 줄은 한 번뿐이다."""
 
     hospital = _publication_hospital()
-    held = _od_written(hospital, title=_OD_COST_TITLE)
+    held = _od_unwritten(hospital)
     missing = _publication_item(hospital, body="임시", title="임시")
     missing.title = None
     missing.body = None
@@ -7074,7 +7053,7 @@ def test_seven_forty_five_operator_line_lives_beside_other_blockers_once(monkeyp
 
 def test_rerunning_seven_forty_five_keeps_one_digest_for_the_operator_hold(monkeypatch):
     hospital = _publication_hospital()
-    written = _od_written(hospital, title=_OD_COST_TITLE)
+    written = _od_unwritten(hospital)
     unwritten = _od_unwritten(hospital)
     unwritten.sequence_no = 2
     _od_gate(monkeypatch)
@@ -7146,7 +7125,7 @@ def test_eight_oclock_alone_names_the_same_day_operator_hold_once(monkeypatch):
     """07:45가 돌지 않은 날에도 08:00 요약이 이 보류를 운영자 문구로 한 번 싣는다."""
 
     hospital = _publication_hospital()
-    item = _od_written(hospital, title=_OD_COST_TITLE)
+    item = _od_unwritten(hospital)
     incidents = _od_gate(monkeypatch)
     keys = _od_digest_keys(monkeypatch)
     db = _DigestGateDB(item)
@@ -7160,8 +7139,8 @@ def test_eight_oclock_alone_names_the_same_day_operator_hold_once(monkeypatch):
     text = _od_digest_text(row)
     assert text.count(_OD_LINE_TITLE) == 1
     assert f"{_OD_LINE_TITLE} 1편" in text
-    assert "이 글을 다시 쓰지 않습니다." in text
-    assert _od_action(written=True) in text
+    # D23 뒤로 이 보류는 옛 기록이 남은 쓰이지 않은 슬롯뿐이다 — '새로 쓰기' 문구다.
+    assert _od_action(written=False) in text
     assert "발행 보류 1편" in text
     assert "본문·근거 확인 필요" not in text
 
@@ -7193,7 +7172,7 @@ def test_seven_forty_five_then_eight_oclock_send_one_digest_for_the_operator_hol
     """
 
     hospital = _publication_hospital()
-    held = _od_written(hospital, title=_OD_COST_TITLE)
+    held = _od_unwritten(hospital)
     items = [held]
     if with_other_blocker:
         items.append(_od_unwritten_slot_without_attempt(hospital, sequence_no=2))
@@ -7220,7 +7199,7 @@ def test_seven_forty_five_then_eight_oclock_send_one_digest_for_the_operator_hol
 
 def test_eight_oclock_leaves_out_past_day_and_ordinary_reference_holds(monkeypatch):
     hospital = _publication_hospital()
-    past = _od_written(hospital, title=_OD_COST_TITLE, scheduled_date=_OD_TODAY - timedelta(days=1))
+    past = _od_unwritten(hospital, scheduled_date=_OD_TODAY - timedelta(days=1))
     past_slot = _od_unwritten(hospital, scheduled_date=_OD_TODAY - timedelta(days=3))
     ordinary = _od_written(hospital, title=_OD_MEDICAL_TITLE)
     incidents = _od_gate(monkeypatch)

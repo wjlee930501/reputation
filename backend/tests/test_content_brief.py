@@ -340,14 +340,15 @@ async def test_publish_content_rejects_generated_content_without_references(monk
         id=item_id,
         hospital_id=hospital_id,
         # 참고자료가 비면 발행 경로는 이 글의 주제로 수기 목록 치유를 먼저 시도한다. 수기 목록에
-        # 맞는 문서가 없는 주제(진료비)라야 '참고자료 없음' 거절까지 간다.
-        title="경산 내과 진료비 확인할 점",
+        # 맞는 문서가 없는 의료 주제라야 '참고자료 없음' 거절까지 간다(진료비 글은 D23 뒤로
+        # 참고자료가 선택이라 거절되지 않는다).
+        title="귀지가 막혔을 때 — 집에서 해도 되는 관리",
         body="환자 상태에 따라 진료 방향을 설명합니다.",
         meta_description="진료 전 확인할 점을 정리합니다.",
         essence_status="ALIGNED",
         references_list=[],
-        faq_question="경산 내과 진료비는 무엇에 따라 달라지나요?",
-        faq_answer_summary="검사 범위와 보험 적용에 따라 달라집니다.",
+        faq_question="귀지가 막혔을 때 집에서 빼도 되나요?",
+        faq_answer_summary="면봉으로 깊이 넣지 말고 진료로 확인합니다.",
         image_url="gs://bucket/content.png",
         image_policy_verified_at=datetime.now(timezone.utc),
     )

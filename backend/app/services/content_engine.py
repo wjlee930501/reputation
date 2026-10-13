@@ -42,6 +42,7 @@ from app.services.openrouter import NON_RETRYABLE_LLM_ERRORS
 from app.services.question_wellformed import question_is_wellformed, treatment_applied_to_exam
 from app.services.reference_requirement import (
     REFERENCES_REQUIRED_TYPES,
+    references_block_when_empty_for,
     references_required_for,
     topic_without_authoritative_source,
 )
@@ -1421,7 +1422,11 @@ def _validate_generated_result(
         hospital,
         content_type,
         reference_drop_notes=reference_drop_notes,
-        references_required=references_required_for(content_type, content_brief=content_brief),
+        # 진료비·병원 선택 글(작가의 제목으로 판정)은 참고자료가 선택이다(D23). 검증·수기 목록
+        # 문서 제외는 위 `_verify_generated_references`가 유형 기준으로 그대로 한다.
+        references_required=references_block_when_empty_for(
+            content_type, content_brief=content_brief, title=result.get("title")
+        ),
     )
     # 측정 질의 대응 검사. 워커가 이 목록을 보고 한 번만 보완 재작성을 돌린다.
     target_findings = _validate_target_alignment(result, content_brief, content_type)

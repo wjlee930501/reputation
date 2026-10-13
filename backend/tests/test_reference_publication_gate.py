@@ -244,7 +244,8 @@ def test_still_nothing_holds_publication_with_the_real_cause(monkeypatch):
         monkeypatch,
         references=[{"title": "경산 내과 진료비", "url": GUESSED}],
         checks=None,
-        title="경산 내과 진료비, 무엇에 따라 달라지나요",
+        # 의료 글이어야 보류된다 — 진료비·병원 선택 글은 참고자료가 선택이다(D23).
+        title=NO_CATALOG_TITLE,
     )
     fetcher = PageFetcher({GUESSED: (404, GUESSED, "")})
 
@@ -475,7 +476,7 @@ def test_seven_forty_five_does_not_page_a_slot_a_worker_claims_after_the_refresh
     """
 
     hospital = _publication_hospital()
-    item = _publication_item(hospital, body="진료비 기준을 안내합니다.", title="경산 내과 진료비 안내")
+    item = _publication_item(hospital, body="귀지 관리 기준을 안내합니다.", title=NO_CATALOG_TITLE)
     item.references_list = [{"title": "진료비", "url": GUESSED}]
     item.reference_checks = None
     db = _GateDB(item)
@@ -500,7 +501,7 @@ def test_seven_forty_five_does_not_page_a_slot_a_worker_claims_after_the_refresh
 
 def test_seven_forty_five_holds_and_pages_the_real_cause_when_nothing_survives(monkeypatch):
     hospital = _publication_hospital()
-    item = _publication_item(hospital, body="진료비 기준을 안내합니다.", title="경산 내과 진료비 안내")
+    item = _publication_item(hospital, body="귀지 관리 기준을 안내합니다.", title=NO_CATALOG_TITLE)
     item.references_list = [{"title": "진료비", "url": GUESSED}]
     item.reference_checks = None
     db = _GateDB(item)
@@ -642,10 +643,10 @@ async def test_admin_manual_publish_runs_the_same_reference_gate(monkeypatch):
     hospital = _hospital()
     item = _content_item(
         hospital_id=hospital.id,
-        title="경산 내과 진료비 안내",
-        references_list=[{"title": "진료비", "url": GUESSED}],
-        faq_question="경산 내과 진료비는 무엇에 따라 달라지나요?",
-        faq_answer_summary="검사 범위와 보험 적용에 따라 달라집니다.",
+        title=NO_CATALOG_TITLE,
+        references_list=[{"title": "귀지", "url": GUESSED}],
+        faq_question="귀지가 막혔을 때 집에서 빼도 되나요?",
+        faq_answer_summary="면봉으로 깊이 넣지 말고 진료로 확인합니다.",
     )
     item.reference_checks = None
     _wire(monkeypatch, item, hospital)
@@ -1039,9 +1040,9 @@ def _dead_fetcher() -> PageFetcher:
     ("refs", "gets"),
     [("catalog_fresh_pass", []), ("empty", []), ("dead_outside_url", [GUESSED])],
 )
-def test_last_run_reports_a_claimed_cost_post_without_touching_it(monkeypatch, refs, gets):
-    """S2 재현 — 진료비 글(예정일 D, 본문 있음), claim이 살아 있는 채 23시. 종전 23시처럼 GET하고
-    (죽은 목록 밖 주소), 목록 문서는 GET 없이 빼서 사람의 결정 보류로 보고한다. 행은 그대로다."""
+def test_last_run_neither_reports_nor_touches_a_claimed_cost_post(monkeypatch, refs, gets):
+    """S2 재현의 진료비 글(D23 뒤) — 23시에 종전처럼 GET하고 목록 문서는 GET 없이 빼지만, 참고자료가
+    비어도 보류가 아니다. 생성 중인(claim) 행이라 공개하지도 않고 행은 그대로다."""
 
     references, checks = _refs_for(refs)
     item, _db, effects = _claimed_post(
@@ -1055,11 +1056,9 @@ def test_last_run_reports_a_claimed_cost_post_without_touching_it(monkeypatch, r
         item.id, reference_verifier=ReferenceVerifier(fetcher, domain_spacing=0)
     )
 
-    assert payload is not None and payload["kind"] == "blocked"
-    assert payload["code"] == "MISSING_REFERENCES"
-    assert payload["operator_line"] is True  # #181 요약의 운영자 판단 줄
+    assert payload is None
     assert fetcher.calls == gets and fallback.calls == []  # 잠금 전 재검증이 종전처럼 GET했다
-    assert _row_bytes(item) == before  # 판·참고자료·검증 기록·상태·판정 기록 모두 그대로
+    assert _row_bytes(item) == before
     assert effects == {"revalidate": [], "indexnow": []}
 
 
@@ -1145,7 +1144,11 @@ def test_last_run_defers_a_claimed_row_exactly_like_an_unclaimed_one(monkeypatch
 
 def test_last_run_uses_the_prefetched_refresh_when_the_claim_is_taken_during_the_get(monkeypatch):
     item, _db, _effects = _claimed_post(
-        monkeypatch, at=LAST_RUN, references=list(DEAD_OUTSIDE), claimed=False
+        monkeypatch,
+        at=LAST_RUN,
+        references=list(DEAD_OUTSIDE),
+        claimed=False,
+        title=NO_CATALOG_TITLE,
     )
     before_refs = copy.deepcopy(item.references_list)
 
@@ -1159,7 +1162,7 @@ def test_last_run_uses_the_prefetched_refresh_when_the_claim_is_taken_during_the
         ),
     )
 
-    assert payload["kind"] == "blocked" and payload["operator_line"] is True
+    assert payload["kind"] == "blocked" and payload["operator_line"] is False
     assert (item.content_revision, item.references_list, item.reference_checks) == (
         3,
         before_refs,
@@ -1169,7 +1172,8 @@ def test_last_run_uses_the_prefetched_refresh_when_the_claim_is_taken_during_the
 
 @pytest.mark.parametrize(
     ("refs", "expected"),
-    [("catalog_fresh_pass", "blocked"), ("dead_outside_url", None)],
+    # 진료비 글은 목록 문서를 빼 참고자료가 비어도 보류가 아니다(D23).
+    [("catalog_fresh_pass", None), ("dead_outside_url", None)],
 )
 def test_last_run_falls_back_to_the_stored_state_without_a_prefetched_refresh(
     monkeypatch, refs, expected
@@ -1197,7 +1201,7 @@ def test_a_claimed_row_past_its_date_is_judged_like_the_last_run(monkeypatch):
 
     next_day_noon = arrow.get(2026, 6, 11, 12, 0, tzinfo="Asia/Seoul")
     item, _db, _effects = _claimed_post(
-        monkeypatch, at=next_day_noon, references=list(DEAD_OUTSIDE)
+        monkeypatch, at=next_day_noon, references=list(DEAD_OUTSIDE), title=NO_CATALOG_TITLE
     )
     before = _row_bytes(item)
     fetcher = _dead_fetcher()
@@ -1237,8 +1241,8 @@ def test_a_claimed_row_is_neither_published_nor_held_at_a_non_last_hour(monkeypa
     assert effects == {"revalidate": [], "indexnow": []}
 
 
-def test_an_unclaimed_cost_post_citing_a_catalog_document_is_held_for_the_operator(monkeypatch):
-    """(b) 대조군 — claim이 없으면 종전대로 목록 문서를 빼고(GET 없이) 사람의 결정으로 보류한다."""
+def test_an_unclaimed_cost_post_citing_a_catalog_document_is_published_without_it(monkeypatch):
+    """(b) 대조군 — claim이 없으면 목록 문서를 빼고(GET 없이) 참고자료 0개로 발행한다(D23)."""
 
     references, checks = _catalog_pass()
     item, _db, _effects = _claimed_post(
@@ -1248,10 +1252,9 @@ def test_an_unclaimed_cost_post_citing_a_catalog_document_is_held_for_the_operat
 
     payload = tasks._auto_publish_one(item.id, reference_verifier=ReferenceVerifier(fetcher))
 
-    assert payload["kind"] == "blocked" and payload["code"] == "MISSING_REFERENCES"
-    assert payload["operator_line"] is True
-    assert item.references_list == [] and item.content_revision == 4
-    assert item.status is tasks.ContentStatus.DRAFT
+    assert payload is not None and payload.get("kind") != "blocked"
+    assert item.references_list == []
+    assert item.status is tasks.ContentStatus.PUBLISHED
     assert fetcher.calls == []
 
 
@@ -1475,10 +1478,10 @@ async def test_manual_publish_fetches_before_taking_the_hospital_lock(monkeypatc
     hospital = _hospital()
     item = _content_item(
         hospital_id=hospital.id,
-        title="경산 내과 진료비 안내",
-        references_list=[{"title": "진료비", "url": GUESSED}],
-        faq_question="경산 내과 진료비는 무엇에 따라 달라지나요?",
-        faq_answer_summary="검사 범위와 보험 적용에 따라 달라집니다.",
+        title=NO_CATALOG_TITLE,
+        references_list=[{"title": "귀지", "url": GUESSED}],
+        faq_question="귀지가 막혔을 때 집에서 빼도 되나요?",
+        faq_answer_summary="면봉으로 깊이 넣지 말고 진료로 확인합니다.",
     )
     item.reference_checks = None
     _wire(monkeypatch, item, hospital)

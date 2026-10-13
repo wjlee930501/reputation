@@ -52,6 +52,7 @@ from app.services.content_ai_review import (
 )
 from app.services.post_publish_review_policy import AUTO_PUBLISHABLE_STATUSES
 from app.services.reference_requirement import (
+    references_block_when_empty,
     references_left_to_operator,
     references_required,
 )
@@ -171,7 +172,7 @@ def publication_references_current(item: object, *, now: datetime | None = None)
 def publication_references_missing(item: object) -> bool:
     """참고자료가 필수인 글에 주소가 있는 항목이 하나도 없는가(치유 또는 MISSING_REFERENCES 대상)."""
 
-    if not references_required(item):
+    if not references_block_when_empty(item):
         return False
     entries, _malformed = split_reference_entries(getattr(item, "references_list", None))
     return not entries
@@ -184,7 +185,7 @@ def bind_reference_checks_to_revision(item: object) -> list[dict[str, Any]] | No
     if malformed:
         return None
     if not entries:
-        return None if references_required(item) else []
+        return None if references_block_when_empty(item) else []
     if not publication_references_current(item):
         return None
     indexed = index_reference_checks(getattr(item, "reference_checks", None))
@@ -298,7 +299,7 @@ async def refresh_publication_references(
     )
     if (
         publication_references_current(item, now=observed)
-        and not (required and not references)
+        and not (references_block_when_empty(item) and not references)
         and not strip_curated
     ):
         return PublicationReferenceRefresh(
