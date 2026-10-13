@@ -500,3 +500,38 @@ def test_incident_fixture_matches_the_uploaded_finding() -> None:
     assert f"'{INCIDENT_CITED_SENTENCE}'" in INCIDENT_FINDING["message"]
     assert INCIDENT_CITED_SENTENCE in INCIDENT_PARAGRAPH
     assert json.loads(json.dumps(INCIDENT_FINDING, ensure_ascii=False)) == INCIDENT_FINDING
+
+
+# ── E1(2026-10-13): HARD와 함께 나온 인용 UNCERTAIN도 삭제형 재작성 지시에 싣는다 ───────────
+
+
+def _typed(severity: str, kind: str, message: str, quote: str = ""):
+    return content_ai_review.ContentAiFinding(
+        severity=content_ai_review.ContentAiFindingSeverity(severity),
+        kind=content_ai_review.ContentAiFindingKind(kind),
+        message=message,
+        quote=quote,
+    )
+
+
+def _blocked(*findings):
+    return SimpleNamespace(blocking_findings=tuple(findings))
+
+
+def test_quoted_uncertain_co_occurring_with_hard_joins_the_removal_rewrite() -> None:
+    hard = _typed("HARD", "MEDICAL_SAFETY", "응급 안내 없이 출혈을 다뤘습니다.", "피가 나면 지켜보세요.")
+    uncertain = _typed(
+        "UNCERTAIN", "HOSPITAL_FACT", "승인 자료에 없는 진료 철학입니다.", "내 가족처럼 진료합니다."
+    )
+    synthetic = _typed("UNCERTAIN", "MEDICAL_SAFETY", "독립 AI 검수의 확신이 충분하지 않아 자동 재검수가 필요합니다.")
+
+    removal = hard_removal_findings(_blocked(hard, uncertain, synthetic))
+
+    assert removal[1:] == [hard.message, uncertain.message]
+
+
+def test_uncertain_alone_does_not_buy_a_removal_rewrite() -> None:
+    uncertain = _typed(
+        "UNCERTAIN", "HOSPITAL_FACT", "승인 자료에 없는 진료 철학입니다.", "내 가족처럼 진료합니다."
+    )
+    assert hard_removal_findings(_blocked(uncertain)) == []

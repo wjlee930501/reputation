@@ -1872,3 +1872,56 @@ async def test_pass_that_would_shorten_the_body_below_the_minimum_buys_no_rerevi
 
     assert outcome.status == "REJECTED"
     assert outcome.content is None
+
+
+# ── E1(2026-10-13): HARD와 함께 나온 인용 UNCERTAIN도 같은 교정 패스가 고친다 ─────────────
+
+
+def test_quoted_uncertain_next_to_a_hard_is_corrected_in_the_same_pass(worker, monkeypatch):
+    philosophy, calls = worker
+    body = _body(NEUTRAL_A, WRONG_TRAINING, UNAPPROVED_PHILOSOPHY)
+    hard = _finding("HARD", "HOSPITAL_FACT", "수련기관이 프로필과 다릅니다.", WRONG_TRAINING)
+    uncertain = _finding(
+        "UNCERTAIN", "HOSPITAL_FACT", "승인 자료에 없는 진료 원칙입니다.", UNAPPROVED_PHILOSOPHY
+    )
+    item = _blocked_item(philosophy, body, hard)
+    item.essence_check_summary["ai_review"] = _review_payload(
+        tasks._stored_candidate(item), hard, uncertain
+    )
+    calls["item"] = item
+    seen_contexts = []
+
+    async def propose(*, targets, **_kwargs):
+        return {target.key: ("DELETE", "") for target in targets}
+
+    async def review(**kwargs):
+        seen_contexts.append(kwargs.get("correction_context"))
+        return _review(kwargs["content"])
+
+    _install(monkeypatch, calls, propose=propose, review=review)
+
+    state, code, _message = tasks._generate_single_content_item(
+        _DB(), item, _hospital(id=item.hospital_id)
+    )
+
+    assert (state, code) == (tasks.GenerationItemState.SUCCEEDED, None)
+    assert WRONG_TRAINING not in item.body and UNAPPROVED_PHILOSOPHY not in item.body
+    assert calls["llm"] == 1 and len(calls["reviews"]) == 1, "한 패스·한 재검수로 끝난다"
+
+
+def test_uncertain_only_block_is_left_to_the_rereview_ladder(worker, monkeypatch):
+    """모델이 HARD로 단정하지 않은 차단은 이 패스가 맡지 않는다(종전 경로 그대로)."""
+
+    philosophy, calls = worker
+    body = _body(NEUTRAL_A, UNAPPROVED_PHILOSOPHY)
+    uncertain = _finding(
+        "UNCERTAIN", "HOSPITAL_FACT", "승인 자료에 없는 진료 원칙입니다.", UNAPPROVED_PHILOSOPHY
+    )
+    item = _blocked_item(philosophy, body, uncertain)
+    plan = mc.plan_corrections(
+        tasks._stored_candidate(item),
+        tasks._stored_ai_review(item),
+        include_uncertain=tasks._stored_model_declared_hard(item),
+    )
+    assert not plan.applicable
+

@@ -1062,7 +1062,13 @@ def _auto_correct_blocked_body(
     review = _stored_ai_review(item)
     candidate = _stored_candidate(item)
     must_use = required_must_use_messages(philosophy)
-    plan = plan_corrections(candidate, review, must_use_messages=must_use)
+    # 모델이 HARD로 단정한 판정에 함께 나온 인용 UNCERTAIN도 같은 패스가 고친다 — HARD만 고치면
+    # 남은 UNCERTAIN이 교정본의 재검수를 다시 막는다. UNCERTAIN만 남은 차단은 종전대로 재검수·
+    # 표본 사다리가 맡는다(공개 모드는 이미 늘 켠다).
+    include_uncertain = _stored_model_declared_hard(item)
+    plan = plan_corrections(
+        candidate, review, must_use_messages=must_use, include_uncertain=include_uncertain
+    )
     state = _stored_auto_correction_state(item)
     if not plan.applicable:
         if _stored_model_declared_hard(item):
@@ -1093,6 +1099,7 @@ def _auto_correct_blocked_body(
                 propose=propose_sentence_corrections,
                 review=review_generated_content,
             ),
+            include_uncertain=include_uncertain,
         )
     )
     if outcome.status == "NOT_APPLICABLE":
