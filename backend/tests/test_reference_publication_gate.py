@@ -371,7 +371,7 @@ def test_seven_forty_five_reverifies_stale_references_so_eight_does_not_burst(mo
     hospital = _publication_hospital()
     item = _publication_item(hospital, body="진료 기준을 안내합니다.", title=HEMORRHOID_TITLE)
     item.references_list = [{"title": "치핵", "url": url}]
-    item.reference_checks = [_pass(url, age=timedelta(hours=33))]
+    item.reference_checks = [_pass(url, age=REFERENCE_CHECK_MAX_AGE + timedelta(hours=9))]
     _stamp(item)
     db = _GateDB(item)
     _gate_setup(monkeypatch, item)
@@ -393,7 +393,7 @@ def _stale_claimable_item():
     hospital = _publication_hospital()
     item = _publication_item(hospital, body="진료 기준을 안내합니다.", title=HEMORRHOID_TITLE)
     item.references_list = [{"title": "치핵", "url": url}]
-    item.reference_checks = [_pass(url, age=timedelta(hours=33))]
+    item.reference_checks = [_pass(url, age=REFERENCE_CHECK_MAX_AGE + timedelta(hours=9))]
     item.content_revision = 5
     _stamp(item)
     fetcher = _hemorrhoid_fetcher()

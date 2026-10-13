@@ -879,10 +879,14 @@ async def test_an_old_pass_whose_final_url_is_excluded_is_not_reused_on_outage(f
 
     from datetime import timedelta
 
-    from app.services.reference_verification import check_is_fresh_pass, topic_fingerprint
+    from app.services.reference_verification import (
+        REFERENCE_CHECK_MAX_AGE,
+        check_is_fresh_pass,
+        topic_fingerprint,
+    )
 
     fingerprint = topic_fingerprint([DYSPEPSIA_TITLE])
-    old = _now() - timedelta(days=2)
+    old = _now() - REFERENCE_CHECK_MAX_AGE - timedelta(days=1)
     prior = reference_check_record(
         REDIRECT_TO_EXCLUDED,
         verdict="pass",
