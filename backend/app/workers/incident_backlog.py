@@ -512,30 +512,36 @@ def _unverified_actor_quiet(_db: Session, incident: Incident, now: datetime) -> 
 
 
 # 비용 가드 fail-open 사고는 알린 프로세스가 Redis로 다시 판정할 때 닫는다(`cost_guard_health`).
-# 그 프로세스가 복구 전에 교체되면 메모리 상태가 사라져 아무도 닫지 않는다 — 여기서 같은 Redis가
-# 다시 응답하는 것을 근거로 닫는다. 마지막 관측 뒤 10분은 기다린다(`cost_guard_health`의 재열림
-# 억제와 같은 길이 — 깜빡임마다 열림·복구가 짝지어 나가지 않게).
+# 그 프로세스가 복구 전에 교체되면 메모리 상태가 사라져 아무도 닫지 않는다 — 여기서 닫는다. 근거는
+# PING이 아니라 가드가 실제로 하는 예산 연산의 성공이다(`cost_guard.probe_budget_operation`): Redis가
+# 응답해도 예산 Lua는 OOM·권한·키 타입 오류로 계속 실패할 수 있다. 그리고 마지막 관측 뒤 10분은
+# 기다린다 — 실패하는 프로세스는 5분마다 관측을 다시 기록하므로(`cost_guard_health._TOUCH_SECONDS`)
+# 실패가 이어지는 동안 이 창은 열리지 않는다.
 _COST_GUARD_FAIL_OPEN_QUIET = timedelta(minutes=10)
 
 
-def _cost_guard_redis_reachable() -> bool:
-    """비용 가드가 쓰는 Redis(`cost_guard._client`와 같은 URL·시간 제한)가 지금 응답하는가."""
+def _cost_guard_category(incident: Incident) -> str | None:
+    """사고의 `source_id`(`{category}:fail_open`)에서 비용 가드 카테고리를 읽는다."""
 
-    import redis
+    from app.services.cost_guard import CATEGORIES
 
-    client = redis.Redis.from_url(settings.REDIS_URL, socket_connect_timeout=2, socket_timeout=2)
-    try:
-        return bool(client.ping())
-    except Exception:  # noqa: BLE001 — 응답하지 않으면 근거가 없을 뿐이다.
-        return False
-    finally:
-        client.close()
+    category = str(incident.source_id or "").split(":", 1)[0]
+    return category if category in CATEGORIES else None
+
+
+def _cost_guard_budget_op_succeeds(category: str) -> bool:
+    from app.services.cost_guard import probe_budget_operation
+
+    return probe_budget_operation(category)
 
 
 def _cost_guard_judging_again(_db: Session, incident: Incident, now: datetime) -> str | None:
     if incident.last_seen_at is not None and now - incident.last_seen_at < _COST_GUARD_FAIL_OPEN_QUIET:
         return None
-    return "cost_guard_redis_reachable" if _cost_guard_redis_reachable() else None
+    category = _cost_guard_category(incident)
+    if category is None:
+        return None
+    return "cost_guard_budget_op_succeeded" if _cost_guard_budget_op_succeeds(category) else None
 
 
 # 자율 복구(`autonomous_recovery._stop_operation_run`)가 실행을 멈추며 남기는 원인 코드.

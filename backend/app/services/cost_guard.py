@@ -378,6 +378,47 @@ async def _is_kill_switch_active(client: redis_async.Redis) -> bool:
     return bool(await client.exists(KILL_SWITCH_KEY))
 
 
+def probe_budget_operation(
+    category: str, *, redis_url: str | None = None, now: datetime | None = None
+) -> bool:
+    """가드가 실제로 하는 Redis 연산을 0건 예약으로 한 번 해 보고 성공했는지 돌려준다(동기).
+
+    fail-open 사고의 복구 근거다(`incident_backlog`의 `COST_GUARD_FAIL_OPEN` resolver). PING은 근거가
+    아니다 — Redis가 응답해도 예산 Lua가 OOM·권한(ACL)·키 타입 오류로 계속 실패할 수 있다. 그래서
+    판정 경로와 같은 순서(킬스위치 확인 → 오늘치 상향 읽기 → 예산 Lua)를 같은 키로 실행한다. 0건
+    예약은 카운터를 바꾸지 않지만 쓰기 명령(INCRBY 0)을 거치므로 OOM이면 실패한다.
+    """
+    import redis as redis_sync  # noqa: PLC0415 — 동기 resolver 전용
+
+    if category not in _CATEGORY_LABELS:
+        raise ValueError(f"unknown cost_guard category: {category}")
+    client = redis_sync.Redis.from_url(
+        redis_url or settings.REDIS_URL, socket_connect_timeout=2, socket_timeout=2
+    )
+    try:
+        current = (now or _now()).astimezone(_KST)
+        daily_period = _daily_period(current)
+        daily_limit, monthly_limit = _limits(category)
+        client.exists(KILL_SWITCH_KEY)
+        client.get(_daily_override_key(category, daily_period))
+        client.eval(
+            _RESERVE_BUDGET_SCRIPT,
+            2,
+            _daily_key(category, daily_period),
+            _monthly_key(category, _monthly_period(current)),
+            0,
+            daily_limit,
+            monthly_limit,
+            _DAILY_TTL_SECONDS,
+            _MONTHLY_TTL_SECONDS,
+        )
+        return True
+    except (OSError, RedisError, RuntimeError, TimeoutError):
+        return False
+    finally:
+        client.close()
+
+
 async def check_and_increment(
     category: str,
     *,
