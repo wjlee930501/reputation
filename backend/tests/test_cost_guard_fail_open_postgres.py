@@ -48,6 +48,59 @@ def test_budget_probe_needs_the_real_operation_not_just_a_ping() -> None:
         client.close()
 
 
+def _probe_keys(at: datetime) -> tuple[str, str, str]:
+    return (
+        cost_guard._daily_key("content", cost_guard._daily_period(at)),
+        cost_guard._monthly_key("content", cost_guard._monthly_period(at)),
+        cost_guard._daily_override_key("content", cost_guard._daily_period(at)),
+    )
+
+
+def test_budget_probe_applies_the_override_and_reaches_the_receipt_write(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """기본 100·상향 200·사용 150: 탐침은 실제 예약과 같은 한도(200)로 쓰기 경로까지 간다.
+
+    지출은 그대로이고 탐침 영수증은 남지 않는다. HSET이 막힌 사용자로는 실패한다 — 한도에 걸려
+    쓰기 전에 돌아오던 옛 탐침은 이 경우를 성공으로 보고했다.
+    """
+    url = require_redis_url("COST_GUARD_REDIS_URL")
+    monkeypatch.setattr(cost_guard, "_limits", lambda _c: (100, 0))
+    client = redis.Redis.from_url(url)
+    at = datetime(2026, 1, 16, 12, tzinfo=cost_guard._KST)
+    daily, monthly, override = _probe_keys(at)
+    user = "cost_guard_probe_no_hset"
+    seen: list[tuple] = []
+    real_eval = redis.Redis.eval
+
+    def spy_eval(self, script, numkeys, *args):
+        seen.append(args[numkeys:])
+        return real_eval(self, script, numkeys, *args)
+
+    monkeypatch.setattr(redis.Redis, "eval", spy_eval)
+    try:
+        client.delete(daily, monthly, override)
+        client.set(daily, 150, ex=500)
+        client.set(override, 200)
+        assert cost_guard.probe_budget_operation("content", redis_url=url, now=at) is True
+        assert seen[-1][0] == 200  # 실제 예약과 같은 상향 적용 한도
+        # 지출은 늘지 않고, TTL도 다시 걸리지 않으며, 없던 월간 키를 만들지 않는다.
+        assert int(client.get(daily)) == 150
+        assert 0 < client.ttl(daily) <= 500
+        assert client.exists(monthly) == 0
+        assert list(client.scan_iter("cost_guard:reservation:probe:*")) == []
+
+        client.execute_command("ACL", "SETUSER", user, "reset", "on", ">probe-pw", "~*", "+@all", "-hset")
+        host = url.split("://", 1)[1]
+        denied = f"redis://{user}:probe-pw@{host}"
+        assert cost_guard.probe_budget_operation("content", redis_url=denied, now=at) is False
+        assert int(client.get(daily)) == 150
+    finally:
+        client.execute_command("ACL", "DELUSER", user)
+        client.delete(daily, monthly, override)
+        client.close()
+
+
 @pytest.mark.asyncio
 async def test_fail_open_incident_lifecycle_against_the_real_database(
     monkeypatch: pytest.MonkeyPatch,
