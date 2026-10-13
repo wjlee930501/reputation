@@ -121,3 +121,21 @@ def test_fallback_narrative_query_is_a_registered_read() -> None:
     assert "'fallback'" in sql
     assert "candidate_sha256" in sql
     assert ops_sql_report.parse_args(["--only=q11"]).only == ["q11"]
+
+
+def test_phase4_precheck_queries_are_registered_reads() -> None:
+    """P4-0(2026-10-14): D31 승격 예측(q12), Essence·자동 입력 상태(q13), 보류 사고·알림(q14)."""
+
+    assert [len(ops_sql_report.QUERIES[name]) for name in ("q12", "q13", "q14")] == [1, 1, 2]
+    for name in ("q12", "q13", "q14"):
+        for sql in ops_sql_report.QUERIES[name]:
+            assert sql.strip().upper().startswith("SELECT")
+    assert "would_promote" in ops_sql_report.QUERIES["q12"][0]
+    assert "HANDOFF_ACCEPTED" in ops_sql_report.QUERIES["q12"][0]
+    assert "PROFILE_AUTOFILL" in ops_sql_report.QUERIES["q13"][0]
+    assert "MISSING_APPROVED_ESSENCE_DIGEST" in ops_sql_report.QUERIES["q14"][1]
+    assert ops_sql_report.parse_args(["--only=q12", "--only=q13,q14"]).only == [
+        "q12",
+        "q13",
+        "q14",
+    ]
