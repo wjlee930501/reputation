@@ -9,8 +9,10 @@ from fastapi import BackgroundTasks, HTTPException
 from app.api.admin import hospitals as hospitals_api
 from app.models.handoff import HandoffState
 from app.models.hospital import HospitalStatus
+from app.services import profile_completion
 from app.services.essence_readiness import EssenceReadinessState
 from app.services.hospital_geocoding import GeocodeResult, GeocodingError
+from app.workers.tasks import build_aeo_site
 
 
 class FakeDB:
@@ -116,7 +118,7 @@ async def test_profile_complete_is_derived_from_requirements(monkeypatch):
         dispatched.append(command.operation_type)
         return None
 
-    monkeypatch.setattr(hospitals_api, "dispatch_operation", _dispatch)
+    monkeypatch.setattr(profile_completion, "dispatch_operation", _dispatch)
 
     result = await hospitals_api.update_profile(
         hospital.id,
@@ -135,7 +137,7 @@ async def test_profile_complete_is_derived_from_requirements(monkeypatch):
     assert len(background.tasks) == 1
     site_task = background.tasks[0]
     assert getattr(getattr(site_task.func, "__self__", None), "name", None) == (
-        hospitals_api.build_aeo_site.name
+        build_aeo_site.name
     )
     assert site_task.kwargs["args"] == [str(hospital.id)]
 

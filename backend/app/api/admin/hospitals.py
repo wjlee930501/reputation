@@ -45,19 +45,17 @@ from app.api.admin.physicians import (
     list_physicians,
     replace_physicians,
 )
-from app.core.celery_app import celery_app
 from app.core.database import get_db
 from app.models.admin_user import AdminUser
 from app.models.content import ContentItem, ContentStatus
-from app.models.essence import SourceType
-from app.models.handoff import HandoffSource, HandoffState, HospitalHandoff
+from app.models.handoff import HandoffSource, HospitalHandoff
 from app.models.hospital import Hospital, HospitalStatus, Plan
 from app.models.lead import SalesLead
 from app.models.operations import OperationRun
 from app.models.report import V0_REPORT_TYPE, MonthlyReport
 from app.models.sov import SovRecord
 from app.schemas.hospital import HospitalDetail, HospitalListItem
-from app.services import cost_guard
+from app.services import cost_guard, profile_channel_sources, profile_completion
 from app.services.asset_storage import store_asset_bytes
 from app.services.audit_log import default_actor, write_audit_log
 from app.services.clinic_visual_readiness import evaluate_visual_readiness
@@ -78,10 +76,6 @@ from app.services.essence_readiness import (
     get_essence_readiness,
     get_essence_readiness_states,
     get_public_approved_philosophy_id,
-)
-from app.services.essence_sources import (
-    create_pending_channel_source,
-    find_active_source_id_by_url,
 )
 from app.services.hospital_activation import (
     ActivationOutcome,
@@ -127,11 +121,6 @@ from app.services.keyword_analysis import (
 from app.services.keyword_analysis import (
     normalize as normalize_keyword,
 )
-from app.services.operation_runs import (
-    OperationCommand,
-    OperationQueueUnavailable,
-    dispatch_operation,
-)
 from app.services.public_asset_ref import is_public_asset_path
 from app.services.public_surface_intents import enqueue_public_surface_intent
 from app.services.readiness_operator_copy import readiness_next_actions
@@ -146,9 +135,7 @@ from app.services.site_revalidate import (
 )
 from app.utils.db_locks import acquire_hospital_advisory_lock
 from app.utils.medical_filter import check_forbidden
-from app.workers.dispatch_auth import build_dispatch_headers
 from app.workers.profile_autofill_tasks import PROFILE_AUTOFILL_OPERATION
-from app.workers.tasks import build_aeo_site, trigger_v0_report
 
 logger = logging.getLogger(__name__)
 
@@ -434,17 +421,7 @@ READINESS_CHECK_STATE_LABELS = {
 }
 
 
-def profile_completion_handoff_blocker(
-    _hospital: Hospital, handoff: HospitalHandoff | None
-) -> dict[str, object] | None:
-    if handoff is not None and handoff.state is HandoffState.HANDOFF_ACCEPTED:
-        return None
-    return {
-        "code": "HANDOFF_NOT_ACCEPTED",
-        "missing": ["handoff_accepted"],
-        "message": "고객 인수 승인이 완료된 뒤 프로파일을 완료할 수 있습니다.",
-    }
-
+profile_completion_handoff_blocker = profile_completion.profile_completion_handoff_blocker
 
 PUBLIC_PROFILE_FIELDS = {
     "address",
@@ -478,152 +455,17 @@ PUBLIC_PROFILE_FIELDS = {
     "treatments",
 }
 
-# 공식 채널 주소는 저장하는 순간 근거 자료로 등록된다 — '자료로 추가' 버튼은 없다(설계 §4.3).
-CHANNEL_SOURCE_TYPES: dict[str, SourceType] = {
-    "website_url": SourceType.HOMEPAGE,
-    "blog_url": SourceType.NAVER_BLOG,
-}
-# 본문을 받아오기 전까지 쓰는 제목. 워커가 페이지 <title>로 바꿔 준다.
-CHANNEL_SOURCE_PROVISIONAL_TITLES: dict[str, str] = {
-    "website_url": "병원 홈페이지",
-    "blog_url": "네이버 블로그",
-}
-# 지도·채널 주소는 프로파일 표기 전용이다. 본문이 없어 근거로 쓸 수 없다 —
-# admin/lib/onboarding-candidate.ts의 PROFILE_ONLY_CANDIDATE_KEYS와 같은 목록이다.
-PROFILE_ONLY_CHANNEL_FIELDS = frozenset(
-    {
-        "naver_place_url",
-        "google_business_profile_url",
-        "google_maps_url",
-        "kakao_channel_url",
-    }
-)
+# 공식 채널 자료 등록은 자동 입력 적용과 공용이다(services/profile_channel_sources.py).
+CHANNEL_SOURCE_TYPES = profile_channel_sources.CHANNEL_SOURCE_TYPES
+PROFILE_ONLY_CHANNEL_FIELDS = profile_channel_sources.PROFILE_ONLY_CHANNEL_FIELDS
 
 
 def _submitted_channel_urls(
     hospital: Hospital, body: HospitalProfileUpdate, update_data: dict
 ) -> dict[str, tuple[str, bool]]:
-    """이번 저장이 보낸 공식 채널 주소와, 그것이 바뀐 값인지.
-
-    저장 전에 비교해야 '바뀐 채널'을 알 수 있다 — 적용 뒤에는 이전 값이 남지 않는다.
-    바뀌지 않은 주소도 함께 돌려준다: 지난번 등록이 실패해 자료 행이 없다면 같은 값을
-    다시 저장하는 것만으로 스스로 회복되어야 한다.
-    """
-    submitted: dict[str, tuple[str, bool]] = {}
-    # 지도·플레이스 주소는 이 화면에도 있지만 근거가 아니다. 목록을 명시적으로 건너뛰어야
-    # 새 채널 칸이 생겼을 때 "왜 등록되지 않는지"가 코드에 남는다.
-    for field in (*CHANNEL_SOURCE_TYPES, *sorted(PROFILE_ONLY_CHANNEL_FIELDS)):
-        if field in PROFILE_ONLY_CHANNEL_FIELDS:
-            continue
-        if field not in body.model_fields_set:
-            continue
-        new_url = (update_data.get(field) or "").strip()
-        old_url = (getattr(hospital, field, None) or "").strip()
-        if new_url:
-            submitted[field] = (new_url, new_url != old_url)
-    return submitted
-
-
-async def _register_channel_sources(
-    db: AsyncSession, hospital: Hospital, submitted_channels: dict[str, tuple[str, bool]]
-) -> tuple[list[dict], list[uuid.UUID]]:
-    """공식 채널 주소를 근거 자료 행으로 만든다 — 프로파일 저장과 **같은 트랜잭션**에서.
-
-    커밋 뒤에 만들면 그 사이의 실패가 "저장은 됐는데 자료 행은 없는" 병원을 남기고,
-    운영자는 같은 값을 다시 저장하기 전까지 그 사실을 모른다. 채널 하나하나는 SAVEPOINT
-    안에서 만든다 — 한 채널의 실패가 다른 채널이나 프로파일 저장을 되돌리지 않는다.
-    본문 수집은 커밋 뒤 워커가 맡는다. 응답의 QUEUED는 이 트랜잭션이 커밋되면 행이
-    있다는 뜻이고, FAILED는 그 SAVEPOINT가 되돌아가 행이 없다는 뜻이다.
-    """
-    entries: list[dict] = []
-    dispatch_ids: list[uuid.UUID] = []
-    for field, (url, changed) in submitted_channels.items():
-        try:
-            async with db.begin_nested():
-                existing_id = await find_active_source_id_by_url(
-                    db, hospital_id=hospital.id, url=url
-                )
-                created_id: uuid.UUID | None = None
-                if existing_id is None:
-                    source = await create_pending_channel_source(
-                        db,
-                        hospital_id=hospital.id,
-                        source_type=CHANNEL_SOURCE_TYPES[field],
-                        url=url,
-                        title=CHANNEL_SOURCE_PROVISIONAL_TITLES[field],
-                        channel_field=field,
-                        created_by=default_actor(),
-                    )
-                    created_id = source.id
-        except Exception:
-            logger.warning(
-                "Channel source registration failed for hospital %s (%s)",
-                hospital.id,
-                field,
-                exc_info=True,
-            )
-            entries.append(
-                {
-                    "field": field,
-                    "status": "FAILED",
-                    "source_id": None,
-                    "message": "자료 등록에 실패했습니다. 자료 화면에서 직접 등록해 주세요.",
-                }
-            )
-            continue
-        if existing_id is not None:
-            # 값이 그대로면 이번 저장이 한 일이 없다 — 화면에 알릴 것도 없다.
-            if changed:
-                entries.append(
-                    {
-                        "field": field,
-                        "status": "SKIPPED",
-                        "source_id": existing_id,
-                        "message": "이미 자료로 등록된 주소입니다.",
-                    }
-                )
-            continue
-        dispatch_ids.append(created_id)
-        entries.append(
-            {"field": field, "status": "QUEUED", "source_id": created_id, "message": None}
-        )
-
-    for entry in entries:
-        await write_audit_log(
-            db,
-            action="profile_channel_source_registered",
-            hospital_id=hospital.id,
-            actor=default_actor(),
-            target_type="source_asset",
-            target_id=entry["source_id"],
-            detail={
-                "field": entry["field"],
-                "status": entry["status"],
-                "source_id": str(entry["source_id"]) if entry["source_id"] else None,
-                "message": entry["message"],
-            },
-        )
-    return entries, dispatch_ids
-
-
-def _dispatch_channel_source_fetches(source_ids: list[uuid.UUID]) -> None:
-    """커밋된 자료 행의 본문 수집을 워커에 넘긴다 — 반드시 커밋 뒤에 부른다.
-
-    발행 실패는 응답을 바꾸지 않는다: 행은 이미 durable하고 `fetch_state`가 QUEUED이므로
-    정기 스윕이 같은 fetch를 다시 건다.
-    """
-    for source_id in source_ids:
-        try:
-            celery_app.send_task(
-                "app.workers.tasks.fetch_channel_source",
-                args=[str(source_id)],
-                queue="content",
-                headers=build_dispatch_headers("fetch-channel-source", str(source_id)),
-            )
-        except Exception:
-            logger.warning(
-                "Channel source fetch dispatch failed for source %s", source_id, exc_info=True
-            )
+    return profile_channel_sources.submitted_channel_urls(
+        hospital, body.model_fields_set, update_data
+    )
 
 
 def _readiness_status_label(status_value: str) -> str:
@@ -1085,7 +927,6 @@ async def update_profile(
             },
         )
     submitted_channels = _submitted_channel_urls(h, body, update_data)
-    was_complete = h.profile_complete
     was_public = _has_public_site(h)
     # 이 저장이 비운 항목만 완료를 되돌린다. 저장 전 이미 비어 있던 항목(레거시)까지 세면,
     # 무관한 칸 하나를 고치려다 공개 중인 병원이 차단되거나 완료가 풀린다.
@@ -1123,12 +964,7 @@ async def update_profile(
 
     # 완료 여부는 body가 아니라 저장 결과에서 파생한다 — 화면에 '완료로 표시'가 없으므로
     # 손으로 만든 요청이 불완전한 병원을 완료 처리할 경로도 함께 사라진다(설계 §4.5).
-    requirements_after = profile_requirements(h)
-    missing_requirements = [item.key for item in requirements_after if not item.passed]
-    derived = not missing_requirements
-    newly_missing = [
-        item for item in requirements_after if not item.passed and item.key not in missing_before
-    ]
+    # 판정 규칙은 자동 입력 적용과 공용이다(services/profile_completion.py).
 
     # 선택 보강은 profile_complete만 되돌리고 공개판은 유지한다. 실제 최소 공개 사실을
     # 지우는 저장만 막아, 저장 직전까지 열린 병원이 조용히 404로 바뀌지 않게 한다.
@@ -1155,27 +991,13 @@ async def update_profile(
             },
         )
 
-    if was_complete and newly_missing:
-        next_complete = False
-    elif was_complete:
-        # 이 저장이 비우지 않은 레거시 공백은 완료를 되돌리지 않는다. 남은 항목은 응답의
-        # missing_profile_requirements가 그대로 말한다.
-        next_complete = True
-    else:
-        next_complete = derived
-
-    transitioned = next_complete and not was_complete
-    h.profile_complete = next_complete
-
     # 완료 전환이 V0·사이트 파이프라인을 여는 지점이므로, 인수 승인은 여기서만 막는다.
-    if transitioned:
-        handoff_result = await db.execute(
-            select(HospitalHandoff).where(HospitalHandoff.hospital_id == hospital_id)
-        )
-        handoff = handoff_result.scalar_one_or_none()
-        blocker = profile_completion_handoff_blocker(h, handoff)
-        if blocker is not None:
-            raise HTTPException(status_code=409, detail=blocker)
+    completion = await profile_completion.evaluate_profile_completion(
+        db, h, missing_before=missing_before
+    )
+    if completion.blocked:
+        raise HTTPException(status_code=409, detail=completion.blocker)
+    transitioned = completion.transitioned
 
     if changed_fields:
         await write_audit_log(
@@ -1187,12 +1009,7 @@ async def update_profile(
             target_id=hospital_id,
             detail={
                 "changed_fields": changed_fields,
-                "profile_complete_transition": transitioned,
-                "profile_complete_derived": derived,
-                # 레거시 공백을 남겨 둔 채 완료를 유지한 저장은 파생값과 저장값이 다르다.
-                "profile_complete_applied": next_complete,
-                "missing_requirements": missing_requirements,
-                "newly_missing_requirements": [item.key for item in newly_missing],
+                **profile_completion.completion_audit_detail(completion),
             },
         )
 
@@ -1204,43 +1021,20 @@ async def update_profile(
 
     # 자료 행은 프로파일과 같은 커밋에 들어간다 — 저장은 됐는데 근거 자료만 없는 상태가
     # 생기지 않게 한다.
-    source_registration, fetch_dispatch_ids = await _register_channel_sources(
+    source_registration, fetch_dispatch_ids = await profile_channel_sources.register_channel_sources(
         db, h, submitted_channels
     )
 
     await db.commit()
     await db.refresh(h)
     # 커밋 뒤에 보낸다 — 워커가 아직 없는 행을 찾아 헛돌지 않게 한다.
-    _dispatch_channel_source_fetches(fetch_dispatch_ids)
+    profile_channel_sources.dispatch_channel_source_fetches(fetch_dispatch_ids)
 
-    # 프로파일 완료로 변경되면 V0와 허브 준비를 독립적으로 시작한다. 초기 진단은
-    # 장시간 걸릴 수 있는 백그라운드 산출물이므로 그 큐의 지연·실패가 공개 준비를
-    # 막아서는 안 된다. 허브 태스크는 자율 복구에서도 멱등 재디스패치된다.
+    # 프로파일 완료로 변경되면 V0와 허브 준비를 독립적으로 시작한다(자동 입력 적용과 공용).
     if transitioned:
-        background_tasks.add_task(
-            build_aeo_site.apply_async,
-            args=[str(h.id)],
-            queue="default",
-            headers=build_dispatch_headers("build-aeo-site", str(h.id)),
+        await profile_completion.dispatch_completion_side_effects(
+            db, h.id, actor=default_actor(), schedule=background_tasks.add_task
         )
-        try:
-            await dispatch_operation(
-                db,
-                OperationCommand(
-                    operation_type="TRIGGER_V0_REPORT",
-                    hospital_id=h.id,
-                    requested_by_id=None,
-                    idempotency_key=None,
-                    audit_actor=default_actor(),
-                    target_type="hospital",
-                    target_id=str(h.id),
-                    queue="reports",
-                    task_args=(str(h.id),),
-                ),
-                trigger_v0_report,
-            )
-        except OperationQueueUnavailable:
-            logger.warning("V0 report enqueue failed for hospital %s after profile complete", h.id)
     if needs_site_revalidate:
         # 커밋 이후이므로 실패해도 raise하지 않는다 (R4) — 저장은 이미 성공했다.
         await trigger_hospital_site_revalidate_safe(h.slug, h.treatments, hospital_name=h.name)

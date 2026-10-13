@@ -16,6 +16,7 @@ from app.models.audit import AdminAuditLog
 from app.models.essence import HospitalSourceAsset, SourceStatus, SourceType
 from app.models.handoff import HandoffState
 from app.services import essence_sources as essence_sources_service
+from app.services import profile_channel_sources, profile_completion
 
 
 class FakeSavepoint:
@@ -162,9 +163,9 @@ def worker(monkeypatch):
     async def fake_operation_dispatch(_db, _command, _task):
         return None
 
-    monkeypatch.setattr(hospitals_api.celery_app, "send_task", fake_send_task)
+    monkeypatch.setattr(profile_channel_sources.celery_app, "send_task", fake_send_task)
     monkeypatch.setattr(essence_sources_service, "fetch_url_text", fail_if_fetched)
-    monkeypatch.setattr(hospitals_api, "dispatch_operation", fake_operation_dispatch)
+    monkeypatch.setattr(profile_completion, "dispatch_operation", fake_operation_dispatch)
     return calls
 
 
@@ -290,7 +291,7 @@ async def test_a_row_that_could_not_be_created_reports_failed(monkeypatch, worke
     async def failing_create(*_args, **_kwargs):
         raise RuntimeError("insert failed")
 
-    monkeypatch.setattr(hospitals_api, "create_pending_channel_source", failing_create)
+    monkeypatch.setattr(profile_channel_sources, "create_pending_channel_source", failing_create)
     hospital = _hospital()
     db = FakeDB(hospital)
 
@@ -316,14 +317,14 @@ async def test_a_row_that_could_not_be_created_reports_failed(monkeypatch, worke
 
 async def test_one_failing_channel_does_not_undo_the_other_or_the_profile(monkeypatch, worker):
     """채널 하나의 실패가 다른 채널의 행이나 프로파일 저장을 되돌리지 않는다."""
-    real_create = hospitals_api.create_pending_channel_source
+    real_create = profile_channel_sources.create_pending_channel_source
 
     async def fail_for_blog(db, *, channel_field, **kwargs):
         if channel_field == "blog_url":
             raise RuntimeError("insert failed")
         return await real_create(db, channel_field=channel_field, **kwargs)
 
-    monkeypatch.setattr(hospitals_api, "create_pending_channel_source", fail_for_blog)
+    monkeypatch.setattr(profile_channel_sources, "create_pending_channel_source", fail_for_blog)
     hospital = _hospital()
     db = FakeDB(hospital)
 
@@ -362,7 +363,7 @@ async def test_a_dispatch_failure_after_the_commit_leaves_the_row_for_the_sweep(
     def exploding_send_task(*_args, **_kwargs):
         raise RuntimeError("broker unavailable")
 
-    monkeypatch.setattr(hospitals_api.celery_app, "send_task", exploding_send_task)
+    monkeypatch.setattr(profile_channel_sources.celery_app, "send_task", exploding_send_task)
     hospital = _hospital()
     db = FakeDB(hospital)
 
