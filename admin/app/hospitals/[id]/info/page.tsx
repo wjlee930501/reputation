@@ -302,7 +302,7 @@ export default function HospitalInfoPage() {
         return
       }
       if (!isExpectedOperatorRequestFailure(e)) throw e
-      setError(safeOperatorError('onboarding', '잠시 뒤 다시 불러오거나 ‘병원 정보 자동 입력’을 실행하세요.'))
+      setError(safeOperatorError('onboarding', ADMIN_COPY.storedAutofillRetry))
     } finally {
       setAutofillLoading(false)
     }
