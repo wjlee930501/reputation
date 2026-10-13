@@ -1,6 +1,17 @@
 # 현재 배포와 헬스체크
 
-## 최신 운영 배포 — 2026-10-13 Phase 0 자율성 보완
+## 최신 운영 배포 — 2026-10-13 Phase 1 자율성 보완
+
+main `08abf747`(api `00242-jsw`, worker `00232-vx2`, beat `00227-2mv`, admin `00106-psm`, Site 그대로, DB head
+`0088_add_outbox_open_pairing_index`, RedBeat `2026-10-12.1`). 같은 날 두 번째 배포(대표 승인)로 12:00 스윕 ±45분과 13:00 발행
+틱을 피해 13:03에 시작했다. 배포 전 `.env.production`에서 `SOV_MONTHLY_COHORT_LIMIT`을 지우고 env 대조로 차이가 그 키의
+"운영에만 있음" 하나뿐임을 확인했다(배포 뒤 0). 사전 조회는 옛(P0) 이미지에 q7이 없어 base64 `python -c`로 `notification_outbox`
+행 수(631)를 읽었다. backend와 admin 모두 `DEPLOY_ROLLBACK_STATE_FILE`(`.omo/rollback-p1/backend`·`admin`)으로 좌표를 따로 남겼다.
+readiness 17/17, 병원 11곳 헬스 200, 새 리비전 ERROR 0건, 첫 틱 RECOVERED 24시간 경과 190건 확인 처리(Slack 0). 배포 뒤 대표
+결정 D22로 `python -m app.utils.legacy_budget_reset`(dry-run 23건 확인 → `--apply --reason=…`) 23/23 교체.
+**이후 Worker를 `00223` 이하로 롤백하지 않는다.** 상세는 [배포 기록](../releases/2026-10-13-autonomy-phase1-production.md).
+
+## 이전 운영 배포 — 2026-10-13 Phase 0 자율성 보완
 
 main `31751a88`(api `00241-lhd`, worker `00231-4rx`, beat `00226-gpw`, admin `00105-x4r`, Site 그대로, DB head
 `0087_add_operation_run_redispatch_count`). 본 체크아웃의 untracked 파일이 release revision 검사에 걸리므로 깨끗한 worktree에서
