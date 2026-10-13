@@ -12,7 +12,7 @@ from datetime import UTC, date, datetime
 from zoneinfo import ZoneInfo
 
 import redis.asyncio as redis_async
-from redis.exceptions import RedisError
+from redis.exceptions import RedisError, ResponseError
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -34,6 +34,8 @@ _RECOVERY_MAX_ITEMS = 10_000
 _RECOVERY_RETRY_DELAY_SECONDS = 60
 # spool이 상한을 넘겨 버린 기록 수. 잘리는 순간은 DB가 죽어 있으므로 사고는 drain이 나중에 연다.
 _RECOVERY_DROPPED_KEY = "provider_usage:recovery:dropped"
+# drain이 인수한 유실 수. 사고 커밋이 끝난 뒤에만 지운다 — 인수와 커밋 사이에 워커가 죽어도 남는다.
+_RECOVERY_DROPPED_INFLIGHT_KEY = "provider_usage:recovery:dropped:inflight"
 
 _HOSPITAL_KIND_BY_CATEGORY = {
     "content": HospitalUsageKind.CONTENT.value,
@@ -378,30 +380,53 @@ async def _open_spool_truncation_incident(dropped: int, *, now: datetime) -> Non
         await db.commit()
 
 
+async def _take_over_dropped_count(client: redis_async.Redis) -> int:
+    """처리할 유실 수를 인수 키로 옮겨 돌려준다. 앞 drain이 남긴 인수 키가 있으면 그것부터 처리한다.
+
+    RENAMENX라 인수 키가 이미 있으면 새 카운터를 덮어쓰지 않는다(그 사이 쌓인 유실은 다음 차례).
+    """
+    raw = await client.get(_RECOVERY_DROPPED_INFLIGHT_KEY)
+    if raw is not None:
+        if int(raw):
+            return int(raw)
+        await client.delete(_RECOVERY_DROPPED_INFLIGHT_KEY)  # 0인 인수 키가 새 인수를 막지 않게
+    try:
+        await client.renamenx(_RECOVERY_DROPPED_KEY, _RECOVERY_DROPPED_INFLIGHT_KEY)
+    except ResponseError:
+        return 0  # 카운터가 없다 — 버린 기록이 없다.
+    return int(await client.get(_RECOVERY_DROPPED_INFLIGHT_KEY) or 0)
+
+
 async def report_dropped_usage(*, redis_client: redis_async.Redis | None = None) -> int:
-    """spool이 버린 기록 수를 개발 사고로 바꾸고 카운터를 비운다. 실패하면 카운터를 되돌린다."""
+    """spool이 버린 기록 수를 개발 사고로 바꾼다.
+
+    인수(카운터 → 인수 키) → 사고 기록(KST 하루 한 건이라 다시 해도 같은 사고를 touch할 뿐이다) →
+    커밋 뒤 인수 키 삭제 순서다. 사고 기록이 실패하거나 그 사이 워커가 강제 종료되면 인수 키가
+    남고, 다음 drain이 그것부터 다시 처리한다 — 카운터를 지운 뒤 커밋 전에 죽어 유실 수가 사라지지 않는다.
+    """
     async with _recovery_redis_client(redis_client) as client:
         try:
-            pipe = client.pipeline(transaction=True)
-            pipe.get(_RECOVERY_DROPPED_KEY)
-            pipe.delete(_RECOVERY_DROPPED_KEY)
-            raw, _deleted = await pipe.execute()
-        except (OSError, RedisError, RuntimeError, TimeoutError):
+            dropped = await _take_over_dropped_count(client)
+        except (OSError, RedisError, RuntimeError, TimeoutError, ValueError):
             logger.warning("provider usage dropped counter unavailable: redis unavailable")
             return 0
-        dropped = int(raw or 0)
         if not dropped:
             return 0
         try:
             await _open_spool_truncation_incident(dropped, now=datetime.now(UTC))
-        except Exception:  # noqa: BLE001 — 다음 drain이 다시 시도한다.
+        except Exception:  # noqa: BLE001 — 인수 키가 남아 다음 drain이 다시 시도한다.
             logger.warning("provider usage spool truncation incident not recorded: dropped=%s", dropped)
-            try:
-                await client.incrby(_RECOVERY_DROPPED_KEY, dropped)
-            except (OSError, RedisError, RuntimeError, TimeoutError):
-                logger.error("provider_usage_spool_truncated_count_lost dropped=%s", dropped)
             return 0
+        await _forget_inflight(client)
         return dropped
+
+
+async def _forget_inflight(client: redis_async.Redis) -> None:
+    try:
+        await client.delete(_RECOVERY_DROPPED_INFLIGHT_KEY)
+    except (OSError, RedisError, RuntimeError, TimeoutError):
+        # 사고는 이미 기록했다. 남은 인수 키는 다음 drain이 같은 날 사고를 한 번 더 touch할 뿐이다.
+        logger.warning("provider usage dropped inflight key not cleared")
 
 
 def normalize_cache_status(

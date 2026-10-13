@@ -5,6 +5,8 @@ import time
 import uuid
 from types import SimpleNamespace
 
+import pytest
+
 from app.models.usage import HospitalUsageEvent, ProviderUsageEvent
 from app.services import provider_usage
 
@@ -395,6 +397,22 @@ class FakeSpoolRedis:
         self.counters[key] = self.counters.get(key, 0) + amount
         return self.counters[key]
 
+    # 유실 카운터 인수(report_dropped_usage)가 쓰는 명령 — Redis 의미 그대로.
+    async def get(self, key):
+        value = self.counters.get(key)
+        return None if value is None else str(value).encode()
+
+    async def delete(self, key):
+        return 1 if self.counters.pop(key, None) is not None else 0
+
+    async def renamenx(self, source, destination):
+        if source not in self.counters:
+            raise provider_usage.ResponseError("no such key")
+        if destination in self.counters:
+            return False
+        self.counters[destination] = self.counters.pop(source)
+        return True
+
 
 class _FakePipeline:
     def __init__(self, redis):
@@ -483,17 +501,119 @@ async def test_dropped_usage_opens_one_developer_incident_and_resets_the_counter
     assert opened == [7]
 
 
-async def test_incident_failure_puts_the_dropped_count_back(monkeypatch):
+async def test_incident_failure_keeps_the_taken_over_count_for_the_next_drain(monkeypatch):
     redis = FakeSpoolRedis(existing=0)
     redis.counters[provider_usage._RECOVERY_DROPPED_KEY] = 3
+    opened: list[int] = []
+    outcomes = [RuntimeError("db down"), None, None]
 
-    async def broken(_dropped, *, now):
-        raise RuntimeError("db down")
+    async def flaky(dropped, *, now):
+        outcome = outcomes.pop(0)
+        if outcome is not None:
+            raise outcome
+        opened.append(dropped)
 
-    monkeypatch.setattr(provider_usage, "_open_spool_truncation_incident", broken)
+    monkeypatch.setattr(provider_usage, "_open_spool_truncation_incident", flaky)
 
     assert await provider_usage.report_dropped_usage(redis_client=redis) == 0
-    assert redis.counters[provider_usage._RECOVERY_DROPPED_KEY] == 3
+    # 인수한 수는 인수 키에 남는다(카운터로 되돌리지 않는다). 그 사이 새 유실이 쌓여도 섞이지 않는다.
+    assert redis.counters == {provider_usage._RECOVERY_DROPPED_INFLIGHT_KEY: 3}
+    redis.counters[provider_usage._RECOVERY_DROPPED_KEY] = 2
+
+    assert await provider_usage.report_dropped_usage(redis_client=redis) == 3
+    assert await provider_usage.report_dropped_usage(redis_client=redis) == 2
+    assert opened == [3, 2]
+    assert redis.counters == {}
+
+
+async def test_a_worker_killed_after_takeover_does_not_lose_the_count(monkeypatch):
+    """인수 뒤 사고 커밋 전에 강제 종료돼도(예외가 아닌 종료) 다음 drain이 인수 키를 처리한다."""
+    redis = FakeSpoolRedis(existing=0)
+    redis.counters[provider_usage._RECOVERY_DROPPED_KEY] = 5
+
+    class Killed(BaseException):
+        pass
+
+    async def killed(_dropped, *, now):
+        raise Killed
+
+    monkeypatch.setattr(provider_usage, "_open_spool_truncation_incident", killed)
+    with pytest.raises(Killed):
+        await provider_usage.report_dropped_usage(redis_client=redis)
+    assert redis.counters == {provider_usage._RECOVERY_DROPPED_INFLIGHT_KEY: 5}
+
+    opened: list[int] = []
+
+    async def fine(dropped, *, now):
+        opened.append(dropped)
+
+    monkeypatch.setattr(provider_usage, "_open_spool_truncation_incident", fine)
+    assert await provider_usage.report_dropped_usage(redis_client=redis) == 5
+    assert opened == [5] and redis.counters == {}
+
+
+async def test_a_worker_killed_after_commit_only_touches_the_same_daily_incident_again(monkeypatch):
+    """사고 커밋 뒤 인수 키 삭제 전에 죽으면 다음 drain이 같은 수로 같은 날 사고를 한 번 더 touch한다(새 사고 아님)."""
+    redis = FakeSpoolRedis(existing=0)
+    redis.counters[provider_usage._RECOVERY_DROPPED_KEY] = 4
+    opened: list[int] = []
+
+    async def committed(dropped, *, now):
+        opened.append(dropped)
+
+    class Killed(BaseException):
+        pass
+
+    async def killed_delete(_key):
+        raise Killed
+
+    monkeypatch.setattr(provider_usage, "_open_spool_truncation_incident", committed)
+    original_delete = redis.delete
+    redis.delete = killed_delete
+    with pytest.raises(Killed):
+        await provider_usage.report_dropped_usage(redis_client=redis)
+    redis.delete = original_delete
+
+    assert await provider_usage.report_dropped_usage(redis_client=redis) == 4
+    assert opened == [4, 4]
+    assert redis.counters == {}
+
+
+async def test_dropped_counter_takeover_uses_real_redis_semantics(monkeypatch):
+    """RENAMENX가 남은 인수 키를 덮어쓰지 않는다 — 실제 Redis로 확인한다."""
+    import redis.asyncio as redis_async
+
+    from tests.db_env import require_redis_url
+
+    client = redis_async.from_url(require_redis_url("INTEGRATION_REDIS_URL"))
+    suffix = uuid.uuid4().hex
+    dropped_key = f"test:provider_usage:dropped:{suffix}"
+    inflight_key = f"test:provider_usage:dropped:inflight:{suffix}"
+    monkeypatch.setattr(provider_usage, "_RECOVERY_DROPPED_KEY", dropped_key)
+    monkeypatch.setattr(provider_usage, "_RECOVERY_DROPPED_INFLIGHT_KEY", inflight_key)
+    opened: list[int] = []
+    fail = [True]
+
+    async def open_incident(dropped, *, now):
+        if fail[0]:
+            raise RuntimeError("db down")
+        opened.append(dropped)
+
+    monkeypatch.setattr(provider_usage, "_open_spool_truncation_incident", open_incident)
+    try:
+        await client.incrby(dropped_key, 6)
+        assert await provider_usage.report_dropped_usage(redis_client=client) == 0
+        assert int(await client.get(inflight_key)) == 6
+        await client.incrby(dropped_key, 1)
+        fail[0] = False
+        assert await provider_usage.report_dropped_usage(redis_client=client) == 6
+        assert await provider_usage.report_dropped_usage(redis_client=client) == 1
+        assert await provider_usage.report_dropped_usage(redis_client=client) == 0
+        assert opened == [6, 1]
+        assert await client.exists(dropped_key, inflight_key) == 0
+    finally:
+        await client.delete(dropped_key, inflight_key)
+        await client.aclose()
 
 
 async def test_counter_failure_does_not_turn_a_stored_spool_into_a_failure(monkeypatch, caplog):
