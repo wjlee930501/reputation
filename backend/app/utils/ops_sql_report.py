@@ -271,6 +271,29 @@ QUERIES: dict[str, tuple[str, ...]] = {
         ORDER BY 1, total DESC, 2
         """,
     ),
+    # (0090) 범용 서술 각도(`treatment_narrative.source='fallback'`) 글 — 공개된 적 없거나 최근 3일 안에 처음
+    # 공개된 것. 검수 기록·hash 유무·승인 판·최신 생성 시도. hash가 현재 본문과 같은지는 SQL로 다시 계산하지
+    # 않는다(발행 게이트가 본다) — hash가 없으면 게이트가 STALE로 막고 복구 스윕이 재검수한다.
+    "q11": (
+        """
+        SELECT left(id::text, 8) AS content_id8,
+               status,
+               scheduled_date,
+               essence_check_summary->'ai_review'->>'status' AS ai_review_status,
+               coalesce(essence_check_summary->'ai_review'->>'candidate_sha256', '') <> ''
+                 AS review_hash_present,
+               active_revision_id IS NOT NULL AS has_revision,
+               published_at,
+               essence_check_summary->'generation_attempt'->>'reason' AS attempt_reason,
+               generation_claimed_at IS NOT NULL AS claimed
+        FROM content_items
+        WHERE content_brief->'treatment_narrative'->>'source' = 'fallback'
+          AND (first_published_at IS NULL
+               OR first_published_at >= now() - interval '3 days')
+          AND status <> 'CANCELLED'
+        ORDER BY scheduled_date, id
+        """,
+    ),
 }
 
 

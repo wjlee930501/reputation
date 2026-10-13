@@ -79,6 +79,8 @@ def test_cost_draft_with_no_references_and_nothing_else_to_repair_is_not_claimed
         {"essence_check_summary": {"ai_review": {"status": "REVISE", "blocking": False}}},
         {"content_type": ContentType.FAQ, "faq_question": "비용은?", "faq_answer_summary": ""},
         {"content_type": ContentType.FAQ, "faq_question": "비용은", "faq_answer_summary": "답"},
+        # 범용 서술 각도 글의 hash 없는 검수 — 발행 게이트가 STALE로 막으므로 재검수 대상이다.
+        {"content_brief": {"treatment_narrative": {"source": "fallback", "angle": "각도"}}},
     ],
 )
 def test_the_same_row_with_another_repair_reason_is_still_claimed(monkeypatch, overrides):
@@ -122,9 +124,9 @@ def test_python_mirror_names_every_non_reference_condition_of_the_sql_predicate(
         "references_list",
     ):
         assert f"content_items.{column}" in sql
-    # 본문·이미지·인증·FAQ·참고자료·Essence 승인본·독립 검수·Essence 상태를 or_가 펼친 갈래 수.
+    # 본문·이미지·인증·FAQ·참고자료·Essence 승인본·독립 검수(범용 각도 포함)·Essence 상태를 or_가 펼친 갈래 수.
     # 수가 바뀌면 파이썬 짝을 함께 고친 뒤 이 값을 맞춘다.
-    assert len(_needs_generation_recovery().clauses) == 11
+    assert len(_needs_generation_recovery().clauses) == 12
 
 
 def test_worker_skips_the_row_without_generating(monkeypatch):

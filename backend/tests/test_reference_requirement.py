@@ -27,6 +27,7 @@ from app.api.admin import content as content_api
 from app.models.content import ContentType
 from app.services import content_engine, cost_guard, provider_usage
 from app.services.audit_log import reset_request_actor, set_request_actor
+from app.services.content_ai_review import candidate_sha256
 from app.services.content_publication import (
     has_required_references,
     public_surface_has_required_references,
@@ -175,6 +176,23 @@ def test_item_level_predicate_reads_the_row():
 # ── 발행 게이트: 참고자료 필수 글은 확인된 참고자료 0개로 공개하지 않는다 ─────────────
 
 
+def _bind_pass_review(item) -> None:
+    """범용 서술 각도(`fallback`) 초안은 현재 본문 hash에 묶인 검수가 있어야 발행된다(0090).
+
+    시스템의 참고자료 치유는 직전 hash에 묶인 PASS를 새 hash로 옮긴다.
+    """
+
+    summary = item.essence_check_summary if isinstance(item.essence_check_summary, dict) else {}
+    item.essence_check_summary = {
+        **summary,
+        "ai_review": {
+            "status": "PASS",
+            "schema_version": "3",
+            "candidate_sha256": candidate_sha256(item),
+        },
+    }
+
+
 def _notice_publish_setup(monkeypatch, *, references, brief, query_target_id, title):
     item, db, effects = _publish_setup(monkeypatch, references=references, checks=None, title=title)
     item.content_type = SimpleNamespace(value="NOTICE")
@@ -236,6 +254,7 @@ def test_medical_notice_with_no_references_is_healed_from_the_curated_list_first
         query_target_id=uuid.uuid4(),
         title="마포 고혈압 진료 안내",
     )
+    _bind_pass_review(item)
     fetcher = PageFetcher()
     fetcher.add_document(CURATED_HYPERTENSION, "고혈압 | 국가건강정보포털 | 질병관리청", topic="고혈압")
 
@@ -307,6 +326,7 @@ def test_seven_forty_five_heals_an_empty_medical_notice_before_paging(monkeypatc
     item.query_target_id = uuid.uuid4()
     item.references_list = []
     item.reference_checks = None
+    _bind_pass_review(item)
     db = _GateDB(item)
     incidents = _gate_setup(monkeypatch, item)
     fetcher = PageFetcher()

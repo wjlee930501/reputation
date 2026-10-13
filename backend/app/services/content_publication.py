@@ -155,6 +155,31 @@ def publication_field_values(item: ContentItem) -> dict:
     return values
 
 
+FALLBACK_TREATMENT_NARRATIVE_SOURCE = "fallback"
+
+
+def fallback_narrative_requires_bound_review(item: ContentItem) -> bool:
+    """공개된 적 없는 글이 범용 서술 각도(`treatment_narrative.source == 'fallback'`)로 쓰였는가.
+
+    범용 각도는 승인 근거가 아니라 작성 힌트다(`content_brief._treatment_narrative`) — 승인 판
+    SQL(0090)이 이 글에 판을 주는 대신, 발행 게이트는 **현재 본문 hash에 묶인** 독립 검수
+    PASS(또는 비차단 REVISE)를 요구한다. 검수 기록이 없거나 hash 없는 옛 기록이면 STALE로
+    막고, 복구 스윕(`nightly_generation_batch._needs_generation_recovery`)이 같은 행을 집어
+    재검수한다. 이미 공개된 적 있는 글은 이 규칙으로 숨기지 않는다.
+    """
+
+    if getattr(item, "status", None) == ContentStatus.PUBLISHED:
+        return False
+    if getattr(item, "first_published_at", None) is not None:
+        return False
+    brief = getattr(item, "content_brief", None)
+    narrative = brief.get("treatment_narrative") if isinstance(brief, dict) else None
+    return (
+        isinstance(narrative, dict)
+        and narrative.get("source") == FALLBACK_TREATMENT_NARRATIVE_SOURCE
+    )
+
+
 def _blocking_ai_review_state(item: ContentItem) -> tuple[str, dict[str, Any]] | None:
     """Return CURRENT/STALE for an unresolved review that cannot be discarded."""
 
@@ -170,13 +195,15 @@ def _blocking_ai_review_state(item: ContentItem) -> tuple[str, dict[str, Any]] |
             # 기록이 비었거나 교정 전 본문의 PASS가 남아 있어도 — 통과시키지 않는다. 교정은
             # 검수를 대신하지 못한다(`content_minimal_correction`).
             return "STALE", dict(review) if isinstance(review, dict) else {}
+    # 범용 서술 각도의 글은 현재 본문에 묶인 검수가 있어야 한다 — 없으면 재검수 대기(STALE).
+    requires_bound_review = fallback_narrative_requires_bound_review(item)
     if not isinstance(review, dict):
-        return None
+        return ("STALE", {}) if requires_bound_review else None
     review_status = review.get("status")
     if review_status == "UNAVAILABLE":
         return "UNAVAILABLE", review
     if review_status not in ("PASS", "REVISE"):
-        return None
+        return ("STALE", review) if requires_bound_review else None
     # v2 explicitly distinguishes soft findings. Legacy REVISE payloads did not,
     # so they are safety-uncertain and require one automatic re-review.
     is_legacy = review_status == "REVISE" and review.get("schema_version") is None
@@ -186,6 +213,8 @@ def _blocking_ai_review_state(item: ContentItem) -> tuple[str, dict[str, Any]] |
         # 유료 재검수하지 않으므로 건드리지 않는다. 이미 공개된 글은 숨기지 않는다 — 편집된
         # 공개 글은 사후 검수(`post_publish_ai_review`)가 같은 해시로 다시 본다.
         stored_hash = review.get("candidate_sha256")
+        if requires_bound_review and not stored_hash:
+            return "STALE", review
         if (
             stored_hash
             and getattr(item, "status", None) != ContentStatus.PUBLISHED
