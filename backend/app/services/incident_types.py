@@ -280,8 +280,8 @@ INCIDENT_TYPE_POLICIES: dict[str, IncidentTypePolicy] = {
     # 조치가 비용 경고 기준·측정 한도 환경값 변경(배포 일)이다.
     "MONTHLY_SOV_COHORT_OVER_LIMIT": _DEVELOPER,
     # 하루 자동 재실행 예산을 다 쓴 사이트 준비 = 코드·인프라 문제. 사람이 누른 재시도의
-    # 실패(SITE_BUILD_FAILED)는 운영 담당 그대로다. 비용 한도(COST_GUARD_*)는 대표 결정이라
-    # 운영 담당에 남긴다.
+    # 실패(SITE_BUILD_FAILED)는 운영 담당 그대로다. 비용 한도 도달(COST_GUARD_LIMIT_REACHED)은
+    # 대표 결정이라 운영 담당에 남긴다.
     "SITE_BUILD_RETRIES_EXHAUSTED": _DEVELOPER,
     # 상태로 충분한 관찰 — 행은 남고 Slack·할 일·요약 건수에서 빠진다(Phase 1-8).
     # 주간 상한 초과는 주가 끝나면 근거로 닫힌다. 주간 측정은 월간 근거의 보조이며, 사람의 일은
@@ -309,6 +309,20 @@ INCIDENT_TYPE_POLICIES: dict[str, IncidentTypePolicy] = {
     # 기록이 없어 코호트에 못 든 병원에 월말 창이 주간 측정 1회를 보냈다(요청 + 24시간, 호출자 기한).
     # 기한이 없는 공백(질문 세트 부족 등)은 처음부터 사람의 일이다. 편입되면 근거가 닫는다.
     "MONTHLY_SOV_COHORT_GAP": IncidentTypePolicy(sweep_owned=True),
+    # Phase 2 — 비용 가드가 Redis를 읽지 못해 상한 확인 없이 허용 중이다(fail-open). 비용 한도
+    # 도달(COST_GUARD_LIMIT_REACHED)은 대표 결정이라 운영 담당이지만, 이건 AE가 고칠 수 없는
+    # 인프라 사실이라 개발 담당이다(D6의 예외, D25). 가드가 Redis로 다시 판정하면 복구한다
+    # (`cost_guard_health`).
+    "COST_GUARD_FAIL_OPEN": _DEVELOPER,
+    # 공급자 사용량 기록 spool이 넘쳐 오래된 기록을 버렸다(provider_usage).
+    "PROVIDER_USAGE_SPOOL_TRUNCATED": _DEVELOPER,
+    # Phase 2 — 온보딩 정체와 자체 도메인 DNS 미설정은 사람이 병원 정보·공개 주소에서 정하는
+    # 일이다. 운영 담당·Slack 알림·처음부터 OPEN(스윕 소유 아님). 기본값과 같지만 의도를 남긴다.
+    "ONBOARDING_PROFILE_INCOMPLETE": _DEFAULT_POLICY,
+    "ONBOARDING_SCHEDULE_MISSING": _DEFAULT_POLICY,
+    "ONBOARDING_NO_PUBLICATION": _DEFAULT_POLICY,
+    "ONBOARDING_SOURCES_UNREACHABLE": _DEFAULT_POLICY,
+    "CUSTOM_DOMAIN_DNS_NOT_CONFIGURED": _DEFAULT_POLICY,
 }
 
 

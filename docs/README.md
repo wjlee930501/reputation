@@ -16,6 +16,7 @@
 | [알림 정책](ops/slack-notification-policy.md) | 정상 작업의 무알림, 차단 요약, 복구·개발 채널 분리 |
 | [무료 진단 전달](ops/lead-diagnosis-delivery.md) | 접수·측정·PDF·이메일 상태와 재시도 경계 |
 | [배포·헬스체크](ops/deployment-runbook.md) | 현재 Cloud Run 구조와 릴리스 검증 순서 |
+| [CD 배포 개요](ops/cd-deploy-outline.md) | GitHub Actions·WIF 운영 배포 설계 개요(미구현, 작업 PC 배포가 현재 정본) |
 | [도입문의 접수 자동 처리](ops/inquiry-intake-automation.md) | 도입문의 폼 → 초도 진단 자동 생성 → 안내 문자, 실패가 접수를 되돌리지 않는 경계 |
 | [2026-09-23~24 통합 정합성 보완·파비콘 배포 기록](releases/2026-09-23-integration-hardening-production.md) | 현재 운영 리비전·롤백 좌표·`.env.production` 재구성(DB head `0080`) |
 | [2026-09-23 배포 준비](releases/2026-09-23-integration-hardening-deploy-plan.md) | #144~#153의 범위, 실행 명령, 배포 후 확인, 남은 결정(배포됨) |

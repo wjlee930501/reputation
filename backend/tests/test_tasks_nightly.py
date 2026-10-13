@@ -4143,6 +4143,10 @@ class _MonthlySlotDB:
         self.execute_calls += 1
         return result
 
+    def scalar(self, _stmt):
+        # 첫 계약 월 안분 판정(content_month_target): 첫 달이 아니면 NULL이다.
+        return None
+
     def begin_nested(self):
         return _NestedSlotTransaction(self)
 
@@ -4198,7 +4202,9 @@ def test_monthly_slot_generation_isolates_other_exceptions_and_opens_incident(mo
 
     calls = {"n": 0}
 
-    def fake_generate(plan, publish_days, next_month, start_date=None, *, ensure_quota=False):
+    def fake_generate(
+        plan, publish_days, next_month, start_date=None, *, ensure_quota=False, total=None
+    ):
         assert ensure_quota is True
         calls["n"] += 1
         if publish_days == [1]:

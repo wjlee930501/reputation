@@ -617,6 +617,13 @@ class _RegisterResult:
         return self._single
 
 
+@pytest.fixture(autouse=True)
+def _no_autofill_dispatch(monkeypatch):
+    dispatched: list[uuid.UUID] = []
+    monkeypatch.setattr(handoffs_api, "_dispatch_profile_autofill", dispatched.append)
+    return dispatched
+
+
 class _RegisterDB:
     """계약 등록이 만지는 것만 흉내 낸다 — 중복 조회·slug 조회·flush·commit/rollback."""
 
@@ -814,6 +821,67 @@ async def test_register_contract_converts_the_lead_in_the_same_transaction(
     assert db.committed is True
 
 
+async def test_register_contract_carries_the_lead_targeting_but_not_its_phone(
+    _verified_actor,
+) -> None:
+    ae = _account("OPERATOR")
+    lead = _lead(
+        specialty="외과",
+        region_keyword="강남역",
+        core_keywords=["치질", "치질 수술 100% 완치", "치질", "  "],
+        clinic_phone="02-123-4567",
+    )
+    db = _RegisterDB([ae], lead=lead)
+
+    await handoffs_api.register_contract(
+        _registration(ae, lead_id=lead.id), db=db, actor=ae
+    )
+
+    hospital = next(row for row in db.added if isinstance(row, Hospital))
+    assert hospital.specialties == ["외과"]
+    assert hospital.region == ["강남역"]
+    # 금지 표현이 든 키워드·중복·빈 값은 옮기지 않는다.
+    assert hospital.keywords == ["치질"]
+    # 대표번호는 공개 사실이라 AE 확인 전에는 병원에 저장하지 않는다(PII-2).
+    assert hospital.phone is None
+    create = next(row for row in db.added if getattr(row, "action", None) == "create_hospital")
+    assert create.detail["lead_profile_seed"] == ["keywords", "region", "specialties"]
+
+
+async def test_register_contract_drops_forbidden_lead_specialty_and_region(
+    _verified_actor,
+) -> None:
+    """진료과·지역도 공개 프로필로 그대로 나가는 자유 입력이다 — 키워드와 같은 필터를 탄다."""
+    ae = _account("OPERATOR")
+    lead = _lead(
+        specialty="최고의 외과",
+        region_keyword="강남 100% 완치",
+        core_keywords=["치질"],
+    )
+    db = _RegisterDB([ae], lead=lead)
+
+    await handoffs_api.register_contract(
+        _registration(ae, lead_id=lead.id), db=db, actor=ae
+    )
+
+    hospital = next(row for row in db.added if isinstance(row, Hospital))
+    assert not hospital.specialties
+    assert not hospital.region
+    assert hospital.keywords == ["치질"]
+    create = next(row for row in db.added if getattr(row, "action", None) == "create_hospital")
+    assert create.detail["lead_profile_seed"] == ["keywords"]
+
+
+async def test_register_contract_without_a_lead_seeds_nothing(_verified_actor) -> None:
+    ae = _account("OPERATOR")
+    db = _RegisterDB([ae])
+
+    await handoffs_api.register_contract(_registration(ae), db=db, actor=ae)
+
+    hospital = next(row for row in db.added if isinstance(row, Hospital))
+    assert not hospital.specialties and not hospital.region and not hospital.keywords
+
+
 async def test_register_contract_refuses_a_lead_that_already_has_a_hospital(
     _verified_actor,
 ) -> None:
@@ -1003,3 +1071,16 @@ async def test_register_contract_refuses_an_inactive_owner(_verified_actor) -> N
     assert exc.value.status_code == 422
     assert exc.value.detail["code"] == "ACTIVE_OWNER_REQUIRED"
     assert db.added == []
+
+
+async def test_register_contract_queues_the_profile_autofill_after_commit(
+    _verified_actor, _no_autofill_dispatch
+) -> None:
+    ae = _account("OPERATOR")
+    db = _RegisterDB([ae])
+
+    await handoffs_api.register_contract(_registration(ae), db=db, actor=ae)
+
+    hospital = next(row for row in db.added if isinstance(row, Hospital))
+    assert db.committed is True
+    assert _no_autofill_dispatch == [hospital.id]

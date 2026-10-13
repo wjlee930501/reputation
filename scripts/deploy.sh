@@ -13,6 +13,14 @@
 #   bash scripts/deploy.sh migrate      # DB 마이그레이션 실행
 #   bash scripts/deploy.sh rollback     # 직전 배포 시작 시점의 리비전으로 트래픽 복귀
 #
+# 옵션(대상 뒤에 붙인다):
+#   --accept-env-diff         로컬 .env.production이 운영 env와 다를 때 로컬 값으로 배포
+#   --override-reason="사유"  배치 시간대 규칙을 이번만 넘기거나 같은 날 두 번째 릴리스를 배포(사유 기록)
+#   --unpin                   특정 리비전에 고정된 트래픽을 새 리비전 배포 뒤 옮김
+# 환경변수:
+#   AUTO_ROLLBACK=0           배포 뒤 확인(readiness 등)이 실패해도 자동 롤백하지 않고 멈춤
+#                             (비호환 릴리스용 — 기본은 배포 시작 전 리비전으로 자동 롤백)
+#
 # 모든 배포 대상은 첫 mutation 전에 각 서비스의 현재 리비전을 .deploy-rollback에
 # 기록한다. 중간에 실패해 서비스 버전이 섞이면 `rollback`으로 한 번에 되돌린다
 # (트래픽만 되돌린다 — 이미 적용된 DB 마이그레이션은 별도 판단이 필요하다).
@@ -29,18 +37,41 @@
 # ═══════════════════════════════════════════════════════════════════
 set -euo pipefail
 
-RED='\033[0;31m'; GREEN='\033[0;32m'; BLUE='\033[0;34m'; BOLD='\033[1m'; RESET='\033[0m'
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; BLUE='\033[0;34m'; BOLD='\033[1m'; RESET='\033[0m'
 # 로그는 전부 stderr로 — build_and_push 류 함수가 command substitution으로
 # 캡처될 때 이미지 URL(stdout) 외의 출력이 섞이지 않도록 한다.
 info()  { echo -e "${BLUE}ℹ${RESET}  $1" >&2; }
 ok()    { echo -e "${GREEN}✓${RESET} $1" >&2; }
+warn()  { echo -e "${YELLOW}⚠${RESET}  $1" >&2; }
 fail()  { echo -e "${RED}✗${RESET} $1" >&2; exit 1; }
 
 # ─── 설정 ─────────────────────────────────────────────────────────
 TARGET="${1:-}"
 if [[ -z "$TARGET" ]]; then
-  echo "Usage: bash scripts/deploy.sh [backend|api|worker|beat|site|admin|all|migrate|rollback]"
+  echo "Usage: bash scripts/deploy.sh [backend|api|worker|beat|site|admin|all|migrate|rollback] [--accept-env-diff] [--unpin] [--override-reason=사유]"
   exit 1
+fi
+shift
+
+# 옵션 — 모르는 옵션은 무시하지 않는다(오타가 안전 장치를 끄지 않게).
+#   --accept-env-diff        로컬 .env.production이 운영 env와 달라도 로컬 값으로 바꾼다
+#   --override-reason=사유   배치 시간대·하루 한 번 규칙을 이번만 넘긴다. 사유는 기록된다
+#   --unpin                  특정 리비전에 고정된 트래픽을 이번 배포의 새 리비전으로 옮긴다
+ACCEPT_ENV_DIFF=0
+UNPIN_TRAFFIC=0
+OVERRIDE_REASON=""
+OVERRIDE_GIVEN=0
+for arg in "$@"; do
+  case "$arg" in
+    --accept-env-diff) ACCEPT_ENV_DIFF=1 ;;
+    --unpin) UNPIN_TRAFFIC=1 ;;
+    --override-reason=*) OVERRIDE_GIVEN=1; OVERRIDE_REASON="${arg#--override-reason=}" ;;
+    *) fail "알 수 없는 옵션: ${arg}" ;;
+  esac
+done
+# 빈 사유(--override-reason= 또는 공백뿐)는 규칙을 넘기는 근거가 아니다.
+if [[ "$OVERRIDE_GIVEN" == "1" && -z "${OVERRIDE_REASON//[[:space:]]/}" ]]; then
+  fail "--override-reason=에는 사유를 적어야 합니다."
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -201,13 +232,31 @@ ALL_MANAGED_SECRET_NAMES=(
   "SYNC_DATABASE_URL"
 )
 
+# make_service_env_file이 서비스별로 직접 써 넣는 키 — .env.production에 없어도 된다.
+DEPLOY_INJECTED_ENV_KEYS=(
+  "SERVICE"
+  "APP_ENV"
+  "OPENAI_CHATGPT_USE_WEB_SEARCH"
+  "CERTIFICATE_MANAGER_AUTO_PROVISION"
+  "REPUTATION_RELEASE_REVISION"
+)
+
 BACKEND_REQUIRED_SECRET_NAMES=("${BACKEND_BASE_REQUIRED_SECRET_NAMES[@]}")
 REQUIRED_SECRET_NAMES=()
 OPTIONAL_SECRET_NAMES=()
 SECRET_ARGS=()
 
 cleanup() {
-  local f
+  local status=$? f
+  # 오늘의 배포 잠금을 이 실행이 만들었는데 운영 변경(마이그레이션·서비스 교체) 전에 실패했다면 되돌린다 —
+  # 사전 확인 실패 때문에 같은 날 고친 릴리스를 배포하지 못하는 일이 없게 한다.
+  if (( status != 0 )) && [[ "${DEPLOY_LOCK_CREATED:-0}" == "1" && "${DEPLOY_MUTATED:-0}" != "1" ]]; then
+    if gcloud storage rm "$DEPLOY_LOCK_URI" --project="$PROJECT_ID" >/dev/null 2>&1; then
+      info "운영 변경 전에 실패해 오늘의 배포 잠금을 되돌렸습니다(${DEPLOY_LOCK_URI})."
+    else
+      info "경고: 오늘의 배포 잠금을 되돌리지 못했습니다(${DEPLOY_LOCK_URI}). 같은 날 다른 릴리스를 배포하려면 직접 지우세요."
+    fi
+  fi
   for f in "${TEMP_ENV_FILES[@]:-}"; do
     # if/then으로 쓴다 — `[[ ... ]] && rm`은 조건이 거짓이면 트랩의 마지막 명령이
     # 1을 반환하고, 그 값이 스크립트 종료 코드가 된다(임시 파일이 하나도 없는
@@ -216,6 +265,8 @@ cleanup() {
       rm -f "$f"
     fi
   done
+  # 트랩의 마지막 명령 상태가 스크립트 종료 코드를 바꾸지 않게 원래 상태로 끝낸다.
+  exit "$status"
 }
 trap cleanup EXIT
 
@@ -233,6 +284,63 @@ fi
 if [[ -z "$PROJECT_ID" ]]; then
   fail "GCP_PROJECT_ID 환경변수 또는 gcloud config를 설정해 주세요."
 fi
+
+# ─── env 정본: 운영 서비스의 현재 env ─────────────────────────────
+# `--env-vars-file`은 서비스 env를 통째로 바꾼다. 작업 PC의 .env.production이 정본이던 동안 오래된 파일이
+# 두 번(9/23·10/1) 발견됐다. backend 대상의 정본은 이제 운영 reputation-api의 현재 env(비밀 아닌 값)이고,
+# 로컬 파일은 '바꾸려는 값'을 담은 제안이다. 둘이 다르면 키 이름만 보여 주고 멈춘다. 로컬 값으로 바꾸는 것이
+# 맞으면 --accept-env-diff로 다시 실행한다. 서비스가 아직 없으면(신규 환경) 로컬 파일로 시작한다.
+LOCAL_ENV_FILE="$ENV_FILE"
+ENV_SOURCE="local"
+# 배포가 서비스·릴리스마다 직접 넣는 키 — 렌더에서 빼야 YAML 중복 키가 생기지 않는다.
+LIVE_ENV_DROP_KEYS=("SERVICE" "APP_ENV" "REPUTATION_RELEASE_REVISION")
+
+resolve_backend_env_source() {
+  local err live_json live_file status=0 diff_out
+  err="$(mktemp)"; TEMP_ENV_FILES+=("$err")
+  live_json="$(gcloud run services describe reputation-api --region="$REGION" --project="$PROJECT_ID" \
+      --format=json 2>"$err")" || status=$?
+  if (( status != 0 )); then
+    if grep -qiE "could not be found|cannot find service|NOT_FOUND" "$err"; then
+      [[ -f "$LOCAL_ENV_FILE" ]] \
+        || fail "운영 서비스가 아직 없고 .env.production도 없습니다. 신규 환경은 .env.production.example을 복사해 작성하세요."
+      info "운영 서비스가 아직 없어 .env.production으로 시작합니다(신규 환경)."
+      return
+    fi
+    cat "$err" >&2
+    fail "운영 서비스 env를 읽지 못했습니다(reputation-api). gcloud 인증·권한을 확인하세요. 로컬 파일로 대신 배포하지 않습니다."
+  fi
+
+  live_file="$(mktemp)"; TEMP_ENV_FILES+=("$live_file")
+  printf '%s' "$live_json" | python3 "${SCRIPT_DIR}/deploy_env.py" render \
+      --service-json - --out "$live_file" --drop "${LIVE_ENV_DROP_KEYS[@]}" \
+    || fail "운영 서비스 env를 배포 입력으로 옮기지 못했습니다(여러 줄 값 등). 위 오류를 확인하세요."
+
+  if [[ -f "$LOCAL_ENV_FILE" ]]; then
+    status=0
+    diff_out="$(python3 "${SCRIPT_DIR}/deploy_env.py" diff --local "$LOCAL_ENV_FILE" --live "$live_file" \
+        --ignore "${LIVE_ENV_DROP_KEYS[@]}" "${ALL_MANAGED_SECRET_NAMES[@]}")" || status=$?
+    if (( status == 1 )); then
+      echo "$diff_out" >&2
+      if [[ "$ACCEPT_ENV_DIFF" == "1" ]]; then
+        info "--accept-env-diff: 위 키를 로컬 .env.production 값으로 바꿉니다."
+        return
+      fi
+      fail "로컬 .env.production이 운영 env와 다릅니다(위 키 목록, 값은 출력하지 않음). 운영 값이 맞으면 로컬 파일을 지우거나 고친 뒤 다시 실행하고, 로컬 값으로 바꾸려면 --accept-env-diff를 붙이세요."
+    elif (( status != 0 )); then
+      fail "env 비교에 실패했습니다(deploy_env.py diff exit=${status})."
+    fi
+  fi
+  ENV_FILE="$live_file"
+  ENV_SOURCE="live"
+  ok "운영 서비스 env를 정본으로 씁니다(reputation-api 현재 env)."
+}
+
+case "$TARGET" in
+  backend|api|worker|beat|all|migrate)
+    resolve_backend_env_source
+    ;;
+esac
 
 if [[ "$TARGET" != "rollback" && ! -f "$ENV_FILE" ]]; then
   fail ".env.production 파일이 없습니다. .env.production.example을 복사해서 작성해 주세요."
@@ -1088,15 +1196,6 @@ require_pinned_measurement_models() {
 # 없으면 해당 env를 렌더링하지 않으므로 결과가 일치한다.
 TERRAFORM_ENV_SOURCE="${PROJECT_ROOT}/terraform/cloudrun.tf"
 
-# make_service_env_file이 서비스별로 직접 써 넣는 키 — .env.production에 없어도 된다.
-DEPLOY_INJECTED_ENV_KEYS=(
-  "SERVICE"
-  "APP_ENV"
-  "OPENAI_CHATGPT_USE_WEB_SEARCH"
-  "CERTIFICATE_MANAGER_AUTO_PROVISION"
-  "REPUTATION_RELEASE_REVISION"
-)
-
 is_deploy_injected_env_key() {
   local key="$1"
   local name
@@ -1112,6 +1211,11 @@ env_file_declares_key() {
 }
 
 require_no_dropped_terraform_env() {
+  if [[ "$ENV_SOURCE" == "live" ]]; then
+    # 운영 env 자신은 운영 env보다 키를 잃을 수 없다 — 이 검사의 대상(오래된 로컬 파일)이 아니다.
+    info "운영 서비스 env를 정본으로 쓰므로 Terraform env 드롭 preflight를 건너뜁니다."
+    return
+  fi
   if [[ "${SKIP_TERRAFORM_ENV_PREFLIGHT:-0}" == "1" ]]; then
     info "SKIP_TERRAFORM_ENV_PREFLIGHT=1 — Terraform env 드롭 preflight를 건너뜁니다."
     return
@@ -1265,8 +1369,169 @@ run_production_readiness_gate() {
   set -u
 
   gcloud run jobs execute reputation-production-readiness --region="$REGION" --wait \
-    || fail "새 배포의 자동 작업 준비 확인에 실패했습니다. 트래픽 승격을 중단하고 롤백 좌표를 확인하세요."
+    || rollback_after_failed_gate "새 배포의 자동 작업 준비 확인(readiness)에 실패했습니다"
   ok "현재 배포 버전의 모든 작업 큐 준비 확인 완료"
+}
+
+# ─── 배포 시간대·하루 잠금 ─────────────────────────────────────────
+# 배포는 콘텐츠 배치 시간대 밖에서 한다(2026-10-08). Worker 교체가 실행 중 메시지를 끊어 10/6~10/8
+# V0 보고서 2건이 유실됐다. Worker·Beat를 바꾸는 대상만 적용한다(backend·api·worker·beat·all).
+# site·admin·migrate·rollback은 막지 않는다(롤백은 장애 복구 경로).
+# 배치 시간대 밖이면 하루 여러 번 배포할 수 있다(2026-10-13 대표 결정). 하루 잠금은 막는 규칙이 아니라
+# 기록이다 — 같은 날 다른 릴리스가 이미 나갔으면 경고하고 --override-reason으로 사유를 남겨야 진행한다.
+#
+# 막는 시간(KST): 22:15~02:00 전체(23:00 야간 생성이 몇 시간 이어지고 01시 복구 스윕이 뒤따른다)와
+# 04·07·08·12·18·22시 앞뒤 45분(08시는 07:45·08:00 발행 게이트와 08:30 외부 감시).
+BATCH_NIGHT_START_MINUTE=$(( 22 * 60 + 15 ))
+BATCH_NIGHT_END_MINUTE=$(( 2 * 60 ))
+BATCH_WINDOW_HOURS_KST=(4 7 8 12 18 22)
+BATCH_WINDOW_MARGIN_MINUTES="${BATCH_WINDOW_MARGIN_MINUTES:-45}"
+DEPLOY_LOCK_BUCKET="${DEPLOY_LOCK_BUCKET:-reputation-reports-${PROJECT_ID}}"
+DEPLOY_LOCK_PREFIX="ops/deploy-lock"
+DEPLOY_LOCK_URI=""
+# 이 실행이 오늘의 잠금을 새로 만들었는가 / 운영 변경을 시작했는가 — cleanup이 잠금 반납을 판단한다.
+DEPLOY_LOCK_CREATED=0
+DEPLOY_MUTATED=0
+DEPLOY_CLOCK_OVERRIDDEN=0
+
+deploy_clock_kst() {
+  # 테스트는 DEPLOY_CLOCK_KST(YYYY-MM-DDTHH:MM)로 시각을 고정한다. 테스트 표지(FAKE_COMMAND_LOG)가 없으면
+  # 이 값을 믿지 않는다 — 운영에서 조용한 우회가 되지 않게 require_deploy_slot이 사유를 요구한다.
+  if [[ -n "${DEPLOY_CLOCK_KST:-}" && -n "${FAKE_COMMAND_LOG:-}" ]]; then
+    printf '%s' "$DEPLOY_CLOCK_KST"
+  else
+    TZ=Asia/Seoul date '+%Y-%m-%dT%H:%M'
+  fi
+}
+
+# 운영 변경(마이그레이션·서비스 교체)을 시작한다 — 이 뒤의 실패는 잠금을 되돌리지 않는다.
+mark_deploy_mutating() {
+  DEPLOY_MUTATED=1
+}
+
+# HH:MM이 배치 시간대 안이면 그 배치를 출력하고 0을 돌려준다.
+batch_window_conflict() {
+  local hhmm="$1" now center distance
+  now=$(( 10#${hhmm%%:*} * 60 + 10#${hhmm##*:} ))
+  if (( now >= BATCH_NIGHT_START_MINUTE || now < BATCH_NIGHT_END_MINUTE )); then
+    printf '22:15~02:00 야간 생성'
+    return 0
+  fi
+  for center in "${BATCH_WINDOW_HOURS_KST[@]}"; do
+    distance=$(( now - center * 60 ))
+    if (( distance < 0 )); then
+      distance=$(( -distance ))
+    fi
+    if (( distance <= BATCH_WINDOW_MARGIN_MINUTES )); then
+      printf '%02d:00 앞뒤 %s분' "$center" "$BATCH_WINDOW_MARGIN_MINUTES"
+      return 0
+    fi
+  done
+  return 1
+}
+
+write_deploy_record() {
+  # $1=객체 이름, $2=precondition(빈 값 또는 --if-generation-match=0), 나머지=JSON 키/값 쌍.
+  # 값 "true"는 JSON true로 쓴다. 호출자가 `||`로 결과를 받으므로(set -e가 꺼진다) 실패마다 직접 돌려준다.
+  local object="$1" precondition="$2" record
+  shift 2
+  record="$(mktemp)" || return 1
+  TEMP_ENV_FILES+=("$record")
+  python3 -c '
+import json, sys
+a = sys.argv[1:]
+print(json.dumps({k: (True if v == "true" else v) for k, v in zip(a[0::2], a[1::2])}, ensure_ascii=False))
+' "$@" > "$record" || return 1
+  gcloud storage cp "$record" "gs://${DEPLOY_LOCK_BUCKET}/${DEPLOY_LOCK_PREFIX}/${object}.json" \
+    --project="$PROJECT_ID" ${precondition:+"$precondition"}
+}
+
+# 오늘 잠금에 기록된 릴리스(JSON의 revision). 읽지 못하면 빈 값.
+deploy_lock_revision() {
+  gcloud storage cat "$DEPLOY_LOCK_URI" --project="$PROJECT_ID" 2>/dev/null \
+    | python3 -c 'import json, sys; print(json.load(sys.stdin).get("revision", ""))' 2>/dev/null || true
+}
+
+require_deploy_slot() {
+  local clock day hhmm batch err existing operator status=0
+  if [[ -n "${DEPLOY_CLOCK_KST:-}" && -z "${FAKE_COMMAND_LOG:-}" ]]; then
+    # 운영에서 고정 시각은 규칙을 넘는 수단이 될 수 있다 — 사유가 있을 때만 진행하고 그 사실을 남긴다.
+    [[ -n "$OVERRIDE_REASON" ]] \
+      || fail "DEPLOY_CLOCK_KST는 테스트 전용입니다. 운영 배포에서는 지우거나, 꼭 필요하면 --override-reason=\"사유\"를 붙이세요(실제 시각으로 기록합니다)."
+    DEPLOY_CLOCK_OVERRIDDEN=1
+  fi
+  clock="$(deploy_clock_kst)"
+  day="${clock%%T*}"
+  hhmm="${clock##*T}"
+  DEPLOY_LOCK_URI="gs://${DEPLOY_LOCK_BUCKET}/${DEPLOY_LOCK_PREFIX}/${day}.json"
+  operator="$(gcloud config get-value account 2>/dev/null || true)"
+  local record_fields=(
+    day "$day" clock_kst "$hhmm" target "$TARGET" revision "$RELEASE_REVISION" operator "${operator:-unknown}"
+  )
+  if [[ "$DEPLOY_CLOCK_OVERRIDDEN" == "1" ]]; then
+    record_fields+=(clock_override true requested_clock_kst "$DEPLOY_CLOCK_KST")
+  fi
+
+  if [[ -n "$OVERRIDE_REASON" ]]; then
+    info "배포 규칙 예외: ${OVERRIDE_REASON}"
+    # 같은 날 두 번째 릴리스도 이 사유로 넘기므로, 배치 시간대까지 넘는 경우는 따로 드러내고 기록한다.
+    if batch="$(batch_window_conflict "$hhmm")"; then
+      warn "지금(KST ${hhmm})은 콘텐츠 배치 시간대(${batch})입니다 — 사유로 배치 시간대 규칙도 넘습니다."
+      record_fields+=(batch_window "$batch")
+    fi
+    write_deploy_record "${day}-override-${hhmm/:/}" "" \
+      "${record_fields[@]}" override_reason "$OVERRIDE_REASON" \
+      || fail "배포 예외 기록을 남기지 못했습니다(gs://${DEPLOY_LOCK_BUCKET}). 기록 없이 규칙을 넘지 않습니다."
+    # 오늘의 잠금도 잡아 둔다(이미 있으면 그대로). 같은 날 다른 릴리스는 다시 사유가 필요하다.
+    write_deploy_record "$day" "--if-generation-match=0" "${record_fields[@]}" >/dev/null 2>&1 || status=$?
+    if (( status == 0 )); then
+      DEPLOY_LOCK_CREATED=1
+    fi
+    return
+  fi
+
+  if batch="$(batch_window_conflict "$hhmm")"; then
+    fail "지금(KST ${hhmm})은 콘텐츠 배치 시간대(${batch})입니다. 배치 시간대 밖에서 다시 배포하거나, 꼭 필요하면 --override-reason=\"사유\"를 붙이세요."
+  fi
+
+  err="$(mktemp)"; TEMP_ENV_FILES+=("$err")
+  write_deploy_record "$day" "--if-generation-match=0" "${record_fields[@]}" 2>"$err" || status=$?
+  if (( status == 0 )); then
+    DEPLOY_LOCK_CREATED=1
+    ok "오늘(${day}) 배포 잠금: ${DEPLOY_LOCK_URI}"
+    return
+  fi
+  if grep -qiE "412|precondition" "$err"; then
+    existing="$(deploy_lock_revision)"
+    if [[ -n "$existing" && "$existing" == "$RELEASE_REVISION" ]]; then
+      info "같은 릴리스(${RELEASE_REVISION})의 오늘 재시도입니다 — 계속합니다."
+      return
+    fi
+    # 하루 잠금은 권고다 — 배치 시간대 밖의 두 번째 릴리스는 사유만 남기면 된다(2026-10-13).
+    warn "오늘(${day}) 이미 다른 릴리스(${existing:-알 수 없음})를 배포했습니다. 배치 시간대 밖이면 하루 여러 번 배포할 수 있습니다."
+    fail "같은 날 두 번째 릴리스는 사유를 남깁니다 — --override-reason=\"사유\"를 붙여 다시 실행하세요."
+  fi
+  cat "$err" >&2
+  fail "배포 잠금을 확인하지 못했습니다(gs://${DEPLOY_LOCK_BUCKET}). 버킷과 권한을 확인하세요."
+}
+
+# require_deploy_slot은 이미지 빌드 전에 한 번 본다. 빌드·마이그레이션이 길어지면 실제 교체가 배치
+# 시간대에 들어갈 수 있으므로(예: 11:10 시작 → 빌드 뒤 11:20 Worker 교체 = 12시 배치 앞 45분),
+# 첫 운영 변경 직전과 Worker 교체 직전에 다시 본다. --override-reason이 있으면 처음처럼 넘기되 경고한다.
+# Worker를 바꾼 뒤에는 Beat까지 마저 바꾼다 — 둘 사이에서 멈추면 새 Worker·옛 Beat의 반쪽 상태가 남는다.
+recheck_batch_window() {
+  local stage="$1" clock hhmm batch
+  clock="$(deploy_clock_kst)"
+  hhmm="${clock##*T}"
+  batch="$(batch_window_conflict "$hhmm")" || return 0
+  if [[ -n "$OVERRIDE_REASON" ]]; then
+    warn "${stage} 직전 다시 확인: 지금(KST ${hhmm})은 콘텐츠 배치 시간대(${batch})입니다 — 사유(${OVERRIDE_REASON})로 넘깁니다."
+    return 0
+  fi
+  if [[ "$DEPLOY_MUTATED" == "1" ]]; then
+    fail "${stage} 직전 다시 확인해 보니 지금(KST ${hhmm})은 콘텐츠 배치 시간대(${batch})입니다. 서비스는 바꾸지 않고 멈춥니다(마이그레이션은 이미 적용됐습니다 — 추가형이라 옛 리비전과 함께 동작합니다). 배치 시간대 밖에서 같은 명령을 다시 실행하세요(같은 릴리스의 재시도는 하루 잠금이 막지 않습니다)."
+  fi
+  fail "${stage} 직전 다시 확인해 보니 지금(KST ${hhmm})은 콘텐츠 배치 시간대(${batch})에 들어왔습니다(이미지 빌드가 길었습니다). 운영 변경 없이 멈춥니다 — 배치 시간대 밖에서 다시 배포하거나, 꼭 필요하면 --override-reason=\"사유\"를 붙이세요."
 }
 
 # ─── 롤백 좌표 ─────────────────────────────────────────────────────
@@ -1283,10 +1548,35 @@ current_ready_revision() {
     --format='value(status.latestReadyRevisionName)' 2>/dev/null || true
 }
 
+# 지금 트래픽을 받는 리비전. 고정을 풀 때의 롤백 좌표다(최신 Ready가 아니다).
+current_serving_revision() {
+  local service="$1"
+  gcloud run services describe "$service" \
+    --region="$REGION" \
+    --project="$PROJECT_ID" \
+    --format='value(status.traffic[0].revisionName)' 2>/dev/null || true
+}
+
+# --unpin으로 이번 배포에서 고정 트래픽을 풀 서비스(capture_rollback_point가 채운다).
+UNPIN_SERVICES=()
+
+service_is_unpinning() {
+  local service="$1" name
+  for name in ${UNPIN_SERVICES[@]+"${UNPIN_SERVICES[@]}"}; do
+    [[ "$name" == "$service" ]] && return 0
+  done
+  return 1
+}
+
 # 배포 뒤 실제로 트래픽을 받는 리비전이 방금 Ready가 된 최신 리비전인지 확인한다. 고정 트래픽·은퇴 같은
 # 이유로 옛 리비전이 계속 서비스되면 "배포 완료"를 말하지 않는다.
 require_serving_latest() {
   local service="$1" ready serving
+  if service_is_unpinning "$service"; then
+    # --unpin: 새 리비전이 Ready가 된 지금 고정 트래픽을 옮긴다(배포 전에는 옮기지 않는다).
+    gcloud run services update-traffic "$service" --region="$REGION" --project="$PROJECT_ID" --to-latest \
+      || fail "${service}: 고정 트래픽을 새 리비전으로 옮기지 못했습니다. gcloud run services describe ${service}로 확인하세요."
+  fi
   ready="$(current_ready_revision "$service")"
   serving="$(gcloud run services describe "$service" \
     --region="$REGION" \
@@ -1315,9 +1605,14 @@ capture_rollback_point() {
   for service in "$@"; do
     revision="$(current_ready_revision "$service")"
     if [[ -n "$revision" ]] && ! service_traffic_follows_latest "$service"; then
+      if [[ "$UNPIN_TRAFFIC" == "1" ]]; then
+        UNPIN_SERVICES+=("$service")
+        info "${service}: 고정 트래픽을 이번 배포에서 풉니다(--unpin). 롤백 좌표는 지금 트래픽을 받는 리비전입니다."
+        continue
+      fi
       fail "${service}의 트래픽이 최신 리비전이 아닌 특정 리비전에 고정돼 있습니다(현재 ${revision}). 이대로 배포하면 새 리비전이
-   만들어지자마자 은퇴하고 옛 코드가 계속 서비스됩니다. 고정이 의도한 것이 아니면 먼저
-   gcloud run services update-traffic ${service} --to-latest --region=${REGION} 를 실행한 뒤 다시 배포하세요."
+   만들어지자마자 은퇴하고 옛 코드가 계속 서비스됩니다. 고정이 의도한 것이 아니면 --unpin을 붙여 다시 배포하세요
+   (새 리비전이 Ready가 된 뒤 트래픽을 옮기고, 롤백 좌표는 지금 서비스 중인 리비전으로 남깁니다)."
     fi
   done
 
@@ -1327,7 +1622,11 @@ capture_rollback_point() {
   } > "$ROLLBACK_STATE_FILE"
 
   for service in "$@"; do
-    revision="$(current_ready_revision "$service")"
+    if service_is_unpinning "$service"; then
+      revision="$(current_serving_revision "$service")"
+    else
+      revision="$(current_ready_revision "$service")"
+    fi
     if [[ -n "$revision" ]]; then
       printf '%s=%s\n' "$service" "$revision" >> "$ROLLBACK_STATE_FILE"
       captured=$((captured + 1))
@@ -1391,6 +1690,74 @@ run_rollback() {
   ok "롤백 완료 — ${rolled}개 서비스"
   info "주의: 트래픽만 되돌립니다. 이미 적용된 DB 마이그레이션은 되돌아가지 않습니다. 신구 스키마가 호환되지 않으면 alembic downgrade를 별도로 판단해 실행하세요."
   info "0084 목적 중심 전환 뒤에는 이 일반 롤백으로 baseline writer를 재개하지 마세요. Admin/Worker/Beat를 정지한 채 검증된 compatible_reader_sha의 API public/read와 Site만 복귀하는 절차를 docs/ops/deployment-runbook.md에서 따르세요."
+}
+
+# 배포 뒤 검사(readiness·공개 표면)가 실패하면 사람을 기다리지 않고 배포 시작 전 리비전으로 트래픽을 되돌린다.
+# run_rollback은 실패 시 fail(exit)하므로 서브셸로 부르고 결과에 따라 메시지를 남긴다.
+# 비호환 릴리스(예: 0084 목적 중심 전환)처럼 일반 롤백이 위험하면 AUTO_ROLLBACK=0으로 끈다 — 그때는 멈추기만 한다.
+rollback_after_failed_gate() {
+  local reason="$1"
+  if [[ "${AUTO_ROLLBACK:-1}" == "0" ]]; then
+    fail "${reason}. AUTO_ROLLBACK=0이라 자동 롤백하지 않았습니다 — 서비스 상태를 확인하고 필요하면 bash scripts/deploy.sh rollback 으로 되돌리세요."
+  fi
+  info "${reason} — 배포 시작 전 리비전으로 자동 롤백합니다."
+  if ( run_rollback ); then
+    fail "${reason}. 배포 시작 전 리비전으로 트래픽을 자동으로 되돌렸습니다(DB 마이그레이션은 그대로입니다)."
+  fi
+  fail "${reason}. 자동 롤백도 실패했습니다 — bash scripts/deploy.sh rollback 으로 다시 시도하고 서비스 상태를 확인하세요."
+}
+
+# ─── 배포 뒤 공개 표면 확인 ─────────────────────────────────────────
+# API 배포 뒤 LB 너머 API가 이번 릴리스인지, 배포 전 정상이던 병원 헬스가 그대로인지 본다. 실패하면 자동 롤백.
+SMOKE_HOSTS_FILE=""
+
+smoke_public_domain() {
+  if [[ -n "$PUBLIC_DOMAIN" ]]; then
+    printf '%s' "$PUBLIC_DOMAIN"
+    return
+  fi
+  read_env_file_value SITE_BASE_URL | sed -E 's#^https?://##; s#/.*$##'
+}
+
+capture_smoke_baseline() {
+  if [[ "${SKIP_POST_DEPLOY_SMOKE:-0}" == "1" ]]; then
+    info "SKIP_POST_DEPLOY_SMOKE=1 — 배포 뒤 공개 표면 확인을 건너뜁니다."
+    return
+  fi
+  local domain
+  domain="$(smoke_public_domain)"
+  [[ -n "$domain" ]] \
+    || fail "배포 뒤 확인할 공개 도메인을 알 수 없습니다. PUBLIC_DOMAIN이나 SITE_BASE_URL을 설정하세요."
+  SMOKE_HOSTS_FILE="$(mktemp)"; TEMP_ENV_FILES+=("$SMOKE_HOSTS_FILE")
+  # 병원 목록 조회 실패·형식 오류(2)와 정상 병원 0곳(4)은 모두 배포 전에 멈춘다 — 0곳 기준선이면
+  # 배포 뒤 확인이 병원 헬스를 하나도 보지 않고 통과한다. 공개 병원이 정말 없으면
+  # ALLOW_EMPTY_SMOKE_BASELINE=1로 명시한다.
+  local baseline_args=(baseline --public-domain "$domain" --out "$SMOKE_HOSTS_FILE")
+  if [[ "${ALLOW_EMPTY_SMOKE_BASELINE:-0}" == "1" ]]; then
+    warn "ALLOW_EMPTY_SMOKE_BASELINE=1 — 정상 병원 0곳 기준선도 받아들입니다."
+    baseline_args+=(--allow-empty-baseline)
+  fi
+  python3 "${SCRIPT_DIR}/deploy_smoke.py" "${baseline_args[@]}" \
+    || fail "배포 전 공개 표면 기준선을 만들지 못했습니다(병원 목록 조회 실패이거나 정상 병원 0곳 — 위 메시지)."
+}
+
+run_post_deploy_smoke() {
+  [[ -n "$SMOKE_HOSTS_FILE" ]] || return 0
+  local domain site_release
+  domain="$(smoke_public_domain)"
+  site_release="$(gcloud run services describe reputation-site --region="$REGION" --project="$PROJECT_ID" \
+      --format='value(status.traffic[0].revisionName)' 2>/dev/null || true)"
+  info "배포 뒤 공개 표면 확인 중(${domain})..."
+  local status=0
+  python3 "${SCRIPT_DIR}/deploy_smoke.py" verify --public-domain "$domain" --hosts "$SMOKE_HOSTS_FILE" \
+      --api-release "$RELEASE_REVISION" --site-release "$site_release" || status=$?
+  if (( status == 3 )); then
+    # 병원 일부(절반 미만)만 실패 — 자기 도메인 인증서처럼 한 병원의 문제일 수 있어 트래픽은 그대로 둔다.
+    fail "경고: 배포 뒤 일부 병원 헬스가 실패했습니다(위 목록). 새 API는 서비스 중이며 롤백하지 않았습니다 — 해당 병원 공개 주소를 확인하세요."
+  elif (( status != 0 )); then
+    rollback_after_failed_gate "배포 뒤 공개 표면 확인(API release 또는 병원 절반 이상의 헬스)에 실패했습니다"
+  fi
+  ok "배포 뒤 공개 표면 확인 완료"
 }
 
 # Purpose-first cleanup removes the legacy publish transport only after both
@@ -1497,15 +1864,21 @@ case "$TARGET" in
     if is_cloudsql_mode; then
       require_cloudsql_app_user
     fi
+    require_deploy_slot
     require_legacy_publish_retirement_clear
+    capture_smoke_baseline
     capture_rollback_point reputation-api reputation-worker reputation-beat
     IMAGE_URL=$(build_and_push)
+    recheck_batch_window "마이그레이션·서비스 교체"
+    mark_deploy_mutating
     run_migration "$IMAGE_URL"
+    recheck_batch_window "Worker 교체"
     deploy_worker "$IMAGE_URL"
     run_redbeat_reconcile "$IMAGE_URL"
     deploy_beat "$IMAGE_URL"
     run_production_readiness_gate "$IMAGE_URL"
     deploy_api "$IMAGE_URL"
+    run_post_deploy_smoke
     ;;
   api|worker|beat)
     prepare_backend_secret_args
@@ -1516,16 +1889,30 @@ case "$TARGET" in
     if is_cloudsql_mode; then
       require_cloudsql_app_user
     fi
+    require_deploy_slot
     require_legacy_publish_retirement_clear
+    if [[ "$TARGET" == "api" ]]; then
+      capture_smoke_baseline
+    fi
     if [[ "$TARGET" == "api" ]]; then
       capture_rollback_point reputation-worker reputation-beat reputation-api
     else
       capture_rollback_point "reputation-${TARGET}"
     fi
     IMAGE_URL=$(build_and_push)
+    recheck_batch_window "마이그레이션·서비스 교체"
+    mark_deploy_mutating
     run_migration "$IMAGE_URL"
     if [[ "$TARGET" == "beat" ]]; then
+      recheck_batch_window "Beat 교체"
+    else
+      recheck_batch_window "Worker 교체"
+    fi
+    if [[ "$TARGET" == "beat" ]]; then
       run_redbeat_reconcile "$IMAGE_URL"
+      # reconcile Job(--wait)은 몇 분 걸릴 수 있다 — 그 사이 배치 시간대에 들어갔으면 Beat를 바꾸지 않는다.
+      # (backend·api·all은 Worker를 이미 바꿨으므로 Beat까지 마저 바꾼다 — 여기는 beat 단독뿐이다.)
+      recheck_batch_window "Beat 교체(RedBeat 정합성 복구 뒤)"
     fi
     if [[ "$TARGET" == "api" ]]; then
       deploy_worker "$IMAGE_URL"
@@ -1533,6 +1920,7 @@ case "$TARGET" in
       deploy_beat "$IMAGE_URL"
       run_production_readiness_gate "$IMAGE_URL"
       deploy_api "$IMAGE_URL"
+      run_post_deploy_smoke
     else
       "deploy_${TARGET}" "$IMAGE_URL"
       run_production_readiness_gate "$IMAGE_URL"
@@ -1568,16 +1956,21 @@ case "$TARGET" in
     fi
     require_secret_versions "${SITE_REQUIRED_SECRET_NAMES[@]}" "${ADMIN_REQUIRED_SECRET_NAMES[@]}"
     prepare_backend_secret_args
+    require_deploy_slot
     require_legacy_publish_retirement_clear
+    capture_smoke_baseline
     capture_rollback_point \
       reputation-api reputation-worker reputation-beat \
       reputation-site reputation-admin
     IMAGE_URL=$(build_and_push)
     SITE_IMAGE_URL=$(build_and_push_site)
     ADMIN_IMAGE_URL=$(build_and_push_admin)
+    recheck_batch_window "마이그레이션·서비스 교체"
+    mark_deploy_mutating
     # 마이그레이션을 새 코드 배포보다 먼저 실행 — 새 리비전이 옛 스키마 위에서
     # 기동하는 시간을 없앤다 (additive migration 전제).
     run_migration "$IMAGE_URL"
+    recheck_batch_window "Worker 교체"
     deploy_worker "$IMAGE_URL"
     run_redbeat_reconcile "$IMAGE_URL"
     deploy_beat "$IMAGE_URL"
@@ -1585,6 +1978,7 @@ case "$TARGET" in
     deploy_api "$IMAGE_URL"
     deploy_site "$SITE_IMAGE_URL"
     deploy_admin "$ADMIN_IMAGE_URL"
+    run_post_deploy_smoke
     ;;
   migrate)
     prepare_backend_secret_args

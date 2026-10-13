@@ -1087,9 +1087,13 @@ def test_required_source_stuck_in_error_is_excluded_and_recorded_as_a_gap(pg_ses
     assert pg_session.get(HospitalSourceAsset, broken.id).status == SourceStatus.ERROR
 
 
-def test_recently_failed_source_still_blocks_synthesis(pg_session) -> None:
+def test_recently_failed_source_alone_still_blocks_synthesis(pg_session) -> None:
     hospital, source, note, previous = _seed_baseline(pg_session, label="fresh-error-source")
     pg_session.delete(previous)
+    # 처리된 다른 자료가 없을 때만 6시간을 기다린다 — 기준선 자료를 빼 실패 자료만 남긴다.
+    pg_session.delete(note)
+    pg_session.flush()
+    pg_session.delete(source)
     broken = HospitalSourceAsset(
         id=uuid.uuid4(),
         hospital_id=hospital.id,
@@ -1112,3 +1116,115 @@ def test_recently_failed_source_still_blocks_synthesis(pg_session) -> None:
         reviewer=lambda *_a, **_k: _approved_review(note),
     )
     assert result.status == EssenceRefreshStatus.WAITING_FOR_SOURCES
+
+
+def test_conflicting_sources_escalate_straight_to_a_person(pg_session) -> None:
+    hospital, source, note, previous = _seed_baseline(pg_session, label="conflict-terminal")
+    pg_session.delete(previous)
+    pg_session.flush()
+
+    def synthesize(*_args, **_kwargs):
+        payload = _candidate_payload(source, note)
+        payload["conflict_notes"] = ["원장 인터뷰와 홈페이지의 진료 시간이 다릅니다."]
+        return payload
+
+    def never_review(*_args, **_kwargs):
+        raise AssertionError("결정적 보류는 유료 검수를 사지 않는다")
+
+    result = refresh_essence_snapshot(
+        pg_session, hospital.id, synthesizer=synthesize, reviewer=never_review
+    )
+
+    assert result.status == EssenceRefreshStatus.ESCALATED
+    assert result.next_automatic_attempt_at is None
+    assert result.automatic_recovery_exhausted is True
+    draft = pg_session.get(HospitalContentPhilosophy, result.philosophy_id)
+    assert {"field": "automatic_recovery_terminal", "reason": "conflict_notes"} in (
+        draft.unsupported_gaps or []
+    )
+    # 다음 15분 조정이 같은 입력을 다시 사지 않는다.
+    assert essence_refresh_needed(pg_session, hospital.id) is False
+
+
+def test_error_source_beside_a_processed_one_is_excluded_after_one_hour(pg_session) -> None:
+    hospital, source, note, previous = _seed_baseline(pg_session, label="fresh-error-beside")
+    pg_session.delete(previous)
+    broken = HospitalSourceAsset(
+        id=uuid.uuid4(),
+        hospital_id=hospital.id,
+        source_type=SourceType.INTERVIEW,
+        title="방금 실패한 자료",
+        raw_text="본문은 있으나 처리에 실패한 자료",
+        content_hash="fresh-error-beside-hash",
+        status=SourceStatus.ERROR,
+    )
+    pg_session.add(broken)
+    pg_session.flush()
+
+    # 방금 실패한 자료는 1시간 유예 동안 합성을 막는다(곧 고쳐질 수 있다).
+    assert essence_refresh_needed(pg_session, hospital.id) is False
+    broken.updated_at = datetime.now(timezone.utc) - timedelta(hours=1, minutes=5)
+    pg_session.flush()
+
+    # 유예가 지나면 다른 필수 자료가 처리된 이상 6시간을 다 기다리지 않는다.
+    assert essence_refresh_needed(pg_session, hospital.id) is True
+    result = refresh_essence_snapshot(
+        pg_session,
+        hospital.id,
+        synthesizer=lambda *_a, **_k: _candidate_payload(source, note),
+        reviewer=lambda *_a, **_k: _approved_review(note),
+    )
+
+    assert result.status == EssenceRefreshStatus.AUTO_APPROVED
+    approved = pg_session.get(HospitalContentPhilosophy, result.philosophy_id)
+    assert [
+        gap["source_asset_id"]
+        for gap in approved.unsupported_gaps or []
+        if isinstance(gap, dict) and gap.get("field") == "excluded_error_source"
+    ] == [str(broken.id)]
+
+
+def test_two_untouched_system_drafts_retry_the_latest_and_archive_both(pg_session) -> None:
+    hospital, source, note, previous = _seed_baseline(pg_session, label="two-system-drafts")
+    pg_session.delete(previous)
+    pg_session.flush()
+    synthesize = _always_forbidden_payload(source, note)
+
+    first = refresh_essence_snapshot(
+        pg_session,
+        hospital.id,
+        synthesizer=synthesize,
+        reviewer=lambda *_a, **_k: _approved_review(note),
+    )
+    assert first.status == EssenceRefreshStatus.ESCALATED
+    first_draft = pg_session.get(HospitalContentPhilosophy, first.philosophy_id)
+    # 옛 배포·수동 재검수 요청과 겹쳐 같은 snapshot에 시스템 초안이 하나 더 남은 상태.
+    stray = HospitalContentPhilosophy(
+        hospital_id=hospital.id,
+        version=first_draft.version + 1,
+        status=PhilosophyStatus.DRAFT,
+        created_by=AUTO_ESSENCE_ACTOR,
+        **_candidate_payload(source, note),
+    )
+    pg_session.add(stray)
+    pg_session.flush()
+    stray.unsupported_gaps = list(first_draft.unsupported_gaps or [])
+    pg_session.flush()
+    _rewind_automatic_recovery(pg_session, first.philosophy_id, hours=24)
+    _rewind_automatic_recovery(pg_session, stray.id, hours=24)
+
+    assert essence_refresh_needed(pg_session, hospital.id) is True
+    result = refresh_essence_snapshot(
+        pg_session,
+        hospital.id,
+        synthesizer=synthesize,
+        reviewer=lambda *_a, **_k: _approved_review(note),
+    )
+
+    assert result.status == EssenceRefreshStatus.ESCALATED
+    assert result.automatic_recovery_cycle == 2
+    assert result.philosophy_id not in {first.philosophy_id, stray.id}
+    for old_id in (first.philosophy_id, stray.id):
+        assert pg_session.get(HospitalContentPhilosophy, old_id).status == (
+            PhilosophyStatus.ARCHIVED
+        )

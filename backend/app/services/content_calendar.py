@@ -66,6 +66,7 @@ def generate_monthly_slots(
     start_date: date | None = None,
     hospital_id: object | None = None,
     ensure_quota: bool = False,
+    total: int | None = None,
 ) -> list[tuple[date, ContentType, int, int]]:
     """
     해당 월의 발행 날짜·유형·순번·총편수 목록 생성.
@@ -73,10 +74,15 @@ def generate_monthly_slots(
 
     hospital_id가 주어지면 병원별로 시작 유형이 달라지는 결정적 인터리빙을 적용한다.
     생략 시 plan+target_month를 시드로 사용(호출부 변경 없이도 유형 몰림은 해소됨).
+
+    `total`은 그 달 약속 편수가 요금제 편수보다 작을 때(첫 계약 월 안분,
+    `services/content_month_target`)만 준다. 고르게 섞인 유형 순서의 앞부분을 쓴다.
     """
     distribution = PLAN_DISTRIBUTION.get(plan, {})
     seed = f"{hospital_id if hospital_id is not None else plan}:{target_month.format('YYYY-MM')}"
     type_sequence: list[ContentType] = _interleave_types(distribution, seed)
+    if total is not None:
+        type_sequence = type_sequence[: max(0, total)]
     total = len(type_sequence)
 
     dates: list[date] = []

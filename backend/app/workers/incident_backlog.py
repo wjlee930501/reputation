@@ -511,6 +511,39 @@ def _unverified_actor_quiet(_db: Session, incident: Incident, now: datetime) -> 
     return None
 
 
+# 비용 가드 fail-open 사고는 알린 프로세스가 Redis로 다시 판정할 때 닫는다(`cost_guard_health`).
+# 그 프로세스가 복구 전에 교체되면 메모리 상태가 사라져 아무도 닫지 않는다 — 여기서 닫는다. 근거는
+# PING이 아니라 가드가 실제로 하는 예산 연산의 성공이다(`cost_guard.probe_budget_operation`): Redis가
+# 응답해도 예산 Lua는 OOM·권한·키 타입 오류로 계속 실패할 수 있다. 그리고 마지막 관측 뒤 10분은
+# 기다린다 — 실패하는 프로세스는 5분마다 관측을 다시 기록하므로(`cost_guard_health._TOUCH_SECONDS`)
+# 실패가 이어지는 동안 이 창은 열리지 않는다.
+_COST_GUARD_FAIL_OPEN_QUIET = timedelta(minutes=10)
+
+
+def _cost_guard_category(incident: Incident) -> str | None:
+    """사고의 `source_id`(`{category}:fail_open`)에서 비용 가드 카테고리를 읽는다."""
+
+    from app.services.cost_guard import CATEGORIES
+
+    category = str(incident.source_id or "").split(":", 1)[0]
+    return category if category in CATEGORIES else None
+
+
+def _cost_guard_budget_op_succeeds(category: str) -> bool:
+    from app.services.cost_guard import probe_budget_operation
+
+    return probe_budget_operation(category)
+
+
+def _cost_guard_judging_again(_db: Session, incident: Incident, now: datetime) -> str | None:
+    if incident.last_seen_at is not None and now - incident.last_seen_at < _COST_GUARD_FAIL_OPEN_QUIET:
+        return None
+    category = _cost_guard_category(incident)
+    if category is None:
+        return None
+    return "cost_guard_budget_op_succeeded" if _cost_guard_budget_op_succeeds(category) else None
+
+
 # 자율 복구(`autonomous_recovery._stop_operation_run`)가 실행을 멈추며 남기는 원인 코드.
 # autonomous_recovery가 이 모듈을 불러 쓰므로 여기에 문자열로 두고, 테스트가 두 목록을 맞춘다.
 RECOVERY_STOP_CODES = frozenset(
@@ -603,6 +636,7 @@ RESOLVERS: dict[str, Resolver] = {
     "MONTHLY_SOV_MEASUREMENT_FAILED": _same_period_measurement,
     "SOV_HIGH_PRIORITY_CAP_EXCEEDED": _weekly_capacity,
     "COST_GUARD_LIMIT_REACHED": _budget_period,
+    "COST_GUARD_FAIL_OPEN": _cost_guard_judging_again,
     "V0_REPORT_FAILED": _v0_report_created,
     "CONTENT_GENERATION_FAILED": _content_published,
     "NOTIFICATION_DELIVERY_UNKNOWN": _redirected_delivery,

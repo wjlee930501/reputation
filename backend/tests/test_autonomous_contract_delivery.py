@@ -53,6 +53,7 @@ def test_failed_monthly_insertion_is_not_reported_as_already_complete(monkeypatc
     )
     db = Mock()
     db.execute.return_value.all.return_value = []
+    db.scalar.return_value = None  # 첫 계약 월 안분 판정: 첫 달 아님
     db.flush.side_effect = IntegrityError(
         "insert", {}, RuntimeError("unexpected foreign key failure")
     )

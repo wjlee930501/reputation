@@ -18,6 +18,7 @@ from app.models.content import ContentItem
 from app.models.essence import (
     AUTO_RECOVERY_CYCLE_GAP_FIELD,
     AUTO_RECOVERY_LAST_AT_GAP_FIELD,
+    AUTO_RECOVERY_TERMINAL_GAP_FIELD,
     AUTO_REVIEW_GAP_FIELD,
     EXCLUDED_ERROR_SOURCE_GAP_FIELD,
     HospitalContentPhilosophy,
@@ -63,13 +64,19 @@ AUTO_ESSENCE_CONFIDENCE = 0.90
 AUTO_ESSENCE_ADJUDICATION_CONFIDENCE = 0.95
 AUTO_ESSENCE_MAX_SYNTHESIS_ATTEMPTS = 2
 # 자동 재검수 예산. 한 번 보류했다고 영구 정지시키지 않는다 — LLM 출력은 확률적이라
-# 같은 입력에서도 다음 판이 통과할 수 있다. 대신 사이클마다 24h × 2^(cycle-1)로 물러서고
-# 예산을 다 쓰면 그때 사람의 일이 된다(무한 재구매 금지).
+# 같은 입력에서도 다음 판이 통과할 수 있다. 사이클마다 1h → 4h → 12h로 물러서고
+# 4번째 보류에서 예산을 다 쓰면 그때 사람의 일이 된다(무한 재구매 금지, 합계 약 17시간).
 AUTO_ESSENCE_MAX_RECOVERY_CYCLES = 4
-AUTO_ESSENCE_RECOVERY_BASE_BACKOFF = timedelta(hours=24)
-# 필수 자료가 이 시간 넘게 ERROR면 합성 입력과 완결성 검사에서 빼고 그 사실을 gap으로
-# 남긴다. 자료 한 건의 영구 실패가 병원 전체의 Essence를 영원히 막지 않게 한다.
-ERROR_SOURCE_EXCLUSION_AFTER = timedelta(hours=72)
+AUTO_ESSENCE_RECOVERY_BACKOFFS: tuple[timedelta, ...] = (
+    timedelta(hours=1),
+    timedelta(hours=4),
+    timedelta(hours=12),
+)
+# 필수 자료가 6시간 넘게 ERROR이거나, 다른 필수 자료가 이미 처리됐고 1시간 유예가 지났다면
+# ERROR 자료를 합성 입력과 완결성 검사에서 빼고 gap으로 남긴다. 자료 한 건의 영구 실패가
+# 병원 전체의 Essence를 막지 않게 하되, 곧 고쳐질 자료는 잠깐 기다린다.
+ERROR_SOURCE_EXCLUSION_AFTER = timedelta(hours=6)
+ERROR_SOURCE_EXCLUSION_GRACE = timedelta(hours=1)
 # 같은 입력(snapshot+previous)으로 반복 실패하는 병원이 15분마다 합성·검수를 다시
 # 사지 않도록, 시도 횟수에 따라 다음 claim을 미룬다.
 _CLAIM_RETRY_BASE_BACKOFF = timedelta(minutes=15)
@@ -392,6 +399,28 @@ def _has_prompt_injection(sources: list[HospitalSourceAsset]) -> bool:
     return any(pattern.search(source_text) for pattern in _PROMPT_INJECTION_PATTERNS)
 
 
+def _operator_required_reason(
+    payload: dict[str, Any],
+    sources: list[HospitalSourceAsset],
+) -> str | None:
+    """자동 재합성·재검수로 풀 수 없는 보류의 사유. None이면 확률적 보류다."""
+
+    if _has_prompt_injection(sources):
+        return "prompt_injection"
+    if payload.get("conflict_notes"):
+        return "conflict_notes"
+    return None
+
+
+def _automatic_recovery_terminal_reason(philosophy: HospitalContentPhilosophy) -> str | None:
+    """바로 사람에게 넘긴 보류라는 서버 표식의 사유. 없으면 None."""
+
+    for item in getattr(philosophy, "unsupported_gaps", None) or []:
+        if isinstance(item, dict) and item.get("field") == AUTO_RECOVERY_TERMINAL_GAP_FIELD:
+            return str(item.get("reason") or "operator_required")
+    return None
+
+
 def _candidate_evidence_ids(payload: dict[str, Any]) -> set[str]:
     ids: set[str] = set()
     evidence_map = payload.get("evidence_map")
@@ -458,20 +487,29 @@ def effective_recovery_cycle(philosophy: HospitalContentPhilosophy) -> int:
     return cycles
 
 
+def automatic_recovery_backoff(cycle: int) -> timedelta:
+    """사이클 c를 쓴 보류가 다음 자동 재검수까지 기다리는 시간. 읽기·쓰기가 같은 표를 쓴다."""
+
+    index = min(max(int(cycle), 1), len(AUTO_ESSENCE_RECOVERY_BACKOFFS)) - 1
+    return AUTO_ESSENCE_RECOVERY_BACKOFFS[index]
+
+
 def automatic_recovery_due_at(philosophy: HospitalContentPhilosophy) -> datetime | None:
     """다음 자동 재검수가 가능한 시각. None이면 자동 예산이 끝났다(사람의 일).
 
-    사이클 c를 이미 쓴 초안은 마지막 시도로부터 24h × 2^(c-1)이 지나야 다시 시도한다.
-    표식이 없는 옛 초안(c=0)과 레거시 영구 정지 표식은 지금 바로 한 번 받는다.
+    사이클 c를 이미 쓴 초안은 마지막 시도로부터 `automatic_recovery_backoff(c)`가 지나야
+    다시 시도한다. 표식이 없는 옛 초안(c=0)과 레거시 영구 정지 표식은 지금 바로 한 번 받는다.
     """
 
+    if _automatic_recovery_terminal_reason(philosophy) is not None:
+        return None
     cycles = effective_recovery_cycle(philosophy)
     last_at = _automatic_recovery_last_at(philosophy)
     if cycles >= AUTO_ESSENCE_MAX_RECOVERY_CYCLES:
         return None
     if cycles <= 0 or last_at is None:
         return datetime.min.replace(tzinfo=timezone.utc)
-    return last_at + AUTO_ESSENCE_RECOVERY_BASE_BACKOFF * (2 ** (cycles - 1))
+    return last_at + automatic_recovery_backoff(cycles)
 
 
 def automatic_recovery_owns_draft(philosophy: HospitalContentPhilosophy) -> bool:
@@ -515,17 +553,42 @@ def _is_retryable_auto_draft(
     return bool(automatic_recovery_owns_draft(philosophy) and due_at is not None and now >= due_at)
 
 
+def _select_retryable_auto_draft(
+    drafts: list[HospitalContentPhilosophy],
+    now: datetime,
+) -> tuple[HospitalContentPhilosophy | None, list[HospitalContentPhilosophy]]:
+    """같은 snapshot의 DRAFT 중 다시 만들 시스템 초안과 함께 보관할 옛 시스템 초안.
+
+    모든 초안이 사람이 손대지 않은 시스템 초안일 때만 최신 하나를 고른다. 하나라도 사람의
+    판단이 들어간 초안이 있으면 기계가 덮지 않는다(빈 결과 = 사람의 일).
+    """
+
+    if not drafts or not all(automatic_recovery_owns_draft(draft) for draft in drafts):
+        return None, []
+    latest = max(
+        drafts, key=lambda draft: (int(getattr(draft, "version", 0) or 0), str(draft.id))
+    )
+    if not _is_retryable_auto_draft(latest, now):
+        return None, []
+    return latest, [draft for draft in drafts if draft is not latest]
+
+
 def _split_stale_error_sources(
     sources: list[HospitalSourceAsset],
     now: datetime,
 ) -> tuple[list[HospitalSourceAsset], list[HospitalSourceAsset]]:
-    """72시간 넘게 ERROR인 필수 자료를 합성 입력에서 분리한다.
+    """ERROR 필수 자료를 합성 입력에서 분리한다.
 
-    ERROR는 자동 재시도가 없는 종착지라, 자료 한 건이 고쳐지지 않으면 병원 전체의
-    Essence가 영원히 만들어지지 않는다. 자료 상태는 그대로 두고(사람이 고치면 새
-    snapshot이 된다) 이번 합성에서만 빼며, 그 사실은 후보의 gap으로 남는다.
+    ERROR는 자동 재시도가 없는 종착지다. 다른 필수 자료가 이미 처리됐다면 1시간 유예 뒤에,
+    ERROR 자료뿐이면 6시간 뒤에 뺀다(곧 고쳐질 자료를 위해). 자료 상태는 그대로 두고
+    제외 사실만 gap으로 남는다. 안정 base 규칙상 제외된 자료는 나중에 고쳐져도 재온보딩
+    경로로만 반영된다.
+    세 호출부(필요 판정·진입·writeback 재검사)가 같은 `now`로 같은 답을 낸다.
     """
 
+    has_processed = any(
+        _status_value(source.status) == SourceStatus.PROCESSED.value for source in sources
+    )
     usable: list[HospitalSourceAsset] = []
     stale: list[HospitalSourceAsset] = []
     for source in sources:
@@ -535,7 +598,8 @@ def _split_stale_error_sources(
                 or _as_utc(getattr(source, "processed_at", None))
                 or _as_utc(getattr(source, "created_at", None))
             )
-            if since is not None and now - since >= ERROR_SOURCE_EXCLUSION_AFTER:
+            wait = ERROR_SOURCE_EXCLUSION_GRACE if has_processed else ERROR_SOURCE_EXCLUSION_AFTER
+            if since is not None and now - since >= wait:
                 stale.append(source)
                 continue
         usable.append(source)
@@ -547,9 +611,8 @@ def _excluded_error_source_gaps(sources: list[HospitalSourceAsset]) -> list[dict
         {
             "field": EXCLUDED_ERROR_SOURCE_GAP_FIELD,
             "reason": (
-                f"자료 '{(source.title or str(source.id))[:120]}'가 "
-                f"{int(ERROR_SOURCE_EXCLUSION_AFTER.total_seconds() // 3600)}시간 넘게 "
-                "처리되지 않아 이번 근거에서 제외했습니다."
+                f"자료 '{(source.title or str(source.id))[:120]}'의 처리가 실패해 "
+                "이번 근거에서 제외했습니다. 자료를 고친 뒤 반영하려면 다시 온보딩해 주세요."
             ),
             "source_asset_id": str(source.id),
         }
@@ -596,7 +659,7 @@ def _can_automatically_remediate(
 ) -> bool:
     """Source-level ambiguity is never rewritten away by a second model call."""
 
-    return not _has_prompt_injection(sources) and not bool(payload.get("conflict_notes"))
+    return _operator_required_reason(payload, sources) is None
 
 
 def _critical_losses(
@@ -1455,10 +1518,8 @@ def essence_refresh_needed(db: Session, hospital_id: uuid.UUID) -> bool:
         # An automatic escalation gets a bounded number of recovery cycles with
         # backoff. Manual/ambiguous drafts and exhausted drafts stay operator-owned
         # and never consume AI cost every reconciliation interval.
-        if len(existing_drafts) != 1:
-            return False
-        existing_draft = existing_drafts[0]
-        if not _is_retryable_auto_draft(existing_draft, now):
+        selected, _retired = _select_retryable_auto_draft(existing_drafts, now)
+        if selected is None:
             return False
     if _claim_backoff_active(
         db,
@@ -1489,8 +1550,9 @@ def refresh_essence_snapshot(
     previous = _approved(db, hospital_id)
 
     now = datetime.now(timezone.utc)
-    # 72시간 넘게 ERROR인 필수 자료는 이번 합성의 입력과 완결성 검사에서 뺀다. 자료
-    # 상태는 그대로 두고(사람이 고치면 새 snapshot이 된다) 제외 사실만 gap으로 남긴다.
+    # 제외 대상 ERROR 필수 자료(다른 자료가 처리됐으면 1시간, 아니면 6시간 경과)는
+    # 이번 합성의 입력과 완결성 검사에서 뺀다. 자료 상태는 그대로 두고
+    # (사람이 고치면 새 snapshot이 된다) 제외 사실만 gap으로 남긴다.
     sources, excluded_error_sources = _split_stale_error_sources(
         _required_sources(db, hospital_id), now
     )
@@ -1524,18 +1586,18 @@ def refresh_essence_snapshot(
     noise_hash = load_evidence_noise_hash_sync(db, hospital_id)
     existing_drafts = _drafts_for_snapshot(db, hospital_id, snapshot_hash)
     retryable_auto_draft: HospitalContentPhilosophy | None = None
+    retired_auto_drafts: list[HospitalContentPhilosophy] = []
     if existing_drafts:
-        if len(existing_drafts) == 1:
-            existing_draft = existing_drafts[0]
-            if _is_retryable_auto_draft(existing_draft, now):
-                retryable_auto_draft = existing_draft
+        retryable_auto_draft, retired_auto_drafts = _select_retryable_auto_draft(
+            existing_drafts, now
+        )
         if retryable_auto_draft is None:
-            existing_draft = existing_drafts[0]
+            existing_draft = existing_drafts[-1]
             # 자동 재검수 예산이 남아 있으면 이 보류는 아직 기계의 일이다. 남은 예산과
             # 다음 시도 시각을 실어 호출부가 인시던트를 사람의 일로 올리지 않게 한다.
             due_at = (
                 automatic_recovery_due_at(existing_draft)
-                if len(existing_drafts) == 1 and automatic_recovery_owns_draft(existing_draft)
+                if all(automatic_recovery_owns_draft(draft) for draft in existing_drafts)
                 else None
             )
             return EssenceRefreshResult(
@@ -1690,12 +1752,11 @@ def refresh_essence_snapshot(
 
     # A DRAFT that appeared after synthesis/review was not the payload the reviewer
     # inspected. Never lend that review decision to a different row.
-    current_drafts = _drafts_for_snapshot(db, hospital_id, snapshot_hash)
-    competing_drafts = [
-        draft
-        for draft in current_drafts
-        if retryable_auto_draft is None or draft.id != retryable_auto_draft.id
+    superseded_ids = [
+        draft.id for draft in [retryable_auto_draft, *retired_auto_drafts] if draft is not None
     ]
+    current_drafts = _drafts_for_snapshot(db, hospital_id, snapshot_hash)
+    competing_drafts = [draft for draft in current_drafts if draft.id not in superseded_ids]
     if competing_drafts:
         existing_draft = competing_drafts[0]
         _finish_essence_refresh_claim(claim_run, state=OperationRunState.CANCELLED)
@@ -1715,11 +1776,13 @@ def refresh_essence_snapshot(
 
     # A prior automatic escalation is an implementation artifact, not a human
     # decision. Supersede it only after a complete fresh synthesis/review cycle.
-    if retryable_auto_draft is not None:
-        current_retryable = db.get(HospitalContentPhilosophy, retryable_auto_draft.id)
+    # 같은 snapshot에 남은 옛 시스템 초안도 이 새 판으로 함께 갈음한다.
+    for superseded_id in superseded_ids:
+        current_retryable = db.get(HospitalContentPhilosophy, superseded_id)
         if current_retryable is not None and current_retryable.status == PhilosophyStatus.DRAFT:
             current_retryable.status = PhilosophyStatus.ARCHIVED
-            db.flush()
+    if superseded_ids:
+        db.flush()
 
     candidate = HospitalContentPhilosophy(
         hospital_id=hospital_id,
@@ -1831,6 +1894,7 @@ def refresh_essence_snapshot(
                 "superseded_auto_draft_id": (
                     str(retryable_auto_draft.id) if retryable_auto_draft else None
                 ),
+                "retired_auto_draft_ids": [str(draft.id) for draft in retired_auto_drafts],
                 "all_required_sources_processed": True,
                 "excluded_error_source_ids": [
                     str(source.id) for source in excluded_error_sources
@@ -1858,14 +1922,18 @@ def refresh_essence_snapshot(
     recovery_cycle = (
         effective_recovery_cycle(retryable_auto_draft) if retryable_auto_draft else 0
     ) + 1
+    operator_required_reason = (
+        _operator_required_reason(payload, sources) if findings else None
+    )
     next_attempt_at = (
-        escalated_at + AUTO_ESSENCE_RECOVERY_BASE_BACKOFF * (2 ** (recovery_cycle - 1))
-        if recovery_cycle < AUTO_ESSENCE_MAX_RECOVERY_CYCLES
+        escalated_at + automatic_recovery_backoff(recovery_cycle)
+        if recovery_cycle < AUTO_ESSENCE_MAX_RECOVERY_CYCLES and operator_required_reason is None
         else None
     )
     if findings:
-        # 보류는 종착이 아니라 계수되는 사이클이다. 예산이 남아 있으면 백오프 뒤 자동으로
-        # 한 번 더 만들고, 다 쓰면 그때 사람이 본다.
+        # 확률적 보류는 계수되는 사이클이다. 예산이 남아 있으면 백오프 뒤 자동으로 한 번 더
+        # 만들고, 다 쓰면 그때 사람이 본다. 상충·주입 의심은 같은 입력으로 다시 사도 결론이
+        # 같으므로 바로 사람에게 넘긴다(표식이 자동 사다리를 끊는다).
         candidate.unsupported_gaps = (
             list(candidate.unsupported_gaps or [])
             + [{"field": AUTO_REVIEW_GAP_FIELD, "reason": finding} for finding in findings]
@@ -1879,6 +1947,16 @@ def refresh_essence_snapshot(
                     "reason": escalated_at.isoformat(),
                 },
             ]
+            + (
+                [
+                    {
+                        "field": AUTO_RECOVERY_TERMINAL_GAP_FIELD,
+                        "reason": operator_required_reason,
+                    }
+                ]
+                if operator_required_reason
+                else []
+            )
         )
     write_audit_log_sync(
         db,
@@ -1905,12 +1983,14 @@ def refresh_essence_snapshot(
             "superseded_auto_draft_id": (
                 str(retryable_auto_draft.id) if retryable_auto_draft else None
             ),
+            "retired_auto_draft_ids": [str(draft.id) for draft in retired_auto_drafts],
             "all_required_sources_processed": True,
             "excluded_error_source_ids": [str(source.id) for source in excluded_error_sources],
             "automatic_recovery_cycle": recovery_cycle,
             "next_automatic_attempt_at": (
                 next_attempt_at.isoformat() if next_attempt_at else None
             ),
+            "operator_required_reason": operator_required_reason,
             "findings": findings[:_MAX_REVIEW_FINDINGS],
         },
     )
@@ -1935,11 +2015,13 @@ __all__ = (
     "AUTO_ESSENCE_CONFIDENCE",
     "AUTO_ESSENCE_MAX_RECOVERY_CYCLES",
     "AUTO_ESSENCE_MAX_SYNTHESIS_ATTEMPTS",
-    "AUTO_ESSENCE_RECOVERY_BASE_BACKOFF",
+    "AUTO_ESSENCE_RECOVERY_BACKOFFS",
     "ERROR_SOURCE_EXCLUSION_AFTER",
+    "ERROR_SOURCE_EXCLUSION_GRACE",
     "EssenceAiReview",
     "EssenceRefreshResult",
     "EssenceRefreshStatus",
+    "automatic_recovery_backoff",
     "automatic_recovery_due_at",
     "automatic_recovery_owns_draft",
     "effective_recovery_cycle",

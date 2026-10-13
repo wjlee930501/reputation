@@ -13,8 +13,9 @@ import arrow
 from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.orm import Session
 
-from app.models.content import ContentItem, ContentSchedule, monthly_quota_for_plan
+from app.models.content import ContentItem, ContentSchedule
 from app.models.hospital import Hospital
+from app.services.content_month_target import month_content_target_sync
 from app.services.post_publish_review_policy import publicly_operational_hospital_predicate
 from app.services.schedule_reconciliation import effective_schedules_query
 
@@ -43,7 +44,9 @@ class FleetContractCoverage:
 
 
 def collect_contract_delivery_coverage(db: Session, *, now: datetime) -> FleetContractCoverage:
-    """Four bounded read-only queries for currently operational hospitals.
+    """Bounded read-only queries for currently operational hospitals.
+
+    Two extra reads per hospital resolve a prorated or empty first contract month.
 
     A missing/disabled schedule is unknown, not healthy. Recorded effective terms
     own the denominator, not a future head. No provider calls or commits occur.
@@ -105,7 +108,12 @@ def collect_contract_delivery_coverage(db: Session, *, now: datetime) -> FleetCo
     totals = {field: 0 for field in FleetContractCoverage.__dataclass_fields__}
     for hospital_id in hospitals:
         schedule = schedules.get(hospital_id)
-        quota = monthly_quota_for_plan(schedule.plan) if schedule is not None else None
+        # 첫 계약 월을 안분한 달은 그 편수가 약속이다(content_month_target).
+        quota = (
+            month_content_target_sync(db, hospital_id, local, schedule.plan)
+            if schedule is not None
+            else None
+        )
         row = observed.get(hospital_id)
         allocated = int(row.allocated or 0) if row is not None else 0
         delivered_count = int(row.delivered or 0) if row is not None else 0

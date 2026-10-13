@@ -2,7 +2,7 @@
 
 import { useParams } from 'next/navigation'
 import { useEffect, useState } from 'react'
-import { ApiError, fetchAPI, autofillProfile } from '@/lib/api'
+import { ApiError, fetchAPI, autofillProfile, getStoredAutofillDraft } from '@/lib/api'
 import { OperatorIssuePanel } from '@/app/_components/OperatorIssuePanel'
 import { isExpectedOperatorRequestFailure, safeOperatorError } from '@/lib/operations-journey'
 import { factsPatchPayload } from '@/lib/profile-patch'
@@ -20,6 +20,7 @@ import {
   seedPhysicians,
 } from '@/lib/physicians'
 import type { AutofillResponse, AutofillFieldMeta } from '@/lib/api'
+import { ADMIN_COPY } from '@/lib/admin-copy'
 import type { DoctorPhotoOption } from '@/lib/physicians'
 import type { MissingProfileRequirement } from '@/lib/info-sections'
 import type { ProfileSourceRegistration } from '@/types'
@@ -277,70 +278,7 @@ export default function HospitalInfoPage() {
       if (blogUrl.trim()) body.blog_url = blogUrl.trim()
 
       const result = await autofillProfile(hospitalId, body)
-      setAutofillResult(result)
-
-      const { draft, field_meta } = result
-      const newAiFilled: Record<string, AutofillFieldMeta> = { ...aiFilled }
-
-      // 자동 입력은 아직 저장되지 않은 제안이다 — 헤더가 새로 와도 덮지 않게 표시한다.
-      setFactsDirty(true)
-      setProfile((prev) => {
-        const next = { ...prev }
-
-        for (const key of SCALAR_AUTOFILL_KEYS) {
-          if (key in draft && isBlankScalar(prev[key])) {
-            const val = draft[key]
-            if (typeof val === 'string' && val.trim() !== '') {
-              ;(next as Record<string, unknown>)[key] = val
-              if (field_meta[key]) newAiFilled[key] = field_meta[key]
-            }
-          }
-        }
-
-        if ('business_hours' in draft && isBlankObject(prev.business_hours)) {
-          const val = draft.business_hours
-          if (val && typeof val === 'object' && !Array.isArray(val)) {
-            next.business_hours = val as Record<string, string>
-            if (field_meta.business_hours) newAiFilled.business_hours = field_meta.business_hours
-          }
-        }
-
-        const arrayKeys = ['region', 'specialties', 'keywords', 'competitors'] as const
-        for (const key of arrayKeys) {
-          if (key in draft && isBlankArray(prev[key])) {
-            const val = draft[key]
-            if (Array.isArray(val) && val.length > 0) {
-              ;(next as Record<string, unknown>)[key] = val as string[]
-              if (field_meta[key]) newAiFilled[key] = field_meta[key]
-            }
-          }
-        }
-
-        // 원장명·약력 제안은 의료진 첫 줄로 간다 — 그 칸이 이제 의료진 목록이기 때문이다.
-        // 이미 이름을 채운 줄이 있으면 손대지 않는다.
-        const rows = prev.physicians ?? []
-        const firstEmpty = rows.length === 1 && rows[0].name.trim() === ''
-        const suggestedName = typeof draft.director_name === 'string' ? draft.director_name.trim() : ''
-        if (firstEmpty && suggestedName !== '') {
-          const career = typeof draft.director_career === 'string' ? draft.director_career : ''
-          next.physicians = [
-            { ...rows[0], name: suggestedName, career, is_representative: true },
-          ]
-          if (field_meta.director_name) newAiFilled.director_name = field_meta.director_name
-        }
-
-        if ('treatments' in draft && isBlankArray(prev.treatments)) {
-          const val = draft.treatments
-          if (Array.isArray(val) && val.length > 0) {
-            next.treatments = val as Treatment[]
-            if (field_meta.treatments) newAiFilled.treatments = field_meta.treatments
-          }
-        }
-
-        return next
-      })
-
-      setAiFilled(newAiFilled)
+      applyAutofillResult(result)
       setAutofillOpen(false)
     } catch (e: unknown) {
       if (!isExpectedOperatorRequestFailure(e)) throw e
@@ -348,6 +286,99 @@ export default function HospitalInfoPage() {
     } finally {
       setAutofillLoading(false)
     }
+  }
+
+  // 계약 등록 직후 백그라운드가 찾아 둔 초안을 불러와 같은 규칙으로 빈 칸만 채운다.
+  // 저장은 사람이 확인한 뒤 '저장'으로 한다.
+  async function handleStoredAutofill() {
+    setAutofillLoading(true)
+    setError(null)
+    try {
+      const stored = await getStoredAutofillDraft(hospitalId)
+      applyAutofillResult(stored, stored.lead_suggestions?.phone)
+    } catch (e: unknown) {
+      if (e instanceof ApiError && e.status === 404) {
+        setError(ADMIN_COPY.storedAutofillMissing)
+        return
+      }
+      if (!isExpectedOperatorRequestFailure(e)) throw e
+      setError(safeOperatorError('onboarding', ADMIN_COPY.storedAutofillRetry))
+    } finally {
+      setAutofillLoading(false)
+    }
+  }
+
+  function applyAutofillResult(result: AutofillResponse, leadPhone?: string) {
+    setAutofillResult(result)
+
+    const { draft, field_meta } = result
+    const newAiFilled: Record<string, AutofillFieldMeta> = { ...aiFilled }
+
+    // 자동 입력은 아직 저장되지 않은 제안이다 — 헤더가 새로 와도 덮지 않게 표시한다.
+    setFactsDirty(true)
+    setProfile((prev) => {
+      const next = { ...prev }
+
+      for (const key of SCALAR_AUTOFILL_KEYS) {
+        if (key in draft && isBlankScalar(prev[key])) {
+          const val = draft[key]
+          if (typeof val === 'string' && val.trim() !== '') {
+            ;(next as Record<string, unknown>)[key] = val
+            if (field_meta[key]) newAiFilled[key] = field_meta[key]
+          }
+        }
+      }
+
+      if ('business_hours' in draft && isBlankObject(prev.business_hours)) {
+        const val = draft.business_hours
+        if (val && typeof val === 'object' && !Array.isArray(val)) {
+          next.business_hours = val as Record<string, string>
+          if (field_meta.business_hours) newAiFilled.business_hours = field_meta.business_hours
+        }
+      }
+
+      const arrayKeys = ['region', 'specialties', 'keywords', 'competitors'] as const
+      for (const key of arrayKeys) {
+        if (key in draft && isBlankArray(prev[key])) {
+          const val = draft[key]
+          if (Array.isArray(val) && val.length > 0) {
+            ;(next as Record<string, unknown>)[key] = val as string[]
+            if (field_meta[key]) newAiFilled[key] = field_meta[key]
+          }
+        }
+      }
+
+      // 원장명·약력 제안은 의료진 첫 줄로 간다 — 그 칸이 이제 의료진 목록이기 때문이다.
+      // 이미 이름을 채운 줄이 있으면 손대지 않는다.
+      const rows = prev.physicians ?? []
+      const firstEmpty = rows.length === 1 && rows[0].name.trim() === ''
+      const suggestedName = typeof draft.director_name === 'string' ? draft.director_name.trim() : ''
+      if (firstEmpty && suggestedName !== '') {
+        const career = typeof draft.director_career === 'string' ? draft.director_career : ''
+        next.physicians = [
+          { ...rows[0], name: suggestedName, career, is_representative: true },
+        ]
+        if (field_meta.director_name) newAiFilled.director_name = field_meta.director_name
+      }
+
+      if ('treatments' in draft && isBlankArray(prev.treatments)) {
+        const val = draft.treatments
+        if (Array.isArray(val) && val.length > 0) {
+          next.treatments = val as Treatment[]
+          if (field_meta.treatments) newAiFilled.treatments = field_meta.treatments
+        }
+      }
+
+      // 상담 요청의 대표번호는 확인 전 제안이다 — 전화 칸이 비어 있을 때만 채운다.
+      if (leadPhone && leadPhone.trim() !== '' && isBlankScalar(next.phone)) {
+        next.phone = leadPhone.trim()
+        newAiFilled.phone = { source: 'lead', confidence: 0.5 }
+      }
+
+      return next
+    })
+
+    setAiFilled(newAiFilled)
   }
 
   if (headerLoading && !hospital) {
@@ -409,6 +440,14 @@ export default function HospitalInfoPage() {
               className="min-h-11 flex-1 px-4 py-2 text-sm font-medium text-slate-700 border border-slate-300 rounded-lg hover:bg-slate-50 disabled:opacity-50 transition-colors sm:flex-none"
             >
               병원 정보 자동 입력
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleStoredAutofill()}
+              disabled={saving || autofillLoading}
+              className="min-h-11 flex-1 px-4 py-2 text-sm font-medium text-slate-700 border border-slate-300 rounded-lg hover:bg-slate-50 disabled:opacity-50 transition-colors sm:flex-none"
+            >
+              {ADMIN_COPY.storedAutofillApply}
             </button>
             <button
               type="submit"

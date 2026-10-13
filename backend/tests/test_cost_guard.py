@@ -4,6 +4,7 @@ fakeredis 패키지가 미설치이므로, 기존 test_admin_session_revocation.
 패턴을 확장해 이 테스트에서 필요한 async 메서드(get/set/incrby/expire/exists/delete)를
 구현한다.
 """
+import logging
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from uuid import uuid4
@@ -18,7 +19,7 @@ from app.schemas.operations import (
     CostGuardKillSwitchRequest,
     CostGuardStatusResponse,
 )
-from app.services import audit_log, cost_guard
+from app.services import audit_log, cost_guard, cost_guard_health
 
 
 class FakeRedis:
@@ -177,6 +178,30 @@ class AlertRecorder:
             }
         )
         return self.succeed
+
+
+class FailOpenRecorder:
+    def __init__(self):
+        self.opened: list[tuple[str, str]] = []
+        self.recovered: list[str] = []
+
+    async def open(self, category, error_name, *, now):
+        self.opened.append((category, error_name))
+
+    async def recover(self, category, *, now):
+        self.recovered.append(category)
+        return True
+
+
+@pytest.fixture(autouse=True)
+def fail_open_incidents(monkeypatch):
+    """fail-open 사고는 별도 DB 세션으로 남긴다 — 단위 테스트에서는 기록만 본다."""
+    recorder = FailOpenRecorder()
+    monkeypatch.setattr(cost_guard_health, "_open_fail_open_incident", recorder.open)
+    monkeypatch.setattr(cost_guard_health, "_recover_fail_open_incident", recorder.recover)
+    cost_guard_health.reset_for_tests()
+    yield recorder
+    cost_guard_health.reset_for_tests()
 
 
 @pytest.fixture
@@ -978,3 +1003,231 @@ async def test_receipt_cannot_be_reused_for_different_reservation(monkeypatch, a
         await cost_guard.reserve(
             "content", count=2, reservation_id="collision", redis_client=redis
         )
+
+
+async def test_first_fail_open_per_category_logs_error_and_opens_one_incident(
+    monkeypatch, alerts, fail_open_incidents, caplog
+):
+    _set_limits(monkeypatch, daily=10, monthly=10)
+    _set_limits(monkeypatch, category="image", daily=10, monthly=10)
+    redis = FakeRedis()
+    redis.fail = True
+
+    with caplog.at_level(logging.WARNING, logger="app.services.cost_guard_health"):
+        for _ in range(3):
+            assert (await cost_guard.check_and_increment("content", redis_client=redis)).allowed
+        assert (await cost_guard.reserve("image", redis_client=redis)).allowed
+
+    assert fail_open_incidents.opened == [("content", "RedisError"), ("image", "RedisError")]
+    errors = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert [r.getMessage().split(" ")[0] for r in errors] == ["cost_guard_fail_open", "cost_guard_fail_open"]
+    # 두 번째 이후 같은 카테고리는 WARNING만 — 사고를 다시 열지 않는다.
+    assert sum(1 for r in caplog.records if r.levelname == "WARNING") == 2
+
+
+async def test_guard_recovery_closes_the_fail_open_incident_once(monkeypatch, alerts, fail_open_incidents):
+    _set_limits(monkeypatch, daily=10, monthly=10)
+    redis = FakeRedis()
+    redis.fail = True
+    await cost_guard.check_and_increment("content", redis_client=redis)
+
+    redis.fail = False
+    await cost_guard.check_and_increment("content", redis_client=redis)
+    await cost_guard.check_and_increment("content", redis_client=redis)
+
+    assert fail_open_incidents.recovered == ["content"]
+    assert "content" not in cost_guard_health._REPORTED
+
+
+async def test_fail_open_incident_failure_never_blocks_the_guard_decision(monkeypatch, alerts):
+    _set_limits(monkeypatch, daily=10, monthly=10)
+
+    async def broken(*_args, **_kwargs):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(cost_guard_health, "_open_fail_open_incident", broken)
+    redis = FakeRedis()
+    redis.fail = True
+
+    decision = await cost_guard.check_and_increment("content", redis_client=redis)
+
+    assert decision.allowed is True
+
+
+async def test_failed_incident_write_is_retried_on_a_later_fail_open(monkeypatch, alerts, fail_open_incidents):
+    _set_limits(monkeypatch, daily=10, monthly=10)
+    clock = [1_000.0]
+    monkeypatch.setattr(cost_guard_health, "_monotonic", lambda: clock[0])
+    attempts: list[str] = []
+
+    async def broken_once(category, _error_name, *, now):
+        attempts.append(category)
+        if len(attempts) == 1:
+            raise RuntimeError("db down")
+
+    monkeypatch.setattr(cost_guard_health, "_open_fail_open_incident", broken_once)
+    redis = FakeRedis()
+    redis.fail = True
+
+    await cost_guard.check_and_increment("content", redis_client=redis)
+    # 기록에 실패한 카테고리는 '알렸음'이 아니다.
+    assert "content" not in cost_guard_health._REPORTED
+    await cost_guard.check_and_increment("content", redis_client=redis)  # 1분 안 — 다시 시도하지 않는다
+    clock[0] += 61
+    await cost_guard.check_and_increment("content", redis_client=redis)
+
+    assert attempts == ["content", "content"]
+    assert "content" in cost_guard_health._REPORTED
+
+
+async def test_fail_open_right_after_recovery_does_not_reopen(monkeypatch, alerts, fail_open_incidents):
+    _set_limits(monkeypatch, daily=10, monthly=10)
+    clock = [1_000.0]
+    monkeypatch.setattr(cost_guard_health, "_monotonic", lambda: clock[0])
+    redis = FakeRedis()
+
+    redis.fail = True
+    await cost_guard.check_and_increment("content", redis_client=redis)
+    redis.fail = False
+    await cost_guard.check_and_increment("content", redis_client=redis)
+    # 복구 직후 10분 안의 깜빡임은 사고를 다시 열지 않는다(알림 깜빡임 방지).
+    clock[0] += 300
+    redis.fail = True
+    await cost_guard.check_and_increment("content", redis_client=redis)
+    assert fail_open_incidents.opened == [("content", "RedisError")]
+
+    clock[0] += 301
+    await cost_guard.check_and_increment("content", redis_client=redis)
+    assert fail_open_incidents.opened == [("content", "RedisError"), ("content", "RedisError")]
+
+
+async def test_failed_recovery_keeps_the_incident_reported_and_retries_after_a_minute(
+    monkeypatch, alerts, fail_open_incidents
+):
+    """복구 커밋이 실패하거나(DB 오류) 충돌로 못 닫으면 메모리 상태를 지우지 않고 1분 뒤 다시 닫는다."""
+    _set_limits(monkeypatch, daily=10, monthly=10)
+    clock = [1_000.0]
+    monkeypatch.setattr(cost_guard_health, "_monotonic", lambda: clock[0])
+    outcomes = [RuntimeError("db down"), False, True]
+    attempts: list[str] = []
+
+    async def flaky_recover(category, *, now):
+        attempts.append(category)
+        outcome = outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(cost_guard_health, "_recover_fail_open_incident", flaky_recover)
+    redis = FakeRedis()
+    redis.fail = True
+    await cost_guard.check_and_increment("content", redis_client=redis)
+    redis.fail = False
+
+    await cost_guard.check_and_increment("content", redis_client=redis)  # DB 오류
+    assert "content" in cost_guard_health._REPORTED
+    await cost_guard.check_and_increment("content", redis_client=redis)  # 1분 안 — 다시 시도하지 않는다
+    assert attempts == ["content"]
+
+    clock[0] += 61
+    await cost_guard.check_and_increment("content", redis_client=redis)  # 낙관적 잠금 충돌
+    assert attempts == ["content", "content"]
+    assert "content" in cost_guard_health._REPORTED
+
+    clock[0] += 61
+    await cost_guard.check_and_increment("content", redis_client=redis)  # 커밋 성공
+    assert attempts == ["content", "content", "content"]
+    assert "content" not in cost_guard_health._REPORTED
+    # 실패하는 동안 fail-open이 와도 사고를 다시 열지 않는다(아직 알린 상태다).
+    redis.fail = True
+    await cost_guard.check_and_increment("content", redis_client=redis)
+    assert fail_open_incidents.opened == [("content", "RedisError")]
+
+
+async def test_continuous_fail_open_keeps_touching_so_the_backlog_never_closes_it(
+    monkeypatch, alerts, fail_open_incidents
+):
+    """알린 뒤에도 실패가 이어지면 5분마다 관측을 다시 기록한다 — 11분이 지나도 근거 정리가 닫지 않는다."""
+    from datetime import timedelta
+
+    from app.workers import incident_backlog
+
+    _set_limits(monkeypatch, daily=10, monthly=10)
+    clock = [1_000.0]
+    monkeypatch.setattr(cost_guard_health, "_monotonic", lambda: clock[0])
+    start = datetime(2026, 10, 13, 3, tzinfo=UTC)
+    incident = SimpleNamespace(source_id="content:fail_open", last_seen_at=None)
+
+    async def touch(category, _error_name, *, now):
+        fail_open_incidents.opened.append((category, "touch"))
+        incident.last_seen_at = start + timedelta(seconds=clock[0] - 1_000.0)
+
+    monkeypatch.setattr(cost_guard_health, "_open_fail_open_incident", touch)
+    redis = FakeRedis()
+    redis.fail = True
+    for _minute in range(12):  # 0분 ~ 11분, 매분 fail-open
+        await cost_guard.check_and_increment("content", redis_client=redis)
+        clock[0] += 60
+
+    # 0분 첫 기록, 5분·10분 다시 기록 — 매분이 아니라 5분 간격이다.
+    assert len(fail_open_incidents.opened) == 3
+    assert incident.last_seen_at == start + timedelta(minutes=10)
+    # PING이 되든 예산 연산이 되든, 마지막 관측(10분) 뒤 10분이 지나지 않았으므로 11분에는 닫지 않는다.
+    monkeypatch.setattr(incident_backlog, "_cost_guard_budget_op_succeeds", lambda _c: True)
+    resolver = incident_backlog.RESOLVERS["COST_GUARD_FAIL_OPEN"]
+    assert resolver(None, incident, start + timedelta(minutes=11)) is None
+
+
+async def test_a_reported_fail_open_re_records_after_the_incident_was_closed_elsewhere(
+    monkeypatch, alerts, fail_open_incidents
+):
+    """메모리의 '알렸음'은 다시 열기를 막지 않는다 — 5분 뒤 다음 기록이 닫힌 사고를 새 에피소드로 연다.
+
+    (다시 여는 것은 `open_or_touch_incident`의 의미다. 실제 DB 경로는 postgres 테스트가 본다.)
+    """
+    _set_limits(monkeypatch, daily=10, monthly=10)
+    clock = [1_000.0]
+    monkeypatch.setattr(cost_guard_health, "_monotonic", lambda: clock[0])
+    redis = FakeRedis()
+    redis.fail = True
+    await cost_guard.check_and_increment("content", redis_client=redis)
+    assert "content" in cost_guard_health._REPORTED
+    # 그 사이 근거 정리가 사고를 닫았다고 하자. 이 프로세스는 여전히 실패한다.
+    clock[0] += 301
+    await cost_guard.check_and_increment("content", redis_client=redis)
+
+    assert fail_open_incidents.opened == [("content", "RedisError"), ("content", "RedisError")]
+
+
+def test_backlog_closes_an_orphaned_fail_open_incident_only_after_a_real_budget_op(monkeypatch):
+    """알린 워커가 교체돼 메모리 상태가 사라지면 근거 정리가 닫는다 — PING이 아니라 실제 예산 연산 성공이 근거다."""
+    from datetime import timedelta
+
+    from app.workers import incident_backlog
+
+    resolver = incident_backlog.RESOLVERS["COST_GUARD_FAIL_OPEN"]
+    now = datetime(2026, 10, 13, 3, tzinfo=UTC)
+    stale = SimpleNamespace(source_id="content:fail_open", last_seen_at=now - timedelta(minutes=11))
+    fresh = SimpleNamespace(source_id="content:fail_open", last_seen_at=now - timedelta(minutes=5))
+    probed: list[str] = []
+
+    def budget_op(category):
+        probed.append(category)
+        return outcome[0]
+
+    outcome = [True]
+    monkeypatch.setattr(incident_backlog, "_cost_guard_budget_op_succeeds", budget_op)
+    assert resolver(None, stale, now) == "cost_guard_budget_op_succeeded"
+    assert probed == ["content"]
+    # 마지막 관측 뒤 10분 안이면 깜빡임일 수 있어 기다린다(연산도 해 보지 않는다).
+    assert resolver(None, fresh, now) is None
+    assert probed == ["content"]
+    # Redis가 응답해도 예산 연산이 실패하면(OOM·권한·키 타입) 닫지 않는다.
+    outcome[0] = False
+    assert resolver(None, stale, now) is None
+    # 카테고리를 읽을 수 없는 행은 닫지 않는다.
+    assert resolver(None, SimpleNamespace(source_id="sha256:x", last_seen_at=stale.last_seen_at), now) is None
+
+
+def test_budget_probe_reports_an_unreachable_redis():
+    assert cost_guard.probe_budget_operation("content", redis_url="redis://127.0.0.1:1/0") is False

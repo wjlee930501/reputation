@@ -30,6 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.database import get_async_sessionmaker
 from app.models.operations import Incident, IncidentSeverity
+from app.services import cost_guard_health
 from app.services.incident_types import IncidentFingerprint, IncidentOpenRequest
 from app.services.incidents import open_or_touch_incident
 from app.services.notification_contracts import NotificationIntent, SlackMessage
@@ -180,6 +181,37 @@ redis.call('HSET', KEYS[1], 'consumed_units', consumed, 'released_units', releas
 return {1, 'settled', consumed, released}
 """
 
+# 복구 탐침 전용(`probe_budget_operation`). 영수증 예약(`_RESERVE_WITH_RECEIPT_SCRIPT`)과 같은 키·같은
+# 명령(GET·INCRBY·HSET·EXPIRE)을 같은 순서로 거치되 지출은 바꾸지 않는다 — 한도 판정 결과와 무관하게
+# 쓰기 경로까지 간다(한도에 걸려 쓰기 전에 돌아오면 쓰기 장애를 증명하지 못한다). INCRBY 0은 이미 있는
+# 카운터에만 한다(없는 키를 만들거나 값이 0인 키의 TTL을 다시 걸지 않는다). 영수증은 탐침 전용 키에
+# 짧은 TTL로 쓰고 곧바로 지운다. EXPIRE가 실패해도 영수증을 지운 뒤 그 오류를 돌려준다(탐침 실패, 잔재 없음).
+_PROBE_BUDGET_SCRIPT = """
+local daily = tonumber(redis.call('GET', KEYS[1]) or '0')
+local monthly = tonumber(redis.call('GET', KEYS[2]) or '0')
+local daily_limit = tonumber(ARGV[1])
+local monthly_limit = tonumber(ARGV[2])
+local blocked = ''
+if monthly_limit > 0 and monthly > monthly_limit then blocked = 'monthly'
+elseif daily_limit > 0 and daily > daily_limit then blocked = 'daily' end
+if redis.call('EXISTS', KEYS[1]) == 1 then redis.call('INCRBY', KEYS[1], 0) end
+if redis.call('EXISTS', KEYS[2]) == 1 then redis.call('INCRBY', KEYS[2], 0) end
+redis.call('HSET', KEYS[3],
+  'category', ARGV[3],
+  'daily_period', ARGV[4],
+  'monthly_period', ARGV[5],
+  'daily_key', KEYS[1],
+  'monthly_key', KEYS[2],
+  'reserved_units', 0,
+  'consumed_units', '',
+  'released_units', '')
+local expired = redis.pcall('EXPIRE', KEYS[3], ARGV[6])
+redis.call('DEL', KEYS[3])
+if type(expired) == 'table' and expired.err then return redis.error_reply(expired.err) end
+return {1, blocked, daily, monthly}
+"""
+_PROBE_RECEIPT_TTL_SECONDS = 60
+
 _UNLIMITED_REMAINING = 2**63 - 1
 
 
@@ -284,10 +316,15 @@ async def _effective_daily_limit(
     if configured <= 0:
         return configured
     raw = await client.get(_daily_override_key(category, period))
-    if raw is None:
+    return _apply_daily_override(configured, raw)
+
+
+def _apply_daily_override(configured: int, raw: object) -> int:
+    """저장된 오늘치 상향값(raw)을 설정값에 적용한다 — 예약과 복구 탐침이 같은 계산을 쓴다."""
+    if configured <= 0 or raw is None:
         return configured
     try:
-        override = int(raw)
+        override = int(raw)  # type: ignore[call-overload]
     except (TypeError, ValueError):
         return configured
     return max(configured, min(override, configured * MAX_DAILY_LIMIT_MULTIPLIER))
@@ -377,6 +414,53 @@ async def _is_kill_switch_active(client: redis_async.Redis) -> bool:
     return bool(await client.exists(KILL_SWITCH_KEY))
 
 
+def probe_budget_operation(
+    category: str, *, redis_url: str | None = None, now: datetime | None = None
+) -> bool:
+    """가드가 실제로 하는 Redis 연산을 지출 없이 한 번 해 보고 성공했는지 돌려준다(동기).
+
+    fail-open 사고의 복구 근거다(`incident_backlog`의 `COST_GUARD_FAIL_OPEN` resolver). PING은 근거가
+    아니다 — Redis가 응답해도 예산 연산이 OOM·권한(ACL)·키 타입 오류로 계속 실패할 수 있다. 그래서
+    `reserve()`와 같은 순서(킬스위치 확인 → 오늘치 상향 읽기 → 같은 한도 계산 `_apply_daily_override`
+    → 예산 Lua)를 같은 카운터 키로 실행하고, Lua는 한도 판정과 무관하게 영수증 쓰기(HSET·EXPIRE)까지
+    간다(`_PROBE_BUDGET_SCRIPT`). 카운터는 바뀌지 않고 없는 키를 만들지도 않는다.
+    """
+    import redis as redis_sync  # noqa: PLC0415 — 동기 resolver 전용
+
+    if category not in _CATEGORY_LABELS:
+        raise ValueError(f"unknown cost_guard category: {category}")
+    client = redis_sync.Redis.from_url(
+        redis_url or settings.REDIS_URL, socket_connect_timeout=2, socket_timeout=2
+    )
+    try:
+        current = (now or _now()).astimezone(_KST)
+        daily_period = _daily_period(current)
+        monthly_period = _monthly_period(current)
+        daily_limit, monthly_limit = _limits(category)
+        client.exists(KILL_SWITCH_KEY)
+        daily_limit = _apply_daily_override(
+            daily_limit, client.get(_daily_override_key(category, daily_period))
+        )
+        client.eval(
+            _PROBE_BUDGET_SCRIPT,
+            3,
+            _daily_key(category, daily_period),
+            _monthly_key(category, monthly_period),
+            _reservation_key(f"probe:{category}:{uuid.uuid4()}"),
+            daily_limit,
+            monthly_limit,
+            category,
+            daily_period,
+            monthly_period,
+            _PROBE_RECEIPT_TTL_SECONDS,
+        )
+        return True
+    except (OSError, RedisError, RuntimeError, TimeoutError):
+        return False
+    finally:
+        client.close()
+
+
 async def check_and_increment(
     category: str,
     *,
@@ -438,6 +522,8 @@ async def check_and_increment(
         )
         new_daily = int(reservation[2])
         new_monthly = int(reservation[3])
+        # Redis로 판정했다 — 이 프로세스가 알린 fail-open이 있으면 닫는다(cost_guard_health).
+        await cost_guard_health.report_guard_healthy(category)
 
         # 한 Lua 연산 안에서 current + count를 검사하고 두 카운터를 함께 예약한다.
         if not allowed and blocked_scope == "monthly":
@@ -463,11 +549,8 @@ async def check_and_increment(
 
     except (OSError, RedisError, RuntimeError, TimeoutError) as exc:
         # fail-open: Redis 장애가 콘텐츠/이미지/측정 파이프라인을 멈추게 하지 않는다(가용성 우선).
-        logger.warning(
-            "cost_guard fail-open (redis unavailable): category=%s error=%s",
-            category,
-            exc.__class__.__name__,
-        )
+        # 첫 발생은 ERROR와 개발 사고로 남긴다(cost_guard_health).
+        await cost_guard_health.report_fail_open(category, exc.__class__.__name__)
         return CostGuardDecision(True, None)
 
 
@@ -534,6 +617,7 @@ async def reserve(
             _RESERVATION_TTL_SECONDS,
         )
         status = int(result[0])
+        await cost_guard_health.report_guard_healthy(category)
         scope_raw = result[1]
         scope = scope_raw.decode() if isinstance(scope_raw, bytes) else str(scope_raw)
         daily_value = int(result[2])
@@ -593,11 +677,8 @@ async def reserve(
     except ValueError:
         raise
     except (OSError, RedisError, RuntimeError, TimeoutError) as exc:
-        logger.warning(
-            "cost_guard reservation fail-open (redis unavailable): category=%s error=%s",
-            category,
-            exc.__class__.__name__,
-        )
+        # 킬스위치 확인에서 터진 Redis 오류도 여기로 온다 — 같은 fail-open이다.
+        await cost_guard_health.report_fail_open(category, exc.__class__.__name__)
         return CostGuardDecision(True, None)
 
 

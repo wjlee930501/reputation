@@ -35,7 +35,9 @@ case "$SERVICE" in
       --max-tasks-per-child="${CELERY_MAX_TASKS_PER_CHILD:-50}"
     ;;
   beat)
-    python -m app.workers.health_server &
+    # --beat-tick: /live(Cloud Run liveness probe)가 RedBeat tick 파일의 나이도 본다.
+    # 스케줄 루프가 멈추면 BEAT_LIVENESS_STALE_SECONDS 뒤 재시작된다(기동 유예는 락 대기를 덮는다).
+    python -m app.workers.health_server --beat-tick &
     exec celery -A app.core.celery_app beat --loglevel=info
     ;;
   flower)

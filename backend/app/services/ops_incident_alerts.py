@@ -317,6 +317,42 @@ async def recover_ops_incidents_for_hospital(
         return recovered_count
 
 
+async def recover_ops_incident_by_id(
+    incident_id: uuid.UUID,
+    *,
+    hospital_name: str = "시스템 공통 작업",
+    actor: str = "system",
+    reason: str = "automatic recovery observed",
+    notify: bool = True,
+) -> bool:
+    """조회해 둔 사고 하나를 그 id로 닫는다(열림·재시도 중일 때만).
+
+    저장된 `dedupe_key`·`source_id`는 정규화(`normalize_source_id`)를 거쳐 원래 object_id로 되돌릴 수
+    없을 수 있다 — 그런 사고는 키를 다시 계산하지 말고 조회한 id로 닫는다.
+    """
+
+    sessions = get_async_sessionmaker()
+    async with sessions() as db:
+        incident = await db.scalar(
+            select(Incident).where(
+                Incident.id == incident_id,
+                Incident.state.in_((IncidentState.OPEN.value, IncidentState.RETRYING.value)),
+            )
+        )
+        if incident is None:
+            return False
+        recovered_count = await _recover_incidents(
+            db,
+            [incident],
+            hospital_name=hospital_name,
+            actor=actor,
+            reason=reason,
+            notify=notify,
+        )
+        await db.commit()
+        return recovered_count > 0
+
+
 async def recover_ops_incidents_for_source(
     db: AsyncSession,
     *,

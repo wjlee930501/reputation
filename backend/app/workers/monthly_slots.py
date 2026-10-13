@@ -4,10 +4,11 @@ from datetime import date
 import arrow
 from sqlalchemy.exc import IntegrityError
 
-from app.models.content import PLAN_DISTRIBUTION, ContentItem, ContentSchedule, ContentStatus
+from app.models.content import ContentItem, ContentSchedule, ContentStatus
 from app.models.hospital import HospitalStatus
 from app.services.content_brief import PLANNING_REASON_KEY
 from app.services.content_calendar import generate_monthly_slots
+from app.services.content_month_target import month_content_target_sync
 from app.services.gap_driven_slots import (
     ExistingSlot,
     build_gap_targets,
@@ -29,6 +30,7 @@ def create_next_month_slots_for_schedule(
     next_month_end: date,
     *,
     not_before: date | None = None,
+    month_total: int | None = None,
 ) -> bool:
     hospital = schedule.hospital
     if hospital.status not in (HospitalStatus.ACTIVE, HospitalStatus.PENDING_DOMAIN):
@@ -40,6 +42,16 @@ def create_next_month_slots_for_schedule(
     # 계약보다 한 달 일찍 자동 발행이 시작된다.
     active_from = schedule.active_from
     if active_from and active_from > next_month_end:
+        return False
+    # 그 달 약속 편수. 첫 계약 월을 안분한 달은 첫 일정 서비스가 `month_total`로 주고,
+    # 그 뒤의 재실행(매일 당월 조정)은 첫 일정 감사행이 기록한 안분 편수를 같은 판정으로
+    # 읽어 요금제 편수로 다시 채우지 않는다. 시작일 뒤로 게시 요일이 없던 첫 달은 0편이다.
+    month_target = (
+        month_total
+        if month_total is not None
+        else month_content_target_sync(db, hospital.id, next_month, schedule.plan)
+    )
+    if month_target == 0:
         return False
     # 활성화일이 대상 월 중간에 걸리면 그 날짜 이후로만 발행해야 한다.
     start_date = active_from if active_from and active_from > next_month_start else None
@@ -61,7 +73,7 @@ def create_next_month_slots_for_schedule(
         )
         for row in existing_rows
     ]
-    planned_total = sum(PLAN_DISTRIBUTION.get(schedule.plan, {}).values())
+    planned_total = month_target or 0
     if planned_total and len(existing_rows) >= planned_total:
         return False
 
@@ -71,6 +83,7 @@ def create_next_month_slots_for_schedule(
         next_month,
         start_date,
         ensure_quota=True,
+        total=planned_total or None,
     )
 
     # 측정된 미언급 격차가 유형과 대상 질문을 정하게 한다. 월 전체 슬롯을 놓고 계산해야

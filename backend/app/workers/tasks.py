@@ -31,7 +31,7 @@ import arrow
 import httpx
 from billiard.exceptions import SoftTimeLimitExceeded, WorkerLostError
 from celery import current_task
-from sqlalchemy import ColumnElement, and_, delete, func, or_, select, text, update
+from sqlalchemy import ColumnElement, and_, delete, exists, func, or_, select, text, update
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.exc import IntegrityError, NoInspectionAvailable
 from sqlalchemy.orm import Session, joinedload, selectinload
@@ -43,7 +43,6 @@ from app.models.content import (
     ContentItem,
     ContentSchedule,
     ContentStatus,
-    monthly_quota_for_plan,
 )
 from app.models.essence import (
     HospitalContentPhilosophy,
@@ -112,6 +111,7 @@ from app.services.content_minimal_correction import (
     propose_sentence_corrections,
     run_minimal_correction,
 )
+from app.services.content_month_target import month_content_target_sync
 from app.services.content_provenance import build_generation_provenance
 from app.services.content_publication import (
     HOSPITAL_FALLBACK_IMAGE_SOURCE,
@@ -4148,6 +4148,61 @@ def _cost_guarded_essence_review(
     return _run_async(_call())
 
 
+def _ensure_initial_schedule_safe(hospital_uuid: uuid.UUID, *, trigger: str) -> str:
+    """승인된 공개 병원의 첫 일정을 만든다. 실패해도 Essence 승인·검수 결과를 되돌리지 않는다.
+
+    다음 15분 조정(`_ensure_initial_schedules`)이 같은 일을 다시 시도한다.
+    """
+
+    from app.services.initial_schedule import ensure_initial_content_schedule
+
+    try:
+        with SyncSessionLocal() as db:
+            outcome = ensure_initial_content_schedule(
+                db,
+                hospital_uuid,
+                today=arrow.now("Asia/Seoul").date(),
+                trigger=trigger,
+            )
+            if outcome.created:
+                db.commit()
+            else:
+                db.rollback()
+            return outcome.reason
+    except Exception:
+        logger.exception("initial content schedule failed for hospital %s", hospital_uuid)
+        return "FAILED"
+
+
+def _ensure_initial_schedules(*, limit: int = 200) -> int:
+    """일정이 한 번도 없는 공개(ACTIVE·PENDING_DOMAIN) 병원의 첫 일정을 회수한다.
+
+    승인 직후 호출이 실패했거나, 사람이 승인했거나, 승인 뒤에 공개된 병원을 모두 집는다.
+    """
+
+    from app.services.initial_schedule import INITIAL_SCHEDULE_STATUSES
+
+    with SyncSessionLocal() as db:
+        hospital_ids = list(
+            db.execute(
+                select(Hospital.id)
+                .where(
+                    Hospital.schedule_set.isnot(True),
+                    Hospital.status.in_(tuple(INITIAL_SCHEDULE_STATUSES)),
+                    ~exists().where(ContentSchedule.hospital_id == Hospital.id),
+                )
+                .order_by(Hospital.id)
+                .limit(limit)
+            )
+            .scalars()
+            .all()
+        )
+    return sum(
+        _ensure_initial_schedule_safe(hospital_id, trigger="reconcile_sweep") == "CREATED"
+        for hospital_id in hospital_ids
+    )
+
+
 # 다음 자동 재검수는 15분 재조정(`reconcile-essence-snapshots`)이 집는다. 기한을 재검수 시각에 딱
 # 맞추면 재조정이 집기 전(최대 15분)에 보류된 열림 알림이 먼저 나간다 — 주기 + 여유만큼 늦춘다.
 ESSENCE_ESCALATION_RETRY_MARGIN = timedelta(minutes=30)
@@ -4181,6 +4236,7 @@ def auto_review_essence_snapshot(self, hospital_id: str) -> dict[str, object]:
     require_dispatch(self, "auto-review-essence-snapshot", hospital_id)
     hospital_uuid = uuid.UUID(hospital_id)
     hospital_name = "병원"
+    initial_schedule: str | None = None
     hospital_slug: str | None = None
     refresh_claim_token = (
         f"{str(self.request.id or uuid.uuid4())}:retry:{int(self.request.retries or 0)}"
@@ -4332,10 +4388,17 @@ def auto_review_essence_snapshot(self, hospital_id: str) -> dict[str, object]:
                     hospital_name=hospital_name,
                 )
             )
+        if result.status == EssenceRefreshStatus.AUTO_APPROVED:
+            # 승인은 이미 커밋됐다. 첫 일정은 별도 세션의 부수효과라 실패해도 승인을
+            # 되돌리지 않고, 15분 조정이 다시 시도한다.
+            initial_schedule = _ensure_initial_schedule_safe(
+                hospital_uuid, trigger="essence_auto_approval"
+            )
 
     return {
         "status": result.status.value,
         "hospital_id": hospital_id,
+        "initial_schedule": initial_schedule,
         "snapshot_hash": result.snapshot_hash,
         "philosophy_id": str(result.philosophy_id) if result.philosophy_id else None,
         "findings": list(result.findings),
@@ -4632,8 +4695,10 @@ def reconcile_essence_snapshots(self) -> dict[str, int]:
             headers=build_dispatch_headers("auto-review-essence-snapshot", hospital_id),
         )
         queued += 1
+    initial_schedules_created = _ensure_initial_schedules()
     return {
         "queued": queued,
+        "initial_schedules_created": initial_schedules_created,
         "source_fetches_redispatched": redispatched_fetches,
         "source_runs_created": len(created_source_runs),
         "source_runs_resumed": resumed_source_runs,
@@ -11962,8 +12027,11 @@ def _build_monthly_report_for_hospital(
         .order_by(ContentSchedule.active_from.desc(), ContentSchedule.created_at.desc())
         .limit(1)
     ).scalar_one_or_none()
+    # 약속 편수: 요금제 편수, 첫 계약 월을 안분한 달은 그 편수(content_month_target).
+    period_quota = month_content_target_sync(db, h.id, arrow.get(period_start), period_plan)
     content_operations = build_monthly_content_operations_snapshot(
         plan=period_plan,
+        contract_quota=period_quota,
         scheduled_items=contract_scheduled_contents,
         published_items=actual_published_contents,
         cutoff_at=actual_now,
@@ -12132,7 +12200,7 @@ def _build_monthly_report_for_hospital(
         sov_pct=sov_pct,
         prev_sov_pct=prev_sov,
         published_count=len(actual_published_contents),
-        plan_quota=monthly_quota_for_plan(period_plan),
+        plan_quota=period_quota,
         supplementary_count=supplementary_count,
         early_publication_count=early_publication_count,
         late_recovery_count=late_recovery_count,
@@ -13068,6 +13136,16 @@ def monitor_live_custom_domains():
                 "public site health persistence unavailable: code=%s",
                 exc.__class__.__name__,
             )
+    # PENDING_DOMAIN 병원의 자기 도메인도 같은 15분 주기에 수동 확인과 같은 경로로 확인한다.
+    from app.workers import domain_dns_poll
+
+    try:
+        pending = _run_async(
+            domain_dns_poll.poll_pending_custom_domains_once(datetime.now(timezone.utc))
+        )
+    except Exception as exc:  # noqa: BLE001 — 대기 도메인 폴링이 라이브 감시 결과를 지우지 않는다.
+        logger.warning("pending domain poll failed: code=%s", exc.__class__.__name__)
+        pending = domain_dns_poll.DomainPollSummary()
     return {
         "checked": len(hospitals),
         "new_failures": new_failures,
@@ -13077,6 +13155,10 @@ def monitor_live_custom_domains():
         "shared_server_errors": server_errors,
         "public_site_incident_opened": public_site_opened,
         "public_site_incident_recovered": public_site_recovered,
+        "pending_domains_verified": pending.verified,
+        "pending_domains_not_ready": pending.not_ready,
+        "pending_domains_skipped": pending.skipped,
+        "pending_domains_expired": pending.expired,
     }
 
 

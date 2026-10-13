@@ -109,6 +109,16 @@ _CATALOG = {
         "운영센터에서 한도에 도달한 작업과 재개 예정 시각을 확인해 주세요. 한도 변경은 비용 담당자와 결정해 주세요.",
         "비용 차단 확인",
     ),
+    "COST_GUARD_FAIL_OPEN": ActionCopy(
+        "비용 가드 상한 확인 불가",
+        "개발 담당자는 Redis 연결을 확인해 주세요. 그동안 자동 AI 호출은 상한 확인 없이 계속됩니다.",
+        "운영센터 비용 보기",
+    ),
+    "PROVIDER_USAGE_SPOOL_TRUNCATED": ActionCopy(
+        "AI 사용량 기록 일부 유실",
+        "개발 담당자는 DB 저장 실패 원인을 확인해 주세요. 버려진 사용량 기록은 되살릴 수 없습니다.",
+        "운영센터 비용 보기",
+    ),
     "LEAD_DIAGNOSIS_FAILED": ActionCopy(
         "무료 진단 생성 중단",
         "신청 내역에서 진단 실패 사유를 확인해 주세요. 재시도가 끝난 건만 후속 조치해 주세요.",
@@ -123,6 +133,33 @@ _CATALOG = {
         "진단 메일 전송 중단",
         "신청 내역에서 받는 주소와 전송 결과를 확인한 뒤 필요한 경우에만 다시 보내 주세요.",
         "메일 전송 기록 보기",
+    ),
+    # 대기 도메인 폴링(workers/domain_dns_poll) — 저장 뒤 14일 동안 DNS가 맞지 않았다.
+    "CUSTOM_DOMAIN_DNS_NOT_CONFIGURED": ActionCopy(
+        "병원 주소 DNS 미설정",
+        "병원 정보의 공개 주소에서 DNS 안내를 병원에 다시 전달하거나 기본 주소로 운영할지 정해 주세요.",
+        "공개 주소 상태 보기",
+    ),
+    # 온보딩 정체(services/onboarding_stalls) — 시간만 흐르고 다음 단계로 가지 않는 병원.
+    "ONBOARDING_PROFILE_INCOMPLETE": ActionCopy(
+        "병원 기본 정보 미완료",
+        "병원 정보 화면에서 남은 필수 항목을 채워 주세요. 채우면 공개 준비가 자동으로 이어집니다.",
+        "병원 정보 열기",
+    ),
+    "ONBOARDING_SCHEDULE_MISSING": ActionCopy(
+        "발행 일정 없음",
+        "콘텐츠 화면에서 발행 일정을 저장해 주세요. 저장하면 글 생성이 자동으로 시작됩니다.",
+        "콘텐츠 열기",
+    ),
+    "ONBOARDING_NO_PUBLICATION": ActionCopy(
+        "첫 발행 지연",
+        "콘텐츠 화면에서 생성·발행이 멈춘 사유를 확인해 주세요.",
+        "콘텐츠 열기",
+    ),
+    "ONBOARDING_SOURCES_UNREACHABLE": ActionCopy(
+        "근거 자료 없음",
+        "병원 정보 화면에서 채널 주소를 고치거나 원장 인터뷰 같은 근거 자료를 올려 주세요.",
+        "병원 정보 열기",
     ),
     "LEAD_INTAKE_NOTIFICATION_FAILED": ActionCopy(
         "도입문의 접수 알림 미전달",
