@@ -230,23 +230,60 @@ async def test_a_read_timeout_is_not_retried_because_the_text_may_have_gone_out(
     client = _SequenceClient([httpx.ReadTimeout("slow"), _ok()])
     monkeypatch.setattr(inquiry_sms.httpx, "AsyncClient", lambda **kwargs: client)
 
-    outcome = await inquiry_sms.acknowledge_inquiry(FakeDB(), _lead())
+    lead = _lead()
+    outcome = await inquiry_sms.acknowledge_inquiry(FakeDB(), lead)
 
     assert outcome.status == "FAILED"
+    assert outcome.unconfirmed
+    assert inquiry_sms.delivery_unconfirmed(lead.ack_sms_error)
     assert len(client.calls) == 1
 
 
-async def test_a_503_is_retried_once(monkeypatch):
+async def test_a_503_is_not_retried_and_is_recorded_as_unconfirmed(monkeypatch):
+    """사업자 멱등키가 없다 — 응답 경로의 503은 문자가 이미 나갔을 수 있어 다시 보내지 않는다(Codex R4-2)."""
+
     _configure(monkeypatch)
     monkeypatch.setattr(inquiry_sms, "INQUIRY_SMS_RETRY_DELAY_SECONDS", 0)
-    client = _SequenceClient([httpx.Response(503), httpx.Response(503)])
+    client = _SequenceClient([httpx.Response(503), _ok()])
+    monkeypatch.setattr(inquiry_sms.httpx, "AsyncClient", lambda **kwargs: client)
+
+    lead = _lead()
+    outcome = await inquiry_sms.acknowledge_inquiry(FakeDB(), lead)
+
+    assert outcome.status == "FAILED"
+    assert outcome.unconfirmed
+    assert len(client.calls) == 1
+    assert lead.ack_sms_status == "FAILED"
+    assert inquiry_sms.delivery_unconfirmed(lead.ack_sms_error)
+    assert "HTTP 503" in lead.ack_sms_error
+    assert "not resent" in lead.ack_sms_error
+
+
+async def test_a_429_is_retried_once_because_the_provider_did_not_take_it(monkeypatch):
+    _configure(monkeypatch)
+    monkeypatch.setattr(inquiry_sms, "INQUIRY_SMS_RETRY_DELAY_SECONDS", 0)
+    client = _SequenceClient([httpx.Response(429), _ok()])
     monkeypatch.setattr(inquiry_sms.httpx, "AsyncClient", lambda **kwargs: client)
 
     outcome = await inquiry_sms.acknowledge_inquiry(FakeDB(), _lead())
 
-    assert outcome.status == "FAILED"
-    assert outcome.detail == "HTTP 503"
+    assert outcome.sent
     assert len(client.calls) == 2
+
+
+async def test_a_definite_rejection_is_not_marked_unconfirmed(monkeypatch):
+    _configure(monkeypatch)
+    monkeypatch.setattr(inquiry_sms, "INQUIRY_SMS_RETRY_DELAY_SECONDS", 0)
+    client = _SequenceClient([httpx.Response(429), httpx.Response(429)])
+    monkeypatch.setattr(inquiry_sms.httpx, "AsyncClient", lambda **kwargs: client)
+
+    lead = _lead()
+    outcome = await inquiry_sms.acknowledge_inquiry(FakeDB(), lead)
+
+    assert outcome.status == "FAILED"
+    assert not outcome.unconfirmed
+    assert lead.ack_sms_error == "HTTP 429"
+    assert not inquiry_sms.delivery_unconfirmed(lead.ack_sms_error)
 
 
 async def test_a_plain_500_is_not_retried(monkeypatch):
@@ -258,4 +295,24 @@ async def test_a_plain_500_is_not_retried(monkeypatch):
     outcome = await inquiry_sms.acknowledge_inquiry(FakeDB(), _lead())
 
     assert outcome.status == "FAILED"
+    assert outcome.unconfirmed
     assert len(client.calls) == 1
+
+
+async def test_an_unconfirmed_sms_incident_says_it_was_not_resent(monkeypatch):
+    opened = []
+
+    async def capture(_db, **kwargs):
+        opened.append(kwargs)
+
+    monkeypatch.setattr(inquiry_sms, "open_ops_incident_in", capture)
+
+    await inquiry_sms.open_failure_incident(object(), "lead-1", actor="public-inquiry", unconfirmed=True)
+    await inquiry_sms.open_failure_incident(object(), "lead-2", actor="public-inquiry")
+
+    unconfirmed, failed = opened
+    assert unconfirmed["incident_type"] == failed["incident_type"] == "INQUIRY_SMS_FAILED"
+    assert "확인하지 못했습니다" in unconfirmed["problem"]
+    assert "재발송하지 않" in unconfirmed["customer_impact"]
+    assert "보내지 못했습니다" in failed["problem"]
+    assert "재발송" not in failed["customer_impact"]

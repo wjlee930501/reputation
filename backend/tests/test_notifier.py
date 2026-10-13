@@ -122,19 +122,26 @@ class _ScriptedClient:
         step = _ScriptedClient.script.pop(0)
         if isinstance(step, type) and issubclass(step, Exception):
             raise step("scripted", request=request)
+        if isinstance(step, tuple):  # (상태 코드, 응답 헤더)
+            status, headers = step
+            return httpx.Response(status, headers=headers, request=request)
         return httpx.Response(step, request=request)
+
+
+_SLEEPS: list[float] = []
 
 
 def _script(monkeypatch, *steps):
     monkeypatch.setattr(notifier.settings, "SLACK_WEBHOOK_URL", "https://hooks.slack.com/services/T/B/x")
     monkeypatch.setattr(notifier.httpx, "AsyncClient", _ScriptedClient)
 
-    async def no_sleep(_seconds):
-        return None
+    async def no_sleep(seconds):
+        _SLEEPS.append(seconds)
 
     monkeypatch.setattr(notifier.asyncio, "sleep", no_sleep)
     _ScriptedClient.script = list(steps)
     _ScriptedClient.posts = 0
+    _SLEEPS.clear()
 
 
 async def test_a_read_timeout_after_the_request_was_sent_is_unknown_and_not_retried(monkeypatch):
@@ -181,6 +188,44 @@ async def test_a_rejected_request_is_not_delivered_and_a_rate_limit_is_retried(m
     _script(monkeypatch, 429, 200)
     assert await notifier._send("hello") is notifier.SendOutcome.SENT
     assert _ScriptedClient.posts == 2
+
+
+async def test_a_rate_limit_waits_for_slacks_retry_after(monkeypatch):
+    _script(monkeypatch, (429, {"Retry-After": "2"}), 200)
+
+    assert await notifier._send("hello") is notifier.SendOutcome.SENT
+    assert _ScriptedClient.posts == 2
+    assert _SLEEPS == [2.0]
+
+
+async def test_a_retry_after_beyond_the_request_budget_is_not_waited_for(monkeypatch):
+    """요청 안에서 오래 기다리지 않는다 — 기다릴 시간이 상한(5초)을 넘으면 못 보낸 것으로 돌려준다."""
+
+    _script(monkeypatch, (429, {"Retry-After": "30"}), 200)
+
+    assert await notifier._send("hello") is notifier.SendOutcome.NOT_DELIVERED
+    assert _ScriptedClient.posts == 1
+    assert _SLEEPS == []
+
+
+async def test_a_rate_limit_then_a_5xx_is_unknown(monkeypatch):
+    _script(monkeypatch, (429, {"Retry-After": "1"}), 503, 200)
+
+    assert await notifier._send("hello") is notifier.SendOutcome.UNKNOWN
+    assert _ScriptedClient.posts == 2
+
+
+async def test_rate_limits_to_the_end_are_not_delivered(monkeypatch):
+    _script(
+        monkeypatch,
+        (429, {"Retry-After": "1"}),
+        (429, {"Retry-After": "1"}),
+        (429, {"Retry-After": "1"}),
+    )
+
+    assert await notifier._send("hello") is notifier.SendOutcome.NOT_DELIVERED
+    assert _ScriptedClient.posts == 3
+    assert _SLEEPS == [1.0, 1.0]
 
 
 def _capture_send(monkeypatch):

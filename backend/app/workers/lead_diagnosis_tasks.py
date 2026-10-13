@@ -973,7 +973,7 @@ async def _repair_missing_lead_incidents(session, *, now: datetime | None = None
                 SalesLead.ack_sms_status == inquiry_sms.SMS_FAILED,
                 _lacks_incident(inquiry_sms.SMS_FAILURE_INCIDENT_TYPE),
             ),
-            lambda db, lead_id: inquiry_sms.open_failure_incident(
+            lambda db, lead_id: inquiry_sms.repair_failure_incident(
                 db, lead_id, actor="lead-intake-worker"
             ),
         ),

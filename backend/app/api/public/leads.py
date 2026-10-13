@@ -242,7 +242,7 @@ async def create_lead(
     # 리드는 위에서 이미 커밋됐다. 실패 상태와 그 사고는 이 한 커밋에 묶는다 — 응답 뒤 작업으로
     # 미루면 프로세스가 그 사이에 죽을 때 사고가 사라진다(남으면 drain이 메운다).
     if sms.status == inquiry_sms.SMS_FAILED:
-        await inquiry_sms.record_failure_incident(db, lead.id)
+        await inquiry_sms.record_failure_incident(db, lead.id, unconfirmed=sms.unconfirmed)
     await db.commit()
 
     return {

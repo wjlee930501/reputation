@@ -555,8 +555,9 @@ async def test_a_failed_sms_records_its_incident_in_the_status_commit(monkeypatc
     _sms_result(monkeypatch, "FAILED")
     db = _OrderedDB()
 
-    async def fake_record(target_db, lead_id):
+    async def fake_record(target_db, lead_id, *, unconfirmed=False):
         assert target_db is db
+        assert unconfirmed is False
         db.events.append(("incident", lead_id))
         return True
 
@@ -574,6 +575,34 @@ async def test_a_failed_sms_records_its_incident_in_the_status_commit(monkeypatc
     # 응답 뒤 작업으로 미루지 않는다.
     assert db.events == ["commit", "commit", "commit", ("incident", "lead-id"), "commit"]
     assert tasks.tasks == []
+
+
+async def test_an_unconfirmed_sms_records_its_incident_as_unconfirmed(monkeypatch):
+    """문자 사업자가 받았는지 모르는 실패(5xx·응답 유실)는 사고에 '재발송하지 않음'으로 남는다(Codex R4-2)."""
+
+    _silence_notifier(monkeypatch)
+
+    async def fake_ack(_db, lead):
+        lead.ack_sms_status = "FAILED"
+        return inquiry_sms.AckSmsOutcome("FAILED", "stub", unconfirmed=True)
+
+    monkeypatch.setattr(inquiry_sms, "acknowledge_inquiry", fake_ack)
+    recorded = []
+
+    async def fake_record(_db, lead_id, *, unconfirmed=False):
+        recorded.append(unconfirmed)
+        return True
+
+    monkeypatch.setattr(inquiry_sms, "record_failure_incident", fake_record)
+
+    await _create_lead(
+        request=FakeRequest(),
+        body=_inquiry_body(specialty=None, region_keyword=None, core_keywords=None),
+        background_tasks=BackgroundTasks(),
+        db=_OrderedDB(),
+    )
+
+    assert recorded == [True]
 
 
 async def test_skipped_sms_opens_nothing(monkeypatch):

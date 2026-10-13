@@ -130,7 +130,7 @@ class SendOutcome(Enum):
 
     - SENT: 2xx를 받았다.
     - NOT_DELIVERED: Slack이 받지 않았음이 확실하다 — 보낼 곳이 없거나, 연결 전에 실패했거나,
-      Slack이 4xx(재시도 소진한 429 포함)로 거절했다. 다시 보내도 중복이 아니다.
+      Slack이 4xx(재시도 소진·대기 상한을 넘은 429 포함)로 거절했다. 다시 보내도 중복이 아니다.
     - UNKNOWN: 요청이 나간 뒤 응답을 잃었거나(읽기 시간 초과·연결 끊김) 5xx를 받았다. Slack이
       받았을 수 있으므로 다시 보내지 않는다.
     """
@@ -150,6 +150,18 @@ DELIVERY_UNKNOWN_ERROR = "Slack delivery outcome unknown; not resent to avoid a 
 # 요청 바이트가 하나도 나가지 않은 실패 — 다시 보내도 중복이 생기지 않는다.
 _NOT_SENT_ERRORS = (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)
 
+# 429에서 Slack의 `Retry-After`(초)를 따르되, 한 요청 안에서 기다리는 시간의 합은 이 상한까지다.
+# 더 기다려야 하면 기다리지 않고 NOT_DELIVERED로 돌려준다(호출자의 재시도·drain이 이어받는다).
+_RATE_LIMIT_WAIT_BUDGET_SECONDS = 5.0
+
+
+def _retry_after_seconds(response: httpx.Response, fallback: float) -> float:
+    """429 응답의 `Retry-After`(초). 없거나 읽을 수 없으면 `fallback`."""
+    try:
+        return max(0.0, float(response.headers.get("Retry-After", "")))
+    except ValueError:
+        return fallback
+
 
 async def _send(
     text: str, blocks: list | None = None, *, webhook_url: str | None = None
@@ -162,6 +174,7 @@ async def _send(
         logger.error("Slack webhook URL rejected: host not in allowlist (SSRF guard)")
         return SendOutcome.NOT_DELIVERED
     attempts = 3
+    waited = 0.0
     for attempt in range(attempts):
         try:
             async with httpx.AsyncClient(timeout=10) as client:
@@ -173,11 +186,15 @@ async def _send(
                 return SendOutcome.SENT
         except httpx.HTTPStatusError as exc:
             status_code = exc.response.status_code
-            # 429는 Slack이 처리하지 않은 요청이라 다시 보내도 중복이 아니다. 5xx는 처리 뒤에도 날 수
-            # 있어 다시 보내지 않는다.
+            # 429는 Slack이 처리하지 않은 요청이라 다시 보내도 중복이 아니다. Slack이 말한 만큼
+            # (`Retry-After`) 기다리되 상한을 넘으면 기다리지 않는다. 5xx는 처리 뒤에도 날 수 있어
+            # 다시 보내지 않는다.
             if status_code == 429 and attempt < attempts - 1:
-                await asyncio.sleep(0.25 * (2 ** attempt))
-                continue
+                delay = _retry_after_seconds(exc.response, 0.25 * (2 ** attempt))
+                if waited + delay <= _RATE_LIMIT_WAIT_BUDGET_SECONDS:
+                    waited += delay
+                    await asyncio.sleep(delay)
+                    continue
             # 응답 본문/웹훅 URL은 시크릿이 섞일 수 있어 기록하지 않는다. 상태 코드는
             # revoked webhook(404/410), rate limit(429), Slack 장애(5xx)를 구분하는 데 필요하다.
             logger.error("Slack delivery failed: HTTPStatusError status=%s", status_code)

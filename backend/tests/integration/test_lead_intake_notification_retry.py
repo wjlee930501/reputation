@@ -1,10 +1,12 @@
 """도입문의 접수 Slack 실패는 drain이 다시 보낸다(2026-10 감사 F12, Phase 1-9c-1)."""
 
-from datetime import datetime, timedelta, timezone
+import uuid
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import func, select
 
+from app.core.config import settings
 from app.models.lead import SalesLead
 from app.models.operations import Incident
 from app.services import notifier
@@ -258,6 +260,81 @@ async def test_drain_repairs_a_failed_sms_left_without_an_incident(pg_async_sess
 
     assert await _incidents(pg_async_session, orphan.id, "INQUIRY_SMS_FAILED") == 1
     assert await _incidents(pg_async_session, skipped.id, "INQUIRY_SMS_FAILED") == 0
+
+
+@pytest.mark.asyncio
+async def test_drain_repairs_an_unconfirmed_sms_with_the_not_resent_copy(pg_async_session, monkeypatch):
+    """수신 불명으로 끝난 문자의 사고를 메울 때도 '재발송하지 않음'으로 말한다(Codex R4-2)."""
+
+    from app.services import inquiry_sms
+
+    now = datetime.now(timezone.utc)
+    orphan = await _inquiry(
+        pg_async_session, status="SENT", ack_sms_status="FAILED", created_at=now - timedelta(minutes=5)
+    )
+    orphan.ack_sms_error = inquiry_sms.unconfirmed_detail("HTTP 503")
+    await pg_async_session.flush()
+    _route_drain(pg_async_session, monkeypatch)
+
+    await leadgen._drain()
+
+    impact = await pg_async_session.scalar(
+        select(Incident.customer_impact).where(
+            Incident.source_id == str(orphan.id), Incident.incident_type == "INQUIRY_SMS_FAILED"
+        )
+    )
+    assert impact is not None and "재발송하지 않" in impact
+
+
+@pytest.mark.asyncio
+async def test_a_free_diagnosis_notice_with_an_unknown_outcome_fails_and_is_not_resent(
+    pg_async_session, monkeypatch
+):
+    """무료 진단 접수 알림이 Slack에 갔는지 모르면 FAILED로 끝내고 다시 보내지 않는다."""
+
+    from app.models.lead_diagnosis import LeadDiagnosis
+
+    lead = await _inquiry(pg_async_session, status=None, source="AI_DIAGNOSIS")
+    pg_async_session.add(
+        LeadDiagnosis(
+            lead_id=lead.id,
+            applicant_email_hash=uuid.uuid4().hex,
+            subject_phone_hash=uuid.uuid4().hex,
+            subject_hospital_name="재발송의원",
+            subject_region="수서역",
+            slot_date=date(2026, 8, 20),
+            slot_no=7,
+            queries=[{"slot": 1, "kind": "진료과형", "text": "수서역 근처 내과 병원 추천해줘"}],
+            requested_models={"openai": "m", "gemini": "g", "judge": "j"},
+            repeat_count=settings.LEADGEN_REPEAT_COUNT,
+        )
+    )
+    await pg_async_session.flush()
+    calls = []
+
+    async def unknown(**payload):
+        calls.append(payload)
+        return notifier.SendOutcome.UNKNOWN
+
+    monkeypatch.setattr(notifier, "notify_lead_diagnosis_received", unknown)
+
+    result = await leadgen._notify_lead_intake_in(pg_async_session, str(lead.id))
+
+    assert result["sent"] is False
+    status, error = (
+        await pg_async_session.execute(
+            select(SalesLead.notification_status, SalesLead.notification_error).where(
+                SalesLead.id == lead.id
+            )
+        )
+    ).one()
+    assert status == "FAILED"
+    assert error == notifier.DELIVERY_UNKNOWN_ERROR
+    # 다시 보내지 않는다: drain이 집지 않고, 같은 리드로 다시 불러도 claim이 되지 않는다.
+    assert str(lead.id) not in await leadgen._lead_notifications_to_dispatch(pg_async_session)
+    again = await leadgen._notify_lead_intake_in(pg_async_session, str(lead.id))
+    assert again == {"skipped": "already_claimed_or_finished"}
+    assert len(calls) == 1
 
 
 # ── 상태 NULL 회수(Codex HOLD P2): 접수 API가 상태를 쓰기 전에 죽은 공개 접수.
