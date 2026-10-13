@@ -1,6 +1,15 @@
 # 현재 배포와 헬스체크
 
-## 최신 운영 배포 — 2026-10-10 반복 알림 근본 수정
+## 최신 운영 배포 — 2026-10-13 Phase 0 자율성 보완
+
+main `31751a88`(api `00241-lhd`, worker `00231-4rx`, beat `00226-gpw`, admin `00105-x4r`, Site 그대로, DB head
+`0087_add_operation_run_redispatch_count`). 본 체크아웃의 untracked 파일이 release revision 검사에 걸리므로 깨끗한 worktree에서
+`deploy.sh backend`를 실행했고, `deploy.sh admin`은 `DEPLOY_ROLLBACK_STATE_FILE`로 별도 롤백 파일을 써 backend 좌표를 덮지 않았다.
+readiness 17/17, 병원 11곳 헬스 200, 새 리비전 ERROR 0건, `daily-fleet-heartbeat` 새 워커에서 `before_summary_window`. 35일 RUNNING
+잔재 1건이 `OPERATION_RUN_ABANDONED`로 종료되며 예상한 사고·Slack 1건. 배포 뒤 `ops_sql_report`는 migrate Job으로 쓸 수 있다.
+**이후 Worker를 `00223` 이하로 롤백하지 않는다.** 상세는 [배포 기록](../releases/2026-10-13-autonomy-phase0-production.md).
+
+## 이전 운영 배포 — 2026-10-10 반복 알림 근본 수정
 
 main `2cc60247`(api `00240-c9n`, worker `00230-s6m`, beat `00225-npd`, admin `00104-gkq`, DB 0086 그대로). Backend 배포의
 legacy publish 사전 확인은 로컬 `DATABASE_URL` 없이 VPC 안 migrate Job으로 돈다. **배포 전 서비스 트래픽이 최신을 따라가는지
