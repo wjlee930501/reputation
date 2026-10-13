@@ -263,10 +263,14 @@ WHERE status NOT IN ('PUBLISHED','CANCELLED','WITHHELD');
 
 **Phase 3(2026-10-13 콘텐츠 게이트 조정) — 배포 전 확인.** 새 DB 리비전은 없다(head `0087`).
 1. **금지 표현 필터(`utils/medical_filter.py`)를 바꾼 배포는 새 이미지로 영향 조회를 먼저 돌린다.** 필터는 공개 가시성·병원 공개
-   문구에도 쓰여 배포 즉시 걸리는 공개 글을 숨긴다. `scripts/deploy.sh migrate`로 migrate Job의 이미지를 새 이미지로 바꾼 뒤(이
-   릴리스는 alembic 변경이 없어 upgrade는 아무것도 하지 않는다) 운영 DB에 대해 돌린다. 출력은 걸린 항목마다 JSON 한 줄과 끝의
-   `{"summary": {라벨: 건수}}`이며 읽기 전용(READ ONLY·롤백)이다. 옛 이미지에서도 이미 걸려 숨겨진 항목이 섞이므로 새 라벨
-   (`할인·유인`) 건수를 본다. 0건이거나 대표가 확인한 목록일 때만 서비스 배포를 진행한다.
+   문구에도 쓰여 배포 즉시 걸리는 공개 글을 숨기고, 문맥 예외가 넓어지면 운영 필터가 숨기던 글을 **다시 보이게** 한다.
+   `scripts/deploy.sh migrate`로 migrate Job의 이미지를 새 이미지로 바꾼 뒤(이 릴리스는 alembic 변경이 없어 upgrade는 아무것도
+   하지 않는다) 운영 DB에 대해 돌린다. 조회는 글·문구마다 새 필터와 **운영 필터 동결본**(`utils/medical_filter_baseline.py`,
+   기준 이미지 `7a1e2174`의 필터 그대로)의 판정을 함께 찍는다 — 한쪽에라도 걸린 항목마다
+   `{"labels": [...], "baseline_labels": [...], "change": "newly_blocked"|"newly_unblocked"|"still_blocked"}` 한 줄, 끝에
+   `{"summary": ..., "changes": ..., "baseline": "7a1e2174"}`. 읽기 전용(READ ONLY·롤백)이다. **두 방향을 모두 본다**:
+   `newly_blocked`(배포 즉시 숨겨진다)와 `newly_unblocked`(배포 즉시 다시 공개된다 — 예외가 결과 보장·유인을 놓쳤는지 원문을
+   직접 읽는다). 둘 다 0건이거나 대표가 확인한 목록일 때만 서비스 배포를 진행한다. 출력 전체를 릴리스 기록에 보관한다.
 
    ```bash
    gcloud run jobs execute reputation-migrate --project mso-platform-481505 --region asia-northeast3 --wait \
@@ -289,6 +293,18 @@ WHERE status NOT IN ('PUBLISHED','CANCELLED','WITHHELD');
 
    같은 글이 하루 여러 번이면 그 글의 `human_edited_at`과 `essence_check_summary->'auto_correction'->'history'` 길이가 늘지 않았는지로
    공회전(사람이 편집해 교정이 맡지 못한 HARD)을 가른다.
+4. **롤백은 코드만 되돌린다 — 데이터는 되돌아오지 않는다.** 배포 전에 1의 영향 ID 목록과, 그 글들의 현재 판
+   (`content_revision`·본문 hash·`essence_check_summary`)을 읽기 전용으로 떠 둔다. 롤백 때 알아 둘 것:
+   - 생성 단계의 결정적 치유(금지 표현 문장 삭제, 필수 문구·병원명 덧붙이기)로 저장된 본문은 코드 롤백으로 복원되지 않는다. 치유
+     전 후보는 저장되지 않으므로, 배포 뒤 문제가 된 글은 사람이 PATCH로 고치거나 다시 생성한다.
+   - 새 필터만으로 숨겨진 공개 글(`newly_blocked`)은 옛 리비전에서 **다시 공개된다**. 반대로 새 필터가 풀어 준 글
+     (`newly_unblocked`)은 옛 리비전에서 다시 숨는다.
+   - D23으로 참고자료 0개로 발행된 진료비·병원 선택 글은 옛 API의 공개 가시성(`public_surface_has_required_references`)에서
+     **다시 숨는다**. 롤백 전 `content_items`에서 해당 글(발행 이력 있음·참고자료 0개·진료비/병원 선택 제목)을 뽑아 두고, 롤백이
+     길어지면 대표에게 알린다.
+5. **호환 롤백 이미지는 게이트 카탈로그 판 `2026-10-13.1`을 유지해야 한다.** 판을 옛 값으로 되돌리면 입력 지문(`context`)이 다시
+   바뀌어 종착 슬롯 전부가 또 한 번 재평가된다(2의 부하가 반복된다). 롤백이 필요하면 직전 운영 이미지를 그대로 쓰지 말고, 직전
+   운영 코드에 `GENERATION_GATE_CATALOG_VERSION = "2026-10-13.1"`만 얹은 이미지를 미리 빌드해 둔다(필터·D23 동작은 옛 그대로).
 
 **10/8 배치(PR #226, `0083_add_operation_run_not_before`) — 0083 migrate Job을 먼저 끝내고, 코드는 그 다음 배포한다.**
 새 ORM이 `operation_runs.not_before_at`을 SELECT한다. 추가형·NULL 허용이라 0083 위의 옛 코드는 안전하다.
