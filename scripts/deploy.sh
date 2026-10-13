@@ -1515,6 +1515,25 @@ require_deploy_slot() {
   fail "배포 잠금을 확인하지 못했습니다(gs://${DEPLOY_LOCK_BUCKET}). 버킷과 권한을 확인하세요."
 }
 
+# require_deploy_slot은 이미지 빌드 전에 한 번 본다. 빌드·마이그레이션이 길어지면 실제 교체가 배치
+# 시간대에 들어갈 수 있으므로(예: 11:10 시작 → 빌드 뒤 11:20 Worker 교체 = 12시 배치 앞 45분),
+# 첫 운영 변경 직전과 Worker 교체 직전에 다시 본다. --override-reason이 있으면 처음처럼 넘기되 경고한다.
+# Worker를 바꾼 뒤에는 Beat까지 마저 바꾼다 — 둘 사이에서 멈추면 새 Worker·옛 Beat의 반쪽 상태가 남는다.
+recheck_batch_window() {
+  local stage="$1" clock hhmm batch
+  clock="$(deploy_clock_kst)"
+  hhmm="${clock##*T}"
+  batch="$(batch_window_conflict "$hhmm")" || return 0
+  if [[ -n "$OVERRIDE_REASON" ]]; then
+    warn "${stage} 직전 다시 확인: 지금(KST ${hhmm})은 콘텐츠 배치 시간대(${batch})입니다 — 사유(${OVERRIDE_REASON})로 넘깁니다."
+    return 0
+  fi
+  if [[ "$DEPLOY_MUTATED" == "1" ]]; then
+    fail "${stage} 직전 다시 확인해 보니 지금(KST ${hhmm})은 콘텐츠 배치 시간대(${batch})입니다. 서비스는 바꾸지 않고 멈춥니다(마이그레이션은 이미 적용됐습니다 — 추가형이라 옛 리비전과 함께 동작합니다). 배치 시간대 밖에서 같은 명령을 다시 실행하세요(같은 릴리스의 재시도는 하루 잠금이 막지 않습니다)."
+  fi
+  fail "${stage} 직전 다시 확인해 보니 지금(KST ${hhmm})은 콘텐츠 배치 시간대(${batch})에 들어왔습니다(이미지 빌드가 길었습니다). 운영 변경 없이 멈춥니다 — 배치 시간대 밖에서 다시 배포하거나, 꼭 필요하면 --override-reason=\"사유\"를 붙이세요."
+}
+
 # ─── 롤백 좌표 ─────────────────────────────────────────────────────
 # 다중 서비스 배포는 중간에 실패할 수 있다 (예: api/worker는 신버전, beat/site/admin은
 # 구버전, 스키마는 이미 마이그레이션됨). 어떤 리비전으로 되돌려야 하는지는 배포가
@@ -1850,8 +1869,10 @@ case "$TARGET" in
     capture_smoke_baseline
     capture_rollback_point reputation-api reputation-worker reputation-beat
     IMAGE_URL=$(build_and_push)
+    recheck_batch_window "마이그레이션·서비스 교체"
     mark_deploy_mutating
     run_migration "$IMAGE_URL"
+    recheck_batch_window "Worker 교체"
     deploy_worker "$IMAGE_URL"
     run_redbeat_reconcile "$IMAGE_URL"
     deploy_beat "$IMAGE_URL"
@@ -1879,8 +1900,14 @@ case "$TARGET" in
       capture_rollback_point "reputation-${TARGET}"
     fi
     IMAGE_URL=$(build_and_push)
+    recheck_batch_window "마이그레이션·서비스 교체"
     mark_deploy_mutating
     run_migration "$IMAGE_URL"
+    if [[ "$TARGET" == "beat" ]]; then
+      recheck_batch_window "Beat 교체"
+    else
+      recheck_batch_window "Worker 교체"
+    fi
     if [[ "$TARGET" == "beat" ]]; then
       run_redbeat_reconcile "$IMAGE_URL"
     fi
@@ -1935,10 +1962,12 @@ case "$TARGET" in
     IMAGE_URL=$(build_and_push)
     SITE_IMAGE_URL=$(build_and_push_site)
     ADMIN_IMAGE_URL=$(build_and_push_admin)
+    recheck_batch_window "마이그레이션·서비스 교체"
     mark_deploy_mutating
     # 마이그레이션을 새 코드 배포보다 먼저 실행 — 새 리비전이 옛 스키마 위에서
     # 기동하는 시간을 없앤다 (additive migration 전제).
     run_migration "$IMAGE_URL"
+    recheck_batch_window "Worker 교체"
     deploy_worker "$IMAGE_URL"
     run_redbeat_reconcile "$IMAGE_URL"
     deploy_beat "$IMAGE_URL"

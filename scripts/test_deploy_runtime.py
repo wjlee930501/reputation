@@ -2158,6 +2158,97 @@ def test_backend_deploy_runs_outside_batch_windows(tmp_path: Path, clock: str) -
     assert commands.index("storage cp") < commands.index("docker build")
 
 
+def _run_with_advancing_clock(tmp_path: Path, target: str, clocks: list[str], *args: str):
+    """deploy.sh가 KST 시각을 읽을 때마다 `clocks`의 다음 값을 돌려준다(마지막 값에서 멈춘다).
+
+    고정 시각(DEPLOY_CLOCK_KST)으로는 '빌드하는 동안 배치 시간대로 들어가는' 경우를 만들 수 없어,
+    시각 형식의 `date` 호출만 스텁한다. 다른 `date` 호출은 실제 date로 넘긴다.
+    """
+    project, fake_bin, command_log = _make_project(tmp_path)
+    shutil.copy2(PROJECT_ROOT / ".env.production.example", project / ".env.production")
+    sequence = tmp_path / "clock-sequence"
+    sequence.write_text("\n".join(clocks) + "\n")
+    real_date = shutil.which("date")
+    _write_executable(
+        fake_bin / "date",
+        "\n".join([
+            "#!/usr/bin/env bash",
+            'if [[ "$1" == "+%Y-%m-%dT%H:%M" ]]; then',
+            f'  seq="{sequence}"',
+            '  head -n 1 "$seq"',
+            '  if [[ $(wc -l < "$seq") -gt 1 ]]; then tail -n +2 "$seq" > "$seq.next" && mv "$seq.next" "$seq"; fi',
+            "  exit 0",
+            "fi",
+            f'exec "{real_date}" "$@"',
+            "",
+        ]),
+    )
+    result = subprocess.run(
+        ["bash", "scripts/deploy.sh", target, *args],
+        cwd=project,
+        env=_clean_env(
+            fake_bin, command_log,
+            SKIP_ASSET_BUCKET_PREFLIGHT="1",
+            SKIP_PUBLIC_DNS_PREFLIGHT="1",
+            PUBLIC_DOMAIN="reputation.example.test",
+            ADMIN_DOMAIN="admin.reputation.example.test",
+            DEPLOY_CLOCK_KST="",
+        ),
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+    )
+    return result, command_log.read_text() if command_log.exists() else ""
+
+
+def test_a_build_that_runs_into_a_batch_window_stops_before_any_mutation(tmp_path: Path) -> None:
+    # 11:10 시작(통과) → 빌드 뒤 11:20(12시 배치 앞 45분 안). 빌드 뒤 첫 운영 변경 전에 멈춘다.
+    result, commands = _run_with_advancing_clock(
+        tmp_path, "api", ["2026-10-11T11:10", "2026-10-11T11:20"]
+    )
+    assert result.returncode != 0
+    assert "마이그레이션·서비스 교체 직전 다시 확인" in result.stderr
+    assert "12:00 앞뒤 45분" in result.stderr
+    assert "docker build" in commands
+    assert "gcloud run jobs execute reputation-migrate" not in commands
+    assert "gcloud run deploy" not in commands
+    # 운영 변경 전에 멈췄으므로 이 실행이 만든 오늘의 잠금을 되돌린다.
+    assert "gcloud storage rm" in commands
+
+
+def test_a_migration_that_runs_into_a_batch_window_stops_before_the_worker_switch(
+    tmp_path: Path,
+) -> None:
+    # 시작·빌드 뒤는 밖이지만 마이그레이션이 끝난 시각은 배치 시간대다 — Worker를 바꾸지 않는다.
+    result, commands = _run_with_advancing_clock(
+        tmp_path, "api", ["2026-10-11T11:00", "2026-10-11T11:10", "2026-10-11T11:16"]
+    )
+    assert result.returncode != 0
+    assert "Worker 교체 직전 다시 확인" in result.stderr
+    assert "마이그레이션은 이미 적용됐습니다" in result.stderr
+    assert "gcloud run jobs execute reputation-migrate" in commands
+    assert "gcloud run deploy reputation-worker" not in commands
+    assert "gcloud run deploy reputation-beat" not in commands
+
+
+def test_an_override_reason_still_passes_the_rechecks_with_a_warning(tmp_path: Path) -> None:
+    result, commands = _run_with_advancing_clock(
+        tmp_path, "api", ["2026-10-11T11:10", "2026-10-11T11:20"], "--override-reason=장애 복구"
+    )
+    assert result.returncode == 0, result.stderr
+    assert "사유(장애 복구)로 넘깁니다" in result.stderr
+    assert "gcloud run deploy reputation-worker" in commands
+
+
+def test_rechecks_outside_batch_windows_change_nothing(tmp_path: Path) -> None:
+    result, commands = _run_with_advancing_clock(
+        tmp_path, "api", ["2026-10-11T14:30", "2026-10-11T14:40", "2026-10-11T14:50"]
+    )
+    assert result.returncode == 0, result.stderr
+    assert "다시 확인" not in result.stderr
+    assert commands.index("gcloud run deploy reputation-worker") < commands.index(
+        "gcloud run deploy reputation-beat"
+    )
+
+
 def test_second_release_on_the_same_day_warns_and_asks_for_a_reason(tmp_path: Path) -> None:
     # 배치 시간대 밖이면 하루 여러 번 배포할 수 있다(2026-10-13) — 잠금은 경고하고 사유를 요구할 뿐이다.
     result, commands = _run_target(
