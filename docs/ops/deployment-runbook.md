@@ -8,8 +8,7 @@ main `d6b85c96`(api `00243-mx4`, worker `00233-9k7`, beat `00228-jlm`, admin `00
 `DEPLOY_ROLLBACK_STATE_FILE`(`.omo/rollback-p2/backend`·`admin`)으로 좌표를 남겼다. admin은 셸에 `PUBLIC_DOMAIN`·`ADMIN_DOMAIN`이 없어 첫 시도가
 사전 검증에서 멈췄고(변경 없음) export 뒤 다시 실행했다. readiness 18/18, 병원 11곳 헬스 200(slug·canonical_host·hospital_id 따로 확인),
 `ops_sql_report` q8 행 없음. 첫 15분 틱에서 예상한 온보딩 정체 사고 1건, 예측 밖으로 Essence 자동 재검수의 LLM 출력 잘림(`length`)
-`ESSENCE_AUTO_REVIEW_FAILED` 1건(새 리비전 ERROR 1건, 원인 미조사). **보류**: Terraform 경보 2종(아래 2번)은 작업 PC의
-terraform 1.5.7이 plan을 못 돌려 적용하지 않았고, `OPS_ALERT_EMAIL`(4번)은 비워 두었다(`facts.ops_alert_email_configured=false`, readiness 통과).
+`ESSENCE_AUTO_REVIEW_FAILED` 1건(새 리비전 ERROR 1건, 원인 미조사). 대표 결정 D29: 경보는 Slack 하나로 받는다 — `OPS_ALERT_EMAIL`은 의도적으로 비우고 Terraform 경보 2종은 적용하지 않는다(아래 2·4번 건너뜀, `facts.ops_alert_email_configured=false`, readiness 통과).
 **이후 Worker를 `00223` 이하로 롤백하지 않는다.** 상세는 [배포 기록](../releases/2026-10-13-autonomy-phase2-production.md).
 
 ## 이전 운영 배포 — 2026-10-13 Phase 1 자율성 보완
@@ -307,7 +306,7 @@ gcloud run jobs execute reputation-migrate --project mso-platform-481505 --regio
 `CREATE INDEX CONCURRENTLY ix_notification_outbox_open_pairing ON notification_outbox (incident_id, state, created_at)
 WHERE notification_type = 'INCIDENT_OPEN';`을 먼저 실행한다 — 0088은 인덱스가 이미 있으면 생성을 건너뛴다.
 
-**Phase 2(마이그레이션 없음, DB head `0088` 그대로) — 배포일 절차(2026-10-13 15:03~15:13 KST 배포 완료: 2번 Terraform 경보 보류, 4번 `OPS_ALERT_EMAIL` 비움, 6번은 env 차이 0이라 `--accept-env-diff` 없이, 기록은 [Phase 2 배포 기록](../releases/2026-10-13-autonomy-phase2-production.md)).** 대상은 API·Worker·Beat(`bash scripts/deploy.sh backend`)와
+**Phase 2(마이그레이션 없음, DB head `0088` 그대로) — 배포일 절차(2026-10-13 15:03~15:13 KST 배포 완료: 2·4번은 대표 결정 D29로 하지 않음, 6번은 env 차이 0이라 `--accept-env-diff` 없이, 기록은 [Phase 2 배포 기록](../releases/2026-10-13-autonomy-phase2-production.md)).** 대상은 API·Worker·Beat(`bash scripts/deploy.sh backend`)와
 Admin(`bash scripts/deploy.sh admin` — 병원 정보 화면의 자동 입력 초안, 시간대 규칙 없음)이다. Site 변경은 없다. Phase 1이 먼저
 배포됐는지, 운영 DB head가 `0088_add_outbox_open_pairing_index`인지 먼저 확인한다.
 
@@ -320,7 +319,7 @@ hospital ID 대조를 smoke가 했다고 기록하지 않는다(필요하면 따
 
 1. **시각.** `deploy.sh`(backend·api·worker·beat·all)가 막는 KST 구간은 21:15~02:00(22시 앞뒤 45분 + 22:15~02:00 야간), 03:15~04:45,
    06:15~08:45, 11:15~12:45, 17:15~18:45다. 배포 가능 구간은 02:00~03:14, 04:46~06:14, 08:46~11:14, 12:46~17:14, 18:46~21:14.
-2. **Terraform 경보 2종(배포 코드와 독립, 먼저 적용해도 된다).** `terraform plan`이 아래 두 정책의 **추가 2건만** 보이는지 확인한 뒤
+2. **Terraform 경보 2종 — 적용하지 않는다.** 대표 결정 D29: 경보는 Slack 하나로 받는다 — `OPS_ALERT_EMAIL`은 의도적으로 비우고 Terraform 경보 2종은 적용하지 않는다(기존 GCP uptime·ERROR·5xx 경보는 그대로). 아래는 결정 전 절차의 기록이다. **(결정 전)** `terraform plan`이 아래 두 정책의 **추가 2건만** 보이는지 확인한 뒤
    그 둘만 적용한다. 둘 다 기존 이메일 채널(`google_monitoring_notification_channel.email[0]`)과 감시 스케줄러 잡을 참조하므로 다른
    리소스 변경이 나오면 멈추고 원인을 본다.
 
@@ -336,7 +335,7 @@ hospital ID 대조를 smoke가 했다고 기록하지 않는다(필요하면 따
    ```bash
    gcloud secrets versions list PIPELINE_WATCHDOG_TOKEN --project=mso-platform-481505 --filter=state=enabled
    ```
-4. **`OPS_ALERT_EMAIL` 값 = Terraform `alert_email`.** 저장소에는 실제 값이 없다(`terraform.tfvars` 비추적, 예시만 있음). 운영의 이메일
+4. **`OPS_ALERT_EMAIL` — 비워 둔다(대표 결정 D29: 경보는 Slack 하나로 받는다).** 아래는 결정 전 절차의 기록이다. **(결정 전)** 저장소에는 실제 값이 없다(`terraform.tfvars` 비추적, 예시만 있음). 운영의 이메일
    경보 채널 주소를 읽어 같은 주소를 `.env.production`에 `OPS_ALERT_EMAIL=<주소>`로 넣는다(비밀이 아닌 env). `RESEND_API_KEY`는 이미
    필수 시크릿이라 메일은 바로 보낼 수 있다.
 
@@ -394,6 +393,11 @@ hospital ID 대조를 smoke가 했다고 기록하지 않는다(필요하면 따
    다시 만든다 — 롤백 중에는 안분된 병원의 일정 교체를 미룬다.
 
 **Phase 3(2026-10-13 콘텐츠 게이트 조정) — 배포 전 확인.** 새 DB 리비전은 없다(head는 Phase 1의 `0088` 그대로).
+**배포 기록(2026-10-13 15:48~15:56 KST, main `c1ce0494`, [기록](../releases/2026-10-13-autonomy-phase3-production.md))**: 영향 조회 새로 숨김 1·다시 보임 0,
+q4 종착 슬롯 4, 롤백 좌표 `.omo/rollback-p3/backend`(api `00243-mx4`·worker `00233-9k7`·beat `00228-jlm`), 호환 롤백 이미지
+`reputation:rollback-p3-d6b85c96-cat20261013`(5번). 1번의 "migrate Job 이미지를 새 이미지로" 단계를 쓸 수 없으면, 현재 migrate 이미지에 새 커밋의
+`medical_filter.py`·`medical_filter_baseline.py`·`forbidden_impact_scan.py`를 base64 `python -c`로 실어 모듈을 바꿔 끼워 돌려도 된다(이번 배포에서
+배포 뒤 새 이미지로 다시 돌려 같은 결과를 확인했다). 후속으로 main `42c2b119`(Essence 검수 출력 상한)를 16:26~16:31에 Backend만 다시 배포했다(롤백 좌표 `.omo/rollback-essence/backend` = Phase 3 리비전).
 1. **금지 표현 필터(`utils/medical_filter.py`)를 바꾼 배포는 새 이미지로 영향 조회를 먼저 돌린다.** 필터는 공개 가시성·병원 공개
    문구에도 쓰여 배포 즉시 걸리는 공개 글을 숨기고, 문맥 예외가 넓어지면 운영 필터가 숨기던 글을 **다시 보이게** 한다.
    `scripts/deploy.sh migrate`로 migrate Job의 이미지를 새 이미지로 바꾼 뒤(이 릴리스는 alembic 변경이 없어 upgrade는 아무것도

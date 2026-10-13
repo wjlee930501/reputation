@@ -63,6 +63,7 @@
 | D26 (구현 중 확정) | 처리 ERROR 필수 자료의 Essence 제외는 다른 필수 자료가 PROCESSED면 **1시간 유예**(`ERROR_SOURCE_EXCLUSION_GRACE`) 뒤, ERROR뿐이면 6시간(`ERROR_SOURCE_EXCLUSION_AFTER`) 뒤 — 2-3c 초안의 '즉시'를 대체한다(처리 직후 일시 오류로 근거가 빠지지 않게) | P2-A 2-3c `cc80b088`, 후속 `d5588836` |
 | D27 (구현 중 확정) | 대기 자기 도메인의 DNS 확인은 14일(`DOMAIN_DNS_POLL_MAX_DAYS`) 창이 지나도 **멈추지 않는다** — 창이 지나면 사람의 일 `CUSTOM_DOMAIN_DNS_NOT_CONFIGURED`를 한 번 열 뿐이고, 늦게 맞춘 병원도 수동 확인과 같은 경로로 열린다(DNS 조회는 비용이 없다) | P2-A 2-5b `80a118eb`, 후속 `d5588836` |
 | D28 (2026-10-13 대표 결정) | 배포 금지 배치 시간대는 KST 22:15~02:00 전체와 04·07·08·12·18·22시 앞뒤 45분(**22시 포함**). 배포 횟수는 완화 — 배치 시간대 밖이면 **하루 여러 번** 가능하고, `deploy.sh`의 하루 1회 잠금은 권고(경고 + `--override-reason` 사유 기록)다. D4·D13의 '하루 1회'를 대체한다 | P2-B 2-9b `8d20d271`·`69d59a70`, Phase 2 문서 커밋 |
+| D29 (2026-10-13 대표 결정) | 경보는 **Slack 하나**로 받는다 — `OPS_ALERT_EMAIL`은 의도적으로 비우고, Terraform 경보 정책 2종(`watchdog_scheduler_failures`·`slack_path_failures`)은 적용하지 않는다. 기존 GCP uptime·ERROR·5xx 경보 정책은 그대로. D12의 '앱 메일 + GCP 로그 경보 2차 경로'를 운영에서 쓰지 않는다(코드는 남는다) | Phase 2 배포 뒤, Phase 3 배포 기록 |
 
 D18~D22는 main에 먼저 기록됐다(D18~D21은 Phase 1 문서 커밋, D22는 PR #242의 배포 안내). 이 브랜치의 기준 커밋(`7a1e2174`)에 없어 같은 문장을 옮겨 둔다.
 

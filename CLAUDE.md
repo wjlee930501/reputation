@@ -1,18 +1,23 @@
 # Re:putation — 현재 프로젝트 개발 안내
 
-## 최신 운영 배포 — Phase 3 콘텐츠 게이트 (배포 전)
+## 최신 운영 배포 — 2026-10-13 Phase 3 콘텐츠 게이트
 
-**이 절은 배포 기록이 아니다.** 배포는 [운영 배포 절차](docs/ops/deployment-runbook.md)의 Phase 3 항목으로 따로 검증해 기록한다.
-브랜치 `claude/autonomy-p3`(main `d6b85c96` 병합)가 [자율 운영 보완 MasterPlan](docs/plans/2026-10-11-autonomy-masterplan.md)의
-Phase 3([계획](docs/plans/2026-10-13-p3-content-gates.md))을 구현했다 — 공통 필터의 가격 우위·할인·이벤트·무료 유인 하드 차단(D24, 라벨
-`할인·유인`)과 문장 전체·방향 무관 문맥 예외·결과 보장 표지, 진료비·병원 선택 글의 참고자료 선택화(D23), 본문 금지 표현 문장 삭제·
-병원명·필수 문구 덧붙이기 결정적 치유, 생성 거절 사유 라벨과 운영 조회 q9·q10. **마이그레이션은 없다**(DB head `0088` 그대로).
-게이트 카탈로그 판이 `2026-10-13.1`로 올라 종착 슬롯 전부가 한 번 다시 평가된다(슬롯당 작가 세션 1회분 상한, 배포 전 `q4`로 수를 센다).
-배포 전 새 이미지로 `app.utils.forbidden_impact_scan`을 돌려 새로 막히는/풀리는 공개 글을 모두 기록하고 그 글들의 승인 공개 판
-(revision·본문 hash)을 보관한다. **롤백 주의**: 치유로 저장된 본문과 새 필터로 숨겨진 글의 상태는 코드 롤백으로 돌아오지 않고, D23으로
-참고자료 없이 공개된 글은 옛 API에서 다시 숨는다. 롤백 이미지는 카탈로그 판 `2026-10-13.1`을 유지해야 한다(되돌리면 재평가 부하 반복).
+main `c1ce0494`(PR #245 `claude/autonomy-p3`)을 API·Worker·Beat에 배포했다(2026-10-13 15:48~15:56 KST, 같은 날 네 번째 배포 — 대표 지시
+"준비되는 즉시", 배치 시간대 밖 D28). 리비전은 api `00244-r2w`, worker `00234-nn4`, beat `00229-l4v`였고 Admin `00107-d26`·Site는 그대로,
+**마이그레이션은 없다 — DB head `0088` 그대로**. [Phase 3 계획](docs/plans/2026-10-13-p3-content-gates.md) — 공통 필터의 가격 우위·할인·이벤트·
+무료 유인 하드 차단(D24, 라벨 `할인·유인`)과 문장 전체·방향 무관 문맥 예외·결과 보장 표지, 진료비·병원 선택 글의 참고자료 선택화(D23),
+본문 금지 표현 문장 삭제·병원명·필수 문구 덧붙이기 결정적 치유, 생성 거절 사유 라벨과 운영 조회 q9·q10. 게이트 카탈로그 판이
+`2026-10-13.1`로 올라 종착 슬롯 4개(q4: 진료비 참고자료 보류 3·HARD 1)가 한 번 다시 평가된다. 배포 전 영향 조회(양방향): **새로 숨김 1건·
+다시 보임 0건** — 공개 글 `4a3c2b13…`(마포성모탑정형외과 "도수치료 비용", '패키지 할인이나 회차 할인' 문장)이 배포 즉시 숨었고 나머지 공개
+글 247편은 그대로다. readiness 18/18, 병원 11곳 헬스 200, +30분 ERROR 0. `CONTENT_HARD_FINDING_IDLE_TERMINAL`은 false(10/10 이후 공회전 0건).
+**롤백 주의**: `deploy.sh rollback`(트래픽 복귀)은 카탈로그 판을 `2026-10-02.1`로 되돌려 재평가를 반복시킨다 — 호환 롤백 이미지
+`reputation:rollback-p3-d6b85c96-cat20261013`을 미리 빌드했다. 치유로 저장된 본문과 숨긴 글의 상태는 코드 롤백으로 돌아오지 않는다.
+후속 배포: main `42c2b119`(PR #247 Essence 검수 출력 상한 1600→4000)를 16:26~16:31 KST에 API·Worker·Beat에 올려 현재 리비전은 api `00245-9dg`,
+worker `00235-vnd`, beat `00230-vzv`다(readiness 18/18, +10분 ERROR 0). `nyupeulraenyeoseongyiweon`의 Essence 검수는 17:21 KST에 잘림 없이 끝나 보류
+(ESCALATED, 재검수 예산 안 RETRYING)로 넘어갔다. 18:00 복구 스윕에서 진료비 보류 슬롯 2개가 원고를 얻었고, **예상 밖으로 6슬롯이
+`LEGACY_SPEND_UNKNOWN`/`OPERATOR_REQUIRED`가 됐다(원인 미조사, 개발 확인 필요)**. 상세는 [Phase 3 배포 기록](docs/releases/2026-10-13-autonomy-phase3-production.md).
 
-## 최신 운영 배포 — 2026-10-13 Phase 2 자율성 보완
+## 이전 운영 배포 — 2026-10-13 Phase 2 자율성 보완
 
 main `d6b85c96`(PR #244 `claude/autonomy-p2`)을 API·Worker·Beat·Admin에 배포했다(2026-10-13 15:03~15:13 KST, 같은 날 세 번째 배포 —
 대표 지시 "준비되는 즉시", 배치 시간대 밖 D28). 현재 리비전은 api `00243-mx4`, worker `00233-9k7`, beat `00228-jlm`, admin `00107-d26`이고
@@ -23,8 +28,7 @@ Site는 그대로, **마이그레이션은 없다 — DB head는 `0088_add_outbo
 readiness 감시 토큰 검사(18개 검사)·운영 경보 메일(`OPS_ALERT_EMAIL`)·Beat liveness·비용 가드 fail-open과 사용량 spool 잘림 개발 사고·
 `deploy.sh` 규칙 코드화(운영 env 정본·배치 시간대·자동 롤백·`--unpin`)(P2-B)다. readiness 18/18, 병원 11곳 헬스 200. 첫 15분 틱에서 예상한
 온보딩 정체 사고 1건(세종다온신경과의원, 프로필 미완료)이 열렸고, 예측 밖으로 `nyupeulraenyeoseongyiweon`의 Essence 자동 재검수가 LLM 출력 잘림(`length`)으로
-세 번 실패해 `ESSENCE_AUTO_REVIEW_FAILED`(새 리비전 ERROR 1건, Slack 1건)가 열렸다(원인 미조사). **보류**: Terraform 경보 정책 2종은 작업 PC의 terraform
-1.5.7이 plan을 못 돌려 적용하지 않았고, `OPS_ALERT_EMAIL`은 비워 두었다(readiness는 통과, `facts.ops_alert_email_configured=false`). 플래그
+세 번 실패해 `ESSENCE_AUTO_REVIEW_FAILED`(새 리비전 ERROR 1건, Slack 1건)가 열렸다(원인 미조사). 대표 결정 D29: 경보는 Slack 하나로 받는다 — `OPS_ALERT_EMAIL`은 의도적으로 비우고 Terraform 경보 2종은 적용하지 않는다(readiness는 통과, `facts.ops_alert_email_configured=false`). 플래그
 `ONBOARDING_SOURCE_FETCH_ALERTS_ENABLED`·`PROFILE_GATE_OPTIONAL_ENRICHMENT`는 기본 꺼짐(대표 결정 전)이다. 배포 smoke는 slug·canonical_host·Site
 리비전을 비교하고 hospital ID는 보지 않는다. **롤백(알려진 한계)**: 마이그레이션은 없지만 트래픽 롤백만으로 안전하지 않다. Phase 2 이전 Worker는
 그 달 약속 편수를 요금제 편수로 계산하므로, 안분된 첫 달이 있는 채로 되돌리면 21:30 KST 당월 조정이 그 달을 요금제 편수까지 채운다(초과
@@ -212,7 +216,7 @@ BaseEssence의 일반 자료 추가 drift는 재합성하지 않는다. 명시�
 Site/Admin IAM 분리는 단계적으로 적용한다. 구 revision 종료 전 legacy grants를 회수하지 않는다.
 
 
-문서 버전: **2.26** · 갱신일: **2026-10-13 (Asia/Seoul)**
+문서 버전: **2.27** · 갱신일: **2026-10-13 (Asia/Seoul)**
 소스 기준선: **`4db1b69` 이후 커밋 이력 정합성 보완**
 구현 상태: **체크포인트 2(`a774851`) 운영 배포 완료. 그 뒤 main의 stable-base Essence(`8c59141`) 등 31개 커밋과 콘텐츠 수율 버전업 v2.7(`claude/system-performance-review-x6vtn4`, [계획](docs/plans/2026-09-12-content-yield-versionup-plan.md))은 미배포**
 
@@ -318,7 +322,7 @@ Essence가 **자동 승인**되면(또는 15분 조정이 일정이 한 번도 �
 - Slack은 [알림 정책](docs/ops/slack-notification-policy.md)을 따른다. 정상 발행 알림을 다시 추가하지 않는다. 사후검수 지적(`POST_PUBLISH_REVIEW_FLAGGED`)처럼 `incident_types.INCIDENT_TYPE_POLICIES`에 조용함(`quiet`)으로 등록한 사고는 사고 행·Admin에는 남되 Slack 알림을 만들지 않는다(outbox 입구에서 넣지 않고, 이미 쌓인 행도 발송기가 집지 않는다). 발송기는 스윕 소유 사고의 열림 알림을 그 기한까지 보류하고(`notification_store.claimable_notifications_stmt`), 기한 전에 사고가 복구·확인되면 그 알림을 `INCIDENT_RESOLVED_BEFORE_SEND`로 종결한다. 열림 알림이 나가지 않은 사고는 복구 알림도 보내지 않는다(`settle_incident_notices`). 복구 알림은 같은 에피소드의 열림 알림이 실제로 나간 뒤에만 나간다 — SENT·보낸 뒤 결과 불명 HOLD만 '나간 것'이고, SENDING은 claim이 HTTP 전에 커밋한 선점이라 대기다. 열림이 아직 나갈 수 있으면(PENDING·RETRYING·SENDING·보내기 전 보류 HOLD) 복구는 기다리고, 짝 열림이 모두 FAILED이거나 없으면 발송 전 종결한다(`notification_store._paired_open_exists`, 종결·claim 공용). 알림기는 Slack 429에서 `Retry-After`를 따르되(한 요청 안 대기 합계 5초 이하) 5xx·읽기 시간 초과는 처리됐을 수 있어 다시 보내지 않는다. outbox 실패가 도메인 트랜잭션을 되돌리지 않게 한다.
 - `#mkt-reputation`의 모든 메시지는 fallback text와 Block Kit header의 첫 토큰으로 `[Lead : 도입 문의]`·`[Error : 오류 발생]`·`[Report : 운영 현황 보고]` 중 하나를 쓴다. 문구와 종류→라벨 대응은 `services/notification_labels.py` 한 곳에 두고 라벨 문자열을 다른 파일에 복사하지 않는다. 라벨은 기존 문장 앞에만 붙고 버튼·`OPS-` 참조·개발팀 안내를 지우지 않으며, 자동 복구 사실(`INCIDENT_RECOVERED`)은 Error가 아니라 Report다. 전달 준비 완료 마일스톤(`MILESTONE_SUMMARY_REPORT`)·사이트 준비/공개 완료·자동 복구가 도는 월간 공백(`MONTHLY_REPORT_GAP_AUTO`)도 Report다. 라벨을 중복 억제·채널 라우팅·발행 게이트 판정에 쓰지 않는다.
 - Slack 채널은 운영 채널 하나다(2026-10-08 대표 결정). `IncidentAudience`(운영/개발 대상)는 유지하되 개발 대상 알림은 라벨 바로 뒤 `[개발 확인]` 표시와 함께 운영 채널로 가고, 죽은 웹훅을 우회한 알림은 `[채널 대체 전송]` 표시를 단다. 웹훅 생존은 채널 단위 전송 사고 하나가 정본이며 배포(`deploy.sh`)·준비 점검(`slack_webhooks_not_dead`)·한 시간 탐침이 같은 분류(400 `no_text` = 살아 있음, 3xx/403/404/410 = 죽음, 5xx·시간 초과 = 모름, 400 본문 거절 = 그 알림 하나의 실패)를 쓴다. 보낼 곳이 없어 보류한 행(`SLACK_CHANNEL_UNAVAILABLE`)은 복구 때 다시 보낸다. 전송 실패는 outbox 행의 `incident_id`를 덮어쓰지 않는다. 쓰지 않는 선택 시크릿은 버전을 비활성화해 끄고, `deploy.sh`는 활성 버전 없는 선택 시크릿을 주입하지 않는다.
-- Slack이 닿지 않을 때만 쓰는 **운영 경보 메일(2차 경로)**: `OPS_ALERT_EMAIL`(기본 빈 값 = 보내지 않고 ERROR 로그 `ops alert email: …`만 남김; 운영 값은 Terraform `alert_email`과 같은 주소)로 Resend 메일을 보낸다(`ops_alert_email.send_ops_alert`, 결정적 `idempotency_key`). 보내는 경우는 둘뿐이다. (1) 외부 감시(`/admin/watchdog/pipeline/*`)의 경보가 Slack에 전달되지 않았을 때 — 에피소드당 한 통(`watchdog:{audience}:{episode_id}`; Redis가 없어 에피소드를 모르면 `watchdog:{audience}:nr:{조건 서명}:{처음 시각}` — 같은 수신자·조건 집합의 24시간 안 기록을 같은 장애로 이어 써 KST 자정을 넘겨도 새 키를 만들지 않고, 장애가 더 길면 24시간마다 한 통). 메일 발송 기록의 정본은 Slack 상태와 별개인 DB 감사행(`watchdog_ops_email_planned`·`watchdog_ops_email_sent`, append-only)이고 Redis(7일)는 캐시일 뿐이라, Slack 장애가 Resend의 24시간 멱등 창보다 길어지거나 메일을 보내는 그때 Redis가 내려가 있어도 같은 에피소드 메일을 다시 보내지 않는다. 본문은 Slack 문구(판정마다 바뀌는 건수)가 아니라 경보 번호(키)와 처음 정할 때의 조건 집합으로 정한 고정 문구이고, 처음 정한 키·제목·본문을 DB 계획 행(`watchdog_ops_email_planned`의 detail)에 남겨 같은 키의 재시도가 그대로 다시 쓴다 — 에피소드는 조건 집합이 줄어도 키를 유지하므로 현재 조건으로 본문을 다시 만들지 않는다(409 반복 없음). 에피소드 키로 보낸 메일과 Redis 장애 동안의 에피소드 없는 키 메일은 같은 수신자·조건 서명의 24시간 안 계획으로 서로 잇는다(E→Redis 장애, Redis 장애→새 에피소드 어느 쪽도 다시 보내지 않는다). DB와 Redis가 모두 없으면 프로세스 메모리로 프로세스 수명 동안(24시간 안) 수신자·조건 집합당 한 통이다 — 인스턴스가 바뀌거나 여럿이면 인스턴스마다 다시 보낼 수 있는 알려진 한계다. 복구는 메일로 보내지 않으며 판정·에피소드 기록을 바꾸지 않는다. (2) 운영 채널 사고가 열렸는데 대신 받을 살아 있는 개발 채널도 없을 때 — 사고 episode당 한 통(`ops-channel-down:{incident_id}:e{episode_seq}`, 감사 `ops_alert_email_sent`로 중복 방지, 실패하면 프로세스 안에서 15분 뒤 같은 키로 재시도, outbox·사고 상태는 바꾸지 않음). Resend 409(같은 키가 처리 중이거나 다른 본문)는 전달 확인이 아니라 결과 불명(`OpsAlertResult.UNKNOWN`)이라 '보냈음'을 기록하지 않고 같은 키·같은 본문으로 다시 보낸다. 정상 경로가 아니다. Slack을 거치지 않는 GCP 이메일 경보도 둘 더 있다(시간당 1회, 24시간 자동 종료): Cloud Scheduler 감시 호출(`watchdog-heartbeat`·`watchdog-publish-check`)의 ERROR 로그(토큰 공백 401·LB·API 장애)와 API 서비스의 `pipeline watchdog`·`ops alert email` ERROR 로그(`terraform/monitoring.tf`). Worker쪽 Slack 경로 실패는 기존 worker ERROR 경보가 이메일로 보낸다.
+- Slack이 닿지 않을 때만 쓰는 **운영 경보 메일(2차 경로)**: `OPS_ALERT_EMAIL`(기본 빈 값 = 보내지 않고 ERROR 로그 `ops alert email: …`만 남김; 운영은 대표 결정 D29로 의도적으로 비운다 — 경보는 Slack 하나로 받는다)로 Resend 메일을 보낸다(`ops_alert_email.send_ops_alert`, 결정적 `idempotency_key`). 보내는 경우는 둘뿐이다. (1) 외부 감시(`/admin/watchdog/pipeline/*`)의 경보가 Slack에 전달되지 않았을 때 — 에피소드당 한 통(`watchdog:{audience}:{episode_id}`; Redis가 없어 에피소드를 모르면 `watchdog:{audience}:nr:{조건 서명}:{처음 시각}` — 같은 수신자·조건 집합의 24시간 안 기록을 같은 장애로 이어 써 KST 자정을 넘겨도 새 키를 만들지 않고, 장애가 더 길면 24시간마다 한 통). 메일 발송 기록의 정본은 Slack 상태와 별개인 DB 감사행(`watchdog_ops_email_planned`·`watchdog_ops_email_sent`, append-only)이고 Redis(7일)는 캐시일 뿐이라, Slack 장애가 Resend의 24시간 멱등 창보다 길어지거나 메일을 보내는 그때 Redis가 내려가 있어도 같은 에피소드 메일을 다시 보내지 않는다. 본문은 Slack 문구(판정마다 바뀌는 건수)가 아니라 경보 번호(키)와 처음 정할 때의 조건 집합으로 정한 고정 문구이고, 처음 정한 키·제목·본문을 DB 계획 행(`watchdog_ops_email_planned`의 detail)에 남겨 같은 키의 재시도가 그대로 다시 쓴다 — 에피소드는 조건 집합이 줄어도 키를 유지하므로 현재 조건으로 본문을 다시 만들지 않는다(409 반복 없음). 에피소드 키로 보낸 메일과 Redis 장애 동안의 에피소드 없는 키 메일은 같은 수신자·조건 서명의 24시간 안 계획으로 서로 잇는다(E→Redis 장애, Redis 장애→새 에피소드 어느 쪽도 다시 보내지 않는다). DB와 Redis가 모두 없으면 프로세스 메모리로 프로세스 수명 동안(24시간 안) 수신자·조건 집합당 한 통이다 — 인스턴스가 바뀌거나 여럿이면 인스턴스마다 다시 보낼 수 있는 알려진 한계다. 복구는 메일로 보내지 않으며 판정·에피소드 기록을 바꾸지 않는다. (2) 운영 채널 사고가 열렸는데 대신 받을 살아 있는 개발 채널도 없을 때 — 사고 episode당 한 통(`ops-channel-down:{incident_id}:e{episode_seq}`, 감사 `ops_alert_email_sent`로 중복 방지, 실패하면 프로세스 안에서 15분 뒤 같은 키로 재시도, outbox·사고 상태는 바꾸지 않음). Resend 409(같은 키가 처리 중이거나 다른 본문)는 전달 확인이 아니라 결과 불명(`OpsAlertResult.UNKNOWN`)이라 '보냈음'을 기록하지 않고 같은 키·같은 본문으로 다시 보낸다. 정상 경로가 아니다. `terraform/monitoring.tf`에 선언된 Slack을 거치지 않는 GCP 이메일 경보 둘은 대표 결정 D29로 운영에 적용하지 않는다(기존 GCP uptime·ERROR·5xx 경보는 그대로)(시간당 1회, 24시간 자동 종료): Cloud Scheduler 감시 호출(`watchdog-heartbeat`·`watchdog-publish-check`)의 ERROR 로그(토큰 공백 401·LB·API 장애)와 API 서비스의 `pipeline watchdog`·`ops alert email` ERROR 로그(`terraform/monitoring.tf`). Worker쪽 Slack 경로 실패는 기존 worker ERROR 경보가 이메일로 보낸다.
 - 사람의 일 건수는 `operator_action.is_operator_todo` 하나로 센다(기한 지난 사람의 일 ∧ 운영 대상 ∧ 조용한 종류 아님). RETRYING에는 언제나 기한이 있다 — `mark_retrying`은 기본 24시간(`DEFAULT_RETRYING_DEADLINE`)을 달고, 정착 스윕은 기한 없는 옛 행에 마지막 변경 + 24시간을 단다. 예외는 사람의 일을 별도 Essence 사고가 가지는 `MISSING_APPROVED_ESSENCE` 생성 보류 하나다. 일일 요약·운영센터 큐·현황 카드·병원 목록이 같은 술어와 같은 원인 묶음(`incident_cause_group.cause_group_key`)을 쓰므로 요약의 건수와 운영센터의 묶음 수가 같다. 개발 몫은 "개발 확인 M건"으로 따로, 둘 다 0이면 "점검 이상 없음"이다. 월간 마일스톤 상태 키는 `monthly:{hospital_id}:{YYYY-MM}`이고 새 버전 알림은 처음 준비·차단 뒤 재준비·전달 뒤 숫자가 바뀐 재빌드 셋뿐이다(TEMPLATE_REFRESH는 알리지 않는다). 07:45·08:00 발행 보류 요약은 새로 막힌 (글, 사고 epoch)만 알리고 `GENERATION_BLOCKED_NOTICE` 실행 기록으로 중복을 막는다. 월간 공백은 자동 복구 중(AUTO, Report)과 사람이 정할 것(MANUAL, 조치 필요)으로 가르고 분류가 바뀔 때만 알린다.
 
 ## 검증과 배포
