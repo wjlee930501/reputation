@@ -298,3 +298,16 @@ def test_dispatch_carries_the_key_and_live_flag(monkeypatch) -> None:
     assert sent[0]["args"] == [str(hospital_id), "backfill"]
     assert sent[1]["args"] == [str(hospital_id), "backfill", True]
     assert sent[0]["queue"] == "default"
+
+
+def test_onboarding_sweeps_survive_each_others_failures(monkeypatch) -> None:
+    async def boom(**_kwargs):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(module, "promote_completed_profiles", boom)
+    monkeypatch.setattr(module, "sweep_profile_autofill", lambda: 2)
+
+    assert module.run_onboarding_sweeps() == {
+        "profiles_promoted": 0,
+        "profile_autofill_dispatched": 2,
+    }
