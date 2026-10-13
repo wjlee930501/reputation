@@ -316,3 +316,54 @@ async def test_an_unconfirmed_sms_incident_says_it_was_not_resent(monkeypatch):
     assert "재발송하지 않" in unconfirmed["customer_impact"]
     assert "보내지 못했습니다" in failed["problem"]
     assert "재발송" not in failed["customer_impact"]
+
+
+async def test_the_rendered_sms_notice_never_contradicts_an_unconfirmed_delivery(monkeypatch):
+    """공통 문구(제목·지금 할 일)는 중립이고, 수신 불명이면 상세가 '확인 못 함·재발송 안 함'을 말한다(Codex R5-2)."""
+
+    import json
+    import uuid
+
+    from app.services.notification_contracts import IncidentSlackProjection
+    from app.services.notification_messages import build_open_incident_notification
+
+    opened = []
+
+    async def capture(_db, **kwargs):
+        opened.append(kwargs)
+
+    monkeypatch.setattr(inquiry_sms, "open_ops_incident_in", capture)
+    await inquiry_sms.open_failure_incident(object(), "lead-1", actor="public-inquiry", unconfirmed=True)
+    await inquiry_sms.open_failure_incident(object(), "lead-2", actor="public-inquiry")
+
+    def rendered(kwargs) -> str:
+        intent = build_open_incident_notification(
+            IncidentSlackProjection(
+                incident_id=uuid.uuid4(),
+                hospital_name=kwargs["hospital_name"],
+                severity="HIGH",
+                customer_impact=kwargs["customer_impact"],
+                next_action=kwargs["next_action"],
+                admin_path=kwargs["admin_path"],
+                owner_label="미지정",
+                sla_label="확인 필요",
+                problem=kwargs["problem"],
+                incident_type=kwargs["incident_type"],
+            ),
+            "https://admin.example.com",
+        )
+        return json.dumps(intent.message.payload(), ensure_ascii=False)
+
+    unconfirmed, failed = (rendered(kwargs) for kwargs in opened)
+
+    for text in (unconfirmed, failed):
+        assert "문자 전달 확인 필요" in text
+        assert "직접 연락" in text
+    # 수신 불명: 갔다고도 안 갔다고도 단정하지 않는다.
+    assert "확인하지 못했습니다" in unconfirmed
+    assert "재발송하지 않았습니다" in unconfirmed
+    for asserted in ("가지 않았습니다", "보내지 못했습니다", "미발송", "받지 못했습니다."):
+        assert asserted not in unconfirmed
+    # 확정 실패: 보내지 못했다고 말한다.
+    assert "보내지 못했습니다" in failed
+    assert "재발송" not in failed

@@ -354,8 +354,9 @@ def claimable_notifications_stmt(*, claimed_at: datetime, limit: int):
       생성분)도 보내지 않게 한다.
     - 발송 전 종결 대상(`settle_incident_notices`의 두 규칙)은 종결 배치가 아직 닿지 않았어도
       집지 않는다 — 종결 상한 밖의 행이 claim으로 새어 짝 없는 알림을 내보내지 않게 한다.
-    - 복구 알림은 같은 에피소드의 열림이 실제로 나간 뒤(`_open_went_out`)에만 집는다. 열림이 아직
-      대기 중이면(다른 트랜잭션이 잡았거나 종결 배치가 닿지 않았거나 재시도 대기) 다음 tick을 기다린다.
+    - 복구 알림은 같은 에피소드의 열림이 실제로 나간 뒤(`_open_went_out`: SENT, 보낸 뒤 결과 불명
+      HOLD)에만 집는다. 열림이 아직 대기 중이면(다른 워커가 SENDING으로 잡았거나 행 잠금 중이거나
+      종결 배치가 닿지 않았거나 재시도 대기) 다음 tick을 기다린다.
     - 스윕이 재시도를 소유하는 사고(`SWEEP_OWNED_INCIDENT_TYPES`)가 기한 안에서 RETRYING이면 그
       열림 알림을 집지 않는다. 기한이 지나면 그때 나간다 — 사람에게 넘어가는 순간의 알림이다.
       콘텐츠 생성처럼 등록하지 않은 종류는 RETRYING이어도 종전처럼 나간다(아침 알림 계약).
@@ -436,7 +437,7 @@ async def settle_incident_notices(db: AsyncSession, *, now: datetime) -> None:
     2. 복구 알림: 같은 에피소드의 열림 알림 중 나간 것(`_open_went_out`)도, 아직 나갈 수 있는 것
        (`_open_still_unsent`)도 없다 — 모두 FAILED(발송 전 종결·전송 실패)이거나 짝 열림이 아예
        없다. 다른 에피소드의 열림은 이 복구의 짝이 아니므로 세지 않는다(에피소드 없는 옛 키는
-       복구보다 먼저 만든 열림을 짝으로 본다). 열림이 아직 대기 중이면 종결하지도 집지도 않고 기다린다.
+       복구보다 먼저 만든 열림을 짝으로 본다). 열림이 아직 대기 중이면(SENDING 포함) 종결하지도 집지도 않고 기다린다.
     짝 계약("나간 OPEN에는 반드시 RECOVERED가 따르고, RECOVERED는 나간 OPEN 뒤에만 나간다")은 그대로다.
     """
 
@@ -488,12 +489,14 @@ def _open_settle_eligible():
 
 
 def _open_went_out(open_row):
-    """채널에 나갔거나 나가는 중인 열림: SENT·SENDING, 또는 보낸 뒤 수신 여부를 모르는 HOLD."""
+    """채널에 나간 열림: SENT, 또는 보낸 뒤 수신 여부를 모르는 HOLD(전송 결과 불명·만료된 lease).
+
+    SENDING은 '나간 것'이 아니다 — claim이 배치 전체를 HTTP 호출 전에 SENDING으로 커밋하므로
+    아직 보내지 않았을 수 있다. 그 전송이 실패하면 복구만 채널에 남는다(Codex R5-1).
+    """
 
     return or_(
-        open_row.state.in_(
-            (NotificationOutboxState.SENT.value, NotificationOutboxState.SENDING.value)
-        ),
+        open_row.state == NotificationOutboxState.SENT.value,
         and_(
             open_row.state == NotificationOutboxState.HOLD.value,
             open_row.safe_error_code == _DELIVERY_OUTCOME_UNKNOWN_CODE,
@@ -502,10 +505,14 @@ def _open_went_out(open_row):
 
 
 def _open_still_unsent(open_row):
-    """아직 나가지 않았지만 나갈 수 있는 열림: PENDING·RETRYING, 또는 보내기 전에 보류한 HOLD."""
+    """아직 나가지 않았지만 나갈 수 있는 열림: PENDING·RETRYING·SENDING, 또는 보내기 전에 보류한 HOLD.
+
+    SENDING은 결판(SENT·RETRYING·FAILED, lease 만료 시 수신 불명 HOLD)이 날 때까지의 대기 상태다 —
+    복구 알림은 그동안 집히지도 종결되지도 않는다.
+    """
 
     return or_(
-        open_row.state.in_(_SENDABLE_STATES),
+        open_row.state.in_((*_SENDABLE_STATES, NotificationOutboxState.SENDING.value)),
         and_(
             open_row.state == NotificationOutboxState.HOLD.value,
             open_row.safe_error_code.is_distinct_from(_DELIVERY_OUTCOME_UNKNOWN_CODE),
@@ -582,8 +589,10 @@ async def claim_notification_batch(
     """Lease a deterministic due batch and commit before any transport I/O.
 
     Ordering: an `INCIDENT_RECOVERED` is never leased before its same-episode
-    `INCIDENT_OPEN` went out (`_open_went_out`). An OPEN waiting in retry backoff or
-    locked by another worker holds its RECOVERED until a later tick; an OPEN that
+    `INCIDENT_OPEN` went out (`_open_went_out`: SENT, or a post-send HOLD whose outcome
+    is unknown). An OPEN leased as SENDING by another worker (committed before its HTTP
+    call), waiting in retry backoff, or row-locked holds its RECOVERED until a later
+    tick; an OPEN that
     ended FAILED settles the RECOVERED instead. Other notifications keep the
     `next_attempt_at` order and are never stalled behind one failing row.
     """

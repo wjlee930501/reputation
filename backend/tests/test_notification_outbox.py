@@ -1767,3 +1767,51 @@ async def test_a_recovery_is_not_claimed_while_its_open_is_locked_elsewhere(outb
             row = await verify.get(NotificationOutbox, notice_id)
             assert row.state == NotificationOutboxState.FAILED.value
             assert row.safe_error_code == "INCIDENT_RESOLVED_BEFORE_SEND"
+
+
+@pytest.mark.asyncio
+async def test_each_row_is_finalized_before_the_next_row_is_sent(outbox_sessions) -> None:
+    """한 배치의 행은 끝나는 즉시 결판이 커밋된다 — 열림이 SENT가 되는 순간 그 복구가 집힐 수 있다(Codex R5-1)."""
+
+    # Given: two due rows that sort first (A before B) ahead of any other due row in the shared DB
+    long_ago = _NOW - timedelta(days=3650)
+    async with outbox_sessions() as db:
+        await enqueue_notification(db, _intent("OPS-QA-T10-PER-ROW-A"), now=long_ago)
+        await enqueue_notification(
+            db, _intent("OPS-QA-T10-PER-ROW-B"), now=long_ago + timedelta(seconds=1)
+        )
+        await db.commit()
+    states_seen_at_second_post: list[str] = []
+    posts = 0
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal posts
+        posts += 1
+        if posts == 2:
+            async with outbox_sessions() as probe:
+                first = await probe.scalar(
+                    select(NotificationOutbox.state).where(
+                        NotificationOutbox.dedupe_key == "OPS-QA-T10-PER-ROW-A"
+                    )
+                )
+                states_seen_at_second_post.append(first)
+        return httpx.Response(200, text="ok")
+
+    async def no_pause() -> None:
+        return None
+
+    # When: one batch sends both rows
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await dispatch_notification_batch(
+            outbox_sessions,
+            client,
+            webhook_url="https://hooks.slack.com/services/T/B/X",
+            worker_id="worker-per-row",
+            now=_NOW,
+            limit=2,
+            throttle=no_pause,
+        )
+
+    # Then: the first row was already committed SENT before the second POST left
+    assert result.sent == 2
+    assert states_seen_at_second_post == [NotificationOutboxState.SENT.value]

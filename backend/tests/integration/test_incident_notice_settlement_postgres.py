@@ -8,11 +8,13 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from sqlalchemy import select
 
-from app.models.operations import Incident, NotificationOutbox
+from app.models.operations import Incident, NotificationOutbox, NotificationOutboxState
+from app.services.notification_delivery import _finalize
 from app.services.notification_store import (
     RESOLVED_BEFORE_SEND_CODE,
     claim_notification_batch,
 )
+from app.services.notification_transport import TransportDecision
 
 NOW = datetime(2026, 10, 26, 3, 0, tzinfo=UTC)
 
@@ -426,22 +428,110 @@ async def test_a_recovery_waits_for_its_open_and_follows_it_on_the_next_tick(pg_
     db.add_all([opened, recovered])
     await db.flush()
 
-    first_tick = await _claimed_ids(db)
+    first_tick = await claim_notification_batch(db, "worker-a", now=NOW)
+    [open_lease] = [claim for claim in first_tick if claim.id == opened.id]
 
-    assert opened.id in first_tick
-    assert recovered.id not in first_tick
+    assert recovered.id not in {claim.id for claim in first_tick}
     assert (await _row(db, recovered)).state == "PENDING"
 
-    second_tick = await _claimed_ids(db)
+    # 열림은 SENDING으로 커밋됐지만 아직 HTTP를 보내지 않았다 — 복구는 이번에도 기다린다(Codex R5-1).
+    assert recovered.id not in await _claimed_ids(db)
+    assert (await _row(db, recovered)).state == "PENDING"
 
-    assert recovered.id in second_tick
+    # 열림 전송이 일시 실패했다. 다음 시도에서도 열림만 나가고 복구는 기다린다.
+    await _finalize(db, open_lease, _decision("RETRYING", "SLACK_SERVER_ERROR"), NOW)
+    retry_at = NOW + timedelta(hours=1)
+    retry_tick = await claim_notification_batch(db, "worker-b", now=retry_at)
+    [retry_lease] = [claim for claim in retry_tick if claim.id == opened.id]
+    assert recovered.id not in {claim.id for claim in retry_tick}
+
+    # 재시도가 Slack에 닿은 뒤에야 복구가 나간다.
+    await _finalize(db, retry_lease, _decision("SENT", None), retry_at)
+    after_sent = {
+        claim.id for claim in await claim_notification_batch(db, "worker-c", now=retry_at)
+    }
+    assert recovered.id in after_sent
+
+
+def _decision(state: str, code: str | None) -> TransportDecision:
+    return TransportDecision(NotificationOutboxState(state), code, {"status": 200}, attempted=True)
+
+
+async def test_a_recovery_is_settled_when_its_claimed_open_never_reached_slack(pg_async_session):
+    """워커 A가 열림을 잡은(SENDING) 사이 사고가 복구됐고, A의 전송이 실패했다(Codex R5-1).
+
+    복구 알림을 다른 워커가 먼저 내보내면 채널에는 열림 없는 복구 줄만 남는다. 복구는 열림이
+    결판날 때까지 기다리고, 열림이 끝내 나가지 못하면 둘 다 발송 전 종결된다.
+    """
+
+    db = pg_async_session
+    incident = _incident("CONTENT_GENERATION_FAILED", "OPEN")
+    db.add(incident)
+    await db.flush()
+    opened = _notice(incident, created_at=NOW - timedelta(minutes=50))
+    db.add(opened)
+    await db.flush()
+    [open_lease] = [
+        claim
+        for claim in await claim_notification_batch(db, "worker-a", now=NOW)
+        if claim.id == opened.id
+    ]
+
+    incident.state = "RECOVERED"
+    incident.recovered_at = NOW
+    recovered = _notice(incident, "INCIDENT_RECOVERED", created_at=NOW)
+    recovered.next_attempt_at = NOW
+    db.add(recovered)
+    await db.flush()
+
+    assert recovered.id not in await _claimed_ids(db)
+    assert (await _row(db, recovered)).state == "PENDING"
+
+    await _finalize(db, open_lease, _decision("RETRYING", "SLACK_SERVER_ERROR"), NOW)
+    later = {claim.id for claim in await claim_notification_batch(db, "worker-b", now=NOW + timedelta(hours=1))}
+
+    assert opened.id not in later and recovered.id not in later
+    for row in (opened, recovered):
+        settled = await _row(db, row)
+        assert settled.state == "FAILED"
+        assert settled.safe_error_code == RESOLVED_BEFORE_SEND_CODE
+
+
+async def test_a_recovery_follows_a_claimed_open_once_its_send_lands(pg_async_session):
+    """사고가 복구된 사이 잡혀 있던 열림이 결국 Slack에 닿았다 — 그 뒤 복구가 나간다."""
+
+    db = pg_async_session
+    incident = _incident("CONTENT_GENERATION_FAILED", "OPEN")
+    db.add(incident)
+    await db.flush()
+    opened = _notice(incident, created_at=NOW - timedelta(minutes=50))
+    db.add(opened)
+    await db.flush()
+    [open_lease] = [
+        claim
+        for claim in await claim_notification_batch(db, "worker-a", now=NOW)
+        if claim.id == opened.id
+    ]
+    incident.state = "RECOVERED"
+    incident.recovered_at = NOW
+    recovered = _notice(incident, "INCIDENT_RECOVERED", created_at=NOW)
+    recovered.next_attempt_at = NOW
+    db.add(recovered)
+    await db.flush()
+
+    assert recovered.id not in await _claimed_ids(db)
+
+    await _finalize(db, open_lease, _decision("SENT", None), NOW)
+
+    assert recovered.id in await _claimed_ids(db)
 
 
 @pytest.mark.parametrize(
     ("open_state", "open_code", "recovery_claimed", "recovery_state"),
     [
         ("SENT", None, True, "SENDING"),
-        ("SENDING", None, True, "SENDING"),
+        # 잡혔지만 아직 보내지 않았을 수 있는 열림 — 결판(SENT·실패)이 날 때까지 복구는 기다린다.
+        ("SENDING", None, False, "PENDING"),
         # 보낸 뒤 결과를 모르는 열림 — 채널에 닿았을 수 있으므로 복구가 따른다.
         ("HOLD", "DELIVERY_OUTCOME_UNKNOWN", True, "SENDING"),
         # 보낼 채널이 없어 보내기 전에 보류한 열림 — 아직 나가지 않았으므로 복구는 기다린다.

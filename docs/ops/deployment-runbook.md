@@ -38,7 +38,7 @@ gcloud run jobs execute reputation-migrate --project mso-platform-481505 --regio
 
 ## 운영 DB 읽기 전용 조회
 
-운영 DB는 사설 IP라 작업 PC에서 직접 붙지 않는다. 자율 운영 지표(Q1~Q6, 쿼리 원문은 `backend/app/utils/ops_sql_report.py`)는
+운영 DB는 사설 IP라 작업 PC에서 직접 붙지 않는다. 자율 운영 지표(Q1~Q6)와 배포 전 확인(Q7, 쿼리 원문은 `backend/app/utils/ops_sql_report.py`)은
 VPC 안의 migrate Job으로 돌린다. CLI는 첫 문장으로 `SET TRANSACTION READ ONLY`를 실행하고 끝나면 롤백하며, 쿼리마다 JSON 한 줄을
 Job 로그에 남긴다. gcloud `--args`는 쉼표로 인자를 나누므로 `--only`는 쿼리마다 따로 넘긴다(`--only=q1,q3`은 한 토큰이 아니다).
 
@@ -251,6 +251,19 @@ WHERE status NOT IN ('PUBLISHED','CANCELLED','WITHHELD');
 남긴 `CONTENT_NOT_GENERATED` 등). `ops_sql_report --only=q4`로 `OPERATOR_REQUIRED`·`INPUT_CHANGE_REQUIRED` 슬롯을 원인별로 뽑고,
 그중 원고 미생성으로 동결된 슬롯은 운영센터 사고 큐(`/operations?queue=incidents`)의 "작업 다시 시도"로 한 번 풀어 준다. `LEGACY_SPEND_UNKNOWN`(2026-10-11 조회 기준 12건)은 이 버튼으로 풀리지 않는다 — 운영센터의 "레거시 예산 교체 후 다시 시도"(`POST /api/admin/hospitals/{h}/content/{c}/regenerate`, 사유 필수·검증된 actor·멱등 키)로 글마다 예산을 교체해야 하며, 사람이 지출 사실을 확인하는 감사 가능한 행위라 일괄 스크립트로 대신하지 않는다.
 다음 날 지표는 MasterPlan §5 Phase 0 (f)를 따른다.
+
+**Phase 1(`0088_add_outbox_open_pairing_index`) — 배포 전 확인.** 0088은 `notification_outbox`에 열림 알림 짝 조회용 부분
+인덱스를 CONCURRENTLY 없이 만든다(만드는 동안 outbox 쓰기가 기다린다). outbox는 운영 알림 행만 쌓이는 작은 표(수천 행 단위)라
+1초 안팎이지만, 배포 전에 행 수를 읽기 전용으로 확인해 기록한다.
+
+```bash
+gcloud run jobs execute reputation-migrate --project mso-platform-481505 --region asia-northeast3 --wait \
+  --args=python,-m,app.utils.ops_sql_report,--only=q7
+```
+
+`outbox_rows`가 **약 100만 행 이하**면 표준 `deploy.sh`(migrate 선행)로 진행한다. 넘으면 배포 전에 읽기 전용이 아닌 세션에서
+`CREATE INDEX CONCURRENTLY ix_notification_outbox_open_pairing ON notification_outbox (incident_id, state, created_at)
+WHERE notification_type = 'INCIDENT_OPEN';`을 먼저 실행한다 — 0088은 인덱스가 이미 있으면 생성을 건너뛴다.
 
 **10/8 배치(PR #226, `0083_add_operation_run_not_before`) — 0083 migrate Job을 먼저 끝내고, 코드는 그 다음 배포한다.**
 새 ORM이 `operation_runs.not_before_at`을 SELECT한다. 추가형·NULL 허용이라 0083 위의 옛 코드는 안전하다.
