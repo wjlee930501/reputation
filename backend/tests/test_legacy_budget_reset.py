@@ -400,6 +400,55 @@ def test_cli_apply_uses_the_shared_function_per_row_and_is_idempotent(monkeypatc
     assert len(calls) == 2
 
 
+def test_cli_ids_mode_selects_only_named_rows_with_body() -> None:
+    target = uuid.uuid4()
+    sql = str(
+        cli.candidate_query([target]).compile(
+            dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
+        )
+    )
+    for fragment in (
+        "content_items.status IN ('DRAFT', 'READY')",
+        "content_items.first_published_at IS NULL",
+        f"content_items.id IN ('{target}'",
+        "'LEGACY_SPEND_UNKNOWN'",
+    ):
+        assert fragment in sql, fragment
+    # 본문이 저장된 10/13 예산 유실 슬롯이 대상이라 생성 시각·빈 본문 조건을 걸지 않는다.
+    assert "content_items.created_at <" not in sql
+    assert "content_items.body IS NULL" not in sql
+
+
+def test_cli_ids_mode_uses_its_own_actor_and_reports_unselected(monkeypatch) -> None:
+    lost = {
+        "context": "gate_catalog=2026-10-13.1;philosophy=p;content_type=COLUMN;query_target=q",
+        "reason": "LEGACY_SPEND_UNKNOWN",
+        "retry_class": "OPERATOR_REQUIRED",
+        "next_retry_at": None,
+        "exhausted_days": 0,
+        "guard_deferral_count": 0,
+    }
+    row = _row(lost, incident_open=True)
+    missing = uuid.uuid4()
+    calls = []
+
+    def apply_one(db, content_id, *, actor, reason, idempotency_key):
+        calls.append((actor, idempotency_key))
+        return SimpleNamespace(content_id=str(content_id), outcome="REPLACED", detail=None)
+
+    monkeypatch.setattr(cli, "apply_legacy_budget_replacement_sync", apply_one)
+    out = io.StringIO()
+
+    cli.run(_CliDB([row]), apply=True, reason="hotfix", out=out, ids=[row[0].id, missing])
+
+    lines = out.getvalue().splitlines()
+    assert f'NOT_SELECTED {{"content_id": "{missing}"}}' in lines
+    assert calls == [(cli.IDS_ACTOR, f"budget-loss-hotfix-20261013:{row[0].id}")]
+    assert cli.parse_args(["--ids", f"{row[0].id},{missing}"]).ids == [row[0].id, missing]
+    with pytest.raises(SystemExit):
+        cli.parse_args(["--ids", "not-a-uuid"])
+
+
 def test_cli_apply_requires_a_reason() -> None:
     with pytest.raises(SystemExit):
         cli.parse_args(["--apply"])

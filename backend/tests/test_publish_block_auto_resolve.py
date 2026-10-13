@@ -38,7 +38,11 @@ from app.services.specialty_compatibility import (
 )
 from app.utils.medical_filter import check_forbidden
 from app.workers import generation_incident_control, tasks, topic_swap_fallback
-from app.workers.generation_attempt_state import fresh_generation_attempt
+from app.workers.generation_attempt_state import (
+    fresh_generation_attempt,
+    read_generation_attempt,
+    read_generation_budget,
+)
 from app.workers.generation_retry_policy import (
     AUTO_CORRECTION_EXHAUSTED_KEY,
     GenerationRetryClass,
@@ -571,6 +575,47 @@ def test_hard_finding_corrected_and_rereview_pass_leads_to_publish_gate(worker, 
     assert calls["llm"] == 1 and len(calls["reviews"]) == 1 and calls["writer"] == 0
     assert calls["image"] == 1, "PASS 뒤에는 기존 이미지·발행 준비 판정으로 이어 간다"
     assert _blocking_ai_review_state(item) is None
+
+
+def test_correction_pass_keeps_the_slot_budget_for_the_image_step(worker, monkeypatch):
+    """교정 PASS가 시도 기록을 지워도 예산은 남는다 — 이어지는 이미지 단계가 예산을 읽는다.
+
+    2026-10-13 18:00 스윕: PASS가 시도 기록을 통째로 지워 이미지 단계가 예산 없는 기록을
+    LEGACY_SPEND_UNKNOWN으로 읽었고, 본문이 저장된 6개 슬롯이 사람의 일로 굳었다.
+    """
+
+    philosophy, calls = worker
+    body = _body(NEUTRAL_A, WRONG_TRAINING)
+    finding = _finding("HARD", "HOSPITAL_FACT", "수련기관이 프로필과 다릅니다.", WRONG_TRAINING)
+    item = _blocked_item(philosophy, body, finding)
+    stored_budget = item.essence_check_summary["generation_attempt"]["budget"]
+    calls["item"] = item
+    seen_budgets = []
+
+    def image(_db, image_item, _hospital, _philosophy):
+        calls["image"] += 1
+        # 실제 이미지 단계의 원장과 같은 읽기 — 예산이 없으면 GenerationBudgetUnknown이다.
+        seen_budgets.append(read_generation_budget(read_generation_attempt(image_item)))
+        return tasks.GenerationItemState.SUCCEEDED
+
+    monkeypatch.setattr(tasks, "_recover_missing_content_image", image)
+
+    async def propose(*, targets, **_kwargs):
+        return {targets[0].key: ("REPLACE", MAPO_PROFILE_SENTENCE)}
+
+    async def review(**kwargs):
+        return _review(kwargs["content"])
+
+    _install(monkeypatch, calls, propose=propose, review=review)
+
+    state, code, _message = tasks._generate_single_content_item(
+        _DB(), item, _hospital(id=item.hospital_id)
+    )
+
+    assert (state, code) == (tasks.GenerationItemState.SUCCEEDED, None)
+    written = calls["writes"][0]["essence_check_summary"]
+    assert written["generation_attempt"] == {"budget": stored_budget}
+    assert len(seen_budgets) == 1 and seen_budgets[0].legacy_state == "KNOWN_ZERO"
 
 
 def test_two_failed_corrections_swap_topic_then_alert_operator(worker, monkeypatch):
@@ -1526,7 +1571,8 @@ def test_correction_runs_after_backoff_and_its_pass_clears_the_review_record(
     correction = item.essence_check_summary[mc.AUTO_CORRECTION_KEY]
     assert (correction["passes"], correction["rereviews"]) == (1, 1)
     assert "review_unavailable_total" not in correction
-    assert tasks._stored_generation_attempt(item) == {}
+    # 억제(원인·검수 장애 계수)는 지워지고 슬롯 예산만 남는다.
+    assert set(tasks._stored_generation_attempt(item)) == {"budget"}
 
 
 def test_correction_and_review_unavailable_caps_keep_separate_counters(worker, monkeypatch):
