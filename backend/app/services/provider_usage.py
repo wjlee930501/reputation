@@ -398,12 +398,36 @@ async def _open_spool_truncation_incident(
 
 
 # 인수: 원본 키(새 카운터 또는 주인 없이 남은 인수 키)를 이 drain의 고유 키로 옮기고 인수 색인에 시각을
-# 단다. 한 Lua 연산이라 둘이 같은 키를 인수하면 한쪽만 성공하고, 색인 없는 인수 키가 생기지 않는다.
+# 단다. 한 Lua 연산이라 둘이 같은 키를 인수하면 한쪽만 성공한다. Lua는 명령 오류를 되돌리지 않으므로
+# 순서로 지킨다 — 색인(ZADD)을 먼저 달고 옮긴다(RENAME). ZADD가 실패하면 아무것도 바뀌지 않고, RENAME이
+# 실패하면 단 색인을 떼고 원본(과 원본의 색인)을 그대로 둔다. 원본의 색인은 옮긴 뒤에만 뗀다. 어느
+# 경우든 원본 키나 색인된 인수 키 하나는 남는다(색인 없는 인수 키가 생기지 않는다).
 _CLAIM_DROPPED_SCRIPT = """
-redis.call('ZREM', KEYS[3], KEYS[1])
-if redis.call('EXISTS', KEYS[1]) == 0 then return 0 end
-redis.call('RENAME', KEYS[1], KEYS[2])
+if redis.call('EXISTS', KEYS[1]) == 0 then
+  redis.call('ZREM', KEYS[3], KEYS[1])
+  return 0
+end
 redis.call('ZADD', KEYS[3], ARGV[1], KEYS[2])
+local moved = redis.pcall('RENAME', KEYS[1], KEYS[2])
+if type(moved) == 'table' and moved.err then
+  redis.pcall('ZREM', KEYS[3], KEYS[2])
+  return redis.error_reply(moved.err)
+end
+redis.pcall('ZREM', KEYS[3], KEYS[1])
+return 1
+"""
+# 격리: 읽을 수 없는 인수 키를 격리 키로 옮기고(RENAME) 보관 기한을 걸고(EXPIRE) 인수 색인에서 뗀다(ZREM)
+# — 한 Lua 연산이다. 기한을 걸지 못하면 원래 이름으로 되돌린다(기한 없는 격리 키를 남기지 않는다 —
+# 색인이 남은 원래 키는 다음 drain이 다시 본다).
+_QUARANTINE_DROPPED_SCRIPT = """
+local moved = redis.pcall('RENAME', KEYS[1], KEYS[2])
+if type(moved) == 'table' and moved.err then return redis.error_reply(moved.err) end
+local ttl = redis.pcall('EXPIRE', KEYS[2], ARGV[1])
+if type(ttl) == 'table' and ttl.err then
+  redis.pcall('RENAME', KEYS[2], KEYS[1])
+  return redis.error_reply(ttl.err)
+end
+redis.pcall('ZREM', KEYS[3], KEYS[1])
 return 1
 """
 # 확인(ACK): 자기 인수 키와 그 색인만 지운다.
@@ -518,9 +542,14 @@ async def _quarantine(client: redis_async.Redis, key: str) -> None:
         logger.warning("provider usage unreadable inflight key incident not recorded: key=%s", key)
         return
     try:
-        await client.rename(key, quarantine_key)
-        await client.expire(quarantine_key, _RECOVERY_DROPPED_QUARANTINE_TTL_SECONDS)
-        await client.zrem(_inflight_index_key(), key)
+        await client.eval(
+            _QUARANTINE_DROPPED_SCRIPT,
+            3,
+            key,
+            quarantine_key,
+            _inflight_index_key(),
+            _RECOVERY_DROPPED_QUARANTINE_TTL_SECONDS,
+        )
     except (OSError, RedisError, RuntimeError, TimeoutError):
         logger.warning("provider usage unreadable inflight key not quarantined: key=%s", key)
 

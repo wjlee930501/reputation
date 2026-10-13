@@ -688,6 +688,79 @@ async def test_an_unreadable_inflight_key_is_quarantined_and_never_blocks_new_co
     assert len(rig.opened) == 2
 
 
+class _RestrictedRedis:
+    """특정 명령만 막힌 실제 Redis 사용자(ACL) — Lua 안의 그 명령이 실패한다."""
+
+    def __init__(self, rig, denied: str):
+        import redis.asyncio as redis_async
+
+        self.rig = rig
+        self.user = f"test_usage_{denied}_{uuid.uuid4().hex[:8]}"
+        self.denied = denied
+        host = rig.url.split("://", 1)[1]
+        self.url = f"redis://{self.user}:pw@{host}"
+        self.client = None
+        self._factory = redis_async.from_url
+
+    async def __aenter__(self):
+        await self.rig.client.execute_command(
+            "ACL", "SETUSER", self.user, "reset", "on", ">pw", "~*", "+@all", f"-{self.denied}"
+        )
+        self.client = self._factory(self.url)
+        return self.client
+
+    async def __aexit__(self, *_exc):
+        await self.client.aclose()
+        await self.rig.client.execute_command("ACL", "DELUSER", self.user)
+
+
+@pytest.mark.parametrize("denied", ["zadd", "rename"])
+async def test_a_failed_takeover_leaves_the_original_key_and_no_unindexed_copy(dropped_rig, denied):
+    """인수 Lua에서 ZADD나 RENAME이 실패해도 원본(새 카운터·남은 인수 키와 그 색인)이 그대로 남는다."""
+    rig = dropped_rig
+    index = provider_usage._inflight_index_key()
+    leftover = f"{rig.inflight_key}:1:{uuid.uuid4().hex}"
+    await rig.client.set(leftover, 4)
+    await rig.client.zadd(index, {leftover: 1})
+    await rig.client.incrby(rig.dropped_key, 2)
+    rig.advance(301)
+    before = await rig.keys()
+
+    async with _RestrictedRedis(rig, denied) as restricted:
+        assert await provider_usage.report_dropped_usage(redis_client=restricted) == 0
+
+    assert await rig.keys() == before
+    assert int(await rig.client.get(rig.dropped_key)) == 2
+    assert [m.decode() for m in await rig.client.zrange(index, 0, -1)] == [leftover]
+    # 막힌 명령이 풀리면 다음 drain이 둘 다 처리한다.
+    assert await rig.drain() == 6
+    assert await rig.keys() == []
+
+
+async def test_a_quarantine_that_cannot_set_its_ttl_restores_the_inflight_key(dropped_rig):
+    """격리 Lua에서 EXPIRE가 실패하면 기한 없는 격리 키를 남기지 않고 원래 인수 키(색인 포함)로 되돌린다."""
+    rig = dropped_rig
+    index = provider_usage._inflight_index_key()
+    leftover = f"{rig.inflight_key}:1:{uuid.uuid4().hex}"
+    await rig.client.set(leftover, "not-a-number")
+    await rig.client.zadd(index, {leftover: 1})
+    rig.advance(301)
+
+    async with _RestrictedRedis(rig, "expire") as restricted:
+        assert await provider_usage.report_dropped_usage(redis_client=restricted) == 0
+
+    remaining = await rig.keys()
+    assert not any(":quarantine:" in key for key in remaining)
+    members = [m.decode() for m in await rig.client.zrange(index, 0, -1)]
+    assert len(members) == 1 and await rig.client.get(members[0]) == b"not-a-number"
+    # 정상 drain은 한 연산으로 격리한다 — 기한이 걸리고 색인에서 빠진다.
+    rig.advance(301)
+    assert await rig.drain() == 0
+    quarantined = [key for key in await rig.keys() if ":quarantine:" in key]
+    assert len(quarantined) == 1 and await rig.client.ttl(quarantined[0]) > 0
+    assert await rig.client.zcard(index) == 0
+
+
 async def test_counter_failure_does_not_turn_a_stored_spool_into_a_failure(monkeypatch, caplog):
     # spool 저장은 이미 성공했다 — 유실 카운터만 실패해도 기록은 spool에 있다(정상 경로로 되돌리지 않는다).
     db = FakeDB()
