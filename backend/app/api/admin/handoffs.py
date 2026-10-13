@@ -104,17 +104,18 @@ def _lead_profile_seed(lead: SalesLead | None) -> dict[str, list[str]]:
 
     병원 대표번호(`clinic_phone`)는 옮기지 않는다 — 공개 페이지에 바로 나가는 사실이라
     AE가 확인해야 하고, 병원 행으로 복사하면 리드 보관기간 파기를 우회한다(PII-2·PII-3).
-    키워드는 공개 표면에 쓰이므로 의료광고 금지 표현이 든 값은 버린다.
+    세 값 모두 공개 표면(공개 API의 병원 프로필)에 그대로 쓰이므로 의료광고 금지 표현이
+    든 값은 옮기지 않는다 — 진료과·지역도 공개 접수의 자유 입력이다.
     """
 
     if lead is None:
         return {}
     seed: dict[str, list[str]] = {}
     specialty = (lead.specialty or "").strip()
-    if specialty:
+    if specialty and not check_forbidden(specialty):
         seed["specialties"] = [specialty]
     region = (lead.region_keyword or "").strip()
-    if region:
+    if region and not check_forbidden(region):
         seed["region"] = [region]
     keywords = [
         keyword.strip()

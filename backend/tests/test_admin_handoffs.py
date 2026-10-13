@@ -848,6 +848,30 @@ async def test_register_contract_carries_the_lead_targeting_but_not_its_phone(
     assert create.detail["lead_profile_seed"] == ["keywords", "region", "specialties"]
 
 
+async def test_register_contract_drops_forbidden_lead_specialty_and_region(
+    _verified_actor,
+) -> None:
+    """진료과·지역도 공개 프로필로 그대로 나가는 자유 입력이다 — 키워드와 같은 필터를 탄다."""
+    ae = _account("OPERATOR")
+    lead = _lead(
+        specialty="최고의 외과",
+        region_keyword="강남 100% 완치",
+        core_keywords=["치질"],
+    )
+    db = _RegisterDB([ae], lead=lead)
+
+    await handoffs_api.register_contract(
+        _registration(ae, lead_id=lead.id), db=db, actor=ae
+    )
+
+    hospital = next(row for row in db.added if isinstance(row, Hospital))
+    assert not hospital.specialties
+    assert not hospital.region
+    assert hospital.keywords == ["치질"]
+    create = next(row for row in db.added if getattr(row, "action", None) == "create_hospital")
+    assert create.detail["lead_profile_seed"] == ["keywords"]
+
+
 async def test_register_contract_without_a_lead_seeds_nothing(_verified_actor) -> None:
     ae = _account("OPERATOR")
     db = _RegisterDB([ae])
