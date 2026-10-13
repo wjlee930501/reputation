@@ -1,6 +1,18 @@
 # 현재 배포와 헬스체크
 
-## 최신 운영 배포 — 2026-10-13 Phase 1 자율성 보완
+## 최신 운영 배포 — 2026-10-13 Phase 2 자율성 보완
+
+main `d6b85c96`(api `00243-mx4`, worker `00233-9k7`, beat `00228-jlm`, admin `00107-d26`, Site 그대로, **마이그레이션 없음** — DB head
+`0088_add_outbox_open_pairing_index`, RedBeat `2026-10-12.1` 그대로). 같은 날 세 번째 배포(대표 지시, D28)로 15:03~15:13 KST. `deploy.sh`가 운영
+서비스 env를 정본으로 썼고 차이가 없어(14:30 대조 0) `--accept-env-diff`는 쓰지 않았다. 하루 잠금은 거절 없이 통과했다. backend·admin 모두
+`DEPLOY_ROLLBACK_STATE_FILE`(`.omo/rollback-p2/backend`·`admin`)으로 좌표를 남겼다. admin은 셸에 `PUBLIC_DOMAIN`·`ADMIN_DOMAIN`이 없어 첫 시도가
+사전 검증에서 멈췄고(변경 없음) export 뒤 다시 실행했다. readiness 18/18, 병원 11곳 헬스 200(slug·canonical_host·hospital_id 따로 확인),
+`ops_sql_report` q8 행 없음. 첫 15분 틱에서 예상한 온보딩 정체 사고 1건, 예측 밖으로 Essence 자동 재검수의 LLM 출력 잘림(`length`)
+`ESSENCE_AUTO_REVIEW_FAILED` 1건(새 리비전 ERROR 1건, 원인 미조사). **보류**: Terraform 경보 2종(아래 2번)은 작업 PC의
+terraform 1.5.7이 plan을 못 돌려 적용하지 않았고, `OPS_ALERT_EMAIL`(4번)은 비워 두었다(`facts.ops_alert_email_configured=false`, readiness 통과).
+**이후 Worker를 `00223` 이하로 롤백하지 않는다.** 상세는 [배포 기록](../releases/2026-10-13-autonomy-phase2-production.md).
+
+## 이전 운영 배포 — 2026-10-13 Phase 1 자율성 보완
 
 main `08abf747`(api `00242-jsw`, worker `00232-vx2`, beat `00227-2mv`, admin `00106-psm`, Site 그대로, DB head
 `0088_add_outbox_open_pairing_index`, RedBeat `2026-10-12.1`). 같은 날 두 번째 배포(대표 승인)로 12:00 스윕 ±45분과 13:00 발행
@@ -295,7 +307,7 @@ gcloud run jobs execute reputation-migrate --project mso-platform-481505 --regio
 `CREATE INDEX CONCURRENTLY ix_notification_outbox_open_pairing ON notification_outbox (incident_id, state, created_at)
 WHERE notification_type = 'INCIDENT_OPEN';`을 먼저 실행한다 — 0088은 인덱스가 이미 있으면 생성을 건너뛴다.
 
-**Phase 2(마이그레이션 없음, DB head `0088` 그대로) — 배포일 절차.** 대상은 API·Worker·Beat(`bash scripts/deploy.sh backend`)와
+**Phase 2(마이그레이션 없음, DB head `0088` 그대로) — 배포일 절차(2026-10-13 15:03~15:13 KST 배포 완료: 2번 Terraform 경보 보류, 4번 `OPS_ALERT_EMAIL` 비움, 6번은 env 차이 0이라 `--accept-env-diff` 없이, 기록은 [Phase 2 배포 기록](../releases/2026-10-13-autonomy-phase2-production.md)).** 대상은 API·Worker·Beat(`bash scripts/deploy.sh backend`)와
 Admin(`bash scripts/deploy.sh admin` — 병원 정보 화면의 자동 입력 초안, 시간대 규칙 없음)이다. Site 변경은 없다. Phase 1이 먼저
 배포됐는지, 운영 DB head가 `0088_add_outbox_open_pairing_index`인지 먼저 확인한다.
 
@@ -345,7 +357,7 @@ hospital ID 대조를 smoke가 했다고 기록하지 않는다(필요하면 따
    사라진다(9/23·10/1 사고의 원인). 로컬 파일을 운영 env에 맞춰 고친 뒤 다시 본다(Phase 1이 지우게 한 `SOV_MONTHLY_COHORT_LIMIT`이
    운영에 남아 있으면 `removed:`로 나온다 — Phase 1 배포 기록부터 확인한다). 이후 배포부터는 운영 env가 정본이다.
 7. **배포 뒤 확인.** readiness 18개 검사 전부 통과(`checks.pipeline_watchdog_token_configured: true`, `facts.ops_alert_email_configured:
-   true`), `/api/v1/health/live`의 `release`가 이번 릴리스(`deploy.sh`가 자동 확인), Beat `/live` 정상(`beat_liveness_failed` 로그 없음,
+   true` — 비워 두었다면 false이고 readiness는 그래도 통과한다), `/api/v1/health/live`의 `release`가 이번 릴리스(`deploy.sh`가 자동 확인), Beat `/live` 정상(`beat_liveness_failed` 로그 없음,
    기동 뒤 15분 유예), 새 리비전 ERROR 0건, 15분 뒤 `project_milestone_events` 결과에 `onboarding_stalls_*` 키와
    `monitor_live_custom_domains` 결과에 `pending_domains_*` 키, GCP 경보 정책 2개 존재. 트래픽이 고정돼 있으면 `--unpin`을 붙인다.
 8. **롤백 — 마이그레이션이 없어도 트래픽 롤백만으로 안전하지 않다(첫 달 안분).** Phase 2 이전 Worker·API(main `08abf747` 이하)는
