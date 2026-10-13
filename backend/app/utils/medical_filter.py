@@ -75,8 +75,8 @@ FORBIDDEN_PATTERNS: dict[str, re.Pattern] = {
     # ('심혈관 이벤트가', '최저혈압', '국가 암검진은 무료')은 패턴 모양과 아래 문맥 예외로 비켜 간다.
     # 어휘 경계는 법무 확인 권장(계획 Q1).
     "할인·유인": re.compile(
-        r"최저가|최저\s*(?:가격|비용|수가)|업계\s*최저|(?:가장|제일)\s*(?:저렴|싸)"
-        r"|(?:타|다른)\s*(?:병원|의원|곳)\s*(?:보다|대비)[^.?!\n]{0,12}(?:저렴|싸|낮은\s*(?:가격|비용))"
+        r"최저가(?!\s*(?:되|돼|될|된))|최저\s*(?:가격|비용|수가)|업계\s*최저|(?:가장|제일)\s*(?:저렴|싸)"
+        r"|(?:타|다른)\s*(?:병원|의원|곳)\s*(?:보다|대비)[^.?!\n]{0,12}(?:저렴|(?<!비)싸|낮은\s*(?:가격|비용))"
         r"|\d+(?:\.\d+)?\s*%\s*할인|할인가|할인\s*(?:이벤트|행사|혜택|쿠폰|가격|율|중)"
         r"|특가|반값|파격\s*(?:가|할인)|땡처리|페이백"
         r"|(?:오픈|개원|런칭|시즌|기념|감사|할인|봄맞이|여름맞이|가을맞이|겨울맞이)\s*이벤트"
@@ -177,6 +177,25 @@ _PROCEDURE = re.compile(
     r"시술|수술|치료|진료|마취|주사|레이저|내시경|검사|교정|발치|임플란트|저희|본원|병원"
 )
 
+
+def _earlier_in_sentence(pattern: re.Pattern) -> re.Pattern:
+    """매치 앞, **같은 문장 안**에 이 표현이 있는가(문장 부호·줄바꿈을 넘지 않는다)."""
+    return re.compile(rf"(?:{pattern.pattern})[^.?!\n]*$")
+
+
+def _later_in_sentence(pattern: re.Pattern) -> re.Pattern:
+    """매치 뒤, **같은 문장 안**에 이 표현이 있는가."""
+    return re.compile(rf"^[^.?!\n]*(?:{pattern.pattern})")
+
+
+# 공적 제도·기관. '무료 검진'·'본인부담금 면제'가 이 말과 함께 나오면 병원의 유인이 아니라 제도 안내다.
+_PUBLIC_PROGRAM = re.compile(
+    r"국가|공단|보건소|국민\s*건강\s*보험|건강\s*보험|일반\s*건강\s*검진|지자체|정부"
+    r"|의료\s*급여|차상위|산정\s*특례|상한제"
+)
+# 병원이 혜택을 주겠다는 말. 이 말이 같은 문장에 있으면 제도 안내 예외를 주지 않는다.
+_OFFERING = re.compile(r"해\s*드|드립니다|드려요|제공|혜택|이벤트|특가|증정|모십니다|모셔|오세요")
+
 _ALLOWED_CONTEXTS: dict[str, tuple[_ContextExemption, ...]] = {
     # "사망원인 1위", "발생률 1위" 같은 역학 통계. 역학 명사가 **바로 앞에 붙어 있을
     # 때만** 예외다 — 창을 넓게 잡으면 "발생률 1위 질환을 치료하는 국내 1위 병원"의
@@ -220,8 +239,9 @@ _ALLOWED_CONTEXTS: dict[str, tuple[_ContextExemption, ...]] = {
             preceded_by=re.compile(
                 r"(?:임상|연구|시험|논문|문헌|진료\s*지침|학회)(?:에서|으로|를\s*통해|결과)?\s*$"
             ),
-            unless_preceded_by=_HOSPITAL_SELF,
-            window=12,
+            # 병원 자기 주장은 문장 어디에 있어도 막는다("저희 병원에서 진행한 임상 연구에서 확인된 효과").
+            unless_preceded_by=_earlier_in_sentence(_HOSPITAL_SELF),
+            window=60,
         ),
     ),
     # "탁월한 효과를 기대하기 어렵습니다"처럼 우월 주장을 바로 부정하는 문장.
@@ -242,8 +262,8 @@ _ALLOWED_CONTEXTS: dict[str, tuple[_ContextExemption, ...]] = {
             reason="완전 회복까지 걸리는 기간 안내",
             trigger=re.compile(r"완전\s*회복"),
             followed_by=re.compile(
-                r"^\s*(?:까지|되기까지|하기까지)\s*(?:보통\s*|대개\s*|약\s*|대략\s*)?"
-                r"\d+(?:\s*[~～-]\s*\d+)?\s*(?:일|주|개월|달|년)"
+                r"^\s*(?:까지|되기까지|하기까지)(?:는)?\s*(?:보통\s*|대개\s*|약\s*|대략\s*)?"
+                r"(?:\d+(?:\s*[~～-]\s*\d+)?|수)\s*(?:일|주|개월|달|년)"
             ),
             window=24,
         ),
@@ -289,12 +309,14 @@ _ALLOWED_CONTEXTS: dict[str, tuple[_ContextExemption, ...]] = {
     ),
     # "첨단 기술이 효과를 보장하지 않습니다" 같은 부정. "최첨단"은 계속 차단.
     "최첨단": (
-        # "첨단 장비로 정밀하게 촬영합니다" — 병원 자기 주장이 아닌 일반 설명. "최첨단", "첨단 시술",
-        # 병원·시술을 가리키는 말이 가까이 있는 "본원은 첨단 장비를 갖췄습니다"·"첨단 기술로
-        # 시술합니다"는 계속 막는다.
+        # "첨단 장비로 정밀하게 촬영합니다" — 촬영·판독 과정을 설명하는 문장만 예외다(양성 근거).
+        # 병원·시술을 가리키는 말이 없다는 것만으로는 풀지 않는다 — "첨단 장비를 갖추고 있습니다"는
+        # 주어가 생략된 병원 자기 주장이다. "최첨단", "첨단 시술", "본원은 첨단 장비를 갖췄습니다",
+        # "첨단 기술로 시술합니다"는 계속 막는다.
         _ContextExemption(
-            reason="병원 자기 주장이 아닌 장비·기술 설명",
+            reason="촬영·판독 과정의 장비 설명",
             trigger=re.compile(r"첨단[의]?\s*(?:기술|장비)"),
+            followed_by=re.compile(r"^\s*(?:으)?로\s*(?:정밀|촬영|판독)"),
             unless_preceded_by=_CLAIM_CONTEXT,
             unless_followed_by=_CLAIM_CONTEXT,
             window=20,
@@ -306,28 +328,64 @@ _ALLOWED_CONTEXTS: dict[str, tuple[_ContextExemption, ...]] = {
             window=20,
         ),
     ),
-    # "국가에서 시행하는 무료 검진" — 공적 검진 제도 안내는 병원의 무료 유인이 아니다.
-    # 같은 문장이라도 병원이 주는 무료 상담·시술·진료는 계속 막는다.
+    # "국가에서 시행하는 무료 검진", "보건소에서 무료 검사", "본인부담금 면제 대상" — 공적 제도
+    # 안내는 병원의 무료 유인이 아니다. 같은 문장에 병원 자기 주장(저희·본원·병원에서)이나 혜택을
+    # 주겠다는 말(해 드립니다·제공·혜택·이벤트)이 있으면 예외가 아니다 — "국가 암검진 대상자가
+    # 아니어도 무료 검진을 해 드립니다"는 계속 막는다.
     "할인·유인": (
         _ContextExemption(
-            reason="공적 검진 제도의 무료 안내",
-            trigger=re.compile(r"무료\s*검진"),
-            preceded_by=re.compile(r"(?:국가|공단|보건소|국민\s*건강\s*보험|일반\s*건강\s*검진)"),
-            unless_preceded_by=_HOSPITAL_SELF,
-            window=20,
+            reason="공적 제도의 무료 검진·검사·상담 안내",
+            trigger=re.compile(
+                r"무료\s*(?:검진|검사|상담)|(?:상담|검사)\s*(?:비\s*|비용\s*)?(?:전액\s*)?무료"
+            ),
+            preceded_by=re.compile(
+                rf"(?:{_PUBLIC_PROGRAM.pattern}|대상(?:자)?|제도|연령|주기|\d+\s*년\s*마다)[^.?!\n]*$"
+            ),
+            unless_preceded_by=_earlier_in_sentence(_HOSPITAL_SELF),
+            unless_followed_by=_later_in_sentence(_OFFERING),
+            window=40,
+        ),
+        _ContextExemption(
+            reason="공적 제도의 무료 검진·검사·상담 안내(제도가 뒤에 오는 문장)",
+            trigger=re.compile(
+                r"무료\s*(?:검진|검사|상담)|(?:상담|검사)\s*(?:비\s*|비용\s*)?(?:전액\s*)?무료"
+            ),
+            followed_by=re.compile(
+                rf"^[^.?!\n]*(?:{_PUBLIC_PROGRAM.pattern})|^\s*(?:대상|제도|사업)"
+            ),
+            unless_preceded_by=_earlier_in_sentence(_HOSPITAL_SELF),
+            unless_followed_by=_later_in_sentence(_OFFERING),
+            window=40,
+        ),
+        # "본인부담상한제에 따라 본인부담금 환급", "차상위 계층은 본인부담금 면제 대상" — 건강보험
+        # 제도 안내. 병원이 깎아 주거나 대신 내 주겠다는 말("본인부담금 면제 혜택을 드립니다")과
+        # 할인·대납은 계속 막는다.
+        _ContextExemption(
+            reason="건강보험 제도의 본인부담 면제·환급 안내",
+            trigger=re.compile(r"본인\s*부담금?\s*(?:면제|감면|환급|0\s*원)"),
+            unless_preceded_by=_earlier_in_sentence(_HOSPITAL_SELF),
+            unless_followed_by=_later_in_sentence(_OFFERING),
+            window=40,
         ),
     ),
     # "시술이 아프지 않을까 걱정하는 분이 많습니다" — 환자의 의문·걱정 인용.
     # "시술은 아프지 않습니다" 같은 단정은 계속 차단.
     "통증 없는": (
-        # "고혈압은 초기에 통증 없이 진행합니다", "결절은 통증 없는 혹으로 발견됩니다" — 무증상
-        # 질환 설명. 가까이에 시술·진료·병원을 가리키는 말이 있으면 결과 보장으로 보고 막는다.
+        # "고혈압은 초기에 통증 없이 진행합니다", "결절은 대부분 통증 없는 혹으로 발견됩니다" — 무증상
+        # 질환 설명. 질환·증상 주어가 **바로 앞에** 있을 때만 예외다(양성 근거). 주어가 없는
+        # "통증 없이 편안하게 받으실 수 있습니다"는 생략된 시술 결과 보장이라 계속 막고, 가까이에
+        # 시술·진료·병원을 가리키는 말이 있어도 막는다.
         _ContextExemption(
             reason="무증상 질환의 경과 설명",
             trigger=re.compile(r"통증\s*없[는이]"),
+            preceded_by=re.compile(
+                r"(?:(?:질환|질병|증상|결절|혹|병변|종양|무증상)[은는이가의]?\s*"
+                r"(?:대부분\s*|흔히\s*|초기에(?:는)?\s*)?"
+                r"|초기에(?:는)?\s*)$"
+            ),
             unless_preceded_by=_PROCEDURE,
             unless_followed_by=_PROCEDURE,
-            window=10,
+            window=12,
         ),
         _ContextExemption(
             reason="환자의 의문·걱정 표현",
