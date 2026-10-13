@@ -261,6 +261,34 @@ WHERE status NOT IN ('PUBLISHED','CANCELLED','WITHHELD');
 그중 원고 미생성으로 동결된 슬롯은 운영센터 사고 큐(`/operations?queue=incidents`)의 "작업 다시 시도"로 한 번 풀어 준다. `LEGACY_SPEND_UNKNOWN`(2026-10-11 조회 기준 12건)은 이 버튼으로 풀리지 않는다 — 운영센터의 "레거시 예산 교체 후 다시 시도"(`POST /api/admin/hospitals/{h}/content/{c}/regenerate`, 사유 필수·검증된 actor·멱등 키)로 글마다 예산을 교체해야 하며, 사람이 지출 사실을 확인하는 감사 가능한 행위라 일괄 스크립트로 대신하지 않는다.
 다음 날 지표는 MasterPlan §5 Phase 0 (f)를 따른다.
 
+**Phase 3(2026-10-13 콘텐츠 게이트 조정) — 배포 전 확인.** 새 DB 리비전은 없다(head `0087`).
+1. **금지 표현 필터(`utils/medical_filter.py`)를 바꾼 배포는 새 이미지로 영향 조회를 먼저 돌린다.** 필터는 공개 가시성·병원 공개
+   문구에도 쓰여 배포 즉시 걸리는 공개 글을 숨긴다. `scripts/deploy.sh migrate`로 migrate Job의 이미지를 새 이미지로 바꾼 뒤(이
+   릴리스는 alembic 변경이 없어 upgrade는 아무것도 하지 않는다) 운영 DB에 대해 돌린다. 출력은 걸린 항목마다 JSON 한 줄과 끝의
+   `{"summary": {라벨: 건수}}`이며 읽기 전용(READ ONLY·롤백)이다. 옛 이미지에서도 이미 걸려 숨겨진 항목이 섞이므로 새 라벨
+   (`할인·유인`) 건수를 본다. 0건이거나 대표가 확인한 목록일 때만 서비스 배포를 진행한다.
+
+   ```bash
+   gcloud run jobs execute reputation-migrate --project mso-platform-481505 --region asia-northeast3 --wait \
+     --args=python,-m,app.utils.forbidden_impact_scan
+   ```
+
+2. `ops_sql_report --only=q4`로 게이트 카탈로그 판(`2026-10-13.1`)이 한 번 다시 평가할 종착 슬롯 수를 센다(슬롯당 작가 세션 1회분 상한).
+3. `CONTENT_HARD_FINDING_IDLE_TERMINAL`(기본 `false`)은 아래 측정이 10/10 이후 같은 글의 반복 공회전을 보여 줄 때만 `.env.production`에서 켠다.
+
+   ```sql
+   SELECT date_trunc('day', r.requested_at AT TIME ZONE 'Asia/Seoul') AS day, count(*) AS runs,
+          count(DISTINCT r.request_payload->>'source_id') AS items
+   FROM operation_runs r
+   WHERE r.operation_type = 'GENERATE_CONTENT_ITEM' AND r.state = 'FAILED'
+     AND r.safe_error_code = 'CONTENT_AI_HARD_FINDING'
+     AND r.requested_at >= '2026-10-10'
+   GROUP BY 1 ORDER BY 1;
+   ```
+
+   같은 글이 하루 여러 번이면 그 글의 `human_edited_at`과 `essence_check_summary->'auto_correction'->'history'` 길이가 늘지 않았는지로
+   공회전(사람이 편집해 교정이 맡지 못한 HARD)을 가른다.
+
 **10/8 배치(PR #226, `0083_add_operation_run_not_before`) — 0083 migrate Job을 먼저 끝내고, 코드는 그 다음 배포한다.**
 새 ORM이 `operation_runs.not_before_at`을 SELECT한다. 추가형·NULL 허용이라 0083 위의 옛 코드는 안전하다.
 `deploy.sh`의 Backend 대상은 4단계에서 마이그레이션을 먼저 실행하므로 표준 경로를 쓰면 순서가 지켜진다.
