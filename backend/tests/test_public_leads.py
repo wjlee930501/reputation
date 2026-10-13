@@ -30,10 +30,25 @@ class FakeRequest:
         self.client = SimpleNamespace(host=ip)
 
 
+class _Result:
+    def __init__(self, value):
+        self._value = value
+
+    def scalar_one_or_none(self):
+        return self._value
+
+
 class FakeDB:
+    """접수 알림의 SENDING claim·결과 CAS(`UPDATE … RETURNING`)는 항상 한 행을 잡는다."""
+
     def __init__(self):
         self.added = []
         self.committed = False
+        self.statements = []
+
+    async def execute(self, statement):
+        self.statements.append(statement)
+        return _Result("lead-id")
 
     async def commit(self):
         self.committed = True
@@ -102,8 +117,18 @@ async def test_create_lead_records_notification_failure(monkeypatch):
     )
     await _create_lead(request=FakeRequest(), body=body, background_tasks=BackgroundTasks(), db=db)
 
-    assert db.added[0].notification_status == "FAILED"
+    # 실패는 끝이 아니다 — drain이 1시간 동안 다시 보낸다.
+    assert db.added[0].notification_status == "PENDING"
     assert "Slack/webhook" in db.added[0].notification_error
+
+
+def test_diagnosis_note_constants_stay_importable_from_the_api():
+    """문구 정본은 서비스(drain 재발송이 같은 줄을 다시 만든다), API 이름도 그대로 보인다."""
+    from app.services import inquiry_diagnosis
+
+    assert leads_api.DIAGNOSIS_NOTE_QUEUED == inquiry_diagnosis.DIAGNOSIS_NOTE_QUEUED
+    assert leads_api.DIAGNOSIS_NOTE_NO_INPUT == inquiry_diagnosis.DIAGNOSIS_NOTE_NO_INPUT
+    assert leads_api.DIAGNOSIS_NOTE_REFUSED == inquiry_diagnosis.DIAGNOSIS_NOTE_REFUSED
 
 
 async def test_create_lead_ignores_forwarded_ip_from_untrusted_remote(monkeypatch):
@@ -511,3 +536,183 @@ def test_diagnosis_fields_are_cleaned_and_screened():
         _inquiry_body(core_keywords=["환자 홍길동 수술 기록"])
     with pytest.raises(ValueError, match="50자"):
         _inquiry_body(core_keywords=["가" * 51])
+
+
+class _OrderedDB(FakeDB):
+    """커밋 순서를 기록한다 — 사고가 실패 상태와 같은 커밋에 실리는지 본다."""
+
+    def __init__(self):
+        super().__init__()
+        self.events = []
+
+    async def commit(self):
+        self.events.append("commit")
+        await super().commit()
+
+
+async def test_a_failed_sms_records_its_incident_in_the_status_commit(monkeypatch):
+    _silence_notifier(monkeypatch)
+    _sms_result(monkeypatch, "FAILED")
+    db = _OrderedDB()
+
+    async def fake_record(target_db, lead_id, *, unconfirmed=False):
+        assert target_db is db
+        assert unconfirmed is False
+        db.events.append(("incident", lead_id))
+        return True
+
+    monkeypatch.setattr(inquiry_sms, "record_failure_incident", fake_record)
+    tasks = BackgroundTasks()
+
+    await _create_lead(
+        request=FakeRequest(),
+        body=_inquiry_body(specialty=None, region_keyword=None, core_keywords=None),
+        background_tasks=tasks,
+        db=db,
+    )
+
+    # 리드 커밋 → SENDING claim 커밋 → 발송 결과 커밋, 그다음 실패 상태와 사고가 한 커밋.
+    # 응답 뒤 작업으로 미루지 않는다.
+    assert db.events == ["commit", "commit", "commit", ("incident", "lead-id"), "commit"]
+    assert tasks.tasks == []
+
+
+async def test_an_unconfirmed_sms_records_its_incident_as_unconfirmed(monkeypatch):
+    """문자 사업자가 받았는지 모르는 실패(5xx·응답 유실)는 사고에 '재발송하지 않음'으로 남는다(Codex R4-2)."""
+
+    _silence_notifier(monkeypatch)
+
+    async def fake_ack(_db, lead):
+        lead.ack_sms_status = "FAILED"
+        return inquiry_sms.AckSmsOutcome("FAILED", "stub", unconfirmed=True)
+
+    monkeypatch.setattr(inquiry_sms, "acknowledge_inquiry", fake_ack)
+    recorded = []
+
+    async def fake_record(_db, lead_id, *, unconfirmed=False):
+        recorded.append(unconfirmed)
+        return True
+
+    monkeypatch.setattr(inquiry_sms, "record_failure_incident", fake_record)
+
+    await _create_lead(
+        request=FakeRequest(),
+        body=_inquiry_body(specialty=None, region_keyword=None, core_keywords=None),
+        background_tasks=BackgroundTasks(),
+        db=_OrderedDB(),
+    )
+
+    assert recorded == [True]
+
+
+async def test_skipped_sms_opens_nothing(monkeypatch):
+    _silence_notifier(monkeypatch)
+    _sms_result(monkeypatch, "SKIPPED")
+
+    async def forbidden(*_a, **_k):
+        pytest.fail("no incident")
+
+    monkeypatch.setattr(inquiry_sms, "record_failure_incident", forbidden)
+
+    await _create_lead(
+        request=FakeRequest(),
+        body=_inquiry_body(specialty=None, region_keyword=None, core_keywords=None),
+        background_tasks=BackgroundTasks(),
+        db=FakeDB(),
+    )
+
+
+async def test_an_incident_failure_never_breaks_the_intake(monkeypatch):
+    class _Nested:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    class _DB:
+        def begin_nested(self):
+            return _Nested()
+
+    async def broken_open(*_args, **_kwargs):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(inquiry_sms, "open_ops_incident_in", broken_open)
+
+    assert await inquiry_sms.record_failure_incident(_DB(), "lead-id") is False
+
+
+async def test_the_sms_incident_keeps_the_privacy_scope(monkeypatch):
+    opened = []
+
+    async def capture(_db, **kwargs):
+        opened.append(kwargs)
+
+    monkeypatch.setattr(inquiry_sms, "open_ops_incident_in", capture)
+
+    await inquiry_sms.open_failure_incident(object(), "lead-id", actor="public-inquiry")
+
+    assert [item["incident_type"] for item in opened] == ["INQUIRY_SMS_FAILED"]
+    assert opened[0]["object_id"] == "lead-id"
+    assert opened[0]["hospital_name"] == "도입문의"  # 병원명·연락처를 사고 제목에 싣지 않는다
+
+
+async def test_the_intake_notice_is_claimed_as_sending_and_committed_before_slack(monkeypatch):
+    """SENDING을 커밋한 뒤에만 보낸다 — 보낸 직후 죽어도 drain이 NULL로 보고 다시 보내지 않는다(R2-1)."""
+
+    db = _OrderedDB()
+
+    async def fake_execute(statement):
+        compiled = statement.compile()
+        db.events.append(("execute", compiled.params.get("notification_status")))
+        return _Result("lead-id")
+
+    db.execute = fake_execute
+
+    async def fake_notify(**_payload):
+        db.events.append("slack")
+        return True
+
+    monkeypatch.setattr(notifier, "notify_lead_created", fake_notify)
+    _sms_result(monkeypatch, "SKIPPED")
+
+    await _create_lead(
+        request=FakeRequest(),
+        body=_inquiry_body(specialty=None, region_keyword=None, core_keywords=None),
+        background_tasks=BackgroundTasks(),
+        db=db,
+    )
+
+    assert db.events[:6] == [
+        "commit",  # 리드
+        ("execute", "SENDING"),
+        "commit",  # claim — 발송 전에 영속한다
+        "slack",
+        ("execute", "SENT"),
+        "commit",  # 결과 CAS — 문자를 보내기 전에 남긴다
+    ]
+    assert db.added[0].notification_status == "SENT"
+
+
+async def test_the_intake_skips_slack_when_its_claim_was_already_taken(monkeypatch):
+    """접수가 15분 넘게 멈춘 사이 drain이 NULL을 집어 보냈다면 접수 API는 다시 보내지 않는다."""
+
+    class _TakenDB(FakeDB):
+        async def execute(self, statement):
+            self.statements.append(statement)
+            return _Result(None)
+
+    async def forbidden(**_payload):
+        pytest.fail("the worker already owns this notice")
+
+    monkeypatch.setattr(notifier, "notify_lead_created", forbidden)
+    _sms_result(monkeypatch, "SKIPPED")
+
+    response = await _create_lead(
+        request=FakeRequest(),
+        body=_inquiry_body(specialty=None, region_keyword=None, core_keywords=None),
+        background_tasks=BackgroundTasks(),
+        db=_TakenDB(),
+    )
+
+    assert response["ok"] is True

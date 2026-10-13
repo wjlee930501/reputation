@@ -5,7 +5,8 @@
 미생성은 매일 00:15 배치가 다시 만든다. 코호트 밖 병원의 측정 미완료는 어떤 자동 경로도 없다.
 - 자동 복구가 도는 공백(AUTO): 집합이 바뀐 날에만 REPORT 한 건. 매일 같은 요약을 반복하지 않는다.
 - 자동 경로가 없는 공백(MANUAL): 병원·월마다 ERROR 한 건.
-- 마지막 복구일(7일)에도 남은 AUTO 공백: 더 돌 배치가 없으므로 '자동 복구 종료' ERROR 한 건.
+- 그 달 고정 매니페스트가 없는 공백(MANIFEST_MISSING): 전달 불가 — 병원·월마다 한 건, 다시 만들기를 권하지 않는다.
+- 8일 00:15 최종화 뒤(8일 09:00)에도 남은 AUTO 공백: 더 돌 자동 복구가 없으므로 '자동 복구 종료' ERROR 한 건.
 """
 
 from __future__ import annotations
@@ -20,13 +21,15 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.models.hospital import Hospital
+from app.models.monthly_control import MonthlyMeasurementManifest, MonthlyReportArtifact
 from app.models.report import MonthlyReport
 from app.services.monthly_period import (
+    MONTHLY_FINALIZE_DAY,
     MONTHLY_RECOVERY_END_DAY,
     eligible_hospital_ids,
     prior_month_to_close,
 )
-from app.services.monthly_report_delivery import coverage_is_final
+from app.services.monthly_report_delivery import monthly_report_delivery_gate
 from app.services.monthly_sov_cohort import hospital_requires_monthly_sov_success
 from app.services.notification_contracts import NotificationIntent
 from app.services.notification_labels import prefixed_for_event
@@ -45,6 +48,9 @@ KST = ZoneInfo("Asia/Seoul")
 MONTHLY_REPORT_GAP_SUMMARY_TYPE = "MONTHLY_REPORT_GAP_SUMMARY"
 MONTHLY_REPORT_GAP_AUTO_TYPE = "MONTHLY_REPORT_GAP_AUTO"
 _MAX_NAMES = 15
+MANIFEST_MISSING = "MANIFEST_MISSING"
+# 매니페스트는 있는데 측정이 끝나지 않았거나 다른 달·다른 병원 것에 묶인 상태. 자동 재측정·재생성이 푼다.
+_COVERAGE_GATE_CODES = frozenset({"coverage_incomplete", "manifest_open", "manifest_mismatch"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,8 +62,25 @@ class MonthlyReportGap:
     recoverable: bool = False
 
 
+def classify_monthly_report_gap(report, period_manifest, artifact) -> str | None:
+    """전달 게이트와 같은 사실로 공백을 가른다. None이면 이 요약이 알릴 공백이 아니다.
+
+    그 달 매니페스트가 없으면 어떤 자동 경로도 지난달 측정을 만들지 못한다(매니페스트는 24일~말일
+    창에서만 생긴다). 코호트 밖 병원이 주간 자료로 '최종' 커버리지 보고서를 가져도 전달 게이트는
+    매니페스트를 요구하므로 영구히 전달할 수 없다. 원장 PDF 문제는 월간 원장 PDF 대조 작업이 소유한다.
+    """
+    if period_manifest is None:
+        return MANIFEST_MISSING
+    if report is None:
+        return "MISSING"
+    gate = monthly_report_delivery_gate(report, period_manifest, artifact)
+    if gate.ready:
+        return None
+    return "COVERAGE_INCOMPLETE" if gate.code in _COVERAGE_GATE_CODES else None
+
+
 def load_monthly_report_gaps(db: Session, now: datetime) -> tuple[str, list[MonthlyReportGap]]:
-    """Return only MISSING and COVERAGE_INCOMPLETE facts for the prior month."""
+    """Return MISSING, COVERAGE_INCOMPLETE and MANIFEST_MISSING facts for the prior month."""
 
     period = prior_month_to_close(now)
     period_key = f"{period.year:04d}-{period.month:02d}"
@@ -84,17 +107,33 @@ def load_monthly_report_gaps(db: Session, now: datetime) -> tuple[str, list[Mont
             .order_by(MonthlyReport.version.desc())
             .limit(1)
         ).first()
-        if report is None:
-            # 매일 00:15 배치가 코호트 여부와 무관하게 다시 만든다.
-            gaps.append(MonthlyReportGap(hospital.name, "MISSING", recoverable=True))
-        elif not coverage_is_final(report):
-            gaps.append(
-                MonthlyReportGap(
-                    hospital.name,
-                    "COVERAGE_INCOMPLETE",
-                    recoverable=hospital_requires_monthly_sov_success(db, hospital, period_key),
-                )
+        manifest = db.scalars(
+            select(MonthlyMeasurementManifest).where(
+                MonthlyMeasurementManifest.hospital_id == hospital.id,
+                MonthlyMeasurementManifest.period_year == period.year,
+                MonthlyMeasurementManifest.period_month == period.month,
             )
+        ).first()
+        artifact = (
+            db.scalars(
+                select(MonthlyReportArtifact).where(
+                    MonthlyReportArtifact.report_id == report.id,
+                    MonthlyReportArtifact.audience == "DOCTOR",
+                )
+            ).first()
+            if report is not None and manifest is not None
+            else None
+        )
+        state = classify_monthly_report_gap(report, manifest, artifact)
+        if state is None:
+            continue
+        # 미생성은 매일 00:15 배치가 다시 만든다. 측정 미완료는 코호트(또는 그 달 월간 RUN_SOV)만
+        # 1~7일 catch-up이 되돌린다. 매니페스트 없는 달은 어떤 자동 경로도 없다.
+        recoverable = state == "MISSING" or (
+            state == "COVERAGE_INCOMPLETE"
+            and hospital_requires_monthly_sov_success(db, hospital, period_key)
+        )
+        gaps.append(MonthlyReportGap(hospital.name, state, recoverable=recoverable))
     return period_key, gaps
 
 
@@ -149,8 +188,8 @@ def build_monthly_report_gap_auto_summary(
         counts_text=f"*{period_key}* · 총 {len(gaps)}곳\n{summary}",
         detail=(
             f"대상: {_names(gaps)}\n"
-            "시스템이 매월 1~7일 자동 재측정·마감을 계속합니다. 수동으로 반복 실행하지 마세요. "
-            "끝내 풀리지 않은 공백은 마지막 복구일에 별도 조치 알림으로 안내합니다."
+            "시스템이 매월 1~7일 자동 재측정·마감을 계속하고 8일 00:15에 최종 마감합니다. "
+            "수동으로 반복 실행하지 마세요. 최종 마감 뒤에도 남은 공백은 8일 오전에 별도 조치 알림으로 안내합니다."
         ),
         fallback_tail="시스템이 자동 재측정·마감을 진행합니다. 수동으로 반복 실행하지 마세요.",
     )
@@ -211,21 +250,58 @@ def build_monthly_report_gap_summary(
     )
 
 
+def build_monthly_report_manifest_missing_notice(
+    *, period_key: str, gap: MonthlyReportGap
+) -> NotificationIntent:
+    """그 달 고정 측정이 없어 전달 가능한 리포트가 생길 수 없다 — 병원·월마다 한 건.
+
+    다시 만들기를 권하지 않는다(지난달 매니페스트는 어떤 재생성으로도 생기지 않는다).
+    """
+
+    name = safe_text(gap.hospital_name, 60)
+    message = _message(
+        event=MONTHLY_REPORT_GAP_SUMMARY_TYPE,
+        header=f"[전달 불가] {period_key} {name} 월간 리포트",
+        summary="월간 고정 측정 없음",
+        counts_text=f"*{period_key}* · {name}\n월간 고정 측정(24일~말일) 대상이 아니었습니다.",
+        detail=(
+            f"대상: {name}\n"
+            "이번 달은 측정이 없어 전달 불가, 다음 달부터 자동으로 측정합니다. "
+            "리포트를 다시 만들어도 바뀌지 않습니다. 원장님께 이번 달은 월간 측정이 없었다는 사실을 안내해 주세요. "
+            "다음 달 측정 창(24일) 전에 대상에 들어가지 못하면 측정 대상 공백 알림으로 따로 안내합니다."
+        ),
+        fallback_tail="이번 달은 측정이 없어 전달 불가, 다음 달부터 자동 — 원장님께 안내해 주세요.",
+    )
+    return NotificationIntent(
+        dedupe_key=(
+            f"{MONTHLY_REPORT_GAP_SUMMARY_TYPE}:{period_key}:manifest_missing:{_digest(gap.hospital_name)}"
+        ),
+        notification_type=MONTHLY_REPORT_GAP_SUMMARY_TYPE,
+        message=message,
+    )
+
+
 def monthly_report_gap_intents(
     *, period_key: str, gaps: list[MonthlyReportGap], day: int
 ) -> list[NotificationIntent]:
-    """오늘 보낼 알림 — 자동 복구 보고, 병원별 조치 필요, 마지막 복구일의 종료 요약."""
+    """오늘 보낼 알림 — 자동 복구 보고, 병원별 조치 필요, 8일 최종화 뒤의 종료 요약."""
 
-    # 마지막 복구일(7일)에는 이튿날 00:15 배치가 없다. 그 뒤에는 자동 복구가 남아 있지 않다.
-    recovery_ahead = day < MONTHLY_RECOVERY_END_DAY
+    # 7일 23:59:59까지 자동 복구가 돌고 8일 00:15 배치가 마감 사실로 최종화한다.
+    # 8일 09:00 판정은 그 최종화 뒤라, 이때 남은 공백만 자동 복구가 끝난 것이다.
+    recovery_ahead = day <= MONTHLY_RECOVERY_END_DAY
     auto = [gap for gap in gaps if gap.recoverable and recovery_ahead]
     closing = [gap for gap in gaps if gap.recoverable and not recovery_ahead]
-    manual = [gap for gap in gaps if not gap.recoverable]
+    manifest_missing = [gap for gap in gaps if gap.state == MANIFEST_MISSING]
+    manual = [gap for gap in gaps if not gap.recoverable and gap.state != MANIFEST_MISSING]
     intents: list[NotificationIntent] = []
     if auto:
         intents.append(build_monthly_report_gap_auto_summary(period_key=period_key, gaps=auto))
     intents.extend(
         build_monthly_report_gap_summary(period_key=period_key, gaps=[gap]) for gap in manual
+    )
+    intents.extend(
+        build_monthly_report_manifest_missing_notice(period_key=period_key, gap=gap)
+        for gap in manifest_missing
     )
     if closing:
         intents.append(
@@ -236,7 +312,7 @@ def monthly_report_gap_intents(
 
 def enqueue_monthly_report_gap_summary_sync(db: Session, *, now: datetime) -> bool:
     local = now.astimezone(KST)
-    if not 1 <= local.day <= MONTHLY_RECOVERY_END_DAY:
+    if not 1 <= local.day <= MONTHLY_FINALIZE_DAY:
         return False
     period_key, gaps = load_monthly_report_gaps(db, now)
     if not gaps:

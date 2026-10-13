@@ -238,3 +238,52 @@ def test_the_exhausted_message_names_the_budget_and_both_ways_a_copy_is_lost() -
     message = autonomous_recovery._RECOVERY_STOP_MESSAGES[autonomous_recovery._REDISPATCH_EXHAUSTED]
     assert f"{autonomous_recovery._REDISPATCH_BUDGET}번" in message
     assert "시작되지 않거나 끝나지 않아" in message
+
+
+def test_the_repair_query_finds_only_recent_unrecorded_cause_stops() -> None:
+    from sqlalchemy.dialects import postgresql
+
+    sql = str(
+        autonomous_recovery._unrecorded_recovery_stops_query(NOW).compile(
+            dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
+        )
+    )
+    assert "operation_runs.state = 'FAILED'" in sql
+    for code in autonomous_recovery._RECOVERY_STOP_MESSAGES:
+        assert f"'{code}'" in sql
+    # 사이트 준비는 병원 사고가 맡는다.
+    assert "operation_runs.operation_type != 'REBUILD_SITE'" in sql
+    assert "2026-10-04" in sql  # 지난 7일
+    assert "NOT (EXISTS" in sql and "incidents.last_seen_at >= operation_runs.completed_at" in sql
+    assert f"LIMIT {autonomous_recovery._RECOVERY_STOP_REPAIR_LIMIT}" in sql
+    assert "FOR UPDATE SKIP LOCKED" in sql
+
+
+def test_the_repair_upserts_one_incident_per_found_run(monkeypatch) -> None:
+    rows = [
+        SimpleNamespace(
+            id=uuid.uuid4(),
+            safe_error_code="OPERATION_RUN_ABANDONED",
+            completed_at=NOW - timedelta(hours=3),
+        ),
+        SimpleNamespace(
+            id=uuid.uuid4(),
+            safe_error_code="OPERATION_LEASE_EXPIRED",
+            completed_at=NOW - timedelta(hours=1),
+        ),
+    ]
+    opened: list[tuple[object, str, datetime]] = []
+    monkeypatch.setattr(
+        autonomous_recovery,
+        "_open_recovery_stop_incident",
+        lambda _db, run, _at, code, *, occurred_at: opened.append((run.id, code, occurred_at)),
+    )
+    db = SimpleNamespace(
+        execute=lambda _statement: SimpleNamespace(
+            scalars=lambda: SimpleNamespace(all=lambda: rows)
+        )
+    )
+
+    assert autonomous_recovery._repair_unrecorded_recovery_stops(db, NOW) == 2
+    # 사고의 에피소드는 복구한 tick이 아니라 실행이 멈춘 시각에 묶인다.
+    assert opened == [(row.id, row.safe_error_code, row.completed_at) for row in rows]

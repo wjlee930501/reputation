@@ -300,6 +300,14 @@ class NotificationOutbox(Base):
             postgresql_where=text("state = 'SENDING'"),
         ),
         Index("ix_notification_outbox_hospital_created", "hospital_id", "created_at"),
+        # 복구 알림의 같은 에피소드 열림 짝 조회(claim·발송 전 종결, 0088).
+        Index(
+            "ix_notification_outbox_open_pairing",
+            "incident_id",
+            "state",
+            "created_at",
+            postgresql_where=text("notification_type = 'INCIDENT_OPEN'"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)

@@ -32,6 +32,8 @@ export const ADMIN_COPY = {
   // 계약 등록 직후 백그라운드로 찾아 둔 병원 정보(저장 전 제안).
   storedAutofillApply: '등록 때 찾아 둔 정보 채우기',
   storedAutofillMissing: '등록 때 찾아 둔 정보가 아직 없습니다.',
+  ackSmsFailed: '원장 안내 문자 미발송 — 직접 연락이 필요합니다.',
+  ackSmsUnconfirmed: '원장 안내 문자 수신 불명(재발송 안 함) — 원장에게 직접 확인하세요.',
 } as const
 
 export function describeMentionRate(value: number | null): string {

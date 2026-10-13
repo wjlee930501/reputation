@@ -150,6 +150,7 @@ async def test_acknowledge_sends_once_and_records_the_outcome_on_the_lead(monkey
 
 async def test_acknowledge_records_provider_failure_without_raising(monkeypatch):
     _configure(monkeypatch)
+    monkeypatch.setattr(inquiry_sms, "INQUIRY_SMS_RETRY_DELAY_SECONDS", 0)
     client = _FakeClient(error=httpx.ConnectTimeout("timeout"))
     monkeypatch.setattr(inquiry_sms.httpx, "AsyncClient", lambda **kwargs: client)
 
@@ -189,3 +190,180 @@ async def test_acknowledge_suppresses_a_repeat_from_the_same_contact(monkeypatch
     assert outcome.status == "SKIPPED"
     assert lead.ack_sms_status == "SKIPPED"
     assert client.calls == []
+
+
+class _SequenceClient(_FakeClient):
+    def __init__(self, outcomes):
+        super().__init__()
+        self._outcomes = list(outcomes)
+
+    async def post(self, url, headers=None, json=None):
+        self.calls.append({"url": url})
+        outcome = self._outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+
+def _ok():
+    return httpx.Response(
+        200,
+        json={"header": {"isSuccessful": True}, "body": {"data": {"sendResultList": [{"resultCode": 0}]}}},
+    )
+
+
+async def test_a_connect_failure_is_retried_once_and_can_succeed(monkeypatch):
+    _configure(monkeypatch)
+    monkeypatch.setattr(inquiry_sms, "INQUIRY_SMS_RETRY_DELAY_SECONDS", 0)
+    client = _SequenceClient([httpx.ConnectError("refused"), _ok()])
+    monkeypatch.setattr(inquiry_sms.httpx, "AsyncClient", lambda **kwargs: client)
+
+    outcome = await inquiry_sms.acknowledge_inquiry(FakeDB(), _lead())
+
+    assert outcome.sent
+    assert len(client.calls) == 2
+
+
+async def test_a_read_timeout_is_not_retried_because_the_text_may_have_gone_out(monkeypatch):
+    _configure(monkeypatch)
+    monkeypatch.setattr(inquiry_sms, "INQUIRY_SMS_RETRY_DELAY_SECONDS", 0)
+    client = _SequenceClient([httpx.ReadTimeout("slow"), _ok()])
+    monkeypatch.setattr(inquiry_sms.httpx, "AsyncClient", lambda **kwargs: client)
+
+    lead = _lead()
+    outcome = await inquiry_sms.acknowledge_inquiry(FakeDB(), lead)
+
+    assert outcome.status == "FAILED"
+    assert outcome.unconfirmed
+    assert inquiry_sms.delivery_unconfirmed(lead.ack_sms_error)
+    assert len(client.calls) == 1
+
+
+async def test_a_503_is_not_retried_and_is_recorded_as_unconfirmed(monkeypatch):
+    """사업자 멱등키가 없다 — 응답 경로의 503은 문자가 이미 나갔을 수 있어 다시 보내지 않는다(Codex R4-2)."""
+
+    _configure(monkeypatch)
+    monkeypatch.setattr(inquiry_sms, "INQUIRY_SMS_RETRY_DELAY_SECONDS", 0)
+    client = _SequenceClient([httpx.Response(503), _ok()])
+    monkeypatch.setattr(inquiry_sms.httpx, "AsyncClient", lambda **kwargs: client)
+
+    lead = _lead()
+    outcome = await inquiry_sms.acknowledge_inquiry(FakeDB(), lead)
+
+    assert outcome.status == "FAILED"
+    assert outcome.unconfirmed
+    assert len(client.calls) == 1
+    assert lead.ack_sms_status == "FAILED"
+    assert inquiry_sms.delivery_unconfirmed(lead.ack_sms_error)
+    assert "HTTP 503" in lead.ack_sms_error
+    assert "not resent" in lead.ack_sms_error
+
+
+async def test_a_429_is_retried_once_because_the_provider_did_not_take_it(monkeypatch):
+    _configure(monkeypatch)
+    monkeypatch.setattr(inquiry_sms, "INQUIRY_SMS_RETRY_DELAY_SECONDS", 0)
+    client = _SequenceClient([httpx.Response(429), _ok()])
+    monkeypatch.setattr(inquiry_sms.httpx, "AsyncClient", lambda **kwargs: client)
+
+    outcome = await inquiry_sms.acknowledge_inquiry(FakeDB(), _lead())
+
+    assert outcome.sent
+    assert len(client.calls) == 2
+
+
+async def test_a_definite_rejection_is_not_marked_unconfirmed(monkeypatch):
+    _configure(monkeypatch)
+    monkeypatch.setattr(inquiry_sms, "INQUIRY_SMS_RETRY_DELAY_SECONDS", 0)
+    client = _SequenceClient([httpx.Response(429), httpx.Response(429)])
+    monkeypatch.setattr(inquiry_sms.httpx, "AsyncClient", lambda **kwargs: client)
+
+    lead = _lead()
+    outcome = await inquiry_sms.acknowledge_inquiry(FakeDB(), lead)
+
+    assert outcome.status == "FAILED"
+    assert not outcome.unconfirmed
+    assert lead.ack_sms_error == "HTTP 429"
+    assert not inquiry_sms.delivery_unconfirmed(lead.ack_sms_error)
+
+
+async def test_a_plain_500_is_not_retried(monkeypatch):
+    _configure(monkeypatch)
+    monkeypatch.setattr(inquiry_sms, "INQUIRY_SMS_RETRY_DELAY_SECONDS", 0)
+    client = _SequenceClient([httpx.Response(500), _ok()])
+    monkeypatch.setattr(inquiry_sms.httpx, "AsyncClient", lambda **kwargs: client)
+
+    outcome = await inquiry_sms.acknowledge_inquiry(FakeDB(), _lead())
+
+    assert outcome.status == "FAILED"
+    assert outcome.unconfirmed
+    assert len(client.calls) == 1
+
+
+async def test_an_unconfirmed_sms_incident_says_it_was_not_resent(monkeypatch):
+    opened = []
+
+    async def capture(_db, **kwargs):
+        opened.append(kwargs)
+
+    monkeypatch.setattr(inquiry_sms, "open_ops_incident_in", capture)
+
+    await inquiry_sms.open_failure_incident(object(), "lead-1", actor="public-inquiry", unconfirmed=True)
+    await inquiry_sms.open_failure_incident(object(), "lead-2", actor="public-inquiry")
+
+    unconfirmed, failed = opened
+    assert unconfirmed["incident_type"] == failed["incident_type"] == "INQUIRY_SMS_FAILED"
+    assert "확인하지 못했습니다" in unconfirmed["problem"]
+    assert "재발송하지 않" in unconfirmed["customer_impact"]
+    assert "보내지 못했습니다" in failed["problem"]
+    assert "재발송" not in failed["customer_impact"]
+
+
+async def test_the_rendered_sms_notice_never_contradicts_an_unconfirmed_delivery(monkeypatch):
+    """공통 문구(제목·지금 할 일)는 중립이고, 수신 불명이면 상세가 '확인 못 함·재발송 안 함'을 말한다(Codex R5-2)."""
+
+    import json
+    import uuid
+
+    from app.services.notification_contracts import IncidentSlackProjection
+    from app.services.notification_messages import build_open_incident_notification
+
+    opened = []
+
+    async def capture(_db, **kwargs):
+        opened.append(kwargs)
+
+    monkeypatch.setattr(inquiry_sms, "open_ops_incident_in", capture)
+    await inquiry_sms.open_failure_incident(object(), "lead-1", actor="public-inquiry", unconfirmed=True)
+    await inquiry_sms.open_failure_incident(object(), "lead-2", actor="public-inquiry")
+
+    def rendered(kwargs) -> str:
+        intent = build_open_incident_notification(
+            IncidentSlackProjection(
+                incident_id=uuid.uuid4(),
+                hospital_name=kwargs["hospital_name"],
+                severity="HIGH",
+                customer_impact=kwargs["customer_impact"],
+                next_action=kwargs["next_action"],
+                admin_path=kwargs["admin_path"],
+                owner_label="미지정",
+                sla_label="확인 필요",
+                problem=kwargs["problem"],
+                incident_type=kwargs["incident_type"],
+            ),
+            "https://admin.example.com",
+        )
+        return json.dumps(intent.message.payload(), ensure_ascii=False)
+
+    unconfirmed, failed = (rendered(kwargs) for kwargs in opened)
+
+    for text in (unconfirmed, failed):
+        assert "문자 전달 확인 필요" in text
+        assert "직접 연락" in text
+    # 수신 불명: 갔다고도 안 갔다고도 단정하지 않는다.
+    assert "확인하지 못했습니다" in unconfirmed
+    assert "재발송하지 않았습니다" in unconfirmed
+    for asserted in ("가지 않았습니다", "보내지 못했습니다", "미발송", "받지 못했습니다."):
+        assert asserted not in unconfirmed
+    # 확정 실패: 보내지 못했다고 말한다.
+    assert "보내지 못했습니다" in failed
+    assert "재발송" not in failed

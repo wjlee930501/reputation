@@ -23,14 +23,19 @@ from app.workers import autonomous_recovery, tasks
 
 @pytest.fixture(autouse=True)
 def _no_resolved_task_incidents(monkeypatch):
-    monkeypatch.setattr(autonomous_recovery, "close_resolved_backlog_incidents", lambda _db: 0)
+    monkeypatch.setattr(autonomous_recovery, "_settle_incident_backlog", lambda _db: 0)
 
 
 class _ScalarResult:
+    """가짜 결과. 이 테스트가 모르는 읽기 전용 조회에는 빈 결과로 답한다."""
+
     def __init__(self, values):
         self._values = values
 
     def scalars(self):
+        return self
+
+    def unique(self):
         return self
 
     def all(self):
@@ -38,6 +43,15 @@ class _ScalarResult:
 
     def first(self):
         return self._values[0] if self._values else None
+
+    def one_or_none(self):
+        return self.first()
+
+    def scalar_one_or_none(self):
+        return self.first()
+
+    def scalar(self):
+        return self.first()
 
 
 class _RecoverySession:
@@ -88,7 +102,8 @@ class _RecoverySession:
             return SimpleNamespace(
                 scalar_one_or_none=lambda: getattr(current, "id", None)
             )
-        description = statement.column_descriptions[0]
+        descriptions = getattr(statement, "column_descriptions", None) or [{}]
+        description = descriptions[0]
         entity = description.get("entity")
         if entity is Hospital:
             return _ScalarResult(self.hospitals)
@@ -100,6 +115,9 @@ class _RecoverySession:
                 return _ScalarResult(self.visible_block_keys)
             return _ScalarResult(self.rebuild_site_incidents)
         if entity is OperationRun:
+            if "operation_runs.safe_error_code IN" in str(statement):
+                # 사고 없이 FAILED만 남은 멈춘 실행 복구 조회 — 이 가짜 DB에는 없다.
+                return _ScalarResult(())
             self._operation_run_reads += 1
             # 1: SITE_REVALIDATION, 2: 재배달 후보, 그다음 병원별 사이트 준비 이력,
             # 마지막이 재인증 실행 이력.
@@ -179,7 +197,7 @@ def test_recovery_beat_and_retryable_month_schedules_are_declared() -> None:
         "<crontab: 15 0 1-8 * * (m/h/dM/MY/d)>"
     )
     assert str(schedules["monthly-report-gap-summary"]["schedule"]) == (
-        "<crontab: 0 9 1-7 * * (m/h/dM/MY/d)>"
+        "<crontab: 0 9 1-8 * * (m/h/dM/MY/d)>"
     )
 
 
@@ -380,9 +398,8 @@ def test_site_build_recovery_hands_a_spent_budget_to_one_incident(monkeypatch) -
     assert incident.hospital_id == hospital.id
     assert incident.operation_run_id == failures[0].id
     assert incident.admin_path == f"/hospitals/{hospital.id}"
-    assert incident.next_action == (
-        "병원 기본 정보와 공개 준비 오류를 확인하고 운영센터에서 다시 시도하세요."
-    )
+    assert incident.next_action == autonomous_recovery.SITE_BUILD_EXHAUSTED_NEXT_ACTION
+    assert "‘작업 다시 시도’" in incident.next_action
     assert incident.dedupe_key == autonomous_recovery.build_incident_key(
         "site_build",
         "hospital",
@@ -392,7 +409,8 @@ def test_site_build_recovery_hands_a_spent_budget_to_one_incident(monkeypatch) -
     # 사람이 볼 사고 하나에 운영자 채널 알림 하나.
     assert len(intents) == 1
     assert intents[0].notification_type == "INCIDENT_OPEN"
-    assert intents[0].channel == "SLACK"
+    # 하루 자동 재실행 예산 소진은 코드·인프라 문제 — 개발 담당(Phase 1-8).
+    assert intents[0].channel == "SLACK_DEV"
     assert intents[0].incident_id == incident.id
     assert [
         row.action for row in session.added if isinstance(row, AdminAuditLog)
@@ -605,6 +623,8 @@ def test_site_build_budget_only_counts_the_last_day_of_runs(monkeypatch) -> None
         for statement in session.statements
         if statement.column_descriptions[0].get("entity") is OperationRun
         and "REBUILD_SITE" in statement.compile().params.values()
+        # 멈춘 실행 복구 조회도 REBUILD_SITE를 (제외 조건으로) 싣는다.
+        and "OPERATION_RECOVERY_EXHAUSTED" not in statement.compile().params.values()
     )
     assert now - timedelta(hours=24) in budget_query.compile().params.values()
 

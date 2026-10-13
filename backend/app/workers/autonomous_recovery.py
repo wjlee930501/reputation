@@ -9,7 +9,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Final, TypedDict
 
 from celery import current_task
-from sqlalchemy import and_, case, func, or_, select, update
+from sqlalchemy import Interval, and_, case, func, literal, null, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 
@@ -47,7 +47,7 @@ from app.services.site_revalidation_control import retry_delay
 from app.workers import generation_run_control
 from app.workers.dispatch_auth import build_dispatch_headers, require_dispatch
 from app.workers.dispatch_envelope import expected_purpose
-from app.workers.incident_backlog import close_resolved_backlog_incidents
+from app.workers.incident_backlog import close_resolved_backlog_incidents, settle_incidents
 
 _BATCH_SIZE: Final = 100
 # REQUESTED는 '아직 브로커에 넣지 못했다'만 뜻한다 — 모든 배포 지점이 publish 직후 QUEUED로
@@ -79,6 +79,9 @@ _ABANDONED_RUNNING_AFTER_BY_TYPE: Final[dict[str, timedelta]] = {
     "MONTHLY_SOV_PERIOD": timedelta(days=20),
 }
 _RUN_ABANDONED: Final = "OPERATION_RUN_ABANDONED"
+# 사고 없이 FAILED만 남은 멈춘 실행을 다시 찾는 범위와 tick당 상한.
+_RECOVERY_STOP_REPAIR_WINDOW: Final = timedelta(days=7)
+_RECOVERY_STOP_REPAIR_LIMIT: Final = 50
 _RECOVERY_STOP_MESSAGES: Final[dict[str, str]] = {
     # FAILED는 마지막 재배달의 유예(기본값 × 8) 뒤에 온다 — V0·월간 보고서는 6시간, 그 밖은 24시간.
     _REDISPATCH_EXHAUSTED: (
@@ -194,6 +197,19 @@ def _queued_redispatch_grace(run: OperationRun) -> timedelta:
         else _QUEUED_REDISPATCH_GRACE
     )
     return base * (2 ** min(_redispatch_count(run), _REDISPATCH_BUDGET))
+
+
+def _queued_redispatch_grace_sql():
+    """`_queued_redispatch_grace`의 SQL 판."""
+
+    base = case(
+        (
+            OperationRun.operation_type.in_(tuple(_FAST_QUEUED_REDISPATCH_TYPES)),
+            literal(_FAST_QUEUED_REDISPATCH_GRACE, Interval()),
+        ),
+        else_=literal(_QUEUED_REDISPATCH_GRACE, Interval()),
+    )
+    return base * func.power(2, func.least(OperationRun.redispatch_count, _REDISPATCH_BUDGET))
 
 
 def _counts_against_redispatch_budget(run: OperationRun) -> bool:
@@ -364,19 +380,12 @@ def reconcile() -> RecoveryCounts:
                                 and_(
                                     OperationRun.state == OperationRunState.QUEUED,
                                     OperationRun.not_before_at.is_(None),
-                                    # 유형별 기본 유예로 고른다(다른 유형의 45분~3시간 적체가 배치를
-                                    # 채우지 않게). 재배달 횟수에 따른 두 배 판정은
-                                    # `_operation_redispatch_is_due`가 한다.
+                                    # `_queued_redispatch_grace`와 같은 유예(유형별 기본 × 2^횟수)를
+                                    # SQL에서 건다. 아직 두 배 유예 안의 행이 배치(100)를 채워 이미
+                                    # 기한이 지난 V0·만료 lease를 굶기지 않게 한다.
                                     func.coalesce(OperationRun.queued_at, OperationRun.requested_at)
-                                    <= case(
-                                        (
-                                            OperationRun.operation_type.in_(
-                                                tuple(_FAST_QUEUED_REDISPATCH_TYPES)
-                                            ),
-                                            observed_at - _FAST_QUEUED_REDISPATCH_GRACE,
-                                        ),
-                                        else_=observed_at - _QUEUED_REDISPATCH_GRACE,
-                                    ),
+                                    + _queued_redispatch_grace_sql()
+                                    <= observed_at,
                                 ),
                                 # 미룬 실행은 적체가 아니다 — 정한 시각이 지났을 때만 보낸다.
                                 and_(
@@ -414,6 +423,9 @@ def reconcile() -> RecoveryCounts:
                 headers=build_dispatch_headers("retry-site-revalidation", str(run.id)),
             )
             run.heartbeat_at = observed_at
+        # 사고 없이 FAILED만 남은 멈춘 실행을 이번 tick의 새 멈춤보다 먼저 기록한다. 새 멈춤이
+        # 먼저 `last_seen_at`을 지금으로 올리면 더 이른 멈춤이 '기록됨'으로 보인다.
+        _repair_unrecorded_recovery_stops(db, observed_at)
         operation_redispatches = 0
         handled_site_hospitals: set[uuid.UUID] = set()
         for run in operation_runs:
@@ -455,7 +467,7 @@ def reconcile() -> RecoveryCounts:
             if rebuild is not None and _redispatch_operation_run(db, rebuild, observed_at):
                 site_builds += 1
         recertifications = _dispatch_published_image_recertifications(db, observed_at)
-        resolved_task_incidents = close_resolved_backlog_incidents(db)
+        resolved_task_incidents = _settle_incident_backlog(db)
         db.commit()
     return {
         "site_builds": site_builds,
@@ -464,6 +476,15 @@ def reconcile() -> RecoveryCounts:
         "image_recertifications": recertifications,
         "resolved_task_incidents": resolved_task_incidents,
     }
+
+
+def _settle_incident_backlog(db) -> int:
+    """근거로 닫을 사고와 자동화가 끝낸 사고를 정리한다(사고 쪽 정리의 한 이음매).
+
+    새 정리 단계는 여기에 더한다 — 재조정 테스트는 이 한 함수만 막으면 된다.
+    """
+
+    return close_resolved_backlog_incidents(db) + settle_incidents(db)
 
 
 def _cleared_certificate_candidates(db) -> list[ContentItem]:
@@ -820,6 +841,13 @@ def _failures_since_last_success(recent: list[OperationRun]) -> list[OperationRu
     ]
 
 
+# 개발 담당의 사고다(`incident_types`). 원인을 고친 뒤 할 수 있는 일은 운영센터의 재시도 버튼 하나다.
+SITE_BUILD_EXHAUSTED_NEXT_ACTION = (
+    "사이트 준비 오류를 확인해 원인을 고친 뒤, 운영센터에서 이 사고에 연결된 작업의 "
+    "‘작업 다시 시도’를 눌러 주세요."
+)
+
+
 def _open_rebuild_site_incident(
     db, hospital: Hospital, newest_failed_run: OperationRun, observed_at: datetime
 ) -> None:
@@ -841,9 +869,7 @@ def _open_rebuild_site_incident(
             failed_run_id=newest_failed_run.id,
             safe_error_code="SITE_BUILD_RETRIES_EXHAUSTED",
             safe_error_message="사이트 준비 자동 재실행이 하루치 예산을 모두 사용했습니다.",
-            next_action=(
-                "병원 기본 정보와 공개 준비 오류를 확인하고 운영센터에서 다시 시도하세요."
-            ),
+            next_action=SITE_BUILD_EXHAUSTED_NEXT_ACTION,
             observed_at=observed_at,
         )
         if created is not None:
@@ -1234,7 +1260,8 @@ def _stop_operation_run(db, run: OperationRun, observed_at: datetime, code: str)
     run.safe_error_code = code
     run.safe_error_message = message
     run.version += 1
-    db.commit()
+    # FAILED와 사고(·알림 intent)는 한 트랜잭션이다. 둘 사이에서 끊기면 FAILED 실행은 다시
+    # 후보가 되지 않아 사고가 영영 열리지 않는다 — 함께 되돌아가면 다음 tick이 다시 멈춘다.
     hospital = (
         db.get(Hospital, run.hospital_id)
         if run.operation_type == "REBUILD_SITE" and run.hospital_id is not None
@@ -1245,19 +1272,80 @@ def _stop_operation_run(db, run: OperationRun, observed_at: datetime, code: str)
         _open_rebuild_site_incident(db, hospital, run, observed_at)
     else:
         _open_recovery_stop_incident(db, run, observed_at, code)
+    db.commit()
     return True
 
 
-def _open_recovery_stop_incident(
-    db, run: OperationRun, observed_at: datetime, code: str
-) -> None:
-    """원인 코드 하나에 사고 하나. 열려 있으면 횟수만 늘리고, 닫혔으면 새 에피소드로 다시 연다."""
+def _unrecorded_recovery_stops_query(observed_at: datetime):
+    """원인 사고에 기록되지 않은 채 멈춘 실행(최근 7일). 같은 원인 사고의 마지막 관측이 실행의
+    종료보다 늦으면 이미 기록된 것이다. 사이트 준비는 병원 사고가 맡으므로 뺀다."""
 
+    recorded = (
+        select(Incident.id)
+        .where(
+            Incident.incident_type == _RECOVERY_STOP_INCIDENT_TYPE,
+            Incident.safe_error_code == OperationRun.safe_error_code,
+            Incident.last_seen_at >= OperationRun.completed_at,
+        )
+        .exists()
+    )
+    return (
+        select(OperationRun)
+        .where(
+            OperationRun.state == OperationRunState.FAILED,
+            OperationRun.safe_error_code.in_(tuple(_RECOVERY_STOP_MESSAGES)),
+            OperationRun.operation_type != "REBUILD_SITE",
+            OperationRun.completed_at >= observed_at - _RECOVERY_STOP_REPAIR_WINDOW,
+            ~recorded,
+        )
+        .order_by(OperationRun.completed_at, OperationRun.id)
+        # 같은 tick의 다른 reconciler가 같은 실행으로 사고·알림을 두 번 만들지 않게 한다.
+        .with_for_update(skip_locked=True)
+        .limit(_RECOVERY_STOP_REPAIR_LIMIT)
+    )
+
+
+def _repair_unrecorded_recovery_stops(db, observed_at: datetime) -> int:
+    """FAILED만 남고 원인 사고가 없는 멈춘 실행에 사고를 채운다(멱등, tick당 상한). 커밋은 호출자."""
+
+    runs = db.execute(_unrecorded_recovery_stops_query(observed_at)).scalars().all()
+    for run in runs:
+        _open_recovery_stop_incident(
+            db, run, observed_at, str(run.safe_error_code), occurred_at=run.completed_at
+        )
+    return len(runs)
+
+
+def _open_recovery_stop_incident(
+    db,
+    run: OperationRun,
+    observed_at: datetime,
+    code: str,
+    *,
+    occurred_at: datetime | None = None,
+) -> None:
+    """원인 코드 하나에 사고 하나. 열려 있으면 횟수만 늘리고, 닫혔으면 새 에피소드로 다시 연다.
+
+    `occurred_at`은 실행이 멈춘 시각이다(기본은 관측 시각). 사고의 시각은 이 값으로만 움직인다:
+    - `last_seen_at`은 뒤로 가지 않는다(`greatest`). 먼저 시작한 reconciler가 더 이른 시각으로
+      늦게 기록해도 이미 기록된 멈춤을 '기록 안 됨'으로 되돌리지 않는다.
+    - 열린 사고의 `first_seen_at`은 더 이른 멈춤까지 넓힌다(`least`) — 나중에 복구해 기록한 멈춤도
+      이번 에피소드에 들어가 해결 판정(`incident_backlog._stopped_runs_recovered`)이 본다.
+    - 닫힌 사고는 마지막 관측보다 늦은 멈춤만 새 에피소드로 다시 연다. 그보다 이른 관측은 이미
+      닫힌 일이라 상태·횟수·에피소드를 바꾸지 않고 알림도 내지 않는다.
+    """
+
+    occurred_at = occurred_at or observed_at
     dedupe_key = build_incident_key(
         "autonomous_recovery", "operation_recovery_stop", code, IncidentFingerprint.UNKNOWN
     )
     closed = (IncidentState.RECOVERED.value, IncidentState.ACKNOWLEDGED.value)
-    previous_state = db.scalar(select(Incident.state).where(Incident.dedupe_key == dedupe_key))
+    previous_episode = db.scalar(
+        select(Incident.episode_seq).where(Incident.dedupe_key == dedupe_key)
+    )
+    is_closed = Incident.state.in_(closed)
+    reopen = and_(is_closed, Incident.last_seen_at < occurred_at)
+    counted = or_(~is_closed, reopen)
     message = _RECOVERY_STOP_MESSAGES[code]
     impact = "자동 복구가 멈춘 작업이 있어 진단·보고서·콘텐츠·사이트 준비 결과가 늦어질 수 있습니다."
     next_action = (
@@ -1281,29 +1369,29 @@ def _open_recovery_stop_incident(
             safe_error_message=message,
             next_action=next_action,
             admin_path="/operations",
-            first_seen_at=observed_at,
-            last_seen_at=observed_at,
+            first_seen_at=occurred_at,
+            last_seen_at=occurred_at,
             created_at=observed_at,
             updated_at=observed_at,
         )
         .on_conflict_do_update(
             index_elements=[Incident.dedupe_key],
             set_={
-                "state": IncidentState.OPEN.value,
-                "operation_run_id": run.id,
-                "last_seen_at": observed_at,
-                "occurrence_count": Incident.occurrence_count + 1,
-                "episode_seq": case(
-                    (Incident.state.in_(closed), Incident.episode_seq + 1),
-                    else_=Incident.episode_seq,
-                ),
+                "state": case((counted, IncidentState.OPEN.value), else_=Incident.state),
+                "operation_run_id": case((counted, run.id), else_=Incident.operation_run_id),
+                "last_seen_at": func.greatest(Incident.last_seen_at, occurred_at),
+                "occurrence_count": Incident.occurrence_count + case((counted, 1), else_=0),
+                "episode_seq": Incident.episode_seq + case((reopen, 1), else_=0),
                 "first_seen_at": case(
-                    (Incident.state.in_(closed), observed_at),
-                    else_=Incident.first_seen_at,
+                    (reopen, occurred_at),
+                    (is_closed, Incident.first_seen_at),
+                    else_=func.least(Incident.first_seen_at, occurred_at),
                 ),
-                "recovered_at": None,
-                "acknowledged_at": None,
-                "acknowledged_by_id": None,
+                "recovered_at": case((reopen, null()), else_=Incident.recovered_at),
+                "acknowledged_at": case((reopen, null()), else_=Incident.acknowledged_at),
+                "acknowledged_by_id": case(
+                    (reopen, null()), else_=Incident.acknowledged_by_id
+                ),
                 "version": Incident.version + 1,
                 "updated_at": observed_at,
             },
@@ -1311,7 +1399,8 @@ def _open_recovery_stop_incident(
         .returning(Incident)
         .execution_options(populate_existing=True)
     ).scalar_one()
-    if previous_state is not None and previous_state not in closed:
+    if previous_episode is not None and incident.episode_seq == previous_episode:
+        # 열린 사고에 더해졌거나, 닫힌 사고의 지난 관측이다 — 새로 알릴 일이 없다.
         return
     auto_assign_owner_sync(db, incident, observed_at=observed_at)
     projection = IncidentSlackProjection(

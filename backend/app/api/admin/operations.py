@@ -50,6 +50,10 @@ from app.services.content_visibility import assess_sampled_visibility, visibilit
 from app.services.content_yield import compute_content_yield_async, kst_week_start
 from app.services.hospital_lifecycle import missing_profile_requirement_keys
 from app.services.incident_safety import sanitize_operator_text
+from app.services.legacy_budget_replacement import (
+    LEGACY_BUDGET_REPLACED_ACTION,
+    legacy_incident_open_stmt,
+)
 from app.services.monthly_delivery_projection import (
     latest_delivery_event_subquery,
     latest_monthly_report_subquery,
@@ -80,8 +84,9 @@ from app.workers.generation_attempt_state import (
     GENERATION_ATTEMPT_KEY,
     GenerationBudgetExceeded,
     GenerationBudgetUnknown,
+    legacy_budget_is_replaceable,
     read_generation_budget,
-    replace_unknown_legacy_budget,
+    replace_legacy_budget_and_release,
 )
 from app.workers.tasks import (
     build_aeo_site,
@@ -994,14 +999,20 @@ async def regenerate_content_operation(
     summary = item.essence_check_summary if isinstance(item.essence_check_summary, dict) else {}
     attempt = summary.get(GENERATION_ATTEMPT_KEY)
     attempt = dict(attempt) if isinstance(attempt, dict) else {}
-    legacy_unknown = False
     try:
         budget = read_generation_budget(attempt)
     except GenerationBudgetUnknown:
-        legacy_unknown = True
         budget = None
     if budget is not None and budget.reset_record is not None and body is not None:
         raise HTTPException(status_code=409, detail="Legacy generation budget was already replaced")
+    # 지출을 정말 모르는 슬롯과, `LEGACY_SPEND_UNKNOWN` 실패 기록이 계수 0을 남겨 KNOWN으로
+    # 읽히는 슬롯(게이트가 기록을 덮었으면 열린 사고가 근거) 모두 감사된 교체 대상이다.
+    legacy_incident_open = bool(
+        await db.scalar(legacy_incident_open_stmt(content_id, hospital.id))
+    )
+    legacy_unknown = legacy_budget_is_replaceable(
+        attempt, legacy_incident_open=legacy_incident_open
+    )
     if legacy_unknown:
         actor = verified_request_actor()
         if actor is None:
@@ -1019,32 +1030,25 @@ async def regenerate_content_operation(
         item = locked.scalar_one_or_none()
         if item is None:
             raise HTTPException(status_code=404, detail="Content not found")
-        locked_summary = (
-            item.essence_check_summary if isinstance(item.essence_check_summary, dict) else {}
-        )
-        locked_attempt = locked_summary.get(GENERATION_ATTEMPT_KEY)
-        locked_attempt = dict(locked_attempt) if isinstance(locked_attempt, dict) else {}
         try:
-            replacement = replace_unknown_legacy_budget(
-                locked_attempt,
+            replaced_summary, reset_record = replace_legacy_budget_and_release(
+                item.essence_check_summary,
                 actor=actor,
                 reason=body.reason,
                 idempotency_key=idempotency_key,
+                legacy_incident_open=legacy_incident_open,
             )
         except GenerationBudgetExceeded as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
-        item.essence_check_summary = {
-            **locked_summary,
-            GENERATION_ATTEMPT_KEY: replacement,
-        }
+        item.essence_check_summary = replaced_summary
         await write_audit_log(
             db,
-            action="LEGACY_BUDGET_REPLACED",
+            action=LEGACY_BUDGET_REPLACED_ACTION,
             hospital_id=hospital.id,
             actor=actor,
             target_type="content_item",
             target_id=content_id,
-            detail=replacement["budget"]["reset_record"],
+            detail=reset_record,
         )
         await db.commit()
     dispatch = await _enqueue_with_truthful_audit(

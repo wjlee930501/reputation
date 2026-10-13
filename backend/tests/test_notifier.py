@@ -56,14 +56,14 @@ async def test_send_rejects_non_allowlisted_webhook_host(monkeypatch, caplog):
     with caplog.at_level(logging.ERROR, logger="app.services.notifier"):
         sent = await notifier._send("hello")
 
-    assert sent is False
+    assert sent is notifier.SendOutcome.NOT_DELIVERED
     assert "allowlist" in caplog.text
 
 
 async def test_send_rejects_lookalike_webhook_host(monkeypatch):
     monkeypatch.setattr(notifier.settings, "SLACK_WEBHOOK_URL", "https://hooks.slack.com.evil.test/x")
     monkeypatch.setattr(notifier.httpx, "AsyncClient", _ShouldNotPostClient)
-    assert await notifier._send("hello") is False
+    assert await notifier._send("hello") is notifier.SendOutcome.NOT_DELIVERED
 
 
 def test_is_allowed_webhook_accepts_slack_only(monkeypatch):
@@ -81,7 +81,7 @@ async def test_slack_failure_log_does_not_include_webhook_url(monkeypatch, caplo
     with caplog.at_level(logging.ERROR, logger="app.services.notifier"):
         sent = await notifier._send("hello")
 
-    assert sent is False
+    assert sent is notifier.SendOutcome.NOT_DELIVERED
     assert "ConnectError" in caplog.text
     assert webhook_url not in caplog.text
     assert "super-secret-token" not in caplog.text
@@ -95,10 +95,137 @@ async def test_slack_http_failure_logs_safe_status_code_only(monkeypatch, caplog
     with caplog.at_level(logging.ERROR, logger="app.services.notifier"):
         sent = await notifier._send("hello")
 
-    assert sent is False
+    assert sent is notifier.SendOutcome.NOT_DELIVERED
     assert "status=410" in caplog.text
     assert webhook_url not in caplog.text
     assert "revoked" not in caplog.text
+
+
+class _ScriptedClient:
+    """POST마다 미리 정한 결과(응답 상태 코드 또는 예외)를 차례로 돌려준다."""
+
+    script: list = []
+    posts = 0
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return None
+
+    async def post(self, url, json):
+        _ScriptedClient.posts += 1
+        request = httpx.Request("POST", url)
+        step = _ScriptedClient.script.pop(0)
+        if isinstance(step, type) and issubclass(step, Exception):
+            raise step("scripted", request=request)
+        if isinstance(step, tuple):  # (상태 코드, 응답 헤더)
+            status, headers = step
+            return httpx.Response(status, headers=headers, request=request)
+        return httpx.Response(step, request=request)
+
+
+_SLEEPS: list[float] = []
+
+
+def _script(monkeypatch, *steps):
+    monkeypatch.setattr(notifier.settings, "SLACK_WEBHOOK_URL", "https://hooks.slack.com/services/T/B/x")
+    monkeypatch.setattr(notifier.httpx, "AsyncClient", _ScriptedClient)
+
+    async def no_sleep(seconds):
+        _SLEEPS.append(seconds)
+
+    monkeypatch.setattr(notifier.asyncio, "sleep", no_sleep)
+    _ScriptedClient.script = list(steps)
+    _ScriptedClient.posts = 0
+    _SLEEPS.clear()
+
+
+async def test_a_read_timeout_after_the_request_was_sent_is_unknown_and_not_retried(monkeypatch):
+    """요청이 나간 뒤 응답을 잃으면 Slack이 받았을 수 있다 — 다시 보내지 않고 '모름'으로 돌려준다(Codex R3-3)."""
+
+    _script(monkeypatch, httpx.ReadTimeout, 200)
+
+    sent = await notifier._send("hello")
+
+    assert sent is notifier.SendOutcome.UNKNOWN
+    assert not sent
+    assert _ScriptedClient.posts == 1
+
+
+async def test_a_slack_5xx_is_unknown_and_not_retried(monkeypatch):
+    _script(monkeypatch, 503, 200)
+
+    assert await notifier._send("hello") is notifier.SendOutcome.UNKNOWN
+    assert _ScriptedClient.posts == 1
+
+
+async def test_a_connect_error_is_retried_because_nothing_reached_slack(monkeypatch):
+    _script(monkeypatch, httpx.ConnectError, httpx.ConnectTimeout, 200)
+
+    sent = await notifier._send("hello")
+
+    assert sent is notifier.SendOutcome.SENT
+    assert sent
+    assert _ScriptedClient.posts == 3
+
+
+async def test_connect_errors_to_the_end_are_not_delivered(monkeypatch):
+    _script(monkeypatch, httpx.ConnectError, httpx.ConnectError, httpx.ConnectError)
+
+    assert await notifier._send("hello") is notifier.SendOutcome.NOT_DELIVERED
+    assert _ScriptedClient.posts == 3
+
+
+async def test_a_rejected_request_is_not_delivered_and_a_rate_limit_is_retried(monkeypatch):
+    _script(monkeypatch, 404)
+    assert await notifier._send("hello") is notifier.SendOutcome.NOT_DELIVERED
+    assert _ScriptedClient.posts == 1
+
+    _script(monkeypatch, 429, 200)
+    assert await notifier._send("hello") is notifier.SendOutcome.SENT
+    assert _ScriptedClient.posts == 2
+
+
+async def test_a_rate_limit_waits_for_slacks_retry_after(monkeypatch):
+    _script(monkeypatch, (429, {"Retry-After": "2"}), 200)
+
+    assert await notifier._send("hello") is notifier.SendOutcome.SENT
+    assert _ScriptedClient.posts == 2
+    assert _SLEEPS == [2.0]
+
+
+async def test_a_retry_after_beyond_the_request_budget_is_not_waited_for(monkeypatch):
+    """요청 안에서 오래 기다리지 않는다 — 기다릴 시간이 상한(5초)을 넘으면 못 보낸 것으로 돌려준다."""
+
+    _script(monkeypatch, (429, {"Retry-After": "30"}), 200)
+
+    assert await notifier._send("hello") is notifier.SendOutcome.NOT_DELIVERED
+    assert _ScriptedClient.posts == 1
+    assert _SLEEPS == []
+
+
+async def test_a_rate_limit_then_a_5xx_is_unknown(monkeypatch):
+    _script(monkeypatch, (429, {"Retry-After": "1"}), 503, 200)
+
+    assert await notifier._send("hello") is notifier.SendOutcome.UNKNOWN
+    assert _ScriptedClient.posts == 2
+
+
+async def test_rate_limits_to_the_end_are_not_delivered(monkeypatch):
+    _script(
+        monkeypatch,
+        (429, {"Retry-After": "1"}),
+        (429, {"Retry-After": "1"}),
+        (429, {"Retry-After": "1"}),
+    )
+
+    assert await notifier._send("hello") is notifier.SendOutcome.NOT_DELIVERED
+    assert _ScriptedClient.posts == 3
+    assert _SLEEPS == [1.0, 1.0]
 
 
 def _capture_send(monkeypatch):
@@ -207,7 +334,7 @@ async def test_inquiry_goes_to_the_inquiry_webhook_when_configured(monkeypatch):
     monkeypatch.setattr(notifier.settings, "SLACK_WEBHOOK_URL_INQUIRY", "https://hooks.slack.com/services/inquiry")
     monkeypatch.setattr(notifier.httpx, "AsyncClient", _RecordingClient)
 
-    assert await notifier.notify_lead_created(clinic_name="도입문의의원", contact="010-1234-5678") is True
+    assert await notifier.notify_lead_created(clinic_name="도입문의의원", contact="010-1234-5678") is notifier.SendOutcome.SENT
 
     assert [url for url, _ in _RecordingClient.posted] == ["https://hooks.slack.com/services/inquiry"]
 
@@ -218,7 +345,7 @@ async def test_inquiry_falls_back_to_the_operator_webhook_when_unset(monkeypatch
     monkeypatch.setattr(notifier.settings, "SLACK_WEBHOOK_URL_INQUIRY", "")
     monkeypatch.setattr(notifier.httpx, "AsyncClient", _RecordingClient)
 
-    assert await notifier.notify_lead_created(clinic_name="도입문의의원", contact="010-1234-5678") is True
+    assert await notifier.notify_lead_created(clinic_name="도입문의의원", contact="010-1234-5678") is notifier.SendOutcome.SENT
 
     assert [url for url, _ in _RecordingClient.posted] == ["https://hooks.slack.com/services/ops"]
 
@@ -228,7 +355,7 @@ async def test_inquiry_webhook_is_held_to_the_same_host_allowlist(monkeypatch):
     monkeypatch.setattr(notifier.settings, "SLACK_WEBHOOK_URL_INQUIRY", "https://evil.example.test/hook")
     monkeypatch.setattr(notifier.httpx, "AsyncClient", _ShouldNotPostClient)
 
-    assert await notifier.notify_lead_created(clinic_name="도입문의의원", contact="010-1234-5678") is False
+    assert await notifier.notify_lead_created(clinic_name="도입문의의원", contact="010-1234-5678") is notifier.SendOutcome.NOT_DELIVERED
 
 
 async def test_other_notifications_stay_on_the_operator_webhook(monkeypatch):

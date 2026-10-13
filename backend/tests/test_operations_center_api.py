@@ -27,7 +27,8 @@ def _incident(*, safe_error_code: str | None, safe_error_message: str | None):
         hospital_id=uuid.uuid4(),
         operation_run_id=None,
         dedupe_key=f"test:{uuid.uuid4()}",
-        incident_type="WEEKLY_SOV_MEASUREMENT_FAILED",
+        # 운영 담당·비조용 종류(주간 측정 실패는 Phase 1-8부터 조용한 상태 기록이다).
+        incident_type="MONTHLY_SOV_MEASUREMENT_FAILED",
         state="OPEN",
         severity="HIGH",
         customer_impact="주간 AI 노출 측정이 지연됩니다.",

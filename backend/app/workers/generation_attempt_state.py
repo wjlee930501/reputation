@@ -696,6 +696,101 @@ def replace_unknown_legacy_budget(
     return {**attempt, GENERATION_BUDGET_KEY: budget}
 
 
+LEGACY_SPEND_UNKNOWN_CODE = "LEGACY_SPEND_UNKNOWN"
+
+
+def attempt_spend_stays_unknown(previous: dict[str, Any], reason: str) -> bool:
+    """이번 시도 기록이 지출 계수 없이 남아야 하는가(모르는 지출을 0으로 바꾸지 않는다).
+
+    예산 표시가 없고 옛 계수도 없는 기록은 지출을 모른다(`_legacy_budget`). 그 기록 위에
+    `LEGACY_SPEND_UNKNOWN` 실패나 그 기록을 덮는 결정(07:45 게이트의 CONTENT_NOT_GENERATED 등)을
+    쓰면서 계수 0을 함께 쓰면, 다음 읽기가 KNOWN_COUNTERS(0)로 읽어 교체·감사 없이 새 예산을
+    만든다. 기록이 아예 없는 슬롯의 다른 원인은 종전대로 계수를 쓴다.
+    """
+
+    if GENERATION_BUDGET_KEY in previous:
+        return False
+    try:
+        _legacy_budget(previous)
+    except GenerationBudgetUnknown:
+        return reason == LEGACY_SPEND_UNKNOWN_CODE or bool(previous.get("reason"))
+    return False
+
+
+def legacy_budget_is_replaceable(
+    attempt: dict[str, Any], *, legacy_incident_open: bool = False
+) -> bool:
+    """감사된 레거시 예산 교체 대상인가.
+
+    두 경우다. (1) 지출을 정말 모른다(`GenerationBudgetUnknown`). (2) 예산 표시가 없고 옛 계수가
+    모두 0인데, 그 0이 지출 사실이 아니라 `LEGACY_SPEND_UNKNOWN` 실패 기록이 남긴 값이다 —
+    저장 원인이 그 코드이거나, 기록을 게이트가 덮었어도 같은 글의 열린 사고가 그 코드다.
+    이미 교체한 예산과 버전 예산은 대상이 아니다(한 번만 교체한다).
+    """
+
+    raw_budget = attempt.get(GENERATION_BUDGET_KEY)
+    if isinstance(raw_budget, dict):
+        if _valid_reset_record(raw_budget.get("reset_record")):
+            return False
+        try:
+            _validate_versioned_budget(raw_budget)
+        except GenerationBudgetUnknown:
+            return True
+        return False
+    try:
+        _legacy_budget(attempt)
+    except GenerationBudgetUnknown:
+        return True
+    if not (attempt.get("reason") == LEGACY_SPEND_UNKNOWN_CODE or legacy_incident_open):
+        return False
+    counters = [
+        attempt[key] for key in ("provider_attempt_count", "attempt_count") if key in attempt
+    ]
+    return all(_nonnegative_int(value) == 0 for value in counters)
+
+
+def replace_legacy_budget_and_release(
+    summary: Any,
+    *,
+    actor: str,
+    reason: str,
+    idempotency_key: str,
+    legacy_incident_open: bool = False,
+    replaced_at: datetime | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """레거시 예산을 한 번 교체하고 같은 원인의 억제를 푼 `essence_check_summary`를 돌려준다.
+
+    교체 예산은 `legacy_state=REPLACED`와 감사 기록(`reset_record`: actor·사유·멱등 키·시각·
+    교체 전 시도 기록 전체)을 갖는다. 억제(reason·retry_class·next_retry_at)는
+    `released_generation_attempt`로 걷어 다음 스윕·운영자 재생성이 이 슬롯을 다시 쓴다.
+    반환값은 (새 summary, reset_record)이며 호출부가 행 잠금 안에서 저장하고 감사 로그
+    `LEGACY_BUDGET_REPLACED`를 같은 트랜잭션에 남긴다.
+    """
+
+    updated = dict(summary) if isinstance(summary, dict) else {}
+    raw_attempt = updated.get(GENERATION_ATTEMPT_KEY)
+    attempt = dict(raw_attempt) if isinstance(raw_attempt, dict) else {}
+    if not legacy_budget_is_replaceable(attempt, legacy_incident_open=legacy_incident_open):
+        raw_budget = attempt.get(GENERATION_BUDGET_KEY)
+        if isinstance(raw_budget, dict) and _valid_reset_record(raw_budget.get("reset_record")):
+            raise GenerationBudgetExceeded("LEGACY_BUDGET_ALREADY_REPLACED")
+        raise GenerationBudgetExceeded("LEGACY_BUDGET_IS_KNOWN")
+    budget = _zero_budget(None)
+    budget["legacy_state"] = "REPLACED"
+    budget["reset_record"] = {
+        "event": "LEGACY_BUDGET_REPLACED",
+        "actor": actor,
+        "reason": reason,
+        "idempotency_key": idempotency_key,
+        "replaced_at": (replaced_at or datetime.now(UTC)).isoformat(),
+        "previous_snapshot": copy.deepcopy(attempt),
+    }
+    replaced = released_generation_attempt(
+        {**updated, GENERATION_ATTEMPT_KEY: {**attempt, GENERATION_BUDGET_KEY: budget}}
+    )
+    return replaced, copy.deepcopy(budget["reset_record"])
+
+
 def acquisition_payload(
     attempt: dict[str, Any], acquisition_id: str
 ) -> dict[str, Any] | None:

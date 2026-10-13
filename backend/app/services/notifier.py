@@ -10,6 +10,7 @@ import asyncio
 import logging
 import re
 from datetime import datetime, timedelta, timezone
+from enum import Enum
 from typing import TypedDict
 from urllib.parse import urlsplit
 
@@ -124,15 +125,56 @@ def _inquiry_webhook_url() -> str:
     return settings.SLACK_WEBHOOK_URL_INQUIRY.strip() or settings.SLACK_WEBHOOK_URL
 
 
-async def _send(text: str, blocks: list | None = None, *, webhook_url: str | None = None) -> bool:
+class SendOutcome(Enum):
+    """Slack 전송 결과. 참/거짓은 SENT일 때만 참이다(옛 `bool` 호출자 호환).
+
+    - SENT: 2xx를 받았다.
+    - NOT_DELIVERED: Slack이 받지 않았음이 확실하다 — 보낼 곳이 없거나, 연결 전에 실패했거나,
+      Slack이 4xx(재시도 소진·대기 상한을 넘은 429 포함)로 거절했다. 다시 보내도 중복이 아니다.
+    - UNKNOWN: 요청이 나간 뒤 응답을 잃었거나(읽기 시간 초과·연결 끊김) 5xx를 받았다. Slack이
+      받았을 수 있으므로 다시 보내지 않는다.
+    """
+
+    SENT = "SENT"
+    NOT_DELIVERED = "NOT_DELIVERED"
+    UNKNOWN = "UNKNOWN"
+
+    def __bool__(self) -> bool:
+        return self is SendOutcome.SENT
+
+
+# 수신 불명 결과를 리드 행에 남기는 사유(재발송하지 않는다).
+DELIVERY_UNKNOWN_ERROR = "Slack delivery outcome unknown; not resent to avoid a duplicate."
+
+
+# 요청 바이트가 하나도 나가지 않은 실패 — 다시 보내도 중복이 생기지 않는다.
+_NOT_SENT_ERRORS = (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)
+
+# 429에서 Slack의 `Retry-After`(초)를 따르되, 한 요청 안에서 기다리는 시간의 합은 이 상한까지다.
+# 더 기다려야 하면 기다리지 않고 NOT_DELIVERED로 돌려준다(호출자의 재시도·drain이 이어받는다).
+_RATE_LIMIT_WAIT_BUDGET_SECONDS = 5.0
+
+
+def _retry_after_seconds(response: httpx.Response, fallback: float) -> float:
+    """429 응답의 `Retry-After`(초). 없거나 읽을 수 없으면 `fallback`."""
+    try:
+        return max(0.0, float(response.headers.get("Retry-After", "")))
+    except ValueError:
+        return fallback
+
+
+async def _send(
+    text: str, blocks: list | None = None, *, webhook_url: str | None = None
+) -> SendOutcome:
     url = webhook_url or settings.SLACK_WEBHOOK_URL
     if not url:
         logger.warning("Slack webhook not configured")
-        return False
+        return SendOutcome.NOT_DELIVERED
     if not _is_allowed_webhook(url):
         logger.error("Slack webhook URL rejected: host not in allowlist (SSRF guard)")
-        return False
+        return SendOutcome.NOT_DELIVERED
     attempts = 3
+    waited = 0.0
     for attempt in range(attempts):
         try:
             async with httpx.AsyncClient(timeout=10) as client:
@@ -141,25 +183,33 @@ async def _send(text: str, blocks: list | None = None, *, webhook_url: str | Non
                     json={"text": text, **({"blocks": blocks} if blocks else {})},
                 )
                 r.raise_for_status()
-                return True
+                return SendOutcome.SENT
         except httpx.HTTPStatusError as exc:
             status_code = exc.response.status_code
-            retryable = status_code == 429 or status_code >= 500
-            if retryable and attempt < attempts - 1:
-                await asyncio.sleep(0.25 * (2 ** attempt))
-                continue
+            # 429는 Slack이 처리하지 않은 요청이라 다시 보내도 중복이 아니다. Slack이 말한 만큼
+            # (`Retry-After`) 기다리되 상한을 넘으면 기다리지 않는다. 5xx는 처리 뒤에도 날 수 있어
+            # 다시 보내지 않는다.
+            if status_code == 429 and attempt < attempts - 1:
+                delay = _retry_after_seconds(exc.response, 0.25 * (2 ** attempt))
+                if waited + delay <= _RATE_LIMIT_WAIT_BUDGET_SECONDS:
+                    waited += delay
+                    await asyncio.sleep(delay)
+                    continue
             # 응답 본문/웹훅 URL은 시크릿이 섞일 수 있어 기록하지 않는다. 상태 코드는
             # revoked webhook(404/410), rate limit(429), Slack 장애(5xx)를 구분하는 데 필요하다.
             logger.error("Slack delivery failed: HTTPStatusError status=%s", status_code)
-            return False
-        except Exception as exc:
-            retryable = isinstance(exc, (httpx.TimeoutException, httpx.NetworkError))
-            if retryable and attempt < attempts - 1:
+            return SendOutcome.UNKNOWN if status_code >= 500 else SendOutcome.NOT_DELIVERED
+        except _NOT_SENT_ERRORS as exc:
+            if attempt < attempts - 1:
                 await asyncio.sleep(0.25 * (2 ** attempt))
                 continue
             logger.error("Slack delivery failed: %s", exc.__class__.__name__)
-            return False
-    return False
+            return SendOutcome.NOT_DELIVERED
+        except Exception as exc:
+            # 읽기 시간 초과·연결 끊김 등 요청이 나간 뒤의 실패 — Slack이 받았을 수 있다.
+            logger.error("Slack delivery outcome unknown: %s", exc.__class__.__name__)
+            return SendOutcome.UNKNOWN
+    return SendOutcome.NOT_DELIVERED  # pragma: no cover - 루프는 항상 return한다
 
 
 class _LegacyButtonText(TypedDict):
@@ -200,7 +250,7 @@ async def notify_lead_created(
     region_keyword: str | None = None,
     source_path: str | None = None,
     created_at: datetime | None = None,
-) -> bool:
+) -> SendOutcome:
     """공개 도입문의 접수 → 도입문의 채널(SLACK_WEBHOOK_URL_INQUIRY, 미설정 시 운영 채널).
 
     신청 정보를 요약해 보내되 처리방침의 Slack 국외 이전 고지 범위(병원명·진료과/지역·
@@ -272,7 +322,7 @@ async def notify_lead_diagnosis_received(
     email: str,
     slot_no: int,
     admin_url: str,
-) -> bool:
+) -> SendOutcome:
     """무료 AI 노출 진단 접수를 한 건만 즉시 알린다."""
     del clinic_type, region, keywords, contact, email
     safe_clinic_name = _safe_operator_label(clinic_name)
@@ -299,7 +349,7 @@ async def notify_lead_purge_result(*, purged: int, skipped: int = 0, error: str 
     정상 파기 기록은 로그에 남기고 실패만 알린다. 실행 여부는 정기 감시로 확인한다.
     """
     if error:
-        return await _send(
+        return bool(await _send(
             text=prefixed_for_event("PRIVACY_RETENTION_FAILED", "🟥 [개인정보 자동 파기] 운영 확인 필요"),
             blocks=[
                 {
@@ -315,7 +365,7 @@ async def notify_lead_purge_result(*, purged: int, skipped: int = 0, error: str 
                 },
                 _admin_action_block(path="/operations?queue=INCIDENTS", label="운영센터에서 확인"),
             ],
-        )
+        ))
     logger.info("PII retention sweep completed: purged=%s skipped=%s", purged, skipped)
     return False  # Successful housekeeping is not an operator task.
 

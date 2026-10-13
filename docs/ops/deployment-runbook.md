@@ -1,6 +1,15 @@
 # 현재 배포와 헬스체크
 
-## 최신 운영 배포 — 2026-10-10 반복 알림 근본 수정
+## 최신 운영 배포 — 2026-10-13 Phase 0 자율성 보완
+
+main `31751a88`(api `00241-lhd`, worker `00231-4rx`, beat `00226-gpw`, admin `00105-x4r`, Site 그대로, DB head
+`0087_add_operation_run_redispatch_count`). 본 체크아웃의 untracked 파일이 release revision 검사에 걸리므로 깨끗한 worktree에서
+`deploy.sh backend`를 실행했고, `deploy.sh admin`은 `DEPLOY_ROLLBACK_STATE_FILE`로 별도 롤백 파일을 써 backend 좌표를 덮지 않았다.
+readiness 17/17, 병원 11곳 헬스 200, 새 리비전 ERROR 0건, `daily-fleet-heartbeat` 새 워커에서 `before_summary_window`. 35일 RUNNING
+잔재 1건이 `OPERATION_RUN_ABANDONED`로 종료되며 예상한 사고·Slack 1건. 배포 뒤 `ops_sql_report`는 migrate Job으로 쓸 수 있다.
+**이후 Worker를 `00223` 이하로 롤백하지 않는다.** 상세는 [배포 기록](../releases/2026-10-13-autonomy-phase0-production.md).
+
+## 이전 운영 배포 — 2026-10-10 반복 알림 근본 수정
 
 main `2cc60247`(api `00240-c9n`, worker `00230-s6m`, beat `00225-npd`, admin `00104-gkq`, DB 0086 그대로). Backend 배포의
 legacy publish 사전 확인은 로컬 `DATABASE_URL` 없이 VPC 안 migrate Job으로 돈다. **배포 전 서비스 트래픽이 최신을 따라가는지
@@ -35,6 +44,17 @@ gcloud run jobs execute reputation-migrate --project mso-platform-481505 --regio
 ```
 
 항목 이름은 `backend/app/core/celery_app.py`의 `beat_schedule` 키다. 결과는 Worker 로그에서 반환 task id로 확인한다.
+
+## 운영 DB 읽기 전용 조회
+
+운영 DB는 사설 IP라 작업 PC에서 직접 붙지 않는다. 자율 운영 지표(Q1~Q6)와 배포 전 확인(Q7, 쿼리 원문은 `backend/app/utils/ops_sql_report.py`)은
+VPC 안의 migrate Job으로 돌린다. CLI는 첫 문장으로 `SET TRANSACTION READ ONLY`를 실행하고 끝나면 롤백하며, 쿼리마다 JSON 한 줄을
+Job 로그에 남긴다. gcloud `--args`는 쉼표로 인자를 나누므로 `--only`는 쿼리마다 따로 넘긴다(`--only=q1,q3`은 한 토큰이 아니다).
+
+```bash
+gcloud run jobs execute reputation-migrate --project mso-platform-481505 --region asia-northeast3 --wait \
+  --args=python,-m,app.utils.ops_sql_report,--only=q1,--only=q3
+```
 
 ## 이전 운영 배포 — 2026-10-01 미결 PR 정리·원장 보고서 개편
 
@@ -210,7 +230,58 @@ Cloud Run이 옛 워커를 10초 뒤 SIGKILL하면 kombu가 미확인 메시지�
 열고 서명은 1시간(`DISPATCH_TTL_SECONDS`) 그대로 두어 겹침 구간의 옛 워커가 새 봉투를 거절하지 않게 하고, #226 이전
 워커 리비전이 모두 사라진 다음 릴리스에서 서명을 6시간으로 올린다. 옛 워커가 실행 중이던 메시지는 7200초 뒤 되돌아와
 만료로 거절되지만(일회성, 사고 1건), 새 순서에서는 만료 사본이 실행을 claim하거나 FAILED로 끝내지 못한다. 배포 뒤에는 `run_beat_entry daily-fleet-heartbeat`로
-일일 요약을 즉시 받아 "점검 이상 없음"을 확인한다.
+일일 요약을 즉시 받아 "점검 이상 없음"을 확인한다. **2026-10-11 릴리스(Phase 0)에서 서명을 6시간으로 올렸다**(#226 이전 워커
+`00223-llc` 이하는 10/8 이후 트래픽 없음 — 10/8의 `00224-xnt`부터 #226이 들어 있다). 이후 워커를 `00223` 이하로 롤백하지 않는다 —
+그 리비전은 수명이 정확히 1시간인 봉투만 받으므로 6시간 봉투를 모두 거절한다.
+
+**Phase 0(2026-10-11, `0087_add_operation_run_redispatch_count`) — 배포 전 확인.** 0087은 추가형(`operation_runs.redispatch_count`
+NOT NULL DEFAULT 0)이라 `deploy.sh`의 migrate 선행 순서로 충분하다. 배포 전에 아래를 읽기 전용으로 조회해 기록한다([운영 DB 읽기 전용 조회](#운영-db-읽기-전용-조회)의
+migrate Job으로 돌리거나 같은 SELECT를 읽기 전용 세션에서 실행한다).
+
+```sql
+-- (a) 배포 뒤 첫 자율 복구가 FAILED(OPERATION_RUN_ABANDONED)로 정리할 RUNNING 잔재. MONTHLY_SOV_PERIOD는 20일 기준이라
+--     10일 결과에 들어 있어도 정리되지 않을 수 있다.
+SELECT operation_type, count(*) FROM operation_runs
+WHERE state='RUNNING' AND operation_type <> 'SITE_REVALIDATION'
+  AND (lease_expires_at IS NULL OR lease_expires_at <= now())
+  AND updated_at <= now() - interval '10 days'
+GROUP BY 1;
+-- (b) 교체 후보 SQL이 정수로 캐스트하는 수리 일수(essence_check_summary 최상위 automatic_body_repair). 기대값 0.
+SELECT count(*) FROM content_items
+WHERE jsonb_typeof(essence_check_summary->'automatic_body_repair') = 'object'
+  AND jsonb_typeof(essence_check_summary->'automatic_body_repair'->'exhausted_days') NOT IN ('number','null');
+-- (c) 이미 교체된 슬롯 수와, 첫 스윕에서 곧바로 교체될 수 있는 생성 예산 소진(RETRYING) 슬롯 수.
+SELECT count(*) FILTER (WHERE jsonb_array_length(coalesce(topic_swap_history,'[]'::jsonb)) > 0) AS swapped,
+       count(*) FILTER (WHERE essence_check_summary->'generation_attempt'->>'reason' = 'GENERATION_BUDGET_EXHAUSTED'
+                          AND essence_check_summary->'generation_attempt'->>'retry_class' = 'SAMPLE_RECOVERABLE'
+                          AND first_published_at IS NULL AND human_edited_at IS NULL
+                          AND jsonb_array_length(coalesce(topic_swap_history,'[]'::jsonb)) = 0) AS swap_candidates
+FROM content_items
+WHERE status NOT IN ('PUBLISHED','CANCELLED','WITHHELD');
+```
+
+(b)가 0이 아니면 배포 전에 그 행을 확인한다 — 정수가 아닌 값은 교체 후보 SQL의 캐스트를 실패시킨다. (c)의 `swap_candidates`는
+현재 주제의 작가 예산이 찼는지를 파이썬 술어가 다시 보므로 상한일 뿐이다.
+
+**Phase 0 — 배포 뒤 1회 조치.** 배포만으로는 이미 기한 없이 굳은 슬롯이 풀리지 않는다(게이트가 예전에 `OPERATOR_REQUIRED`로
+남긴 `CONTENT_NOT_GENERATED` 등). `ops_sql_report --only=q4`로 `OPERATOR_REQUIRED`·`INPUT_CHANGE_REQUIRED` 슬롯을 원인별로 뽑고,
+그중 원고 미생성으로 동결된 슬롯은 운영센터 사고 큐(`/operations?queue=incidents`)의 "작업 다시 시도"로 한 번 풀어 준다. `LEGACY_SPEND_UNKNOWN`(2026-10-11 조회 기준 12건)은 이 버튼으로 풀리지 않는다 — 운영센터의 "레거시 예산 교체 후 다시 시도"(`POST /api/admin/hospitals/{h}/content/{c}/regenerate`, 사유 필수·검증된 actor·멱등 키)로 글마다 예산을 교체해야 하며, 사람이 지출 사실을 확인하는 감사 가능한 행위라 일괄 스크립트로 대신하지 않는다.
+**승인된 1회 예외(2026-10-13 대표 결정 D22):** 10/9 이전에 만든 빈 슬롯 23건(10/12~15 예정, `LEGACY_SPEND_UNKNOWN` 11 + 게이트가 `CONTENT_NOT_GENERATED`로 덮은 12)은 버튼과 같은 교체 함수(`generation_attempt_state.replace_legacy_budget_and_release`)를 시스템 actor `system:legacy-budget-reset-20261013`로 부르는 CLI로 한 번에 교체한다. 교체는 행마다 행 잠금·감사 로그(`LEGACY_BUDGET_REPLACED`, 교체 전 시도 기록 전체 포함)·커밋이며, 억제를 풀어 다음 복구 스윕이 다시 쓴다. 대상은 공개 이력·제목·본문이 없고 2026-10-09 16:00 UTC 이전에 생성된 DRAFT/READY 중 저장 원인 또는 열린 사고 코드가 `LEGACY_SPEND_UNKNOWN`이고 교체 함수가 받아들이는 행이며, 두 번째 실행은 0건이다. 이 예외는 이 23건에만 적용하고 이후의 레거시 슬롯은 위 버튼으로 처리한다:
+`gcloud run jobs execute reputation-migrate --project mso-platform-481505 --region asia-northeast3 --wait --args=python,-m,app.utils.legacy_budget_reset` (dry-run, 건수·id 확인) → `--args="^@^python@-m@app.utils.legacy_budget_reset@--apply@--reason=<사유>"` (적용). 이 CLI가 든 이미지가 배포되기 전에는 같은 코드를 base64 `python -c`로 넘긴다.
+다음 날 지표는 MasterPlan §5 Phase 0 (f)를 따른다.
+
+**Phase 1(`0088_add_outbox_open_pairing_index`) — 배포 전 확인.** 0088은 `notification_outbox`에 열림 알림 짝 조회용 부분
+인덱스를 CONCURRENTLY 없이 만든다(만드는 동안 outbox 쓰기가 기다린다). outbox는 운영 알림 행만 쌓이는 작은 표(수천 행 단위)라
+1초 안팎이지만, 배포 전에 행 수를 읽기 전용으로 확인해 기록한다.
+
+```bash
+gcloud run jobs execute reputation-migrate --project mso-platform-481505 --region asia-northeast3 --wait \
+  --args=python,-m,app.utils.ops_sql_report,--only=q7
+```
+
+`outbox_rows`가 **약 100만 행 이하**면 표준 `deploy.sh`(migrate 선행)로 진행한다. 넘으면 배포 전에 읽기 전용이 아닌 세션에서
+`CREATE INDEX CONCURRENTLY ix_notification_outbox_open_pairing ON notification_outbox (incident_id, state, created_at)
+WHERE notification_type = 'INCIDENT_OPEN';`을 먼저 실행한다 — 0088은 인덱스가 이미 있으면 생성을 건너뛴다.
 
 **10/8 배치(PR #226, `0083_add_operation_run_not_before`) — 0083 migrate Job을 먼저 끝내고, 코드는 그 다음 배포한다.**
 새 ORM이 `operation_runs.not_before_at`을 SELECT한다. 추가형·NULL 허용이라 0083 위의 옛 코드는 안전하다.

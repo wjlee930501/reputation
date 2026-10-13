@@ -612,3 +612,83 @@ async def test_a_run_superseded_midway_does_not_open_an_unclosable_incident(
     await leadgen_tasks._run_lead_diagnosis(str(diagnosis_id))
 
     assert opened == ([] if superseded else ["LEAD_DIAGNOSIS_FAILED"])
+
+
+@pytest.mark.asyncio
+class TestRetryBackoff:
+    async def test_a_backed_off_diagnosis_is_not_dispatched_until_its_time(self, pg_async_session):
+        now = datetime.now(timezone.utc)
+        diagnosis = await _seed(
+            pg_async_session,
+            execution_status=ExecutionStatus.RUNNING.value,
+            execution_attempts=2,
+            running_since=now,
+        )
+
+        await leadgen_tasks._requeue_with_backoff(
+            pg_async_session, diagnosis.id, attempts=2, error="Timeout", now=now
+        )
+
+        await pg_async_session.refresh(diagnosis)
+        assert diagnosis.execution_status == ExecutionStatus.PENDING.value
+        assert diagnosis.cost_deferred_until == now + timedelta(hours=1)
+        assert diagnosis.error == "Timeout"
+        assert str(diagnosis.id) not in await leadgen_tasks._pending_to_dispatch(pg_async_session)
+        assert await leagen_claim(pg_async_session, diagnosis.id) is False
+
+    async def test_the_first_failure_is_retried_at_once(self, pg_async_session):
+        now = datetime.now(timezone.utc)
+        diagnosis = await _seed(
+            pg_async_session,
+            execution_status=ExecutionStatus.RUNNING.value,
+            execution_attempts=1,
+            running_since=now,
+        )
+
+        await leadgen_tasks._requeue_with_backoff(pg_async_session, diagnosis.id, attempts=1, now=now)
+
+        assert str(diagnosis.id) in await leadgen_tasks._pending_to_dispatch(pg_async_session)
+
+    async def test_fourth_attempt_is_still_claimable(self, pg_async_session):
+        diagnosis = await _seed(pg_async_session, execution_attempts=4)
+        assert await leagen_claim(pg_async_session, diagnosis.id) is True
+
+    async def test_an_engine_failure_is_requeued_with_backoff(self, pg_async_session, monkeypatch):
+        diagnosis = await _seed(pg_async_session, execution_attempts=1)
+        diagnosis_id = diagnosis.id
+
+        async def fake_measure(_session, diag):
+            diag.execution_status = ExecutionStatus.FAILED.value
+            diag.finished_at = datetime.now(timezone.utc)
+            diag.running_since = None
+            await _session.commit()
+            return {"planned": 18, "succeeded": 0, "confirmed": 0, "status": diag.execution_status}
+
+        class _Ctx:
+            async def __aenter__(self):
+                return pg_async_session
+
+            async def __aexit__(self, *exc):
+                return False
+
+        monkeypatch.setattr(
+            leadgen_tasks.lead_diagnosis_engine, "run_diagnosis_measurements", fake_measure
+        )
+        monkeypatch.setattr(leadgen_tasks, "get_async_sessionmaker", lambda: _Ctx)
+        before = datetime.now(timezone.utc)
+
+        result = await leadgen_tasks._run_lead_diagnosis(str(diagnosis_id))
+
+        row = (
+            await pg_async_session.execute(
+                select(LeadDiagnosis)
+                .where(LeadDiagnosis.id == diagnosis_id)
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one()
+        assert result["requeued"] is True
+        assert row.execution_status == ExecutionStatus.PENDING.value
+        assert row.execution_attempts == 2
+        # 두 번째 시도가 실패했다 — 1시간 뒤에 다시 잡는다.
+        assert row.cost_deferred_until >= before + timedelta(hours=1)
+        assert row.finished_at is None

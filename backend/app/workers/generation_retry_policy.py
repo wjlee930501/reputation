@@ -155,12 +155,13 @@ def stored_attempt_period(attempt: dict) -> str | None:
     return environment_attempt_period(observed)
 
 
-def environment_window_last_day(attempt: Mapping) -> date | None:
-    """일일 초기화 환경 원인이 자동 재시도를 살 수 있는 마지막 KST 날. 상한이 없으면 `None`.
+def environment_window_start(attempt: Mapping) -> datetime | None:
+    """일일 초기화 환경 원인의 3일 창이 시작된 시각. 창이 없는 원인이면 `None`.
 
     시작은 그 환경 장애 연속 구간을 처음 관측한 시각(`environment_since`)이다. 그 키가 없는
     레거시 기록은 마지막 관측일(`observed_at`)부터 3일 창을 받는다 — 같은 문맥의 옛 표본 실패
-    시각을 물려받을 수 있는 `first_observed_at`으로 보면 이미 닫힌 창으로 읽힌다.
+    시각을 물려받을 수 있는 `first_observed_at`으로 보면 이미 닫힌 창으로 읽힌다. 읽는 쪽
+    (`environment_window_last_day`)과 잇는 쪽(`tasks._remember_generation_attempt`)이 함께 쓴다.
     """
 
     if attempt.get("reason") not in WINDOWED_ENVIRONMENT_CODES:
@@ -175,10 +176,17 @@ def environment_window_last_day(attempt: Mapping) -> date | None:
             continue
         if started.tzinfo is None:
             started = started.replace(tzinfo=UTC)
-        return started.astimezone(KST).date() + timedelta(
-            days=ENVIRONMENT_EXHAUSTED_DAY_LIMIT - 1
-        )
+        return started
     return None
+
+
+def environment_window_last_day(attempt: Mapping) -> date | None:
+    """일일 초기화 환경 원인이 자동 재시도를 살 수 있는 마지막 KST 날. 상한이 없으면 `None`."""
+
+    started = environment_window_start(attempt)
+    if started is None:
+        return None
+    return started.astimezone(KST).date() + timedelta(days=ENVIRONMENT_EXHAUSTED_DAY_LIMIT - 1)
 
 
 def environment_window_closed(attempt: Mapping, now: datetime | None = None) -> bool:

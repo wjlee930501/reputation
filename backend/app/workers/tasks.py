@@ -313,6 +313,7 @@ from app.services.monthly_period import (
     eligible_hospital_ids,
     is_monthly_recovery_window,
     lock_report_version_plan,
+    monthly_recovery_deadline,
     reporting_period,
     require_closed_period,
     scheduled_report_period,
@@ -374,6 +375,7 @@ from app.services.onboarding_notifications import (
 )
 from app.services.operator_action import requires_operator_action
 from app.services.ops_incident_alerts import (
+    extend_retrying_deadline,
     open_ops_incident,
     recover_ops_incident,
     recover_ops_incidents_for_hospital,
@@ -452,6 +454,7 @@ from app.services.sov_tracking_set import (
     MEASUREMENT_WINDOW_MONTH_END,
     hospital_in_monthly_cohort,
     iter_monthly_sov_cohort,
+    monthly_sov_cohort_cost_threshold,
     register_convertible_tracking_sets,
     tracking_set_fingerprint,
     tracking_set_members,
@@ -495,6 +498,8 @@ from app.workers.generation_attempt_state import (
     GenerationBudgetExceeded,
     GenerationBudgetLedger,
     GenerationBudgetUnknown,
+    attempt_spend_stays_unknown,
+    legacy_generation_budget_replaced,
     released_generation_attempt,
     writer_acquisition_prefix,
 )
@@ -534,6 +539,7 @@ from app.workers.generation_retry_policy import (
     attempt_is_terminal,
     environment_attempt_period,
     environment_window_closed,
+    environment_window_start,
     has_model_declared_hard_finding,
     next_recovery_deadline,
     repair_session_is_available,
@@ -1416,16 +1422,16 @@ def _remember_generation_attempt(
         # 환경 장애 연속 구간의 시작. 원인 문자열이 바뀌어도(PROVIDER_TIMEOUT → GENERATION_FAILED,
         # 게이트의 CONTENT_NOT_GENERATED 덮어쓰기) 같은 문맥의 환경 기록이 이어지면 시작을 잇는다 —
         # 원인을 갈아타며 3일 창을 새로 여는 일이 없게 한다.
+        # 이어받는 시작은 읽는 쪽과 같은 규칙이다(`environment_window_start`) — `environment_since`가
+        # 없는 레거시 기록은 그 마지막 관측 시각이다. `now`로 새로 잡으면 닫힌 창이 다시 열린다.
         carried = (
-            previous.get(ENVIRONMENT_SINCE_KEY)
+            environment_window_start(previous)
             if previous.get("context") == context
             and previous.get("retry_class")
             == GenerationRetryClass.ENVIRONMENT_RECOVERABLE.value
             else None
         )
-        attempt[ENVIRONMENT_SINCE_KEY] = (
-            carried if isinstance(carried, str) else observed_at.isoformat()
-        )
+        attempt[ENVIRONMENT_SINCE_KEY] = (carried or observed_at).isoformat()
     if reason == "GENERATION_REJECTED":
         attempt["message"] = safe_generation_rejection_message(message)
     # 이 차단이 어떤 승인 사실 위에서 내려졌는지 남긴다. 사람이 그 자료를 채우면 스윕이
@@ -1484,6 +1490,11 @@ def _remember_generation_attempt(
         attempt["next_retry_at"] = None
     for key, value in (extra or {}).items():
         attempt[key] = value
+    if GENERATION_BUDGET_KEY not in attempt and attempt_spend_stays_unknown(previous, reason):
+        # 지출을 모르는 레거시 기록 위의 결정은 계수를 쓰지 않는다. 계수 0을 쓰면 다음 읽기가
+        # KNOWN_COUNTERS(0)로 읽어 감사된 교체 없이 새 예산이 생긴다(2026-10-13, 23개 슬롯).
+        attempt.pop("attempt_count", None)
+        attempt.pop("provider_attempt_count", None)
     updated[_GENERATION_ATTEMPT_KEY] = attempt
     item.essence_check_summary = updated
     db.commit()
@@ -2342,6 +2353,10 @@ SOFT_REMEDIATION_MAX_GENERATIONS = 1
 HARD_REMOVAL_MAX_GENERATIONS = 1
 
 
+# 실행 진입이 남기는 예약 토큰 일시 속성(`_enter_claimed_execution`). 매핑되지 않은 속성이다.
+_GENERATION_RESERVATION_ATTR = "_generation_reservation_token"
+
+
 async def _generate_with_auto_review(
     *,
     db,
@@ -2377,11 +2392,17 @@ async def _generate_with_auto_review(
             default=str,
         ).encode("utf-8")
     ).hexdigest()[:16]
-    # 작가 결과의 재생 범위는 한 claim(세션)이다. 같은 claim의 재배달은 저장된 결과를 다시
-    # 쓰고(중복 구매 없음), 새 claim은 새 표본을 산다. 본문이 저장되지 않은 실패(제목 거절
-    # 등)가 다음 세션에서 같은 후보를 0원에 재생해 표본 예산만 태우지 않게 한다.
-    # claim이 없는 직접 호출(테스트·도구)은 종전처럼 하나의 범위를 공유한다.
-    session_scope = str(getattr(item, "generation_claim_token", None) or "unclaimed")
+    # 작가 결과의 재생 범위는 한 예약(세션)이다. 같은 예약의 재배달은 저장된 결과를 다시
+    # 쓰고(중복 구매 없음), 새 예약은 새 표본을 산다. 본문이 저장되지 않은 실패(제목 거절
+    # 등)가 다음 세션에서 같은 후보를 0원에 재생해 표본 예산만 태우지 않게 한다. 실행 진입
+    # (`begin_generation_execution`)은 배달마다 claim 토큰을 바꾸므로 예약 토큰을 먼저 본다.
+    # 예약이 없는 경로는 그 실행의 claim 토큰, claim도 없는 직접 호출(테스트·도구)은 종전처럼
+    # 하나의 범위를 공유한다.
+    session_scope = str(
+        getattr(item, _GENERATION_RESERVATION_ATTR, None)
+        or getattr(item, "generation_claim_token", None)
+        or "unclaimed"
+    )
 
     async def _budgeted_generate(*args, **kwargs):
         findings = [str(value) for value in (kwargs.get("remediation_findings") or [])]
@@ -2868,12 +2889,15 @@ def _checkpoint_v0_progress(
     }
 
 
-def _defer_v0_until_cost_window(task, exc: BaseException, failure_retry_count: int):
+def _defer_v0_until_cost_window(
+    task, exc: BaseException, failure_retry_count: int, *, hospital_id: str
+):
     """Hand a cost-deferred V0 run back to the database until the next KST cost window.
 
     다음 비용 창(최대 약 24시간 뒤)까지 countdown으로 기다리면 그 메시지가 브로커·봉투·lease
     시계보다 오래 살아 배포 사이에 만료·중복된다. 실행을 QUEUED로 돌려놓고 시각만 남기면
-    자율 복구가 그 뒤에 새 봉투로 다시 보낸다.
+    자율 복구가 그 뒤에 새 봉투로 다시 보낸다. 자동 재실행 중(RETRYING)인 실패 사고가 있으면
+    그 기한도 미룸 시각 + 유예로 민다 — 비용 창을 기다리는 동안 사람의 일로 넘어가지 않게.
     """
     if explicit_run_context(task) is None:
         # 실행 기록 없이 들어온 옛 배포다 — 상한 안의 짧은 재시도로 다시 확인한다.
@@ -2902,10 +2926,150 @@ def _defer_v0_until_cost_window(task, exc: BaseException, failure_retry_count: i
             kwargs=_v0_retry_kwargs(task, failure_retry_count),
             max_retries=V0_CONTINUATION_MAX_RETRIES,
         ) from defer_error
+    if deferred:
+        try:
+            _run_async(
+                extend_retrying_deadline(
+                    pipeline="v0_report",
+                    object_type="hospital",
+                    object_id=hospital_id,
+                    fingerprint=IncidentFingerprint.UNKNOWN,
+                    retry_until=not_before + V0_AUTO_RERUN_GRACE,
+                )
+            )
+        except Exception:  # noqa: BLE001 - 기한 연장 실패가 미룸을 되돌리지 않는다.
+            logger.exception("V0 rerun incident deadline could not be extended")
     return {
         "status": "cost_deferred" if deferred else "stale_run",
         "not_before": not_before.isoformat(),
     }
+
+
+V0_AUTO_RERUN_BUDGET = 3
+V0_AUTO_RERUN_INTERVAL = timedelta(hours=6)
+# 재실행이 실제로 돌 시간. 이 안에 끝나지 않으면 그때 사람의 일이다. 비용 창 미룸이 겹치면
+# `_defer_v0_until_cost_window`가 미룸 시각 + 이 유예로 기한을 민다.
+V0_AUTO_RERUN_GRACE = timedelta(hours=6)
+V0_AUTO_RERUN_SUMMARY_KEY = "v0_auto_reruns"
+V0_AUTO_RERUN_NEXT_ACTION = (
+    "시스템이 같은 진단을 6시간 뒤 자동으로 다시 만듭니다(최대 3회). 이미 끝난 측정은 다시 사지 않습니다. "
+    "조치하지 마세요 — 끝내 실패하면 그때 다시 알립니다."
+)
+
+
+def _v0_auto_reruns_used(summary: object) -> int:
+    if not isinstance(summary, Mapping):
+        return 0
+    value = summary.get(V0_AUTO_RERUN_SUMMARY_KEY, 0)
+    if type(value) is int and 0 <= value <= V0_AUTO_RERUN_BUDGET:
+        return value
+    # 손상된 예산으로 재실행을 무한히 열지 않는다.
+    return V0_AUTO_RERUN_BUDGET
+
+
+def _v0_in_auto_rerun_stage(operation_run_id: uuid.UUID | None) -> bool:
+    """이 실행이 자동 재실행 단계(재실행 예산을 한 번 이상 쓴 OperationRun)인가.
+
+    재실행 1회 = 시도 1회다. 실패 횟수는 측정 실행(MeasurementRun)에 남는데, 측정 실행이 생기기
+    전에 실패하면 남길 곳이 없어 재실행이 Celery 즉시 재시도 예산을 0부터 다시 쓴다. 그래서 단계를
+    OperationRun에서 읽는다. 읽지 못하면 종전처럼 즉시 재시도한다.
+    """
+    if operation_run_id is None:
+        return False
+    try:
+        with SyncSessionLocal() as db:
+            run = db.get(OperationRun, operation_run_id)
+            return run is not None and _v0_auto_reruns_used(run.result_summary) >= 1
+    except Exception:  # noqa: BLE001 - 판정 실패는 종전 재시도 경로로 둔다.
+        logger.exception("V0 auto rerun stage could not be read")
+        return False
+
+
+def _schedule_v0_auto_rerun(task, *, now: datetime | None = None) -> datetime | None:
+    """같은 실행을 6시간 뒤로 미룬다. 예산 소진·기록 없음·지난 사본이면 None(=지금 사람의 일).
+
+    같은 OperationRun id라 측정 lineage(v0_checkpoint)가 이어진다 — 성공한 공급자 단계는 다시 사지 않는다.
+    """
+    context = explicit_run_context(task)
+    if context is None:
+        return None
+    not_before = (now or datetime.now(timezone.utc)) + V0_AUTO_RERUN_INTERVAL
+    try:
+        with SyncSessionLocal() as db:
+            run = db.get(OperationRun, context.run_id)
+            if run is None:
+                return None
+            used = _v0_auto_reruns_used(run.result_summary)
+            if used >= V0_AUTO_RERUN_BUDGET:
+                return None
+            summary = {
+                **(run.result_summary if isinstance(run.result_summary, Mapping) else {}),
+                V0_AUTO_RERUN_SUMMARY_KEY: used + 1,
+            }
+            deferred = defer_operation_run(db, task, not_before, result_summary=summary)
+    except Exception:  # noqa: BLE001 - 미룸을 못 남기면 지금 사람에게 넘긴다(아래 OPEN).
+        logger.exception("V0 auto rerun could not be scheduled")
+        return None
+    return not_before if deferred else None
+
+
+def _finish_v0_run_failed(task, hospital_id: str) -> None:
+    """도메인 사고(V0_REPORT_FAILED)가 이미 열렸다 — 실행을 명시 종결해 일반 실패 사고가 겹치지 않게 한다."""
+    try:
+        with SyncSessionLocal() as db:
+            finish_explicit_run(
+                db,
+                task,
+                uuid.UUID(hospital_id),
+                OperationRunState.FAILED,
+                safe_error_code="V0_REPORT_FAILED",
+                safe_error_message="초기 진단 리포트를 만들지 못했습니다.",
+            )
+    except Exception:  # noqa: BLE001 - 종결 실패는 Celery 신호가 TASK_FAILED로 대신 끝낸다.
+        logger.exception("V0 run could not be terminalized explicitly")
+
+
+def _handle_v0_final_failure(task, hospital_id: str, exc: BaseException) -> dict | None:
+    """재시도가 끝난 V0 실패. 자동 재실행을 잡으면 그 결과를, 사람에게 넘기면 None을 돌려준다."""
+    summary = getattr(exc, "summary", None)
+    summary = summary if isinstance(summary, Mapping) else {}
+    # 측정 기준 변경은 같은 lineage로 다시 돌려도 같은 이유로 멈춘다.
+    rerun_at = None if isinstance(exc, V0MeasurementPolicyDrift) else _schedule_v0_auto_rerun(task)
+    try:
+        _run_async(
+            open_ops_incident(
+                pipeline="v0_report",
+                object_type="hospital",
+                object_id=hospital_id,
+                incident_type="V0_REPORT_FAILED",
+                safe_error_code=summary.get("safe_error_code", "V0_REPORT_RETRIES_EXHAUSTED"),
+                problem=summary.get(
+                    "safe_error_message", "초기 진단 리포트 생성 재시도가 모두 실패했습니다."
+                ),
+                customer_impact="초기 진단 리포트를 준비할 수 없습니다.",
+                next_action=(
+                    V0_AUTO_RERUN_NEXT_ACTION
+                    if rerun_at is not None
+                    else summary.get(
+                        "next_action",
+                        "운영센터에서 원인을 확인하고 초기 진단 리포트를 수동 재실행하세요.",
+                    )
+                ),
+                source_type="V0_REPORT",
+                hospital_name="병원 초기 진단",
+                hospital_id=uuid.UUID(hospital_id),
+                actor="v0-report-worker",
+                # 재실행이 기한까지 소유한다(RETRYING, 열림 알림 보류). 없으면 사람의 일(OPEN)이고,
+                # 같은 에피소드에 보류된 열림 알림이 그때 나간다.
+                retry_until=(rerun_at + V0_AUTO_RERUN_GRACE) if rerun_at is not None else None,
+            )
+        )
+    except Exception:
+        logger.exception("V0 final-failure ops alert delivery failed (non-fatal)")
+    if rerun_at is not None:
+        return {"status": "auto_rerun_scheduled", "not_before": rerun_at.isoformat()}
+    _finish_v0_run_failed(task, hospital_id)
+    return None
 
 
 def _v0_retry_kwargs(task, failure_retry_count: int) -> dict[str, Any]:
@@ -4039,53 +4203,21 @@ def _ensure_initial_schedules(*, limit: int = 200) -> int:
     )
 
 
-def _defer_essence_escalation_to_automatic_retry(
-    *,
-    object_id: str,
-    retry_due_at: datetime,
-) -> bool:
-    """자동 재검수 예산이 남은 보류는 아직 기계의 일이다 — RETRYING + 다음 시도 기한.
+# 다음 자동 재검수는 15분 재조정(`reconcile-essence-snapshots`)이 집는다. 기한을 재검수 시각에 딱
+# 맞추면 재조정이 집기 전(최대 15분)에 보류된 열림 알림이 먼저 나간다 — 주기 + 여유만큼 늦춘다.
+ESSENCE_ESCALATION_RETRY_MARGIN = timedelta(minutes=30)
 
-    같은 병원·snapshot 인시던트 하나를 시도마다 새로 열지 않고 상태만 바꾼다. 기한이
-    지나면 `requires_operator_action`이 그때부터 사람의 일로 읽으므로, 자동 복구가 죽어도
-    운영자 큐에서 사라지지 않는다.
+
+def _essence_escalation_retry_until(result, now: datetime) -> datetime | None:
+    """Essence 보류 사고의 스윕 소유 기한. 예산이 끝났으면 None(곧바로 사람의 일).
+
+    다음 시도 시각이 이미 지났거나 '지금 바로' 표식(`automatic_recovery_due_at`의 datetime.min — 옛
+    초안·마지막 시도 시각 없음)이면 지금 재검수 대상이다. 즉시 OPEN으로 열지 않고 지금 + 여유로 둔다.
     """
 
-    from app.core.database import get_async_sessionmaker
-    from app.services.incidents import build_incident_key, mark_retrying
-
-    key = build_incident_key(
-        "essence_auto_review",
-        "essence_snapshot",
-        object_id,
-        IncidentFingerprint.VALIDATION_FAILED,
-    )
-
-    async def _run() -> bool:
-        async with get_async_sessionmaker()() as async_db:
-            incident = await async_db.scalar(select(Incident).where(Incident.dedupe_key == key))
-            if incident is None or incident.state != IncidentState.OPEN.value:
-                return False
-            retrying = await mark_retrying(
-                async_db,
-                incident.id,
-                expected_version=incident.version,
-                actor=AUTO_ESSENCE_ACTOR,
-                reason="automatic essence re-review owns this escalation",
-            )
-            if not isinstance(retrying, Incident):
-                return False
-            retrying.sla_due_at = retry_due_at
-            retrying.severity = IncidentSeverity.MEDIUM
-            await async_db.commit()
-            return True
-
-    try:
-        return bool(_run_async(_run()))
-    except Exception:
-        # 인시던트 상태는 보조 표시다. 실패해도 보류 사실과 재시도 예산은 DB에 남아 있다.
-        logger.exception("Failed to defer Essence escalation incident for %s", object_id)
-        return False
+    if result.automatic_recovery_exhausted:
+        return None
+    return max(result.next_automatic_attempt_at, now) + ESSENCE_ESCALATION_RETRY_MARGIN
 
 
 @celery_app.task(
@@ -4203,6 +4335,10 @@ def auto_review_essence_snapshot(self, hospital_id: str) -> dict[str, object]:
 
     if result.requires_operator and result.previous_philosophy_id is None:
         snapshot = result.snapshot_hash or "unknown"
+        # 예산이 남은 보류는 처음부터 RETRYING+다음 자동 재검수 시각으로 연다 — 시도마다 새로
+        # 열지 않고 같은 병원·snapshot 한 건을 만진다. 열림 알림은 발송기가 그 시각까지 보류하고,
+        # 그 안에 승인되면 보내지 않는다. 소진되면 OPEN이며 그때 사람의 일이 된다.
+        retry_until = _essence_escalation_retry_until(result, datetime.now(timezone.utc))
         _run_async(
             open_ops_incident(
                 pipeline="essence_auto_review",
@@ -4223,15 +4359,12 @@ def auto_review_essence_snapshot(self, hospital_id: str) -> dict[str, object]:
                 admin_path=f"/hospitals/{hospital_id}",
                 fingerprint=IncidentFingerprint.VALIDATION_FAILED,
                 actor=AUTO_ESSENCE_ACTOR,
+                retry_until=retry_until,
+                severity=(
+                    IncidentSeverity.MEDIUM if retry_until is not None else IncidentSeverity.HIGH
+                ),
             )
         )
-        if not result.automatic_recovery_exhausted:
-            # 예산이 남은 동안은 같은 인시던트를 RETRYING으로 둔다 — 시도마다 새로 열지
-            # 않고, 자동 재검수 기한이 지나야 운영자의 할 일이 된다.
-            _defer_essence_escalation_to_automatic_retry(
-                object_id=f"{hospital_id}:{snapshot}",
-                retry_due_at=result.next_automatic_attempt_at or datetime.now(timezone.utc),
-            )
     elif result.status in {
         EssenceRefreshStatus.ESCALATED,
         EssenceRefreshStatus.AUTO_APPROVED,
@@ -5075,6 +5208,24 @@ def trigger_v0_report(self, hospital_id: str, failure_retry_count: int = 0):
             # V0 결과를 롤백하지 않고 로그만 남긴다 (post-commit side effect 격리).
             _seed_query_targets_from_matrix_sync(hospital.id)
 
+            # 자동 재실행 중(RETRYING)이던 실패 사고는 성공한 이 실행이 바로 닫는다. 열림 알림이
+            # 나갔으면 복구 알림이 짝으로 따른다 — 백로그 근거 정리가 대신 닫아도 같다(나간 열림에는
+            # 복구 알림, 나가지 않은 열림이면 Slack 없이 닫는다).
+            try:
+                _run_async(
+                    recover_ops_incident(
+                        pipeline="v0_report",
+                        object_type="hospital",
+                        object_id=hospital_id,
+                        fingerprint=IncidentFingerprint.UNKNOWN,
+                        hospital_name="병원 초기 진단",
+                        actor="v0-report-worker",
+                        reason="V0 report created",
+                    )
+                )
+            except Exception:
+                logger.exception("V0 failure incident recovery failed (non-fatal)")
+
             # 콘텐츠 허브 준비는 프로필 완료 시 이미 독립 디스패치된다. 이 호출은 V0가
             # 끝났을 때 한 번 더 보내는 멱등 복구 신호이며, 실패는 V0 결과를 되돌리지 않는다.
             try:
@@ -5110,7 +5261,7 @@ def trigger_v0_report(self, hospital_id: str, failure_retry_count: int = 0):
 
     except V0CostDeferred as exc:
         _reset_v0_analyzing_status(hospital_id, prior_status)
-        return _defer_v0_until_cost_window(self, exc, failure_retry_count)
+        return _defer_v0_until_cost_window(self, exc, failure_retry_count, hospital_id=hospital_id)
     except V0MeasurementResumable as exc:
         _reset_v0_analyzing_status(hospital_id, prior_status)
         raise self.retry(
@@ -5135,37 +5286,19 @@ def trigger_v0_report(self, hospital_id: str, failure_retry_count: int = 0):
         terminal_measurement_failure = isinstance(
             exc, (V0MeasurementUnavailable, V0MeasurementPolicyDrift)
         )
-        if terminal_measurement_failure or failure_retry_count >= self.max_retries:
-            # 공급자별 재시도와 회로 차단까지 끝난 측정 실패는 150건 전체를 Celery가
-            # 다시 돌려도 회복되지 않는다. 즉시 사람 확인 대상으로 넘긴다. 그 밖의
-            # 일시적 작업 오류만 task-level 재시도를 사용한다.
-            try:
-                _run_async(
-                    open_ops_incident(
-                        pipeline="v0_report",
-                        object_type="hospital",
-                        object_id=hospital_id,
-                        incident_type="V0_REPORT_FAILED",
-                        safe_error_code=getattr(exc, "summary", {}).get(
-                            "safe_error_code", "V0_REPORT_RETRIES_EXHAUSTED"
-                        ),
-                        problem=getattr(exc, "summary", {}).get(
-                            "safe_error_message",
-                            "초기 진단 리포트 생성 재시도가 모두 실패했습니다.",
-                        ),
-                        customer_impact="초기 진단 리포트를 준비할 수 없습니다.",
-                        next_action=getattr(exc, "summary", {}).get(
-                            "next_action",
-                            "운영센터에서 원인을 확인하고 초기 진단 리포트를 수동 재실행하세요.",
-                        ),
-                        source_type="V0_REPORT",
-                        hospital_name="병원 초기 진단",
-                        hospital_id=uuid.UUID(hospital_id),
-                        actor="v0-report-worker",
-                    )
-                )
-            except Exception:
-                logger.exception("V0 final-failure ops alert delivery failed (non-fatal)")
+        if (
+            terminal_measurement_failure
+            or failure_retry_count >= self.max_retries
+            or _v0_in_auto_rerun_stage(v0_operation_run_id)
+        ):
+            # 공급자별 재시도와 회로 차단까지 끝난 실패다. 150건 전체를 Celery가 바로 다시
+            # 돌리지 않고, 같은 실행을 6시간 뒤로 미뤄 최대 3회 다시 해 본다(측정 lineage 유지 —
+            # 끝난 측정은 다시 사지 않는다). 소진 뒤에만 사람에게 넘긴다.
+            # 재실행 단계의 실패는 어디서 났든(측정 실행이 생기기 전이어도) 곧바로 여기로 온다 —
+            # 재실행 1회 = 시도 1회.
+            outcome = _handle_v0_final_failure(self, hospital_id, exc)
+            if outcome is not None:
+                return outcome
             raise exc
         next_failure_count = failure_retry_count + 1
         _persist_v0_workflow_failure_count(
@@ -5586,7 +5719,7 @@ def generate_claimed_content_item(
         else:
             context = explicit_run_context(self)
             if context is not None:
-                leased = begin_generation_execution(db, item_id, token, context)
+                leased = _enter_claimed_execution(db, item_id, token, context)
                 if leased is None:
                     item = None
                 else:
@@ -5631,6 +5764,21 @@ def generate_claimed_content_item(
             safe_error_code=code,
             safe_error_message=message,
         )
+
+
+def _enter_claimed_execution(db, item_id, reservation, context):
+    """예약을 실행 lease로 올린다(`begin_generation_execution`). 공급자 호출 전 진입점.
+
+    실행 토큰은 같은 예약의 (재)배달마다 새로 바뀐다. 작가 결과의 재생 범위는 그 배달들이
+    공유하는 예약 토큰이어야 하므로 행에 일시 속성으로 남긴다(`_generate_with_auto_review`).
+    """
+
+    leased = begin_generation_execution(db, item_id, reservation, context)
+    if leased is None:
+        return None
+    item, execution_token = leased
+    setattr(item, _GENERATION_RESERVATION_ATTR, reservation)
+    return item, execution_token
 
 
 _ITEM_RUN_STATES = {
@@ -6257,6 +6405,12 @@ def regenerate_content_item(self, content_id: str):
                         stored_attempt.get("reason") == "CONTENT_NOT_GENERATED"
                         or stored_attempt.get("retry_class")
                         == GenerationRetryClass.ENVIRONMENT_RECOVERABLE.value
+                        # 감사된 레거시 예산 교체 뒤의 재시도. 교체 함수가 억제를 이미 풀지만,
+                        # 억제를 남기던 이전 판의 교체로 바뀐 행도 여기서 푼다.
+                        or (
+                            stored_attempt.get("reason") == "LEGACY_SPEND_UNKNOWN"
+                            and legacy_generation_budget_replaced(item.essence_check_summary)
+                        )
                     )
                 ):
                     # 운영자가 누른 “작업 다시 시도”가 같은 원인 억제에 걸려 작가 0회로 끝나지
@@ -8975,8 +9129,7 @@ def _resolve_monthly_measurement_period(
 def _monthly_sov_recovery_deadline(year: int, month: int) -> datetime:
     """Return the inclusive KST service-period recovery horizon."""
 
-    period = reporting_period(year, month)
-    return period.ends_at + timedelta(days=7) - timedelta(seconds=1)
+    return monthly_recovery_deadline(year, month)
 
 
 def _monthly_sov_deadline_reached(
@@ -9461,6 +9614,25 @@ def _recover_sov_failure(
             period_key=period_key,
         )
     return recover_weekly_sov_failure(hospital_id=hospital_id, week_key=period_key)
+
+
+def _close_finalized_monthly_sov_incident(hospital: Hospital, period_key: str) -> None:
+    """측정이 최종(COMPLETE, 또는 마감 뒤 LIMITED/UNAVAILABLE)이면 그 달 측정 사고는 기계가 닫는다.
+
+    마감으로 닫힌 달에는 새 RUN_SOV 성공이 없어 백로그 해결 규칙이 근거를 찾지 못한다.
+    닫지 않으면 8일 09:00 판정 기한이 지나 이미 전달 가능한 달이 사람의 일로 남는다.
+    """
+    try:
+        _run_async(
+            _recover_sov_failure(
+                hospital_id=hospital.id, period_key=period_key, measurement_mode="monthly"
+            )
+        )
+    except Exception:
+        logger.exception(
+            "Finalized monthly measurement incident could not be closed",
+            extra={"hospital_id": str(hospital.id), "period_key": period_key},
+        )
 
 
 def _start_measurement_run(
@@ -10100,27 +10272,118 @@ def _commit_new_cohort_enrollments(db, registration: Any) -> None:
         db.commit()
 
 
-def _report_monthly_cohort_gaps(registration: Any, period_key: str) -> None:
-    """창이 열렸는데 코호트 밖인 ACTIVE 병원마다 기간별 사고 한 건. 실패해도 측정은 계속한다."""
+NO_SOV_RECORD_REASON = "no SovRecord"
+# 월말 창에서 기록 없는 병원에 주간 측정 1회를 보낸 뒤 편입을 기다리는 시간(6시간 tick 4번).
+COHORT_BOOTSTRAP_GRACE = timedelta(hours=24)
+
+
+def _report_monthly_cohort_gaps(
+    registration: Any,
+    period_key: str,
+    *,
+    skip_reasons: frozenset[str] = frozenset(),
+    retrying_until: Mapping[uuid.UUID, datetime] | None = None,
+) -> None:
+    """코호트 밖 ACTIVE 병원마다 기간별 사고 한 건. 실패해도 측정은 계속한다.
+
+    `skip_reasons`의 사유는 이 실행이 스스로 풀므로 알리지 않는다(주간 실행의 기록 없음).
+    `retrying_until`에 든 병원은 측정을 보냈으므로 그 기한까지 자동 복구로 연다.
+    """
     if not isinstance(registration, Mapping):
         return
+    owned = retrying_until or {}
     for item in registration.get("not_enrolled") or []:
+        if str(item.get("reason") or "") in skip_reasons:
+            continue
         try:
+            hospital_id = uuid.UUID(str(item["hospital_id"]))
             _run_async(
                 open_monthly_cohort_gap(
-                    hospital_id=uuid.UUID(str(item["hospital_id"])),
+                    hospital_id=hospital_id,
                     hospital_name=str(item.get("name") or "unknown"),
                     period_key=period_key,
                     reason=str(item.get("reason") or "unknown"),
+                    retrying_until=owned.get(hospital_id),
                 )
             )
         except Exception:
             logger.exception("Monthly cohort gap incident failed", extra={"item": str(item)})
 
 
+def _weekly_sov_idempotency_key(hospital_id: uuid.UUID, week_key: str) -> str:
+    return f"weekly-sov:{hospital_id}:{week_key}"
+
+
+def _dispatch_weekly_sov_measurement(
+    db, hospital: Hospital, week_key: str, observed_at: datetime
+) -> bool:
+    """병원·ISO주 멱등 주간 측정 1회. 실행 기록이 생기면 True(발행 실패는 자율 복구가 다시 보낸다)."""
+    run = _ensure_weekly_sov_operation_run(db, hospital, week_key, observed_at)
+    if run is None or run.task_id is None:
+        return False
+    hospital_id = str(hospital.id)
+    try:
+        run_sov_for_hospital.apply_async(
+            args=[hospital_id],
+            queue="sov",
+            headers={
+                **build_dispatch_headers("run-sov", hospital_id),
+                "operation_run_id": str(run.id),
+            },
+            task_id=run.task_id,
+        )
+    except Exception:
+        logger.exception(
+            "Weekly visibility measurement dispatch failed; autonomous recovery will redispatch",
+            extra={"hospital_id": hospital_id, "operation_run_id": str(run.id)},
+        )
+        return True
+    _mark_weekly_sov_operation_queued(db, run.id, observed_at)
+    return True
+
+
+def _bootstrap_unmeasured_hospitals(
+    db, registration: Any, today_kst: date, observed_at: datetime
+) -> dict[uuid.UUID, datetime]:
+    """기록이 없어 편입되지 못한 ACTIVE 병원에 이번 주 측정 1회를 바로 보낸다(다음 6시간 tick이 편입).
+
+    병원마다 자동 복구 기한(그 주 측정 요청 + 24시간)을 돌려준다. 이미 이번 주 측정이 있으면 다시
+    보내지 않고 그 요청 시각을 기준으로 한다 — tick마다 기한을 밀면 영원히 '복구 중'에 남는다.
+    기한이 이미 지난 병원은 돌려주지 않는다 — 측정을 보냈는데도 편입되지 못했으니 사람의 일이다.
+    """
+    owned: dict[uuid.UUID, datetime] = {}
+    if not isinstance(registration, Mapping):
+        return owned
+    week_key = _weekly_measurement_key(today_kst)
+    for item in registration.get("not_enrolled") or []:
+        if item.get("reason") != NO_SOV_RECORD_REASON:
+            continue
+        try:
+            hospital = db.get(Hospital, uuid.UUID(str(item["hospital_id"])))
+        except (KeyError, ValueError):
+            continue
+        if hospital is None or hospital.status != HospitalStatus.ACTIVE:
+            continue
+        requested_at = db.execute(
+            select(OperationRun.requested_at).where(
+                OperationRun.hospital_id == hospital.id,
+                OperationRun.operation_type == "RUN_SOV",
+                OperationRun.idempotency_key == _weekly_sov_idempotency_key(hospital.id, week_key),
+            )
+        ).scalar_one_or_none()
+        if requested_at is None:
+            if not _dispatch_weekly_sov_measurement(db, hospital, week_key, observed_at):
+                continue
+            requested_at = observed_at
+        deadline = requested_at + COHORT_BOOTSTRAP_GRACE
+        if deadline > observed_at:
+            owned[hospital.id] = deadline
+    return owned
+
+
 def _warn_monthly_cohort_over_limit(cohort_size: int, period_key: str) -> None:
-    """SOV_MONTHLY_COHORT_LIMIT은 비용 경고 기준이다. 병원을 자르지 않고 알리기만 한다."""
-    limit = settings.SOV_MONTHLY_COHORT_LIMIT
+    """비용 경고선(월 SoV 상한 ÷ 병원 1곳 고정 세트 비용)을 넘으면 알리기만 한다. 병원을 자르지 않는다."""
+    limit = monthly_sov_cohort_cost_threshold()
     if cohort_size <= limit:
         return
     logger.warning(
@@ -10148,6 +10411,12 @@ def run_weekly_monitoring():
         registration = register_convertible_tracking_sets(db, n=15, enroll_new=True)
         _commit_new_cohort_enrollments(db, registration)
         _log_blocked_convertible_tracking_sets(registration)
+        # 기록 없는 병원은 이 실행이 바로 측정한다 — 사람 몫 사유(질문 세트 부족 등)만 24일 전에 미리 알린다.
+        _report_monthly_cohort_gaps(
+            registration,
+            f"{today_kst.year:04d}-{today_kst.month:02d}",
+            skip_reasons=frozenset({NO_SOV_RECORD_REASON}),
+        )
         stmt = select(Hospital).where(Hospital.status == HospitalStatus.ACTIVE)
         result = db.execute(stmt)
         monthly_ids = {hospital.id for hospital in iter_monthly_sov_cohort(db)}
@@ -10164,27 +10433,7 @@ def run_weekly_monitoring():
         ]
 
         for h in hospitals:
-            run = _ensure_weekly_sov_operation_run(db, h, week_key, observed_at)
-            if run is None or run.task_id is None:
-                continue
-            hospital_id = str(h.id)
-            try:
-                run_sov_for_hospital.apply_async(
-                    args=[hospital_id],
-                    queue="sov",
-                    headers={
-                        **build_dispatch_headers("run-sov", hospital_id),
-                        "operation_run_id": str(run.id),
-                    },
-                    task_id=run.task_id,
-                )
-            except Exception:
-                logger.exception(
-                    "Weekly visibility measurement dispatch failed; autonomous recovery will redispatch",
-                    extra={"hospital_id": hospital_id, "operation_run_id": str(run.id)},
-                )
-                continue
-            _mark_weekly_sov_operation_queued(db, run.id, observed_at)
+            _dispatch_weekly_sov_measurement(db, h, week_key, observed_at)
 
         # 측정 결과 기반 질문 우선순위 조정 (P1-4) — 같은 "sov" 큐 뒤에 적재되므로 단일
         # sov 워커(FIFO) 기준으로는 병원별 측정 태스크가 모두 끝난 뒤 실행된다.
@@ -10538,7 +10787,6 @@ def run_monthly_sov_measurement():
         registration = register_convertible_tracking_sets(db, n=15, enroll_new=True)
         _commit_new_cohort_enrollments(db, registration)
         _log_blocked_convertible_tracking_sets(registration)
-        _report_monthly_cohort_gaps(registration, period_key)
         hospitals = _round_robin_hospitals(
             iter_monthly_sov_cohort(db), None
         )
@@ -10551,6 +10799,9 @@ def run_monthly_sov_measurement():
             observed_at=observed_at,
             owner=owner,
         )
+        # 코호트 측정을 먼저 큐에 넣은 뒤 보낸다 — 같은 sov 큐에서 코호트가 먼저 돈다.
+        bootstrapped = _bootstrap_unmeasured_hospitals(db, registration, today_kst, observed_at)
+        _report_monthly_cohort_gaps(registration, period_key, retrying_until=bootstrapped)
 
 
 @celery_app.task(name="app.workers.tasks.adjust_query_priorities")
@@ -10654,7 +10905,7 @@ def _ensure_weekly_sov_operation_run(
     week_key: str,
     observed_at: datetime,
 ) -> OperationRun | None:
-    idempotency_key = f"weekly-sov:{hospital.id}:{week_key}"
+    idempotency_key = _weekly_sov_idempotency_key(hospital.id, week_key)
     existing = db.execute(
         select(OperationRun).where(
             OperationRun.hospital_id == hospital.id,
@@ -12406,12 +12657,12 @@ def run_monthly_reports(self):
         blocked: list[str] = []
         measurement_pending: list[Hospital] = []
         for hospital in eligible_hospitals:
-            if _hospital_requires_monthly_sov_success(
-                db, hospital, period
-            ) and not _monthly_sov_measurement_succeeded(db, hospital.id, period_key):
-                blocked.append(hospital.name)
-                measurement_pending.append(hospital)
-                continue
+            if _hospital_requires_monthly_sov_success(db, hospital, period):
+                if not _monthly_sov_measurement_succeeded(db, hospital.id, period_key):
+                    blocked.append(hospital.name)
+                    measurement_pending.append(hospital)
+                    continue
+                _close_finalized_monthly_sov_incident(hospital, period_key)
             latest_run = _latest_monthly_report_operation_run(
                 db, hospital.id, period.year, period.month
             )

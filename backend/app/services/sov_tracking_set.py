@@ -9,6 +9,7 @@ from collections.abc import Iterable
 from sqlalchemy import exists, select
 from sqlalchemy.orm import selectinload
 
+from app.core.config import settings
 from app.models.hospital import Hospital, HospitalStatus
 from app.models.sov import AIQueryTarget, AIQueryVariant, SovRecord
 from app.services.sov_engine import QUERY_INTENT_LOCAL, classify_query_intent
@@ -378,3 +379,13 @@ def monthly_sov_guard_units(
         + weekly_remaining_hospitals * weekly_specs * 5
         + retry
     )
+
+
+def monthly_sov_cohort_cost_threshold(n: int = TRACKING_SET_N_DEFAULT) -> int:
+    """월간 측정 비용 경고선(병원 수) — 월 SoV 호출 상한을 병원 1곳의 고정 세트 비용으로 나눈 값.
+
+    병원 1곳 = n문항 × 2플랫폼 × 5반복(기본 150호출). 손으로 맞추는 병원 수 상수는 계약 병원이
+    늘 때마다 매월 확정 경고를 만들었다(2026-10: 상한 7 < 9곳). 실제 지출 차단은 비용 가드가 한다.
+    """
+
+    return max(1, settings.COST_GUARD_MONTHLY_SOV_QUERIES // monthly_sov_guard_units(1, n))

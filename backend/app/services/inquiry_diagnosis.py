@@ -30,6 +30,12 @@ from app.services.query_mapper import QueryMappingError, build_lead_diagnosis_qu
 
 logger = logging.getLogger(__name__)
 
+# Slack 한 줄로 나가는 자동 처리 결과. 고정 문구만 쓴다 — 사용자 입력이 섞이면 안 된다.
+# 접수 API와 drain 재발송이 같은 줄을 만든다(`inquiry_diagnosis_note`).
+DIAGNOSIS_NOTE_QUEUED = "초도 노출 진단 자동 시작"
+DIAGNOSIS_NOTE_NO_INPUT = "진료과·지역·키워드 미입력 — Admin에서 초도 진단 생성"
+DIAGNOSIS_NOTE_REFUSED = "초도 노출 진단 자동 생성 거절 — Admin에서 입력값 확인 후 생성"
+
 PUBLIC_INTAKE_ACTOR = "system:public-inquiry"
 
 # 진단 한 건에 붙는 인시던트의 파이프라인. 모두 진단 ID를 source_id로 쓴다
@@ -70,6 +76,18 @@ async def active_diagnosis_for(db: AsyncSession, lead_id: uuid.UUID) -> LeadDiag
         .order_by(LeadDiagnosis.created_at.desc())
         .limit(1)
     )
+
+
+async def inquiry_diagnosis_note(db: AsyncSession, lead: SalesLead) -> str:
+    """접수 Slack의 '자동 처리' 한 줄을 저장된 사실로 다시 만든다(drain 재발송용, 접수 API와 같은 규칙).
+
+    활성 진단이 있으면 자동 시작, 세 입력이 다 있는데 진단이 없으면 생성 거절, 아니면 미입력이다.
+    """
+    if await active_diagnosis_for(db, lead.id) is not None:
+        return DIAGNOSIS_NOTE_QUEUED
+    if lead.specialty and lead.region_keyword and lead.core_keywords:
+        return DIAGNOSIS_NOTE_REFUSED
+    return DIAGNOSIS_NOTE_NO_INPUT
 
 
 def build_inquiry_queries(clinic_name: str, spec: InquiryDiagnosisInput) -> list[dict]:

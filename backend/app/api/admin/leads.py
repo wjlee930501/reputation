@@ -29,7 +29,7 @@ from app.models.lead_diagnosis import (
     ReportStatus,
 )
 from app.models.operations import OperationRun
-from app.services import inquiry_diagnosis, lead_delivery
+from app.services import inquiry_diagnosis, inquiry_sms, lead_delivery
 from app.services.audit_log import default_actor, write_audit_log
 from app.services.hospital_duplicates import find_duplicate_hospitals, matches_hospital_name
 from app.services.lead_diagnosis_identity import InvalidEmail, normalize_email
@@ -634,6 +634,8 @@ def _serialize_lead(lead: SalesLead) -> dict:
         # 접수 안내 문자(SENT/FAILED/SKIPPED). 원장이 실제로 안내를 받았는지 AE가 봐야 한다.
         "ack_sms_status": getattr(lead, "ack_sms_status", None),
         "ack_sms_error": getattr(lead, "ack_sms_error", None),
+        "ack_sms_unconfirmed": getattr(lead, "ack_sms_status", None) == inquiry_sms.SMS_FAILED
+        and inquiry_sms.delivery_unconfirmed(getattr(lead, "ack_sms_error", None)),
         "created_at": lead.created_at.isoformat() if lead.created_at else None,
     }
 
