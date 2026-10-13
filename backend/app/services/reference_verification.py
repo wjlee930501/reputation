@@ -78,12 +78,14 @@ from app.utils.authority_sources import (
 logger = logging.getLogger(__name__)
 
 # ── 한도·기간(이름 있는 상수 — 테스트와 운영 문서가 같은 값을 가리킨다) ─────────────────
-# 발행 게이트가 받아들이는 통과 판정의 최대 나이. 생성 시 검증이 기본이고, 23:00 D-2
-# 생성분(발행까지 약 33시간)은 07:45 게이트가 다시 확인한다 — 08:00에 GET이 몰리지 않는다.
-REFERENCE_CHECK_MAX_AGE = timedelta(hours=24)
+# 발행 게이트가 받아들이는 통과 판정의 최대 나이(2026-10-13 E4: 24시간 → 7일). 생성 시 검증한
+# 판정이 발행(보통 D-2 23:00 생성 → D 08:00)까지 그대로 쓰여 07:45·08:00에 GET·기관 장애 미룸이
+# 생기지 않는다. 일주일 안에 문서가 사라지는 위험은 신뢰도 문제이며, 사후 검수·다음 편집 때 다시 본다.
+REFERENCE_CHECK_MAX_AGE = timedelta(days=7)
 # 도메인 장애 시 직전 통과 판정을 재사용할 수 있는 기간. 기준은 마지막 **실제** 확인 시각
-# (`verified_at`)이라 재사용을 거듭해도 이 기간을 넘겨 늘어나지 않는다.
-REFERENCE_CHECK_REUSE_WINDOW = timedelta(days=7)
+# (`verified_at`)이라 재사용을 거듭해도 이 기간을 넘겨 늘어나지 않는다. 신선도(7일)보다 길어야
+# 재사용이 뜻을 가진다 — 같으면 신선하지 않은 판정은 언제나 재사용 기간도 지나 있다.
+REFERENCE_CHECK_REUSE_WINDOW = timedelta(days=14)
 # 저장된 시각이 현재보다 이만큼까지 앞서 있는 것은 서버 간 시계 차이로 보고 받아들인다. 더 앞선
 # 미래 시각의 기록은 신선한 통과로도, 재사용할 통과로도 보지 않는다(영원히 '신선'해지는 것을 막는다).
 REFERENCE_CHECK_CLOCK_SKEW = timedelta(minutes=5)

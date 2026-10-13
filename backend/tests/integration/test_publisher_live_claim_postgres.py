@@ -30,7 +30,6 @@ from app.workers import tasks
 from tests.integration import test_operator_decides_digest_postgres as digest
 from tests.integration import test_reference_claim_last_run_postgres as last_run
 from tests.integration.test_operator_decides_digest_postgres import (
-    COST_TITLE,
     DEAD_URL,
     MEDICAL_TITLE,
     TODAY,
@@ -52,6 +51,9 @@ incidents = digest.incidents
 real_incidents = last_run.real_incidents  # 실제 `open_generation_incident`(같은 테스트 트랜잭션)
 
 FRESH_URL = "https://health.kdca.go.kr/healthinfo/example"
+
+# 수기 목록 치유 후보가 없는 의료 글(test_reference_publication_gate.NO_CATALOG_TITLE와 같은 제목).
+NO_CATALOG_TITLE = "귀지가 막혔을 때 — 집에서 해도 되는 관리"
 
 
 def _empty_slot(db, hospital, schedule, *, sequence_no):
@@ -280,13 +282,14 @@ def test_an_unclaimed_empty_slot_gets_the_same_line_and_no_duplicate_the_next_da
 
 
 def _three_shapes(db, monkeypatch):
-    """빈 슬롯·확인이 끝난 참고자료의 발행 가능한 글·미확정 참고자료(목록 밖 죽은 주소)의 진료비 글."""
+    """빈 슬롯·확인이 끝난 참고자료의 발행 가능한 글·미확정 참고자료(목록 밖 죽은 주소)의 의료 글."""
 
     hospital, schedule = _hospital(db)
     slot = _empty_slot(db, hospital, schedule, sequence_no=1)
     settled = _complete_row(db, hospital, schedule, sequence_no=2)
+    # 수기 목록 치유 후보가 없는 의료 글 — 진료비 글은 D23 뒤로 참고자료가 비어도 보류가 아니다.
     unsettled = _written(
-        db, hospital, schedule, title=COST_TITLE, scheduled_date=TODAY, sequence_no=3
+        db, hospital, schedule, title=NO_CATALOG_TITLE, scheduled_date=TODAY, sequence_no=3
     )
     _publishable(monkeypatch, settled)
     return hospital, (slot, settled, unsettled)
@@ -313,7 +316,7 @@ def test_every_live_claimed_shape_is_byte_identical_after_the_last_run_with_real
     ]
     assert _item_incidents(db, settled) == []
     assert len(_digests_for(db, hospital)) == 1
-    assert _operator_lines(db, hospital) == 1  # 예정일 당일 진료비 글의 운영자 판단 줄(#181)
+    assert _operator_lines(db, hospital) == 0  # 평범한 참고자료 보류는 운영자 판단 줄이 아니다
     db.expire_all()
     assert all(db.get(ContentItem, row.id).status is ContentStatus.DRAFT for row in rows)
     assert _audits(db, settled) == [] and _runs(db, settled) == []

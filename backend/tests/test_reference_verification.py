@@ -642,7 +642,7 @@ async def test_outage_reuse_rejects_a_future_dated_verification():
     url = KDCA_VIEW.format(502)
     fetcher = PageFetcher({url: httpx.ConnectError("down")})
     future = NOW + timedelta(days=2)
-    previous = [_pass_record(url, checked_at=NOW - timedelta(hours=30), verified_at=future)]
+    previous = [_pass_record(url, checked_at=NOW - REFERENCE_CHECK_MAX_AGE - timedelta(hours=6), verified_at=future)]
 
     outcome = await ReferenceVerifier(fetcher, domain_spacing=0).verify(
         [{"title": "치핵", "url": url}],
@@ -661,7 +661,7 @@ async def test_outage_reuse_never_crosses_article_topics():
     previous = [
         _pass_record(
             url,
-            checked_at=NOW - timedelta(hours=30),
+            checked_at=NOW - REFERENCE_CHECK_MAX_AGE - timedelta(hours=6),
             topic_terms=article_topic_terms(title="고혈압 관리"),
         )
     ]
@@ -767,7 +767,11 @@ async def test_domain_outage_reuses_the_previous_pass_within_the_window(page):
     url = KDCA_VIEW.format(500)
     fetcher = PageFetcher({url: page if isinstance(page, BaseException) else (page[0], url, page[2])})
     previous = [
-        _pass_record(url, checked_at=NOW - timedelta(days=2), verified_at=NOW - timedelta(days=2))
+        _pass_record(
+            url,
+            checked_at=NOW - REFERENCE_CHECK_MAX_AGE - timedelta(days=1),
+            verified_at=NOW - REFERENCE_CHECK_MAX_AGE - timedelta(days=1),
+        )
     ]
 
     outcome = await ReferenceVerifier(fetcher, domain_spacing=0).verify(
@@ -791,7 +795,7 @@ async def test_outage_reuse_is_bounded_by_the_last_real_verification():
     url = KDCA_VIEW.format(501)
     fetcher = PageFetcher({url: httpx.ConnectError("down")})
     too_old = NOW - REFERENCE_CHECK_REUSE_WINDOW - timedelta(hours=1)
-    previous = [_pass_record(url, checked_at=NOW - timedelta(hours=30), verified_at=too_old)]
+    previous = [_pass_record(url, checked_at=NOW - REFERENCE_CHECK_MAX_AGE - timedelta(hours=6), verified_at=too_old)]
 
     outcome = await ReferenceVerifier(fetcher, domain_spacing=0).verify(
         [{"title": "치핵", "url": url}],
@@ -957,3 +961,19 @@ async def test_changed_document_records_revision_bound_retrieval_evidence():
     assert first_check["content_fingerprint"] != changed_check["content_fingerprint"]
     assert first_check["retrieval_evidence"]["status"] == 200
     assert first_check["retrieval_evidence"]["final_url"] == url
+
+
+def test_publication_freshness_is_seven_days_and_reuse_outlives_it():
+    """E4(2026-10-13): 생성 때 검증한 판정을 발행까지 그대로 쓴다. 장애 재사용은 그보다 길다."""
+
+    url = KDCA_VIEW.format(310)
+    references = [{"title": "치핵", "url": url}]
+    six_days = [_pass_record(url, checked_at=NOW - timedelta(days=6, hours=23))]
+    eight_days = [_pass_record(url, checked_at=NOW - timedelta(days=8))]
+
+    assert REFERENCE_CHECK_MAX_AGE == timedelta(days=7)
+    assert REFERENCE_CHECK_REUSE_WINDOW > REFERENCE_CHECK_MAX_AGE
+    assert reference_gate_status(references, six_days, topic_terms=HEMORRHOID_TOPIC, now=NOW).current
+    assert not reference_gate_status(
+        references, eight_days, topic_terms=HEMORRHOID_TOPIC, now=NOW
+    ).current

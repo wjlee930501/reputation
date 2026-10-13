@@ -2,8 +2,8 @@
 
 9/26 장앤김 인시던트의 본문은 필수 문구를 의역했다(쉼표 누락, '조기 발견이' → '조기 발견과
 제거가', 앞머리에 '국가암정보센터에 따르면'). 프롬프트가 "자연스럽게 반영"을 요구했기 때문이다.
-이제 프롬프트는 원문 그대로를 요구하고, 생성 후 코드가 원문 포함을 확인한다. 빠지면 기존
-재작성 루프·호출 예산 안에서만 다시 쓰고, 끝내 빠지면 GENERATION_REJECTED(본문 표본 실패)다.
+이제 프롬프트는 원문 그대로를 요구하고, 생성 후 코드가 원문 포함을 확인한다. 빠지면 승인
+원문을 본문 끝에 결정적으로 덧붙인다(2026-10-13 E2) — 작가를 다시 사지 않는다.
 
 이 파일은 기존 공개 경로(`generate_content`, 실행 분류기)만 쓴다. 모든 공급자 호출은 가짜이며
 외부 네트워크는 막는다.
@@ -19,7 +19,6 @@ import pytest
 
 from app.models.content import ContentType
 from app.services import content_engine
-from app.workers.generation_retry_policy import GenerationRetryClass, retry_class_for
 from app.workers.generation_run_control import classify_generation_failure
 from tests.provider_network_guard_support import (
     forbid_external_network as _forbid_external_network_fixture,  # noqa: F401
@@ -157,49 +156,20 @@ async def test_verbatim_must_use_messages_are_accepted_in_one_call(monkeypatch) 
     assert len(writer.calls) == 1
 
 
-async def test_paraphrased_must_use_is_fed_back_and_rewritten_within_the_existing_loop(
+async def test_paraphrased_must_use_gets_the_original_appended_without_a_rewrite(
     monkeypatch,
 ) -> None:
-    """인시던트의 의역 문장은 저장되지 않고, 빠진 필수 문구가 다음 회차 지적으로 넘어간다."""
-
-    writer = _Writer(
-        [
-            _payload(INCIDENT_PARAPHRASE, MUST_USE_SCREENING),
-            _payload(MUST_USE_2CM, MUST_USE_SCREENING),
-        ]
-    )
-    _install_writer(monkeypatch, writer)
-
-    saved = await _generate([MUST_USE_2CM, MUST_USE_SCREENING])
-
-    assert MUST_USE_2CM in saved["body"]
-    assert INCIDENT_PARAPHRASE not in saved["body"]
-    assert len(writer.calls) == 2
-    second_user = writer.calls[1]["messages"][1]["content"]
-    assert "직전 응답이 시스템 검증에서 거부" in second_user
-    assert "must_use messages missing verbatim" in second_user
-    assert "선종은 암이 나타나기 이전의" in second_user
-    # 이미 들어 있던 필수 문구는 빠진 문구로 지목하지 않는다.
-    assert "국립암센터는" not in second_user
-
-
-async def test_must_use_still_missing_after_the_existing_budget_is_a_sample_rejection(
-    monkeypatch,
-) -> None:
-    """새 루프·새 한도 없이 기존 재작성 3회에서 멈추고, 본문 표본 실패로 분류된다."""
+    """인시던트의 의역 문장 대신 승인 원문을 본문 끝에 덧붙인다 — 작가를 다시 사지 않는다(E2)."""
 
     writer = _Writer([_payload(INCIDENT_PARAPHRASE, MUST_USE_SCREENING)])
     _install_writer(monkeypatch, writer)
 
-    with pytest.raises(ValueError, match="must_use messages missing verbatim") as caught:
-        await _generate([MUST_USE_2CM, MUST_USE_SCREENING])
+    saved = await _generate([MUST_USE_2CM, MUST_USE_SCREENING])
 
-    assert len(writer.calls) == content_engine.GENERATION_REMEDIATION_ROUNDS == 3
-    assert content_engine.GENERATION_PROVIDER_CALL_BUDGET == 5
-    code, message = classify_generation_failure(caught.value)
-    assert code == "GENERATION_REJECTED"
-    assert "필수 문구" in message
-    assert retry_class_for(code) == GenerationRetryClass.SAMPLE_RECOVERABLE
+    assert len(writer.calls) == 1
+    assert saved["body"].rstrip().endswith(MUST_USE_2CM)
+    # 이미 들어 있던 필수 문구는 다시 붙이지 않는다.
+    assert saved["body"].count("국립암센터는") == 1
 
 
 @pytest.mark.parametrize(
@@ -230,12 +200,14 @@ async def test_normalized_verbatim_variants_are_accepted(monkeypatch, written: s
         pytest.param(f"국가암정보센터에 따르면 {MUST_USE_2CM}", id="prefix-added"),
     ],
 )
-async def test_paraphrase_variants_are_rejected(monkeypatch, written: str) -> None:
+async def test_paraphrase_variants_get_the_original_appended(monkeypatch, written: str) -> None:
     writer = _Writer([_payload(written, MUST_USE_SCREENING)])
     _install_writer(monkeypatch, writer)
 
-    with pytest.raises(ValueError, match="must_use messages missing verbatim"):
-        await _generate([MUST_USE_2CM, MUST_USE_SCREENING])
+    saved = await _generate([MUST_USE_2CM, MUST_USE_SCREENING])
+
+    assert len(writer.calls) == 1
+    assert saved["body"].rstrip().endswith(MUST_USE_2CM)
 
 
 async def test_without_must_use_messages_generation_is_unchanged(monkeypatch) -> None:

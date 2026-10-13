@@ -206,54 +206,39 @@ def _section_text(row) -> str:
     )
 
 
-def test_seven_forty_five_names_only_the_same_day_operator_hold_once(gate_db, incidents):
+def test_seven_forty_five_holds_only_the_medical_post_after_d23(gate_db, incidents):
+    """D23(2026-10-13): 작성된 진료비 글은 죽은 주소가 빠져 참고자료가 비어도 보류가 아니다.
+
+    같은 조건의 의료 글은 종전처럼 MISSING_REFERENCES로 보류되고, 그 평범한 보류는 주간 요약
+    몫이라 아침 요약을 만들지 않는다.
+    """
+
     db = gate_db
     hospital, schedule = _hospital(db)
-    held_today = _written(
+    cost_today = _written(
         db, hospital, schedule, title=COST_TITLE, scheduled_date=TODAY, sequence_no=1
     )
     ordinary_today = _written(
         db, hospital, schedule, title=MEDICAL_TITLE, scheduled_date=TODAY, sequence_no=2
     )
-    held_catchup = _written(
+    cost_catchup = _written(
         db, hospital, schedule, title=COST_TITLE, scheduled_date=TODAY - timedelta(days=2),
         sequence_no=3,
     )
     db.commit()
-    ids = {held_today.id, ordinary_today.id, held_catchup.id}
 
-    assert _run(db) == 3
+    assert _run(db) == 1
 
-    # 세 글 모두 보류되고 인시던트는 종전처럼 MISSING_REFERENCES다.
-    assert {call["item_id"] for call in incidents} == ids
-    assert {call["code"] for call in incidents} == {"MISSING_REFERENCES"}
-    for item in (held_today, ordinary_today, held_catchup):
+    assert [(call["item_id"], call["code"]) for call in incidents] == [
+        (ordinary_today.id, "MISSING_REFERENCES")
+    ]
+    for item in (cost_today, ordinary_today, cost_catchup):
         db.refresh(item)
         assert item.references_list == []
-    [row] = _digests_for(db, hospital)
-    text = _section_text(row)
-    assert "발행 보류 1편" in text  # 오늘 예정인 사람의 결정 보류 한 건만
-    assert text.count(LINE_TITLE) == 1
-    assert f"{LINE_TITLE} 1편" in text
-    assert "본문·근거 확인 필요" not in text  # 평범한 참고자료 보류는 주간 요약 몫이다
-    attempts = {
-        item.id: dict(item.essence_check_summary["generation_attempt"])
-        for item in (held_today, ordinary_today, held_catchup)
-    }
-    assert attempts[held_today.id][OPERATOR_DECIDES_KEY] is True
-    assert attempts[held_catchup.id][OPERATOR_DECIDES_KEY] is True
-    assert OPERATOR_DECIDES_KEY not in attempts[ordinary_today.id]
-
-    # 같은 날 07:45가 다시 돌아도 outbox 행은 하나다(같은 식별자 → 같은 중복 키).
-    incidents.clear()
-    assert _run(db) == 3
-    assert len(incidents) == 3
-    [again] = _digests_for(db, hospital)
-    assert again.id == row.id
-    assert again.dedupe_key == row.dedupe_key
-    for item in (held_today, ordinary_today, held_catchup):
-        db.refresh(item)
-        assert item.essence_check_summary["generation_attempt"] == attempts[item.id]
+    for item in (cost_today, cost_catchup):
+        attempt = (item.essence_check_summary or {}).get("generation_attempt") or {}
+        assert OPERATOR_DECIDES_KEY not in attempt
+    assert _digests_for(db, hospital) == []
 
 
 def test_seven_forty_five_names_a_same_day_unwritten_operator_slot_once(gate_db, incidents):
@@ -286,13 +271,13 @@ def test_seven_forty_five_then_eight_oclock_leave_one_digest_with_one_operator_l
 ):
     """평소 아침: 07:45 {A,B} == 08:00 {A,B} → 08:00은 이미 알린 글이라 요약을 다시 만들지 않는다 → outbox 행 하나, 보류 줄 하나.
 
-    A는 오늘 예정인 진료비 글의 사람의 결정 보류, B는 두 요약이 모두 싣는 원고 미생성 슬롯,
-    C는 지난 예정일(catch-up)의 같은 보류라 어느 요약에도 오르지 않는다.
+    A는 오늘 예정인 진료비 슬롯의 사람의 결정 보류(D23 전에 남은 기록), B는 두 요약이 모두 싣는
+    원고 미생성 슬롯, C는 지난 예정일(catch-up)의 같은 보류라 어느 요약에도 오르지 않는다.
     """
 
     db = gate_db
     hospital, schedule = _hospital(db)
-    held = _written(db, hospital, schedule, title=COST_TITLE, scheduled_date=TODAY, sequence_no=1)
+    held = _unwritten(db, hospital, schedule, scheduled_date=TODAY, sequence_no=1)
     missing = ContentItem(
         hospital_id=hospital.id,
         schedule_id=schedule.id,
@@ -303,9 +288,8 @@ def test_seven_forty_five_then_eight_oclock_leave_one_digest_with_one_operator_l
         status=ContentStatus.DRAFT,
     )
     db.add(missing)
-    held_catchup = _written(
-        db, hospital, schedule, title=COST_TITLE, scheduled_date=TODAY - timedelta(days=2),
-        sequence_no=3,
+    held_catchup = _unwritten(
+        db, hospital, schedule, scheduled_date=TODAY - timedelta(days=2), sequence_no=3
     )
     db.commit()
     items = (held, missing, held_catchup)

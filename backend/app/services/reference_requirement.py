@@ -24,9 +24,9 @@
 진료비·병원 선택 글(2026-09-29 김실장 결정): 비용·가격이나 병원·전문의·진료과 고르기를 다루는
 글에는 그 주장을 뒷받침할 공신력 있는 문서가 본질적으로 없다. 수기 목록에서 채우면 주제만 겹치는
 질환 문서가 가짜 근거로 붙는다(예: '도수치료 비용' 글에 요통 문서). 그래서 이 글들은 참고자료가
-전부 빠져도 수기 목록 치유를 하지 않고, 발행 보류를 자동 본문 수리가 아니라 사람의 결정
-(`OPERATOR_REQUIRED`)으로 보낸다(`references_left_to_operator`). 필수 여부는 그대로다 — 통과한
-참고자료가 있으면 그대로 발행한다. 판정은 제목만 본다 — 본문·측정 질문·FAQ 질문은 보지 않는다.
+전부 빠져도 수기 목록 치유를 하지 않는다(`references_left_to_operator`). 2026-10-13 대표 결정(D23)으로
+참고자료가 비어도 생성·발행을 막지 않는다(`references_block_when_empty`). 통과한 참고자료가 있으면
+그대로 발행한다. 판정은 제목만 본다 — 본문·측정 질문·FAQ 질문은 보지 않는다.
 '간질환 치료 비용' 질문에 답한 '간질환 환자 진료 흐름' 글은 의료 글이고, FAQ 질문은 측정 질문을
 그대로 옮기는 일이 많다('당뇨 진료를 받으려는데 하남시 어느 병원으로 가야 해?' → 제목 '하남시 당뇨
 진료 병원 — 혈당 확인부터 합병증 검사까지').
@@ -219,9 +219,11 @@ def topic_without_authoritative_source(title: object) -> str | None:
 
 
 def references_left_to_operator(item: object, *, title: object = None) -> bool:
-    """참고자료가 필수인데 공신력 있는 문서가 본질적으로 없는 주제의 글인가.
+    """참고자료 필수 유형인데 공신력 있는 문서가 본질적으로 없는 주제(진료비·병원 선택)의 글인가.
 
-    이 글은 수기 목록 치유를 하지 않고, 참고자료가 비면 자동 본문 수리 대신 사람이 정한다.
+    이 글은 수기 목록에서 채우지 않고, 작가가 인용한 수기 목록 문서도 발행 전에 뺀다. 2026-10-13
+    대표 결정(D23) 뒤로 참고자료는 **선택**이다 — 비어도 생성·발행을 막지 않는다
+    (`references_block_when_empty`). 이름은 그 전의 "보류는 사람이 정한다" 판정에서 왔다.
     `title`은 아직 쓰이지 않은 슬롯에서 작가가 만든 제목이다(행의 제목 대신 판정한다).
     """
 
@@ -230,4 +232,37 @@ def references_left_to_operator(item: object, *, title: object = None) -> bool:
             title if title is not None else getattr(item, "title", None)
         )
         is not None
+    )
+
+
+def references_block_when_empty_for(
+    content_type: object,
+    *,
+    content_brief: object = None,
+    query_target_id: object = None,
+    title: object = None,
+) -> bool:
+    """참고자료가 비면 이 글의 생성·발행을 막는가(D23).
+
+    참고자료 필수 유형(`references_required_for`)이되 제목이 진료비·병원 선택 글이 아니어야 한다.
+    진료비·병원 선택 글은 붙일 공신력 문서가 본질적으로 없어 참고자료가 선택이다. 참고자료가
+    있으면 다른 글과 똑같이 실제 문서 검증·주제 대조·제외 목록을 거친다.
+    """
+
+    return (
+        references_required_for(
+            content_type, content_brief=content_brief, query_target_id=query_target_id
+        )
+        and topic_without_authoritative_source(title) is None
+    )
+
+
+def references_block_when_empty(item: object, *, title: object = None) -> bool:
+    """행(또는 같은 속성을 가진 보기)에 대한 `references_block_when_empty_for`."""
+
+    return references_block_when_empty_for(
+        getattr(item, "content_type", None),
+        content_brief=getattr(item, "content_brief", None),
+        query_target_id=getattr(item, "query_target_id", None),
+        title=title if title is not None else getattr(item, "title", None),
     )

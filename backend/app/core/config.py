@@ -559,6 +559,11 @@ class Settings(BaseSettings):
     # 넣는가. 켜면 수기 목록 문서가 있는 의료 주제의 다른 측정 질문으로 한 번 바꿔 쓴다.
     # 기본은 꺼짐 — 계약(CLAUDE.md "곧바로 OPERATOR_REQUIRED(사람이 정함)") 변경이라 대표 결정 뒤에 켠다.
     CONTENT_TOPIC_SWAP_OPERATOR_DECIDES: bool = False
+    # 모델이 HARD로 단정한 차단인데 교정도 재작성도 맡지 못한 실행(사람이 편집한 DRAFT 등)에
+    # 종착 표시(`hard_finding_idle`)를 남겨, 입력·사람 편집·승인 병원 사실이 바뀔 때까지 스윕이
+    # 다시 집지 않게 하는가(2026-10-13 E1). 기본은 꺼짐 — 배포 전 측정(계획 3-5 Step 0)이
+    # 10/10 이후 이 공회전을 보여 줄 때만 켠다. 끄면 남은 표시도 종착으로 읽지 않는다(롤백).
+    CONTENT_HARD_FINDING_IDLE_TERMINAL: bool = False
     # 같은 원고 후보의 독립 검수가 공급자 장애·잘린 응답으로 연속 실패할 때 자동 재검수를
     # 사는 최대 횟수(KST 날을 넘어 누적). 닿으면 사람의 일(OPERATOR_REQUIRED)로 넘긴다.
     CONTENT_AI_REVIEW_UNAVAILABLE_MAX_RETRIES: int = 6

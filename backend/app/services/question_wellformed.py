@@ -43,13 +43,52 @@ def is_exam_term(term: object) -> bool:
     return bool(_EXAM_TERM_RE.search(_match_key(str(term or ""))))
 
 
+# 초음파를 **치료에** 쓰는 시술명("고강도 집속 초음파 치료"). 검사가 아니므로 '치료'가 붙어도 비문이 아니다.
+_TREATMENT_ULTRASOUND_MARK = "집속"
+
+
+def _is_treatment_ultrasound(tokens: list[str], index: int) -> bool:
+    return _TREATMENT_ULTRASOUND_MARK in _match_key(tokens[index]) or (
+        index > 0 and _match_key(tokens[index - 1]).endswith(_TREATMENT_ULTRASOUND_MARK)
+    )
+
+
 def treatment_applied_to_exam(text: object) -> bool:
     """검사 이름 바로 뒤에 '치료…'가 붙은 문형인가("갑상선초음파 치료 비용")."""
     tokens = normalize(str(text or "")).split()
     return any(
-        is_exam_term(prev) and _TREATMENT_TOKEN_RE.match(nxt)
-        for prev, nxt in zip(tokens, tokens[1:])
+        is_exam_term(tokens[index])
+        and _TREATMENT_TOKEN_RE.match(tokens[index + 1])
+        and not _is_treatment_ultrasound(tokens, index)
+        for index in range(len(tokens) - 1)
     )
+
+
+# 검사 이름 뒤에 **낱말로 떨어져** 붙은 '치료'("갑상선초음파 치료 비용"). '치료가'·'치료비'처럼
+# 조사·어미가 붙은 꼴은 지우면 문장이 깨지므로 결정적으로 고치지 않는다(작가 보완 재작성 몫).
+# 낱말 첫머리부터 잡고, 치료용 초음파("집속 초음파", "고강도집속초음파")는 건드리지 않는다.
+_EXAM_STANDALONE_TREATMENT_RE = re.compile(
+    r"(?<![0-9A-Za-z가-힣])(?<!집속\s)"
+    r"(?P<exam>(?![0-9A-Za-z가-힣]*집속)[0-9A-Za-z가-힣]*(?:내시경|초음파|촬영|조영술|검사|검진|"
+    r"골밀도|심전도|[Cc][Tt]|[Mm][Rr][Ii]|엑스레이))\s+치료(?=\s|$|[,.?!·:—\-~)])"
+)
+
+
+def drop_treatment_after_exam(text: object) -> str | None:
+    """검사 이름 바로 뒤의 낱말 '치료'를 지운 제목. 고칠 수 없거나 고칠 것이 없으면 None.
+
+    "갑상선초음파 치료 비용, 얼마나 드나요?" → "갑상선초음파 비용, 얼마나 드나요?". 지운 뒤에도
+    `treatment_applied_to_exam`이 참이면(다른 꼴이 남았다) None이다.
+    """
+
+    value = str(text or "")
+    if not treatment_applied_to_exam(value):
+        return None
+    fixed = re.sub(r"\s{2,}", " ", _EXAM_STANDALONE_TREATMENT_RE.sub(r"\g<exam>", value)).strip()
+    if fixed == value.strip() or treatment_applied_to_exam(fixed):
+        return None
+    logger.info("Dropped standalone treatment word after exam in title: %r -> %r", value, fixed)
+    return fixed
 
 
 def question_problems(text: object, *, keyword: str | None = None) -> list[str]:

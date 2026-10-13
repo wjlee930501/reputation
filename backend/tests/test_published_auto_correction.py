@@ -645,6 +645,28 @@ def test_sweep_reviews_the_candidate_with_the_post_publish_model(monkeypatch, ho
     assert models == [settings.POST_PUBLISH_AI_REVIEW_MODEL]
 
 
+def test_published_rereview_also_receives_the_correction_context(monkeypatch, hooks):
+    """공개 모드도 같은 교정 루프를 쓰므로 재검수가 직전 지적과 교정 전·후 문장을 받는다
+    (두더지 잡기는 공개 글에서도 생긴다)."""
+
+    _aligned(monkeypatch)
+    contexts = []
+
+    async def reviewer(**kwargs):
+        contexts.append(kwargs.get("correction_context"))
+        return _pass_review(kwargs["content"])
+
+    monkeypatch.setattr(sweep, "propose_sentence_corrections", _delete_everything)
+    monkeypatch.setattr(sweep, "review_generated_content", reviewer)
+
+    _process(_flagged_item())
+
+    assert len(contexts) == 1
+    addressed = contexts[0]["addressed"]
+    assert addressed and addressed[0]["before"].strip() == BAD.strip()
+    assert addressed[0]["after"] == ""
+
+
 def test_failed_rereview_keeps_live_post_flag_and_incident_and_records_the_attempt(monkeypatch, hooks):
     _aligned(monkeypatch)
     _patch_providers(monkeypatch, review=_blocked_review)

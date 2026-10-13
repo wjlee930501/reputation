@@ -61,7 +61,6 @@ from tests.test_reference_operator_decides import (
     _patch,
     _patch_setup,
     _published,
-    _unwritten_slot,
 )
 from tests.test_reference_publication_gate import KDCA_VIEW, _now, _stamp
 from tests.test_reference_requirement import (
@@ -460,8 +459,8 @@ async def test_generation_drops_a_curated_alias_cited_on_a_cost_title(name):
     ],
     ids=["utm", "port_443", "zero_padded_id"],
 )
-async def test_an_unwritten_cost_slot_citing_an_alias_goes_to_the_operator(monkeypatch, alias):
-    """생성 경로 끝까지 — 별칭도 저장되지 않고, 쓰이지 않은 슬롯은 사람의 결정이 된다."""
+async def test_an_unwritten_cost_slot_citing_an_alias_is_saved_without_it(monkeypatch, alias):
+    """생성 경로 끝까지 — 별칭도 저장되지 않고, 진료비 글은 참고자료 0개로 저장된다(D23)."""
 
     payload = _notice_payload([{"title": "고혈압", "url": alias}])
     payload["title"] = "마포 고혈압 진료비 — 검사·약값과 건강보험 본인부담"
@@ -470,14 +469,12 @@ async def test_an_unwritten_cost_slot_citing_an_alias_goes_to_the_operator(monke
     fetcher.add_document(alias, "고혈압 | 국가건강정보포털 | 질병관리청", topic="고혈압")
 
     with override_reference_fetcher(fetcher):
-        with pytest.raises(content_engine.MissingCitableReferencesError) as raised:
-            await content_engine.generate_content(
-                _mapo_hospital(), ContentType.NOTICE, content_brief=_brief_hypertension()
-            )
+        result = await content_engine.generate_content(
+            _mapo_hospital(), ContentType.NOTICE, content_brief=_brief_hypertension()
+        )
 
-    assert raised.value.result["references"] == []
+    assert result["references"] == []
     assert fetcher.calls == []
-    assert tasks._generation_left_references_to_operator(raised.value, _unwritten_slot())
 
 
 async def test_generation_drops_an_outside_url_that_redirects_to_a_curated_document():
@@ -882,10 +879,14 @@ async def test_an_old_pass_whose_final_url_is_excluded_is_not_reused_on_outage(f
 
     from datetime import timedelta
 
-    from app.services.reference_verification import check_is_fresh_pass, topic_fingerprint
+    from app.services.reference_verification import (
+        REFERENCE_CHECK_MAX_AGE,
+        check_is_fresh_pass,
+        topic_fingerprint,
+    )
 
     fingerprint = topic_fingerprint([DYSPEPSIA_TITLE])
-    old = _now() - timedelta(days=2)
+    old = _now() - REFERENCE_CHECK_MAX_AGE - timedelta(days=1)
     prior = reference_check_record(
         REDIRECT_TO_EXCLUDED,
         verdict="pass",
