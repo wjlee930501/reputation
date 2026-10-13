@@ -76,4 +76,8 @@ async def test_human_gap_and_a_passed_deadline_open_for_people(pg_async_session,
     )
 
     assert (await _incident(db, human)).state == "OPEN"
-    assert (await _incident(db, stale)).state == "OPEN"
+    stale_incident = await _incident(db, stale)
+    assert stale_incident.state == "OPEN"
+    # 지난 기한은 '측정을 보냈다'는 자동 복구 문구가 아니라 사람의 일 문구와 등급으로 연다.
+    assert stale_incident.severity == "HIGH"
+    assert "지역 질문" in stale_incident.next_action

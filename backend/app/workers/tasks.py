@@ -375,6 +375,7 @@ from app.services.onboarding_notifications import (
 )
 from app.services.operator_action import requires_operator_action
 from app.services.ops_incident_alerts import (
+    extend_retrying_deadline,
     open_ops_incident,
     recover_ops_incident,
     recover_ops_incidents_for_hospital,
@@ -2870,12 +2871,15 @@ def _checkpoint_v0_progress(
     }
 
 
-def _defer_v0_until_cost_window(task, exc: BaseException, failure_retry_count: int):
+def _defer_v0_until_cost_window(
+    task, exc: BaseException, failure_retry_count: int, *, hospital_id: str
+):
     """Hand a cost-deferred V0 run back to the database until the next KST cost window.
 
     다음 비용 창(최대 약 24시간 뒤)까지 countdown으로 기다리면 그 메시지가 브로커·봉투·lease
     시계보다 오래 살아 배포 사이에 만료·중복된다. 실행을 QUEUED로 돌려놓고 시각만 남기면
-    자율 복구가 그 뒤에 새 봉투로 다시 보낸다.
+    자율 복구가 그 뒤에 새 봉투로 다시 보낸다. 자동 재실행 중(RETRYING)인 실패 사고가 있으면
+    그 기한도 미룸 시각 + 유예로 민다 — 비용 창을 기다리는 동안 사람의 일로 넘어가지 않게.
     """
     if explicit_run_context(task) is None:
         # 실행 기록 없이 들어온 옛 배포다 — 상한 안의 짧은 재시도로 다시 확인한다.
@@ -2904,6 +2908,19 @@ def _defer_v0_until_cost_window(task, exc: BaseException, failure_retry_count: i
             kwargs=_v0_retry_kwargs(task, failure_retry_count),
             max_retries=V0_CONTINUATION_MAX_RETRIES,
         ) from defer_error
+    if deferred:
+        try:
+            _run_async(
+                extend_retrying_deadline(
+                    pipeline="v0_report",
+                    object_type="hospital",
+                    object_id=hospital_id,
+                    fingerprint=IncidentFingerprint.UNKNOWN,
+                    retry_until=not_before + V0_AUTO_RERUN_GRACE,
+                )
+            )
+        except Exception:  # noqa: BLE001 - 기한 연장 실패가 미룸을 되돌리지 않는다.
+            logger.exception("V0 rerun incident deadline could not be extended")
     return {
         "status": "cost_deferred" if deferred else "stale_run",
         "not_before": not_before.isoformat(),
@@ -2912,8 +2929,9 @@ def _defer_v0_until_cost_window(task, exc: BaseException, failure_retry_count: i
 
 V0_AUTO_RERUN_BUDGET = 3
 V0_AUTO_RERUN_INTERVAL = timedelta(hours=6)
-# 재실행이 실제로 돌 시간. 이 안에 끝나지 않으면 그때 사람의 일이다.
-V0_AUTO_RERUN_GRACE = timedelta(hours=2)
+# 재실행이 실제로 돌 시간. 이 안에 끝나지 않으면 그때 사람의 일이다. 비용 창 미룸이 겹치면
+# `_defer_v0_until_cost_window`가 미룸 시각 + 이 유예로 기한을 민다.
+V0_AUTO_RERUN_GRACE = timedelta(hours=6)
 V0_AUTO_RERUN_SUMMARY_KEY = "v0_auto_reruns"
 V0_AUTO_RERUN_NEXT_ACTION = (
     "시스템이 같은 진단을 6시간 뒤 자동으로 다시 만듭니다(최대 3회). 이미 끝난 측정은 다시 사지 않습니다. "
@@ -5141,7 +5159,7 @@ def trigger_v0_report(self, hospital_id: str, failure_retry_count: int = 0):
 
     except V0CostDeferred as exc:
         _reset_v0_analyzing_status(hospital_id, prior_status)
-        return _defer_v0_until_cost_window(self, exc, failure_retry_count)
+        return _defer_v0_until_cost_window(self, exc, failure_retry_count, hospital_id=hospital_id)
     except V0MeasurementResumable as exc:
         _reset_v0_analyzing_status(hospital_id, prior_status)
         raise self.retry(
@@ -5170,6 +5188,7 @@ def trigger_v0_report(self, hospital_id: str, failure_retry_count: int = 0):
             # 공급자별 재시도와 회로 차단까지 끝난 실패다. 150건 전체를 Celery가 바로 다시
             # 돌리지 않고, 같은 실행을 6시간 뒤로 미뤄 최대 3회 다시 해 본다(측정 lineage 유지 —
             # 끝난 측정은 다시 사지 않는다). 소진 뒤에만 사람에게 넘긴다.
+            # 재실행은 저장된 실패 횟수(이미 상한)를 이어받아 첫 예외에 바로 여기로 온다 — 재실행 1회 = 시도 1회.
             outcome = _handle_v0_final_failure(self, hospital_id, exc)
             if outcome is not None:
                 return outcome
@@ -10202,6 +10221,7 @@ def _bootstrap_unmeasured_hospitals(
 
     병원마다 자동 복구 기한(그 주 측정 요청 + 24시간)을 돌려준다. 이미 이번 주 측정이 있으면 다시
     보내지 않고 그 요청 시각을 기준으로 한다 — tick마다 기한을 밀면 영원히 '복구 중'에 남는다.
+    기한이 이미 지난 병원은 돌려주지 않는다 — 측정을 보냈는데도 편입되지 못했으니 사람의 일이다.
     """
     owned: dict[uuid.UUID, datetime] = {}
     if not isinstance(registration, Mapping):
@@ -10227,7 +10247,9 @@ def _bootstrap_unmeasured_hospitals(
             if not _dispatch_weekly_sov_measurement(db, hospital, week_key, observed_at):
                 continue
             requested_at = observed_at
-        owned[hospital.id] = requested_at + COHORT_BOOTSTRAP_GRACE
+        deadline = requested_at + COHORT_BOOTSTRAP_GRACE
+        if deadline > observed_at:
+            owned[hospital.id] = deadline
     return owned
 
 

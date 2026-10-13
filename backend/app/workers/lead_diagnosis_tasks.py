@@ -758,13 +758,20 @@ async def _lead_notifications_to_dispatch(session) -> list[str]:
 
 
 async def _expire_inquiry_notifications(session, *, now: datetime | None = None) -> list[SalesLead]:
-    """창 안에 보내지 못한 도입문의 접수 알림을 FAILED로 끝낸다(사고는 호출자가 연다)."""
+    """창 안에 보내지 못한 도입문의 접수 알림을 FAILED로 끝낸다(사고는 호출자가 연다).
+
+    SENDING도 포함한다 — 보내는 도중 워커가 죽은 행은 drain이 다시 집지 못해 영원히 남는다.
+    파기된 리드는 알릴 대상이 아니다.
+    """
     observed = now or datetime.now(timezone.utc)
     rows = (
         await session.execute(
             select(SalesLead).where(
                 func.upper(func.trim(SalesLead.source)) == LEAD_SOURCE_INQUIRY,
-                SalesLead.notification_status == LEAD_NOTIFICATION_PENDING,
+                SalesLead.notification_status.in_(
+                    (LEAD_NOTIFICATION_PENDING, LEAD_NOTIFICATION_SENDING)
+                ),
+                SalesLead.purged_at.is_(None),
                 SalesLead.created_at < observed - LEAD_INTAKE_NOTIFY_RETRY_WINDOW,
             )
         )

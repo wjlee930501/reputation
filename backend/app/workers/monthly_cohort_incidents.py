@@ -32,7 +32,12 @@ async def open_monthly_cohort_gap(
 
     `retrying_until`이 있으면 기록 없는 병원에 측정을 방금 보냈다는 뜻이다 — 그때까지 자동 복구
     (RETRYING)이고, 다음 tick이 편입하면 근거(`incident_backlog._monthly_cohort_enrolled`)가 닫는다.
+    이미 지난 기한은 없는 것으로 본다 — 호출자와 무관하게 사람의 일 문구·등급으로 연다.
     """
+
+    now = datetime.now(UTC)
+    if retrying_until is not None and retrying_until <= now:
+        retrying_until = None
 
     message = sanitize_operator_text(
         f"{hospital_name}: 월간 측정 대상에 들어가지 못했습니다 ({reason})"
@@ -70,7 +75,7 @@ async def open_monthly_cohort_gap(
             ),
             actor="monthly-sov-worker",
             reason="monthly cohort enrollment gap",
-            now=datetime.now(UTC),
+            now=now,
         )
         await db.commit()
         return incident.id

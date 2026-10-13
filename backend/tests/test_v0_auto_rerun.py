@@ -99,3 +99,76 @@ def test_v0_failure_is_owned_by_the_rerun_until_the_caller_deadline():
     assert incident_policy("V0_REPORT_FAILED").retry_window is None
     # 재실행 중(RETRYING)인 사고도 V0 리포트가 생기면 근거 정리가 닫는다.
     assert "V0_REPORT_FAILED" in _RETRYING_RESOLVABLE
+
+
+class _NoSession:
+    def __enter__(self):
+        return object()
+
+    def __exit__(self, *_args):
+        return False
+
+
+def _claimed_task():
+    return SimpleNamespace(
+        request=SimpleNamespace(
+            id="v0-copy",
+            headers={"operation_run_id": str(uuid.uuid4())},
+            operation_run_claim_version=3,
+            kwargs={},
+        ),
+        retry=lambda **kwargs: RuntimeError("retry"),
+    )
+
+
+def test_rerun_grace_covers_a_six_hour_wait():
+    assert tasks.V0_AUTO_RERUN_GRACE == timedelta(hours=6)
+
+
+def test_a_cost_deferral_extends_the_retrying_deadline(monkeypatch):
+    """재실행이 비용 창 때문에 다시 미뤄지면 사고 기한도 그 미룸 시각 + 유예로 민다."""
+    hospital_id = str(uuid.uuid4())
+    deferred, extended = [], []
+    monkeypatch.setattr(tasks, "SyncSessionLocal", _NoSession)
+    monkeypatch.setattr(
+        tasks,
+        "defer_operation_run",
+        lambda _db, _task, not_before: deferred.append(not_before) or True,
+    )
+
+    async def fake_extend(**kwargs):
+        extended.append(kwargs)
+        return True
+
+    monkeypatch.setattr(tasks, "extend_retrying_deadline", fake_extend)
+
+    result = tasks._defer_v0_until_cost_window(
+        _claimed_task(), RuntimeError("cost"), 0, hospital_id=hospital_id
+    )
+
+    assert result["status"] == "cost_deferred"
+    assert extended == [
+        {
+            "pipeline": "v0_report",
+            "object_type": "hospital",
+            "object_id": hospital_id,
+            "fingerprint": tasks.IncidentFingerprint.UNKNOWN,
+            "retry_until": deferred[0] + tasks.V0_AUTO_RERUN_GRACE,
+        }
+    ]
+
+
+def test_a_stale_deferral_does_not_touch_the_incident(monkeypatch):
+    monkeypatch.setattr(tasks, "SyncSessionLocal", _NoSession)
+    monkeypatch.setattr(tasks, "defer_operation_run", lambda *_a: False)
+
+    async def fake_extend(**_kwargs):
+        raise AssertionError("must not extend")
+
+    monkeypatch.setattr(tasks, "extend_retrying_deadline", fake_extend)
+
+    result = tasks._defer_v0_until_cost_window(
+        _claimed_task(), RuntimeError("cost"), 0, hospital_id=str(uuid.uuid4())
+    )
+
+    assert result["status"] == "stale_run"

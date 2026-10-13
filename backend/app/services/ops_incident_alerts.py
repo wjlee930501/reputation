@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -122,6 +122,40 @@ async def open_ops_incident(
             )
         await db.commit()
         return incident.id
+
+
+async def extend_retrying_deadline(
+    *,
+    pipeline: str,
+    object_type: str,
+    object_id: str,
+    fingerprint: IncidentFingerprint,
+    retry_until: datetime,
+) -> bool:
+    """자동 재실행이 다시 미뤄졌을 때 RETRYING 사고의 기한만 뒤로 민다.
+
+    사고가 없거나 RETRYING이 아니면 아무것도 하지 않는다 — open_ops_incident로 터치하면 없던
+    사고를 만든다. 기한은 앞으로 당기지 않는다.
+    """
+
+    sessions = get_async_sessionmaker()
+    async with sessions() as db:
+        key = build_incident_key(pipeline, object_type, object_id, fingerprint)
+        result = await db.execute(
+            update(Incident)
+            .where(
+                Incident.dedupe_key == key,
+                Incident.state == IncidentState.RETRYING.value,
+                or_(Incident.sla_due_at.is_(None), Incident.sla_due_at < retry_until),
+            )
+            .values(
+                sla_due_at=retry_until,
+                version=Incident.version + 1,
+                updated_at=datetime.now(UTC),
+            )
+        )
+        await db.commit()
+        return (result.rowcount or 0) > 0
 
 
 async def recover_ops_incident(

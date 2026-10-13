@@ -84,7 +84,7 @@ def test_an_existing_weekly_run_is_not_sent_again_and_anchors_the_deadline(monke
 
     tick마다 기한을 새로 밀면 끝내 편입되지 못한 병원이 영원히 '복구 중'에 남는다.
     """
-    monday = OBSERVED - timedelta(days=5)
+    recent = OBSERVED - timedelta(hours=6)
     monkeypatch.setattr(
         tasks,
         "_dispatch_weekly_sov_measurement",
@@ -92,13 +92,36 @@ def test_an_existing_weekly_run_is_not_sent_again_and_anchors_the_deadline(monke
     )
 
     owned = tasks._bootstrap_unmeasured_hospitals(
-        _BootstrapDB(_hospital(), existing_requested_at=monday),
+        _BootstrapDB(_hospital(), existing_requested_at=recent),
         {"not_enrolled": [NO_RECORD]},
         tasks.date(2026, 10, 24),
         OBSERVED,
     )
 
-    assert owned == {uuid.UUID(NO_RECORD["hospital_id"]): monday + tasks.COHORT_BOOTSTRAP_GRACE}
+    assert owned == {uuid.UUID(NO_RECORD["hospital_id"]): recent + tasks.COHORT_BOOTSTRAP_GRACE}
+
+
+def test_a_passed_bootstrap_deadline_is_human_work(monkeypatch):
+    """그 주 측정 요청에서 24시간이 지나도 편입되지 못했으면 자동 복구가 아니다 — 사람에게 연다."""
+    monday = OBSERVED - timedelta(days=5)
+    monkeypatch.setattr(
+        tasks,
+        "_dispatch_weekly_sov_measurement",
+        lambda *_a: (_ for _ in ()).throw(AssertionError("must not redispatch")),
+    )
+    opened = _capture_gaps(monkeypatch)
+    registration = {"not_enrolled": [NO_RECORD]}
+
+    owned = tasks._bootstrap_unmeasured_hospitals(
+        _BootstrapDB(_hospital(), existing_requested_at=monday),
+        registration,
+        tasks.date(2026, 10, 24),
+        OBSERVED,
+    )
+    tasks._report_monthly_cohort_gaps(registration, "2026-10", retrying_until=owned)
+
+    assert owned == {}
+    assert opened[0]["retrying_until"] is None
 
 
 def test_paused_or_failed_dispatch_is_not_owned(monkeypatch):

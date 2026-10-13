@@ -136,3 +136,53 @@ async def test_drain_opens_one_operator_incident_for_an_expired_notice(pg_async_
     assert [item["incident_type"] for item in mine] == ["LEAD_INTAKE_NOTIFICATION_FAILED"]
     assert mine[0]["hospital_name"] == "도입문의"  # 병원명을 사고 제목에 싣지 않는다
     assert result["expired_intake_notices"] >= 1
+
+
+@pytest.mark.asyncio
+async def test_a_sending_inquiry_stuck_after_a_crash_expires_with_one_incident(
+    pg_async_session, monkeypatch
+):
+    """워커가 SENDING으로 잡은 채 죽으면 drain이 집지 못한다 — 창이 지나면 FAILED와 사고로 끝낸다."""
+    now = datetime.now(timezone.utc)
+    stuck = await _inquiry(pg_async_session, status="SENDING", created_at=now - timedelta(hours=2))
+    fresh = await _inquiry(pg_async_session, status="SENDING")
+    opened = []
+
+    class _Ctx:
+        async def __aenter__(self):
+            return pg_async_session
+
+        async def __aexit__(self, *exc):
+            return False
+
+    async def capture(**kwargs):
+        opened.append(kwargs)
+
+    monkeypatch.setattr(leadgen, "get_async_sessionmaker", lambda: _Ctx)
+    monkeypatch.setattr(leadgen, "open_ops_incident", capture)
+    monkeypatch.setattr(leadgen.notify_lead_intake, "delay", lambda *_a: None)
+    monkeypatch.setattr(leadgen.run_lead_diagnosis, "delay", lambda *_a: None)
+    monkeypatch.setattr(leadgen.build_lead_report, "delay", lambda *_a: None)
+    monkeypatch.setattr(leadgen.send_lead_report_email, "delay", lambda *_a: None)
+
+    await leadgen._drain()
+
+    await pg_async_session.refresh(stuck)
+    await pg_async_session.refresh(fresh)
+    assert stuck.notification_status == "FAILED"
+    assert fresh.notification_status == "SENDING"
+    mine = [item for item in opened if item["object_id"] == str(stuck.id)]
+    assert [item["incident_type"] for item in mine] == ["LEAD_INTAKE_NOTIFICATION_FAILED"]
+    assert not [item for item in opened if item["object_id"] == str(fresh.id)]
+
+
+@pytest.mark.asyncio
+async def test_a_purged_inquiry_is_not_expired(pg_async_session):
+    now = datetime.now(timezone.utc)
+    purged = await _inquiry(pg_async_session, status="PENDING", created_at=now - timedelta(hours=2))
+    purged.purged_at = now
+    await pg_async_session.flush()
+
+    expired = await leadgen._expire_inquiry_notifications(pg_async_session, now=now)
+
+    assert purged.id not in [lead.id for lead in expired]
