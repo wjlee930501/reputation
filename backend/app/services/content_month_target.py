@@ -4,7 +4,9 @@
 남은 게시 요일 비율로 편수를 줄여 슬롯을 만들고, 그 편수를 슬롯의 `total_count`에 기록한다
 (마이그레이션 없는 지속 표식). 병원의 가장 이른 일정이 시작한 달이고 그 달 슬롯이 요금제보다
 작은 `total_count`를 기록하고 있을 때만 그 값을 약속 편수로 본다. 사람이 만든 첫 달은 슬롯이
-요금제 편수를 그대로 기록하므로 소급해 바뀌지 않는다.
+요금제 편수를 그대로 기록하므로 소급해 바뀌지 않는다. 시스템이 만든 첫 일정이 시작일 뒤로
+게시 요일이 하나도 남지 않은 달에 시작하면 슬롯이 없으므로, 그 달은 일정 자체로 0편을 판정한다
+(`no_publish_day_left_in_first_month`).
 
 슬롯 생성(당월 조정 포함)·운영 계약 이행 집계·월간 보고서·현황 카드가 모두 이 판정을 쓴다.
 """
@@ -50,11 +52,32 @@ def prorated_first_month_quota(plan: object, publish_days: list[int], start: dat
     return min(quota, max(1, math.ceil(remaining * quota / len(days))))
 
 
-def resolve_month_target(quota: int | None, first_month_recorded_total: int | None) -> int | None:
-    """요금제 편수와 첫 계약 월 슬롯이 기록한 편수로 그 달 약속 편수를 정한다."""
+def no_publish_day_left_in_first_month(
+    plan: object, publish_days: list[int] | None, start: date | None, month: arrow.Arrow
+) -> bool:
+    """`month`가 `start`로 시작하는 첫 일정의 달이고 시작일 뒤로 게시 요일이 하나도 없는가."""
+
+    if start is None or not (month.floor("month").date() <= start <= month.ceil("month").date()):
+        return False
+    return prorated_first_month_quota(plan, list(publish_days or []), start) == 0
+
+
+def resolve_month_target(
+    quota: int | None,
+    first_month_recorded_total: int | None,
+    *,
+    no_publish_day_left: bool = False,
+) -> int | None:
+    """요금제 편수와 첫 계약 월 슬롯이 기록한 편수로 그 달 약속 편수를 정한다.
+
+    `no_publish_day_left`는 시스템이 만든 첫 일정의 첫 달에 게시 요일이 남지 않았다는 판정이다
+    (`initial_schedule_terms_stmt` + `no_publish_day_left_in_first_month`). 그 달 약속은 0편이다.
+    """
 
     if quota is None:
         return None
+    if no_publish_day_left:
+        return 0
     if first_month_recorded_total is not None and 0 < first_month_recorded_total < quota:
         return first_month_recorded_total
     return quota
@@ -83,6 +106,24 @@ def first_month_recorded_total_stmt(hospital_id: uuid.UUID, month: arrow.Arrow):
     )
 
 
+def initial_schedule_terms_stmt(hospital_id: uuid.UUID):
+    """시스템이 만든 첫 일정(가장 이른 시작). 사람이 만든 첫 일정이면 행 없음.
+
+    현황 카드는 시작일·요금제·게시 요일을 열마다 `with_only_columns(...).scalar_subquery()`로
+    기존 조회에 묶는다.
+    """
+
+    return (
+        select(ContentSchedule)
+        .where(
+            ContentSchedule.hospital_id == hospital_id,
+            _created_by_initial_schedule_service(hospital_id),
+        )
+        .order_by(ContentSchedule.active_from, ContentSchedule.created_at)
+        .limit(1)
+    )
+
+
 def _created_by_initial_schedule_service(hospital_id: uuid.UUID):
     """첫 일정을 시스템이 만들었다는 감사행. 사람이 만든 첫 달(요금제 변경 포함)은 안분이 아니다."""
 
@@ -99,8 +140,14 @@ def month_content_target_sync(
     quota = monthly_quota_for_plan(plan)
     if quota is None:
         return None
+    initial = db.scalar(initial_schedule_terms_stmt(hospital_id))
     return resolve_month_target(
-        quota, db.scalar(first_month_recorded_total_stmt(hospital_id, month))
+        quota,
+        db.scalar(first_month_recorded_total_stmt(hospital_id, month)),
+        no_publish_day_left=initial is not None
+        and no_publish_day_left_in_first_month(
+            initial.plan, initial.publish_days, initial.active_from, month
+        ),
     )
 
 
@@ -112,9 +159,7 @@ def first_month_without_publish_days(db: Session, schedule: ContentSchedule, mon
     """
 
     start = schedule.active_from
-    if start is None or not (month.floor("month").date() <= start <= month.ceil("month").date()):
-        return False
-    if prorated_first_month_quota(schedule.plan, list(schedule.publish_days or []), start) != 0:
+    if not no_publish_day_left_in_first_month(schedule.plan, schedule.publish_days, start, month):
         return False
     first_start = db.scalar(
         select(func.min(ContentSchedule.active_from)).where(

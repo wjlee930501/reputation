@@ -300,3 +300,68 @@ def test_no_publish_weekday_left_creates_no_slots_this_month_and_full_next_month
         pg_session, schedule, november, november.date(), november.ceil("month").date()
     )
     assert len(_month_rows(pg_session, hospital.id, date(2026, 11, 1), date(2026, 11, 30))) == 20
+
+
+class _AsyncSessionShim:
+    """현황 카드(async)를 같은 롤백 트랜잭션의 동기 세션으로 읽는다."""
+
+    def __init__(self, session):
+        self._session = session
+
+    async def execute(self, stmt):
+        return self._session.execute(stmt)
+
+
+async def test_a_first_month_without_publish_days_promises_zero_everywhere(
+    pg_session, monkeypatch
+) -> None:
+    """10월 약속 0편을 계약 이행 집계·현황 카드·월간 보고서가 같이 읽는다(요금제 20편이 아니다)."""
+    from unittest.mock import AsyncMock
+
+    import arrow
+
+    from app.api.admin import hospital_overview as overview
+    from app.services.content_month_target import month_content_target_sync
+    from app.services.contract_delivery_coverage import collect_contract_delivery_coverage
+    from app.services.monthly_content_operations import build_monthly_content_operations_snapshot
+
+    hospital = _seed(pg_session, plan=Plan.PLAN_20)
+    outcome = ensure_initial_content_schedule(
+        pg_session, hospital.id, today=date(2026, 10, 30), trigger="essence_auto_approval"
+    )
+    assert outcome.active_from == date(2026, 10, 31) and outcome.slots_created == 0
+    october = arrow.get(date(2026, 10, 1))
+    observed_at = datetime(2026, 10, 31, 3, tzinfo=timezone.utc)  # 10/31 12:00 KST
+
+    # 월간 보고서의 약속 편수(`period_quota`)와 그 운영 스냅샷.
+    period_quota = month_content_target_sync(pg_session, hospital.id, october, "PLAN_20")
+    assert period_quota == 0
+    snapshot = build_monthly_content_operations_snapshot(
+        plan="PLAN_20",
+        contract_quota=period_quota,
+        scheduled_items=[],
+        published_items=[],
+        cutoff_at=datetime(2026, 11, 1, tzinfo=timezone.utc),
+        contract_published_count=0,
+    )
+    assert snapshot.payload["plan_quota"] == 0 and snapshot.payload["shortfall_count"] == 0
+    assert not any("약정 콘텐츠" in warning for warning in snapshot.delivery_warnings)
+    # 다음 달은 요금제 편수 그대로다.
+    assert (
+        month_content_target_sync(pg_session, hospital.id, arrow.get(date(2026, 11, 1)), "PLAN_20")
+        == 20
+    )
+
+    # 계약 이행 집계: 약속 0편이면 기대·누락도 0이다.
+    coverage = collect_contract_delivery_coverage(pg_session, now=observed_at)
+    assert coverage.expected == 0
+    assert coverage.missing_allocations == 0
+    assert coverage.delivery_at_risk is False
+
+    # 현황 카드의 이번 달 약속 편수.
+    monkeypatch.setattr(overview.arrow, "now", lambda *args: arrow.get(observed_at))
+    monkeypatch.setattr(overview, "weekly_mention_trend", AsyncMock(return_value=[]))
+    summary = await overview._month_summary(
+        _AsyncSessionShim(pg_session), pg_session.get(Hospital, hospital.id)
+    )
+    assert summary.planned_total == 0

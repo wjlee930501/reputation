@@ -46,7 +46,7 @@ class FleetContractCoverage:
 def collect_contract_delivery_coverage(db: Session, *, now: datetime) -> FleetContractCoverage:
     """Bounded read-only queries for currently operational hospitals.
 
-    One extra scalar per hospital reads a prorated first contract month.
+    Two extra reads per hospital resolve a prorated or empty first contract month.
 
     A missing/disabled schedule is unknown, not healthy. Recorded effective terms
     own the denominator, not a future head. No provider calls or commits occur.

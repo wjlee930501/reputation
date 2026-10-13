@@ -98,3 +98,47 @@ def test_a_plan_upgrade_inside_a_human_first_month_is_not_read_as_prorated(db):
     db.flush()
 
     assert month_content_target_sync(db, hospital.id, SEPTEMBER, "PLAN_16") == 16
+
+
+OCTOBER = arrow.get(date(2026, 10, 1))
+
+
+def _first_month_without_publish_days(db):
+    """PLAN_20을 10/30에 자동 승인해 10/31(토)에 시작 — 10월에 남은 게시 요일이 없어 슬롯도 없다."""
+
+    hospital, schedule = seed(db)  # 9월 행은 지난 일정의 것이다. 10월 슬롯은 없다.
+    schedule.plan = "PLAN_20"
+    schedule.publish_days = [0, 2, 4]
+    schedule.active_from = date(2026, 10, 31)
+    db.add(
+        AdminAuditLog(
+            hospital_id=hospital.id, actor=INITIAL_SCHEDULE_ACTOR, action="set_schedule",
+            target_type="content_schedule", target_id=str(schedule.id),
+            detail={"first_month_target": 0},
+        )
+    )
+    db.flush()
+    return hospital
+
+
+def test_a_first_month_without_publish_days_promises_zero_without_shortfall(db):
+    hospital = _first_month_without_publish_days(db)
+    quota = month_content_target_sync(db, hospital.id, OCTOBER, "PLAN_20")
+    assert quota == 0
+    assert month_content_target_sync(db, hospital.id, arrow.get(date(2026, 11, 1)), "PLAN_20") == 20
+
+    snapshot = build_monthly_content_operations_snapshot(
+        plan="PLAN_20",
+        contract_quota=quota,
+        scheduled_items=[],
+        published_items=[],
+        cutoff_at=datetime(2026, 11, 1, tzinfo=timezone.utc),
+        contract_published_count=0,
+    )
+    assert snapshot.payload["plan_quota"] == 0
+    assert snapshot.payload["shortfall_count"] == 0
+    assert not any("약정 콘텐츠" in warning for warning in snapshot.delivery_warnings)
+
+    view = monthly_view(published_count=0, plan_quota=quota, contract_published_count=0)
+    first_page = _page(_html(view), 1)
+    assert "남은" not in first_page and "20편" not in first_page

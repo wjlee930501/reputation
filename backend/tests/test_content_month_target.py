@@ -2,9 +2,11 @@
 
 from datetime import date
 
+import arrow
 import pytest
 
 from app.services.content_month_target import (
+    no_publish_day_left_in_first_month,
     prorated_first_month_quota,
     resolve_month_target,
 )
@@ -50,3 +52,20 @@ def test_month_target_uses_a_smaller_recorded_first_month_total(
     quota, first_month_recorded_total, expected
 ) -> None:
     assert resolve_month_target(quota, first_month_recorded_total) == expected
+
+
+def test_first_month_without_a_publish_weekday_promises_zero() -> None:
+    # PLAN_20을 10/30에 승인해 10/31(토)부터 시작하면 10월에 남은 게시 요일이 없다.
+    october, november = arrow.get(date(2026, 10, 1)), arrow.get(date(2026, 11, 1))
+    start = date(2026, 10, 31)
+    assert no_publish_day_left_in_first_month("PLAN_20", [0, 2, 4], start, october) is True
+    # 다음 달이나 게시 요일이 남은 시작일은 해당하지 않는다.
+    assert no_publish_day_left_in_first_month("PLAN_20", [0, 2, 4], start, november) is False
+    assert (
+        no_publish_day_left_in_first_month("PLAN_20", [0, 2, 4], date(2026, 10, 30), october)
+        is False
+    )
+    assert no_publish_day_left_in_first_month("PLAN_20", [0, 2, 4], None, october) is False
+    # 그 달 약속은 슬롯이 하나도 없어도 요금제 편수가 아니라 0편이다.
+    assert resolve_month_target(20, None, no_publish_day_left=True) == 0
+    assert resolve_month_target(None, None, no_publish_day_left=True) is None

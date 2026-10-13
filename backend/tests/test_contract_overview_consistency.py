@@ -93,3 +93,26 @@ async def test_overview_shows_the_prorated_first_contract_month(db, monkeypatch)
     result = await overview._month_summary(AsyncDB(db), hospital)
 
     assert result.planned_total == 5
+
+
+async def test_overview_promises_zero_for_a_first_month_without_publish_days(db, monkeypatch):
+    """PLAN_20 첫 일정이 10/31(토)에 시작해 10월에 게시 요일이 없으면 현황도 0편을 약속으로 보인다."""
+
+    hospital, schedule = seed(db)
+    hospital.plan = Plan.PLAN_20
+    schedule.plan = "PLAN_20"
+    schedule.publish_days = [0, 2, 4]
+    schedule.active_from = date(2026, 10, 31)
+    db.add(
+        AdminAuditLog(
+            hospital_id=hospital.id, actor=INITIAL_SCHEDULE_ACTOR, action="set_schedule",
+            target_type="content_schedule", target_id=str(schedule.id), detail={},
+        )
+    )
+    db.flush()
+    monkeypatch.setattr(overview.arrow, "now", lambda *args: arrow.get(date(2026, 10, 31)))
+    monkeypatch.setattr(overview, "weekly_mention_trend", AsyncMock(return_value=[]))
+
+    result = await overview._month_summary(AsyncDB(db), hospital)
+
+    assert result.planned_total == 0
