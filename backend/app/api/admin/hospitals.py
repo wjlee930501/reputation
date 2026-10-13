@@ -1193,6 +1193,9 @@ async def autofill_hospital_profile(
         website_url=website_url,
         blog_url=blog_url,
         hospital_id=hospital_id,
+        naver_place_id=getattr(h, "naver_place_id", None),
+        naver_place_url=getattr(h, "naver_place_url", None),
+        regions=list(getattr(h, "region", None) or []),
     )
 
     await write_audit_log(
@@ -1218,6 +1221,8 @@ async def autofill_hospital_profile(
         "violations": result.violations,
         "rejected_fields": result.rejected_fields,
         "naver_place_id": result.naver_place_id,
+        "naver_identity": result.naver_identity,
+        "conflicts": result.conflicts,
         "sources": [{"name": s.name, "ok": s.ok, "reason": s.reason} for s in result.sources],
     }
 

@@ -38,13 +38,52 @@ async def test_scrape_naver_place_success(monkeypatch):
     async def fake_jina(url: str):
         if "list?query" in url:
             return ("[a](https://m.place.naver.com/hospital/1595672233)", None)
-        return ("=== 홈 ===\n수원시 팔달구 · 031-8067-8114", None)
+        return ("=== 홈 ===\n장편한외과의원\n수원시 팔달구 · 031-8067-8114", None)
 
     monkeypatch.setattr(naver_place, "fetch_via_jina", fake_jina)
-    res = await naver_place.scrape_naver_place("장편한외과의원")
+    res = await naver_place.scrape_naver_place("장편한외과의원", regions=["수원시 팔달구"])
     assert res.place_id == "1595672233"
     assert res.markdown
     assert res.reason is None
+    assert res.identity == naver_place.IDENTITY_VERIFIED_SEARCH and res.verified
+
+
+async def test_stored_place_id_skips_the_search(monkeypatch):
+    urls = []
+
+    async def fake_jina(url: str):
+        urls.append(url)
+        return ("다른 상호 본문", None)
+
+    monkeypatch.setattr(naver_place, "fetch_via_jina", fake_jina)
+    res = await naver_place.scrape_naver_place("장편한외과의원", place_id="1595672233")
+    assert res.identity == naver_place.IDENTITY_STORED_ID and res.verified
+    assert not any("list?query" in url for url in urls)
+
+
+@pytest.mark.parametrize(
+    ("detail", "regions"),
+    [
+        ("다온의원 세종점\n세종시 보람동", []),  # 지점명이 붙은 다른 상호
+        ("세종다온의원\n대전 서구", ["세종시"]),  # 같은 상호, 다른 지역
+    ],
+)
+async def test_search_hit_that_is_not_this_hospital_stays_unverified(monkeypatch, detail, regions):
+    async def fake_jina(url: str):
+        if "list?query" in url:
+            return ("[a](https://m.place.naver.com/hospital/1234567)", None)
+        return (detail, None)
+
+    monkeypatch.setattr(naver_place, "fetch_via_jina", fake_jina)
+    res = await naver_place.scrape_naver_place("세종다온의원", regions=regions)
+    assert res.identity == naver_place.IDENTITY_UNVERIFIED and not res.verified
+    assert res.markdown  # 초안에는 남는다
+
+
+def test_stored_place_id_reads_the_url_when_the_id_column_is_empty():
+    assert naver_place.stored_place_id(None, "https://m.place.naver.com/hospital/1595672233/home") == "1595672233"
+    assert naver_place.stored_place_id("98765", None) == "98765"
+    assert naver_place.stored_place_id(None, "https://naver.me/xyz") is None
 
 
 async def test_scrape_naver_place_not_found(monkeypatch):
@@ -112,8 +151,10 @@ async def test_autofill_profile_happy_path(monkeypatch):
     async def fake_jina(url: str):
         return "김원장 완치율 최고 보장 수원시 팔달구", None
 
-    async def fake_naver(name: str):
-        return naver_place.NaverPlaceResult("1595672233", "네이버 본문", None)
+    async def fake_naver(name: str, **_kwargs):
+        return naver_place.NaverPlaceResult(
+            "1595672233", "네이버 본문 수원시 팔달구", None, naver_place.IDENTITY_VERIFIED_SEARCH
+        )
 
     monkeypatch.setattr(af, "fetch_url_text", fake_fetch_url_text)
     monkeypatch.setattr(af.naver_place, "fetch_via_jina", fake_jina)
@@ -150,7 +191,7 @@ async def test_autofill_profile_all_sources_fail_returns_empty(monkeypatch):
     async def fail_jina(url: str):
         return "", "fail"
 
-    async def fail_naver(name: str):
+    async def fail_naver(name: str, **_kwargs):
         return naver_place.NaverPlaceResult(None, "", "찾지 못함")
 
     monkeypatch.setattr(af, "fetch_url_text", fail_fetch)
@@ -180,7 +221,7 @@ async def test_autofill_profile_skips_llm_when_no_sources(monkeypatch):
     async def fail_jina(url: str):
         return "", "fail"
 
-    async def fail_naver(name: str):
+    async def fail_naver(name: str, **_kwargs):
         return naver_place.NaverPlaceResult(None, "", "찾지 못함")
 
     monkeypatch.setattr(af, "fetch_url_text", fail_fetch)
@@ -204,7 +245,7 @@ async def test_autofill_profile_direct_fetch_unpacks_three_tuple(monkeypatch):
     async def _should_not_jina(url: str):
         raise AssertionError("직접 fetch 성공 시 Jina 폴백을 타면 안 된다")
 
-    async def fake_naver(name: str):
+    async def fake_naver(name: str, **_kwargs):
         return naver_place.NaverPlaceResult(None, "", "찾지 못함")
 
     monkeypatch.setattr(af, "fetch_url_text", ok_fetch)
@@ -227,7 +268,7 @@ async def test_autofill_rejects_ungrounded_specialty_and_hours(monkeypatch):
     async def ok_fetch(url: str):
         return "내과 진료 월요일 09:00-18:00", None, None
 
-    async def fake_naver(name: str):
+    async def fake_naver(name: str, **_kwargs):
         return naver_place.NaverPlaceResult(None, "", "찾지 못함")
 
     monkeypatch.setattr(af, "fetch_url_text", ok_fetch)
@@ -286,7 +327,7 @@ async def test_autofill_endpoint_end_to_end_with_real_signature(monkeypatch):
     async def ok_fetch(url: str):
         return f"본문 김원장 {url}", None, None
 
-    async def fake_naver(name: str):
+    async def fake_naver(name: str, **_kwargs):
         return naver_place.NaverPlaceResult(None, "", "찾지 못함")
 
     monkeypatch.setattr(af, "fetch_url_text", ok_fetch)
@@ -334,7 +375,7 @@ async def test_autofill_request_sends_the_configured_model(monkeypatch):
     async def ok_fetch(url: str):
         return "김원장", None, None
 
-    async def fake_naver(name: str):
+    async def fake_naver(name: str, **_kwargs):
         return naver_place.NaverPlaceResult(None, "", "없음")
 
     monkeypatch.setattr(af, "fetch_url_text", ok_fetch)
@@ -371,7 +412,7 @@ async def test_autofill_does_not_retry_deterministic_client_error(monkeypatch):
     async def ok_fetch(url: str):
         return "김원장", None, None
 
-    async def fake_naver(name: str):
+    async def fake_naver(name: str, **_kwargs):
         return naver_place.NaverPlaceResult(None, "", "없음")
 
     monkeypatch.setattr(af, "fetch_url_text", ok_fetch)
@@ -404,7 +445,7 @@ async def test_autofill_records_each_http_retry_with_one_logical_identity(
     async def ok_fetch(_url: str):
         return "김원장", None, None
 
-    async def fake_naver(_name: str):
+    async def fake_naver(_name: str, **_kwargs):
         return naver_place.NaverPlaceResult(None, "", "없음")
 
     async def no_cost_counter(*_args, **_kwargs):
@@ -451,3 +492,191 @@ async def test_autofill_records_each_http_retry_with_one_logical_identity(
     assert _capture_provider_attempts[0]["usage_known"] is False
     assert "usage_known" not in _capture_provider_attempts[1]
     assert _capture_provider_attempts[1]["provider_request_id"] == "msg-autofill-test"
+
+
+# ── D34 출처별 후보와 결정적 우선순위 ─────────────────────────────────
+_SOURCES = {
+    "naver": "=== 네이버 플레이스 ===\n월 10:00-19:00 서울 성동구 왕십리로 1 외과 치질",
+    "survey": "=== 원장 인터뷰 설문 ===\n월 09:00-18:00 환자의 이야기를 끝까지 듣습니다",
+    "homepage": "=== 병원 홈페이지 ===\n월 09:00-18:00 서울 성동구 왕십리로 1 친절한 진료",
+    "blog": "=== 병원 블로그 ===\n서울 성동구 왕십리로 2",
+}
+
+
+def _cand(value, source, evidence, confidence=0.8):
+    return {"value": value, "source": source, "confidence": confidence, "evidence": evidence}
+
+
+_PHONES = {
+    "naver": "02-111-1111",
+    "survey": "02-222-2222",
+    "homepage": "02-333-3333",
+    "blog": "02-444-4444",
+}
+_PHONE_TEXTS = {source: f"=== {source} ===\n대표번호 {phone}" for source, phone in _PHONES.items()}
+
+
+@pytest.mark.parametrize(
+    ("present", "expected"),
+    [
+        (("blog", "homepage", "survey", "naver"), "naver"),
+        (("blog", "homepage", "survey"), "survey"),
+        (("blog", "homepage"), "homepage"),
+        (("blog",), "blog"),
+    ],
+)
+def test_fact_fields_follow_naver_survey_homepage_blog(present, expected):
+    candidates = [_cand(_PHONES[source], source, f"대표번호 {_PHONES[source]}") for source in present]
+    resolution = af._resolve_fields({"phone": {"candidates": candidates}}, _PHONE_TEXTS)
+    assert resolution.meta["phone"]["source"] == expected
+    assert resolution.draft["phone"] == _PHONES[expected]
+    assert len(resolution.conflicts[0]["others"]) == len(present) - 1 if len(present) > 1 else not resolution.conflicts
+
+
+def test_business_hours_prefer_naver_and_record_the_conflict():
+    fields = {
+        "business_hours": {
+            "candidates": [
+                _cand({"mon": "09:00-18:00"}, "homepage", "월 09:00-18:00"),
+                _cand({"mon": "10:00-19:00"}, "naver", "월 10:00-19:00"),
+            ]
+        }
+    }
+    resolution = af._resolve_fields(fields, _SOURCES)
+    assert resolution.draft["business_hours"] == {"mon": "10:00-19:00"}
+    assert resolution.conflicts == [
+        {
+            "field": "business_hours",
+            "chosen": {"source": "naver", "value": {"mon": "10:00-19:00"}},
+            "others": [{"source": "homepage", "value": {"mon": "09:00-18:00"}}],
+        }
+    ]
+
+
+def test_survey_wins_for_the_doctor_philosophy():
+    fields = {
+        "director_philosophy": {
+            "candidates": [
+                _cand("친절한 진료", "homepage", "친절한 진료"),
+                _cand("환자의 이야기를 끝까지 듣습니다", "survey", "환자의 이야기를 끝까지 듣습니다"),
+            ]
+        }
+    }
+    resolution = af._resolve_fields(fields, _SOURCES)
+    assert resolution.meta["director_philosophy"]["source"] == "survey"
+    assert resolution.draft["director_philosophy"] == "환자의 이야기를 끝까지 듣습니다"
+
+
+def test_candidate_quoting_another_sources_text_drops_out_of_the_ranking():
+    """네이버라고 적힌 값의 발췌가 네이버 본문에 없으면 그 후보는 순위에서 빠진다."""
+
+    fields = {
+        "business_hours": {
+            "candidates": [
+                _cand({"mon": "09:00-18:00"}, "naver", "월 09:00-18:00"),
+                _cand({"mon": "09:00-18:00"}, "homepage", "월 09:00-18:00"),
+            ]
+        }
+    }
+    resolution = af._resolve_fields(fields, _SOURCES)
+    assert resolution.meta["business_hours"]["source"] == "homepage"
+    assert resolution.conflicts == []
+
+
+def test_unverified_naver_loses_to_any_other_source_and_alone_is_draft_only():
+    fields = {
+        "business_hours": {
+            "candidates": [
+                _cand({"mon": "10:00-19:00"}, "naver", "월 10:00-19:00"),
+                _cand({"mon": "09:00-18:00"}, "homepage", "월 09:00-18:00"),
+            ]
+        },
+        "specialties": {"candidates": [_cand(["외과"], "naver", "외과 치질")]},
+    }
+    resolution = af._resolve_fields(fields, _SOURCES, naver_verified=False)
+    assert resolution.meta["business_hours"]["source"] == "homepage"
+    assert resolution.meta["business_hours"]["verified"] is True
+    assert resolution.meta["specialties"] == {
+        "source": "naver",
+        "confidence": 0.8,
+        "evidence_excerpt": "외과 치질",
+        "verified": False,
+    }
+
+
+def test_treatment_names_are_facts_but_descriptions_follow_the_narrative_order():
+    sources = {
+        "naver": "=== 네이버 ===\n치질 치루",
+        "survey": "=== 설문 ===\n치질 수술은 당일 퇴원을 원칙으로 합니다",
+    }
+    fields = {
+        "treatments": {
+            "candidates": [
+                _cand([{"name": "치질", "description": "네이버 설명"}, {"name": "치루"}], "naver", "치질 치루"),
+                _cand(
+                    [{"name": "치질", "description": "당일 퇴원을 원칙으로 합니다"}],
+                    "survey",
+                    "치질 수술은 당일 퇴원을 원칙으로 합니다",
+                ),
+            ]
+        }
+    }
+    resolution = af._resolve_fields(fields, sources)
+    assert resolution.meta["treatments"]["source"] == "naver"
+    assert resolution.draft["treatments"] == [
+        {"name": "치질", "description": "당일 퇴원을 원칙으로 합니다"},
+        {"name": "치루", "description": None},
+    ]
+
+
+def test_legacy_single_shape_is_still_read_as_one_candidate():
+    fields = {"address": {"value": "서울 성동구 왕십리로 1", "source": "naver", "evidence": "서울 성동구 왕십리로 1"}}
+    draft, meta, rejected = af._normalize_fields(fields, _SOURCES)
+    assert draft == {"address": "서울 성동구 왕십리로 1"} and rejected == []
+    assert meta["address"]["verified"] is True
+
+
+async def test_autofill_passes_the_stored_place_and_survey_and_reports_identity(monkeypatch):
+    seen = {}
+
+    async def ok_fetch(url: str):
+        return "", "fail", None
+
+    async def no_jina(url: str):
+        return "", "fail"
+
+    async def fake_naver(name, **kwargs):
+        seen.update(kwargs)
+        return naver_place.NaverPlaceResult(
+            kwargs.get("place_id"), "세종다온의원 월 10:00-19:00", None, naver_place.IDENTITY_STORED_ID
+        )
+
+    captured = {}
+
+    def create(**kwargs):
+        captured["user"] = kwargs["messages"][1]["content"]
+        return _fake_claude_response(
+            {
+                "business_hours": {
+                    "candidates": [_cand({"mon": "10:00-19:00"}, "naver", "월 10:00-19:00")]
+                }
+            }
+        )
+
+    monkeypatch.setattr(af, "fetch_url_text", ok_fetch)
+    monkeypatch.setattr(af.naver_place, "fetch_via_jina", no_jina)
+    monkeypatch.setattr(af.naver_place, "scrape_naver_place", fake_naver)
+    monkeypatch.setattr(af._client.chat.completions, "create", create)
+
+    result = await af.autofill_profile(
+        "세종다온의원",
+        naver_place_url="https://m.place.naver.com/hospital/7654321/home",
+        regions=["세종시"],
+        survey_text="원장 설문: 환자의 이야기를 끝까지 듣습니다",
+    )
+
+    assert seen == {"place_id": "7654321", "regions": ("세종시",)}
+    assert "원장 인터뷰 설문" in captured["user"]
+    assert result.naver_identity == naver_place.IDENTITY_STORED_ID
+    assert result.draft["business_hours"] == {"mon": "10:00-19:00"}
+    assert result.field_meta["naver_place_id"]["verified"] is True
