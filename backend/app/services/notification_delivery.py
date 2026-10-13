@@ -23,6 +23,7 @@ from app.services.incident_types import (
 from app.services.incidents import open_or_touch_incident
 from app.services.notification_channel_health import (
     described_channels,
+    email_dead_operator_channel,
     open_channel_incident,
     recover_after_send,
     refresh_channel_health,
@@ -96,7 +97,8 @@ async def dispatch_notification_batch(
     }
     async with sessions() as stale_db:
         await recover_stale_sending(stale_db, now=dispatch_at)
-    unhealthy = set(await refresh_channel_health(sessions, client, webhooks, now=dispatch_at))
+    channel_incidents = await refresh_channel_health(sessions, client, webhooks, now=dispatch_at)
+    unhealthy = set(channel_incidents)
     if not unhealthy:
         # 모든 채널이 살아 있다 — 보낼 곳이 없어 보류했던 알림(수신 불명 정리로 옮겨진 것 포함)을
         # 다시 보내거나 지난 것은 종결한다. 채널이 죽어 있는 동안에는 돌리지 않는다.
@@ -155,6 +157,10 @@ async def dispatch_notification_batch(
     for channel in sorted(sent_channels - unhealthy):
         # 이 채널로 실제 전달이 관측됐다 — 그 채널의 사고가 열려 있었다면 닫는다.
         await recover_after_send(sessions, channel, now=dispatch_at)
+    # 운영 채널이 죽었고 대체 채널도 없으면 Slack 밖(운영 경보 메일)으로 한 번 알린다.
+    # 이번 회차 시작 때 확인한 채널 사고를 그대로 넘긴다(다시 조회하지 않는다). 이번 회차에 새로 열린
+    # 사고는 다음 회차(1분 뒤)가 본다.
+    await email_dead_operator_channel(sessions, webhooks, channel_incidents, now=dispatch_at)
     return DispatchResult(claimed=len(claimed), **counts)
 
 

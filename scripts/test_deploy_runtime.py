@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import shutil
@@ -52,6 +53,30 @@ _FAKE_GCLOUD = "\n".join(
         "  fi",
         "done",
         'case "$*" in',
+        '  "run services describe "*"--format=json"*)',
+        '    if [[ -n "${FAKE_SERVICE_ENV_JSON:-}" ]]; then',
+        '      printf \'%s\\n\' "$FAKE_SERVICE_ENV_JSON"',
+        "      exit 0",
+        "    fi",
+        '    echo "ERROR: (gcloud.run.services.describe) Cannot find service [reputation-api]" >&2',
+        "    exit 1",
+        "    ;;",
+        '  "storage cp "*)',
+        # 잠금·예외 기록의 내용(JSON)도 남긴다 — $3이 기록 파일이다.
+        '    sed "s/^/LOCKREC /" "$3" >> "$FAKE_COMMAND_LOG"',
+        '    if [[ "${FAKE_LOCK_HELD:-0}" == "1" && "$*" == *"--if-generation-match=0"* ]]; then',
+        '      echo "ERROR: HTTPError 412: At least one of the pre-conditions you specified did not hold." >&2',
+        "      exit 1",
+        "    fi",
+        "    exit 0",
+        "    ;;",
+        '  "storage cat "*)',
+        '    printf \'%s\\n\' "${FAKE_LOCK_CONTENT:-}"',
+        "    exit 0",
+        "    ;;",
+        '  "run jobs execute reputation-production-readiness"*)',
+        '    exit "${FAKE_READINESS_EXIT:-0}"',
+        "    ;;",
         '  "run services describe "*"spec.traffic"*)',
         '    if [[ "${FAKE_TRAFFIC_PINNED:-0}" == "1" ]]; then',
         '      echo ""',
@@ -140,6 +165,23 @@ def _make_project(tmp_path: Path) -> tuple[Path, Path, Path]:
     fake_bin.mkdir()
 
     shutil.copy2(PROJECT_ROOT / "scripts" / "deploy.sh", project / "scripts" / "deploy.sh")
+    shutil.copy2(PROJECT_ROOT / "scripts" / "deploy_env.py", project / "scripts" / "deploy_env.py")
+    # 배포 뒤 공개 표면 확인 스텁 — 실제 네트워크를 쓰지 않고 호출만 기록한다.
+    _write_executable(
+        project / "scripts" / "deploy_smoke.py",
+        "\n".join([
+            "#!/usr/bin/env python3",
+            "import os, sys",
+            "with open(os.environ['FAKE_COMMAND_LOG'], 'a') as log:",
+            "    log.write('SMOKE ' + ' '.join(sys.argv[1:]) + '\\n')",
+            "if sys.argv[1] == 'baseline':",
+            "    out = sys.argv[sys.argv.index('--out') + 1]",
+            "    open(out, 'w').write('jangpyeon.example.test jangpyeon\\n')",
+            "    raise SystemExit(0)",
+            "raise SystemExit(int(os.environ.get('FAKE_SMOKE_VERIFY_EXIT', '0')))",
+            "",
+        ]),
+    )
     shutil.copy2(
         PROJECT_ROOT / "terraform" / "cloudrun.tf", project / "terraform" / "cloudrun.tf"
     )
@@ -162,6 +204,8 @@ def _clean_env(fake_bin: Path, command_log: Path, **extra: str) -> dict[str, str
         "GCP_REGION": "asia-northeast3",
         "REPUTATION_RELEASE_REVISION": "test-source-revision",
         "DATABASE_URL": "postgresql+asyncpg://read-only:test@db.example.test/reputation",
+        # 배치 시간대 밖의 고정 시각 — 실제 시각에 따라 테스트가 깨지지 않게 한다.
+        "DEPLOY_CLOCK_KST": "2026-10-11T14:30",
     }
     env.update(extra)
     return env
@@ -951,6 +995,11 @@ def test_all_deploy_path_preserves_preflight_and_runtime_flags(tmp_path: Path) -
                 "#!/usr/bin/env bash",
                 "set -euo pipefail",
                 'echo "gcloud $*" >> "$FAKE_COMMAND_LOG"',
+                # 운영 서비스 env 정본 조회 — 이 테스트는 신규 환경(서비스 없음) 경로를 탄다.
+                'if [[ "$1 $2 $3" == "run services describe" && "$*" == *"--format=json"* ]]; then',
+                '  echo "ERROR: (gcloud.run.services.describe) Cannot find service [reputation-api]" >&2',
+                "  exit 1",
+                "fi",
                 'for arg in "$@"; do',
                 '  if [[ "$arg" == --env-vars-file=* ]]; then',
                 '    sed "s/^/env /" "${arg#*=}" >> "$FAKE_COMMAND_LOG"',
@@ -1020,6 +1069,8 @@ def test_all_deploy_path_preserves_preflight_and_runtime_flags(tmp_path: Path) -
             "DB_USER": "reputation",
             "GCP_STORAGE_BUCKET": "reputation-assets",
             "DATABASE_URL": "postgresql+asyncpg://read-only:test@db.example.test/reputation",
+            "DEPLOY_CLOCK_KST": "2026-10-11T14:30",
+            "SKIP_POST_DEPLOY_SMOKE": "1",
             "OPENAI_CHATGPT_USE_WEB_SEARCH": "true",
                 "CERTIFICATE_MANAGER_AUTO_PROVISION": "true",
                 "REPUTATION_RELEASE_REVISION": "test-source-revision",
@@ -1134,6 +1185,11 @@ def test_supabase_deploy_path_uses_secret_database_urls_without_cloudsql_flags(
                 "#!/usr/bin/env bash",
                 "set -euo pipefail",
                 'echo "gcloud $*" >> "$FAKE_COMMAND_LOG"',
+                # 운영 서비스 env 정본 조회 — 이 테스트는 신규 환경(서비스 없음) 경로를 탄다.
+                'if [[ "$1 $2 $3" == "run services describe" && "$*" == *"--format=json"* ]]; then',
+                '  echo "ERROR: (gcloud.run.services.describe) Cannot find service [reputation-api]" >&2',
+                "  exit 1",
+                "fi",
                 'if [[ "$1 $2" == "secrets describe" ]]; then',
                 "  exit 0",
                 "fi",
@@ -1190,6 +1246,8 @@ def test_supabase_deploy_path_uses_secret_database_urls_without_cloudsql_flags(
             "GCP_REGION": "asia-northeast3",
             "PUBLIC_DOMAIN": "reputation.example.test",
             "DATABASE_URL": "postgresql+asyncpg://read-only:test@db.example.test/reputation",
+            "DEPLOY_CLOCK_KST": "2026-10-11T14:30",
+            "SKIP_POST_DEPLOY_SMOKE": "1",
                 "ADMIN_DOMAIN": "admin.reputation.example.test",
                 "REPUTATION_RELEASE_REVISION": "test-source-revision",
                 "SKIP_PUBLIC_DNS_PREFLIGHT": "1",
@@ -1911,8 +1969,427 @@ def test_deploy_stops_before_mutation_when_traffic_is_pinned(tmp_path: Path) -> 
     )
     assert result.returncode != 0
     # api 대상은 worker·beat·api 순으로 좌표를 잡으므로 첫 고정 서비스에서 멈춘다.
-    assert "--to-latest" in result.stderr
+    assert "--unpin" in result.stderr
     assert "트래픽이 최신 리비전이 아닌 특정 리비전에 고정" in result.stderr
     commands = command_log.read_text()
     assert "gcloud run deploy" not in commands
     assert "docker build" not in commands
+
+
+def test_unknown_option_stops_before_anything_runs(tmp_path: Path) -> None:
+    project, fake_bin, command_log = _make_project(tmp_path)
+    shutil.copy2(PROJECT_ROOT / ".env.production.example", project / ".env.production")
+    result = subprocess.run(
+        ["bash", "scripts/deploy.sh", "api", "--acept-env-diff"],
+        cwd=project,
+        env=_clean_env(fake_bin, command_log, SKIP_ASSET_BUCKET_PREFLIGHT="1"),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert "알 수 없는 옵션: --acept-env-diff" in result.stderr
+    assert not command_log.exists() or "gcloud run deploy" not in command_log.read_text()
+
+
+def test_empty_override_reason_is_refused(tmp_path: Path) -> None:
+    project, fake_bin, command_log = _make_project(tmp_path)
+    shutil.copy2(PROJECT_ROOT / ".env.production.example", project / ".env.production")
+    result = subprocess.run(
+        ["bash", "scripts/deploy.sh", "api", "--override-reason=  "],
+        cwd=project,
+        env=_clean_env(fake_bin, command_log, SKIP_ASSET_BUCKET_PREFLIGHT="1"),
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+    )
+    assert result.returncode != 0
+    assert "사유를 적어야" in result.stderr
+
+
+def _live_service_json(**overrides: str) -> str:
+    """`.env.production.example`의 비어 있지 않은 값을 그대로 가진 운영 API 서비스(JSON)."""
+    pairs = [
+        (key, value)
+        for key, value in _dotenv_pairs((PROJECT_ROOT / ".env.production.example").read_text())
+        if value
+    ]
+    env = [{"name": key, "value": overrides.get(key, value)} for key, value in pairs]
+    env.append({"name": "SERVICE", "value": "api"})
+    env.append({"name": "REPUTATION_RELEASE_REVISION", "value": "previous-release"})
+    env.append({"name": "SLACK_WEBHOOK_URL", "valueFrom": {"secretKeyRef": {"name": "SLACK_WEBHOOK_URL", "key": "latest"}}})
+    return json.dumps({"spec": {"template": {"spec": {"containers": [{"env": env}]}}}})
+
+
+def _run_api_with_live_env(tmp_path: Path, *args: str, local: bool = True, **extra: str):
+    project, fake_bin, command_log = _make_project(tmp_path)
+    if local:
+        shutil.copy2(PROJECT_ROOT / ".env.production.example", project / ".env.production")
+    result = subprocess.run(
+        ["bash", "scripts/deploy.sh", "api", *args],
+        cwd=project,
+        env=_clean_env(fake_bin, command_log, SKIP_ASSET_BUCKET_PREFLIGHT="1", **extra),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    return result, command_log.read_text() if command_log.exists() else ""
+
+
+def test_live_service_env_is_the_source_when_the_local_file_matches(tmp_path: Path) -> None:
+    result, commands = _run_api_with_live_env(tmp_path, FAKE_SERVICE_ENV_JSON=_live_service_json())
+    assert result.returncode == 0, result.stderr
+    assert "운영 서비스 env를 정본으로" in result.stderr
+    # 옛 릴리스 값은 렌더에서 빠지고 이번 릴리스 값만 한 번 들어간다(YAML 중복 키 없음).
+    release_lines = [line for line in commands.splitlines() if line.startswith("env REPUTATION_RELEASE_REVISION:")]
+    assert release_lines and set(release_lines) == {'env REPUTATION_RELEASE_REVISION: "test-source-revision"'}
+
+
+def test_a_stale_local_file_stops_before_mutation_and_names_the_keys(tmp_path: Path) -> None:
+    result, commands = _run_api_with_live_env(
+        tmp_path, FAKE_SERVICE_ENV_JSON=_live_service_json(CLAUDE_MODEL="anthropic/claude-live-only")
+    )
+    assert result.returncode != 0
+    assert "changed: CLAUDE_MODEL" in result.stderr
+    assert "--accept-env-diff" in result.stderr
+    # 값은 출력하지 않는다.
+    assert "claude-live-only" not in result.stderr
+    assert "gcloud run deploy" not in commands
+    assert "docker build" not in commands
+
+
+def test_accept_env_diff_deploys_the_local_values(tmp_path: Path) -> None:
+    result, commands = _run_api_with_live_env(
+        tmp_path,
+        "--accept-env-diff",
+        FAKE_SERVICE_ENV_JSON=_live_service_json(CLAUDE_MODEL="anthropic/claude-live-only"),
+    )
+    assert result.returncode == 0, result.stderr
+    assert "claude-live-only" not in commands
+    assert "gcloud run deploy reputation-api" in commands
+
+
+def test_no_local_file_uses_the_live_env(tmp_path: Path) -> None:
+    result, commands = _run_api_with_live_env(
+        tmp_path, local=False, FAKE_SERVICE_ENV_JSON=_live_service_json()
+    )
+    assert result.returncode == 0, result.stderr
+    assert "gcloud run deploy reputation-api" in commands
+
+
+def test_unreadable_live_env_fails_closed(tmp_path: Path) -> None:
+    project, fake_bin, command_log = _make_project(tmp_path)
+    shutil.copy2(PROJECT_ROOT / ".env.production.example", project / ".env.production")
+    # 권한 오류는 '서비스 없음'이 아니다 — 로컬 파일로 넘어가지 않는다.
+    _write_executable(
+        fake_bin / "gcloud",
+        _FAKE_GCLOUD.replace(
+            "Cannot find service [reputation-api]", "PERMISSION_DENIED: caller lacks run.services.get"
+        ),
+    )
+    result = subprocess.run(
+        ["bash", "scripts/deploy.sh", "api"],
+        cwd=project,
+        env=_clean_env(fake_bin, command_log, SKIP_ASSET_BUCKET_PREFLIGHT="1"),
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+    )
+    assert result.returncode != 0
+    assert "운영 서비스 env를 읽지 못했습니다" in result.stderr
+    assert "gcloud run deploy" not in command_log.read_text()
+
+
+def _run_target(tmp_path: Path, target: str, *args: str, **extra: str):
+    project, fake_bin, command_log = _make_project(tmp_path)
+    shutil.copy2(PROJECT_ROOT / ".env.production.example", project / ".env.production")
+    result = subprocess.run(
+        ["bash", "scripts/deploy.sh", target, *args],
+        cwd=project,
+        env=_clean_env(
+            fake_bin, command_log,
+            SKIP_ASSET_BUCKET_PREFLIGHT="1",
+            SKIP_PUBLIC_DNS_PREFLIGHT="1",
+            PUBLIC_DOMAIN="reputation.example.test",
+            ADMIN_DOMAIN="admin.reputation.example.test",
+            **extra,
+        ),
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+    )
+    return result, command_log.read_text() if command_log.exists() else ""
+
+
+# 22:15~02:00은 야간 생성(23:00)·복구 스윕(01시)이 몇 시간 이어지므로 통째로 막고, 그 밖의 배치
+# (04·07·08·12·18·22시 — 08시는 07:45·08:00 발행 게이트와 08:30 외부 감시)는 앞뒤 45분을 막는다.
+@pytest.mark.parametrize(
+    "clock",
+    [
+        "2026-10-11T22:30",
+        "2026-10-11T23:59",
+        "2026-10-11T00:20",
+        "2026-10-11T01:55",
+        "2026-10-11T08:30",
+        "2026-10-11T12:45",
+        "2026-10-11T17:15",
+        "2026-10-11T21:30",
+    ],
+)
+def test_backend_deploy_is_blocked_inside_a_batch_window(tmp_path: Path, clock: str) -> None:
+    result, commands = _run_target(tmp_path, "api", DEPLOY_CLOCK_KST=clock)
+    assert result.returncode != 0
+    assert "콘텐츠 배치" in result.stderr
+    assert "--override-reason" in result.stderr
+    assert "docker build" not in commands
+    assert "storage cp" not in commands
+    # 가장 싼 확인이 먼저다 — legacy publish 사전 확인(VPC Job/uv)까지 가지 않는다.
+    assert "uv " not in commands
+
+
+@pytest.mark.parametrize(
+    "clock", ["2026-10-11T02:00", "2026-10-11T02:46", "2026-10-11T09:00", "2026-10-11T12:46", "2026-10-11T14:30"]
+)
+def test_backend_deploy_runs_outside_batch_windows(tmp_path: Path, clock: str) -> None:
+    result, commands = _run_target(tmp_path, "api", DEPLOY_CLOCK_KST=clock)
+    assert result.returncode == 0, result.stderr
+    assert "ops/deploy-lock/2026-10-11.json" in commands
+    assert "--if-generation-match=0" in commands
+    # 잠금은 legacy 사전 확인과 첫 mutation(이미지 빌드) 전에 잡는다.
+    assert commands.index("storage cp") < commands.index("uv ")
+    assert commands.index("storage cp") < commands.index("docker build")
+
+
+def test_second_release_on_the_same_day_is_refused(tmp_path: Path) -> None:
+    result, commands = _run_target(
+        tmp_path, "api", FAKE_LOCK_HELD="1",
+        FAKE_LOCK_CONTENT='{"day": "2026-10-11", "revision": "another-release"}',
+    )
+    assert result.returncode != 0
+    assert "하루 한 번" in result.stderr
+    assert "docker build" not in commands
+
+
+def test_retrying_the_same_release_on_the_same_day_is_allowed(tmp_path: Path) -> None:
+    result, commands = _run_target(
+        tmp_path, "api", FAKE_LOCK_HELD="1",
+        FAKE_LOCK_CONTENT='{"day": "2026-10-11", "revision": "test-source-revision"}',
+    )
+    assert result.returncode == 0, result.stderr
+    assert "같은 릴리스" in result.stderr
+
+
+def test_override_reason_passes_the_rules_and_is_recorded(tmp_path: Path) -> None:
+    result, commands = _run_target(
+        tmp_path, "api", "--override-reason=발행 장애 긴급 수정",
+        DEPLOY_CLOCK_KST="2026-10-11T22:50", FAKE_LOCK_HELD="1",
+    )
+    assert result.returncode == 0, result.stderr
+    assert "배포 규칙 예외: 발행 장애 긴급 수정" in result.stderr
+    assert "ops/deploy-lock/2026-10-11-override-2250" in commands
+
+
+def test_site_deploy_is_not_bound_by_the_backend_rules(tmp_path: Path) -> None:
+    result, commands = _run_target(tmp_path, "site", DEPLOY_CLOCK_KST="2026-10-11T22:50")
+    assert result.returncode == 0, result.stderr
+    assert "storage cp" not in commands
+
+
+def test_readiness_failure_rolls_traffic_back_automatically(tmp_path: Path) -> None:
+    result, commands = _run_target(
+        tmp_path, "api", FAKE_READY_REVISION="reputation-api-00240-old", FAKE_READINESS_EXIT="1"
+    )
+    assert result.returncode != 0
+    assert "자동 롤백" in result.stderr
+    traffic = [line for line in commands.splitlines() if line.startswith("gcloud run services update-traffic")]
+    # worker·beat·api 모두 배포 전 리비전으로 되돌린다(api는 아직 바뀌지 않았어도 같은 좌표로 고정).
+    assert {line.split()[4] for line in traffic} == {"reputation-worker", "reputation-beat", "reputation-api"}
+    assert all("--to-revisions=reputation-api-00240-old=100" in line for line in traffic)
+    # API는 readiness 뒤에 배포하므로 배포되지 않는다.
+    assert "gcloud run deploy reputation-api" not in commands
+
+
+def test_auto_rollback_can_be_switched_off(tmp_path: Path) -> None:
+    # 0084 같은 비호환 릴리스는 일반 롤백이 위험하다 — AUTO_ROLLBACK=0이면 되돌리지 않고 멈춘다.
+    result, commands = _run_target(
+        tmp_path, "api",
+        FAKE_READY_REVISION="reputation-api-00240-old", FAKE_READINESS_EXIT="1", AUTO_ROLLBACK="0",
+    )
+    assert result.returncode != 0
+    assert "AUTO_ROLLBACK=0" in result.stderr
+    assert "gcloud run services update-traffic" not in commands
+    assert "gcloud run deploy reputation-api" not in commands
+
+
+def test_api_deploy_runs_a_baseline_then_verifies_the_new_release(tmp_path: Path) -> None:
+    result, commands = _run_target(tmp_path, "api", FAKE_READY_REVISION="reputation-site-00143-mvd")
+    assert result.returncode == 0, result.stderr
+    smoke = [line for line in commands.splitlines() if line.startswith("SMOKE ")]
+    assert smoke[0].startswith("SMOKE baseline --public-domain reputation.example.test")
+    assert smoke[1].startswith("SMOKE verify --public-domain reputation.example.test")
+    assert "--api-release test-source-revision" in smoke[1]
+    assert "--site-release reputation-site-00143-mvd" in smoke[1]
+    # 기준선은 첫 mutation 전, 확인은 API 배포 뒤.
+    assert commands.index("SMOKE baseline") < commands.index("docker build")
+    assert commands.index("gcloud run deploy reputation-api") < commands.index("SMOKE verify")
+
+
+def test_failed_smoke_after_api_deploy_rolls_back(tmp_path: Path) -> None:
+    result, commands = _run_target(
+        tmp_path, "api", FAKE_READY_REVISION="reputation-api-00240-old", FAKE_SMOKE_VERIFY_EXIT="1"
+    )
+    assert result.returncode != 0
+    assert "공개 표면 확인" in result.stderr
+    assert "자동 롤백" in result.stderr
+    assert commands.index("SMOKE verify") < commands.index("gcloud run services update-traffic")
+
+
+def test_smoke_domain_comes_from_site_base_url_without_public_domain(tmp_path: Path) -> None:
+    project, fake_bin, command_log = _make_project(tmp_path)
+    shutil.copy2(PROJECT_ROOT / ".env.production.example", project / ".env.production")
+    result = subprocess.run(
+        ["bash", "scripts/deploy.sh", "api"],
+        cwd=project,
+        env=_clean_env(fake_bin, command_log, SKIP_ASSET_BUCKET_PREFLIGHT="1"),
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "SMOKE baseline --public-domain reputation.motionlabs.kr" in command_log.read_text()
+
+
+def test_unpin_moves_pinned_traffic_to_the_new_revision_after_deploy(tmp_path: Path) -> None:
+    result, commands = _run_target(
+        tmp_path, "api", "--unpin",
+        FAKE_READY_REVISION="reputation-api-00239-mqs", FAKE_TRAFFIC_PINNED="1",
+    )
+    assert result.returncode == 0, result.stderr
+    assert "고정 트래픽을 이번 배포에서 풉니다" in result.stderr
+    lines = commands.splitlines()
+    deploy_at = next(i for i, line in enumerate(lines) if line.startswith("gcloud run deploy reputation-api"))
+    unpin_at = next(
+        i for i, line in enumerate(lines)
+        if line.startswith("gcloud run services update-traffic reputation-api") and "--to-latest" in line
+    )
+    # 새 리비전이 생긴 뒤에만 옮긴다 — 배포 전에 옮기면 고정의 이유였을 리비전으로 트래픽이 간다.
+    assert deploy_at < unpin_at
+    state = (tmp_path / "project" / ".deploy-rollback").read_text()
+    assert "reputation-api=reputation-api-00239-mqs" in state
+
+
+def test_pinned_traffic_without_unpin_still_stops(tmp_path: Path) -> None:
+    result, commands = _run_target(
+        tmp_path, "api", FAKE_READY_REVISION="reputation-api-00239-mqs", FAKE_TRAFFIC_PINNED="1"
+    )
+    assert result.returncode != 0
+    assert "--unpin" in result.stderr
+    assert "gcloud run deploy" not in commands
+
+
+def test_same_release_lock_is_compared_as_json_not_text(tmp_path: Path) -> None:
+    # 공백 없는 JSON도 같은 릴리스로 읽는다(문자열 비교가 아니다).
+    result, _commands = _run_target(
+        tmp_path, "api", FAKE_LOCK_HELD="1", FAKE_LOCK_CONTENT='{"revision":"test-source-revision"}'
+    )
+    assert result.returncode == 0, result.stderr
+    assert "같은 릴리스" in result.stderr
+
+
+def _detach_command_log(project: Path, fake_bin: Path, command_log: Path) -> None:
+    """스텁이 FAKE_COMMAND_LOG 없이도 같은 파일에 기록하게 한다 — 운영처럼 테스트 표지가 없는 실행."""
+    literal = str(command_log)
+    for stub in fake_bin.iterdir():
+        stub.write_text(stub.read_text().replace('"$FAKE_COMMAND_LOG"', f'"{literal}"'))
+    smoke = project / "scripts" / "deploy_smoke.py"
+    smoke.write_text(smoke.read_text().replace("os.environ['FAKE_COMMAND_LOG']", repr(literal)))
+
+
+def _run_without_test_marker(tmp_path: Path, *args: str, **extra: str):
+    project, fake_bin, command_log = _make_project(tmp_path)
+    shutil.copy2(PROJECT_ROOT / ".env.production.example", project / ".env.production")
+    _detach_command_log(project, fake_bin, command_log)
+    env = _clean_env(fake_bin, command_log, SKIP_ASSET_BUCKET_PREFLIGHT="1", **extra)
+    env.pop("FAKE_COMMAND_LOG")
+    result = subprocess.run(
+        ["bash", "scripts/deploy.sh", "api", *args],
+        cwd=project, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+    )
+    return result, command_log.read_text() if command_log.exists() else ""
+
+
+def test_deploy_clock_is_not_a_silent_bypass_outside_tests(tmp_path: Path) -> None:
+    # 테스트 표지(FAKE_COMMAND_LOG)가 없으면 고정 시각을 믿지 않는다 — 사유 없이는 멈춘다.
+    result, commands = _run_without_test_marker(tmp_path, DEPLOY_CLOCK_KST="2026-10-11T14:30")
+    assert result.returncode != 0
+    assert "DEPLOY_CLOCK_KST" in result.stderr
+    assert "--override-reason" in result.stderr
+    assert "docker build" not in commands
+    assert "storage cp" not in commands
+
+
+def test_deploy_clock_outside_tests_needs_a_reason_and_is_recorded(tmp_path: Path) -> None:
+    result, commands = _run_without_test_marker(
+        tmp_path, "--override-reason=시각 재현 점검", DEPLOY_CLOCK_KST="2026-10-11T14:30"
+    )
+    assert result.returncode == 0, result.stderr
+    records = [line for line in commands.splitlines() if line.startswith("LOCKREC ")]
+    assert records and all('"clock_override": true' in line for line in records)
+    assert any('"override_reason": "시각 재현 점검"' in line for line in records)
+
+
+def _failing_docker_build(fake_bin: Path) -> None:
+    _write_executable(
+        fake_bin / "docker",
+        "\n".join([
+            "#!/usr/bin/env bash",
+            'echo "docker $*" >> "$FAKE_COMMAND_LOG"',
+            'if [[ "$1" == "build" ]]; then exit 1; fi',
+            "exit 0",
+            "",
+        ]),
+    )
+
+
+def _run_api_with(tmp_path: Path, prepare, **extra: str):
+    project, fake_bin, command_log = _make_project(tmp_path)
+    shutil.copy2(PROJECT_ROOT / ".env.production.example", project / ".env.production")
+    prepare(fake_bin)
+    result = subprocess.run(
+        ["bash", "scripts/deploy.sh", "api"],
+        cwd=project,
+        env=_clean_env(fake_bin, command_log, SKIP_ASSET_BUCKET_PREFLIGHT="1", **extra),
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+    )
+    return result, command_log.read_text() if command_log.exists() else ""
+
+
+def test_failure_before_any_mutation_returns_the_daily_lock(tmp_path: Path) -> None:
+    result, commands = _run_api_with(tmp_path, _failing_docker_build)
+    assert result.returncode != 0
+    assert "gcloud run deploy" not in commands
+    assert "gcloud storage rm gs://reputation-reports-test-project/ops/deploy-lock/2026-10-11.json" in commands
+    assert "잠금을 되돌" in result.stderr
+
+
+def test_a_lock_this_run_did_not_create_is_never_returned(tmp_path: Path) -> None:
+    # 같은 릴리스의 재시도는 앞선 실행의 잠금을 쓴다 — 실패해도 남의 잠금을 지우지 않는다.
+    result, commands = _run_api_with(
+        tmp_path, _failing_docker_build,
+        FAKE_LOCK_HELD="1", FAKE_LOCK_CONTENT='{"revision": "test-source-revision"}',
+    )
+    assert result.returncode != 0
+    assert "storage rm" not in commands
+
+
+def test_failure_after_mutation_keeps_the_daily_lock(tmp_path: Path) -> None:
+    result, commands = _run_api_with(
+        tmp_path, lambda _bin: None, FAKE_READINESS_EXIT="1", AUTO_ROLLBACK="0"
+    )
+    assert result.returncode != 0
+    assert "gcloud run deploy reputation-worker" in commands
+    assert "storage rm" not in commands
+
+
+def test_a_minority_of_unhealthy_hospitals_warns_without_rollback(tmp_path: Path) -> None:
+    # 병원 한두 곳의 헬스 실패(자기 도메인 인증서 등)는 경고로 멈추고 트래픽은 그대로 둔다.
+    result, commands = _run_target(
+        tmp_path, "api", FAKE_READY_REVISION="reputation-api-00240-old", FAKE_SMOKE_VERIFY_EXIT="3"
+    )
+    assert result.returncode != 0
+    assert "경고" in result.stderr
+    assert "gcloud run services update-traffic" not in commands

@@ -132,6 +132,7 @@ async def test_alert_endpoint_sends_one_message_per_audience(monkeypatch):
             "kind": "ALERT",
             "sent": True,
             "delivered": True,
+            "emailed": False,
             "reason": "new_condition_set",
         },
         {
@@ -139,6 +140,7 @@ async def test_alert_endpoint_sends_one_message_per_audience(monkeypatch):
             "kind": "ALERT",
             "sent": True,
             "delivered": True,
+            "emailed": False,
             "reason": "new_condition_set",
         },
     ]
@@ -183,3 +185,33 @@ def test_router_is_mounted_outside_the_shared_admin_key_dependency():
     assert watchdog.router.prefix == "/admin/watchdog"
     paths = {route.path for route in watchdog.router.routes}
     assert paths == {"/admin/watchdog/pipeline", "/admin/watchdog/pipeline/alert"}
+
+
+async def test_alert_endpoint_emails_alerts_that_slack_did_not_receive(monkeypatch):
+    decisions = (
+        AlertDecision(
+            True, "ALERT", "operator", "발행", "new_condition_set",
+            "https://hooks.slack.com/ops", ("publish_missing",), "e1",
+        ),
+    )
+
+    async def fake_deliver_all(values):
+        return tuple(False for _ in values)
+
+    emailed_with: list[tuple] = []
+
+    async def fake_email(values, outcomes, *, now):
+        emailed_with.append((values, outcomes, now))
+        return (True,)
+
+    monkeypatch.setattr(watchdog, "_evaluate_and_decide", lambda: (_report(), decisions))
+    monkeypatch.setattr(watchdog.pipeline_watchdog, "deliver_all", fake_deliver_all)
+    monkeypatch.setattr(watchdog.pipeline_watchdog, "record_deliveries", lambda *_args: None)
+    monkeypatch.setattr(watchdog.pipeline_watchdog, "email_undelivered", fake_email)
+
+    payload = await watchdog.run_pipeline_watchdog_alert()
+
+    assert emailed_with[0][:2] == (decisions, (False,))
+    assert emailed_with[0][2] == _report().observed_at
+    assert payload["alerts"][0]["delivered"] is False
+    assert payload["alerts"][0]["emailed"] is True

@@ -32,6 +32,7 @@ from app.models.operations import (
     NotificationOutbox,
     NotificationOutboxState,
 )
+from app.services import ops_alert_email
 from app.services.audit_log import write_audit_log
 from app.services.incident_types import (
     SLACK_CHANNEL,
@@ -426,3 +427,85 @@ def _projection(incident: Incident) -> IncidentSlackProjection:
         episode_seq=incident.episode_seq,
         incident_type=incident_type_of(incident),
     )
+
+
+_OPS_EMAIL_ACTION = "ops_alert_email_sent"
+# 메일 발송이 실패했을 때 다음 시도까지의 간격(프로세스 안). 같은 Idempotency-Key라 중복은 없다.
+_OPS_EMAIL_RETRY_AFTER = timedelta(minutes=15)
+_last_ops_email_attempt: dict[str, datetime] = {}
+
+
+def _ops_email_marker(incident: Incident) -> str:
+    return f"{incident.id}:e{incident.episode_seq}"
+
+
+def _ops_email_lines(incident: Incident) -> tuple[str, ...]:
+    # 본문은 결정적이어야 한다(같은 키에 다른 본문이면 Resend 409). 시각·건수를 넣지 않는다.
+    return (
+        "운영 Slack 웹훅이 알림을 받지 않습니다. Re:putation 운영 알림이 Slack에 전달되지 않고 보류되고 있습니다.",
+        f"원인 코드: {incident.safe_error_code or '확인 필요'}",
+        "Slack 웹훅 주소를 확인해 주세요. 주소가 살아나면 한 시간 안에 자동으로 복구되고, 보류된 알림을 다시 보냅니다.",
+        f"운영센터: {settings.ADMIN_BASE_URL.rstrip('/')}/operations",
+    )
+
+
+async def email_dead_operator_channel(
+    sessions: async_sessionmaker[AsyncSession],
+    webhooks: Mapping[str, str],
+    unhealthy: Mapping[str, uuid.UUID],
+    *,
+    now: datetime,
+) -> bool:
+    """운영 채널이 죽었고 대신 받을 살아 있는 채널도 없으면 운영 경보 메일로 알린다.
+
+    단일 채널 운영에서 운영 웹훅이 죽으면 채널 사고의 열림 알림조차 보낼 곳이 없어 보류된다.
+    그 사실을 Slack 밖으로 알리는 경로다(2026-10 자율 운영 감사 F8). 사고 episode당 한 번 보내고
+    보낸 사실은 감사 기록으로 남긴다. 실패하면 15분 뒤 같은 키로 다시 시도한다. outbox·사고
+    상태는 바꾸지 않는다(알림 성공과 저장 성공을 섞지 않는다).
+    """
+
+    # `unhealthy`는 발송기가 이번 회차에 이미 확인한 채널 사고(채널 → 사고 id)다 — 다시 조회하지 않는다.
+    incident_id = unhealthy.get(SLACK_CHANNEL)
+    if incident_id is None:
+        return False
+    developer_live = bool(webhooks.get(SLACK_DEVELOPER_CHANNEL, "").strip()) and (
+        SLACK_DEVELOPER_CHANNEL not in unhealthy
+    )
+    if developer_live:
+        return False  # 개발 채널이 대신 받는다(`[채널 대체 전송]`).
+    async with sessions() as db:
+        incident = await db.get(Incident, incident_id)
+        if incident is None:
+            return False
+        marker = _ops_email_marker(incident)
+        already = await db.scalar(
+            select(AdminAuditLog.id)
+            .where(AdminAuditLog.action == _OPS_EMAIL_ACTION, AdminAuditLog.target_id == marker)
+            .limit(1)
+        )
+        lines = _ops_email_lines(incident)
+    if already is not None:
+        return False
+    key = f"ops-channel-down:{marker}"
+    last = _last_ops_email_attempt.get(key)
+    if last is not None and now - last < _OPS_EMAIL_RETRY_AFTER:
+        return False
+    _last_ops_email_attempt[key] = now
+    sent = await ops_alert_email.send_ops_alert(
+        idempotency_key=key,
+        title="운영 Slack 채널에 알림이 전달되지 않습니다",
+        lines=lines,
+    )
+    if not sent:
+        return False
+    async with sessions() as db:
+        await write_audit_log(
+            db,
+            action=_OPS_EMAIL_ACTION,
+            actor=_ACTOR,
+            target_type="incident",
+            target_id=marker,
+            detail={"channel": SLACK_CHANNEL, "idempotency_key": key},
+        )
+        await db.commit()
+    return True

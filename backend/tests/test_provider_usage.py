@@ -378,3 +378,149 @@ async def test_recovery_failure_is_rotated_so_newer_healthy_rows_are_not_starved
     assert poison_key in redis.index
     assert redis.scores[poison_key] > time.time()
     assert healthy_key not in redis.index
+
+
+class FakeSpoolRedis:
+    """_defer가 쓰는 transaction pipeline과 카운터만 흉내 낸다."""
+
+    def __init__(self, existing: int):
+        self.index_size = existing
+        self.counters: dict[str, int] = {}
+        self.values: dict[str, object] = {}
+
+    def pipeline(self, transaction=True):
+        return _FakePipeline(self)
+
+    async def incrby(self, key, amount):
+        self.counters[key] = self.counters.get(key, 0) + amount
+        return self.counters[key]
+
+
+class _FakePipeline:
+    def __init__(self, redis):
+        self.redis = redis
+        self.ops: list[str] = []
+
+    def set(self, key, value, ex=None):
+        self.ops.append("set")
+        return self
+
+    def zadd(self, _key, mapping):
+        self.ops.append("zadd")
+        self.redis.index_size += len(mapping)
+        return self
+
+    def zremrangebyrank(self, _key, _start, stop):
+        self.ops.append("zrem")
+        return self
+
+    def get(self, key):
+        self.ops.append(("get", key))
+        return self
+
+    def delete(self, key):
+        self.ops.append(("delete", key))
+        return self
+
+    async def execute(self):
+        results = []
+        for op in self.ops:
+            if op == "zrem":
+                keep = provider_usage._RECOVERY_MAX_ITEMS
+                removed = max(0, self.redis.index_size - keep)
+                self.redis.index_size -= removed
+                results.append(removed)
+            elif isinstance(op, tuple) and op[0] == "get":
+                results.append(self.redis.counters.get(op[1]))
+            elif isinstance(op, tuple) and op[0] == "delete":
+                results.append(1 if self.redis.counters.pop(op[1], None) is not None else 0)
+            else:
+                results.append(True)
+        return results
+
+
+async def test_spool_truncation_is_counted_and_logged(monkeypatch, caplog):
+    db = FakeDB()
+    await provider_usage.record_attempt(
+        provider="openai", model="m", workflow="SOV_ANSWER", cost_category="sov",
+        hospital_id=uuid.uuid4(), logical_call_id="c", http_attempt=1, usage=None,
+        idempotency_key="k-trunc", db=db,
+    )
+    event = next(value for value in db.added if isinstance(value, ProviderUsageEvent))
+    redis = FakeSpoolRedis(existing=provider_usage._RECOVERY_MAX_ITEMS)
+
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def fake_client(_injected=None):
+        yield redis
+
+    monkeypatch.setattr(provider_usage, "_recovery_redis_client", fake_client)
+
+    assert await provider_usage._defer(event) is True
+    assert redis.counters[provider_usage._RECOVERY_DROPPED_KEY] == 1
+    assert any(
+        r.levelname == "ERROR" and r.getMessage().startswith("provider_usage_spool_truncated")
+        for r in caplog.records
+    )
+
+
+async def test_dropped_usage_opens_one_developer_incident_and_resets_the_counter(monkeypatch):
+    redis = FakeSpoolRedis(existing=0)
+    redis.counters[provider_usage._RECOVERY_DROPPED_KEY] = 7
+    opened: list[int] = []
+
+    async def fake_open(dropped, *, now):
+        opened.append(dropped)
+
+    monkeypatch.setattr(provider_usage, "_open_spool_truncation_incident", fake_open)
+
+    assert await provider_usage.report_dropped_usage(redis_client=redis) == 7
+    assert opened == [7]
+    assert provider_usage._RECOVERY_DROPPED_KEY not in redis.counters
+    # 다음 drain에는 할 일이 없다.
+    assert await provider_usage.report_dropped_usage(redis_client=redis) == 0
+    assert opened == [7]
+
+
+async def test_incident_failure_puts_the_dropped_count_back(monkeypatch):
+    redis = FakeSpoolRedis(existing=0)
+    redis.counters[provider_usage._RECOVERY_DROPPED_KEY] = 3
+
+    async def broken(_dropped, *, now):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(provider_usage, "_open_spool_truncation_incident", broken)
+
+    assert await provider_usage.report_dropped_usage(redis_client=redis) == 0
+    assert redis.counters[provider_usage._RECOVERY_DROPPED_KEY] == 3
+
+
+async def test_counter_failure_does_not_turn_a_stored_spool_into_a_failure(monkeypatch, caplog):
+    # spool 저장은 이미 성공했다 — 유실 카운터만 실패해도 기록은 spool에 있다(정상 경로로 되돌리지 않는다).
+    db = FakeDB()
+    await provider_usage.record_attempt(
+        provider="openai", model="m", workflow="SOV_ANSWER", cost_category="sov",
+        hospital_id=uuid.uuid4(), logical_call_id="c", http_attempt=1, usage=None,
+        idempotency_key="k-trunc-counter", db=db,
+    )
+    event = next(value for value in db.added if isinstance(value, ProviderUsageEvent))
+    redis = FakeSpoolRedis(existing=provider_usage._RECOVERY_MAX_ITEMS)
+
+    async def broken_incrby(_key, _amount):
+        raise provider_usage.RedisError("counter down")
+
+    redis.incrby = broken_incrby
+
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def fake_client(_injected=None):
+        yield redis
+
+    monkeypatch.setattr(provider_usage, "_recovery_redis_client", fake_client)
+
+    assert await provider_usage._defer(event) is True
+    messages = [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
+    assert any(m.startswith("provider_usage_spool_truncated_count_lost") for m in messages)
+    assert not any("recovery spool unavailable" in r.getMessage() for r in caplog.records)

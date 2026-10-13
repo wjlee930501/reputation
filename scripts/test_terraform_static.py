@@ -107,3 +107,30 @@ def test_certificate_manager_runtime_scaffolding_is_enabled_for_api_and_worker()
     assert cloudrun.count('name  = "CERTIFICATE_MANAGER_AUTO_PROVISION"') == 4
     assert cloudrun.count('name  = "CERTIFICATE_MAP_NAME"') == 4
     assert "var.certificate_manager_role" in serviceaccount
+
+
+def test_watchdog_and_slack_path_failures_alert_by_email() -> None:
+    """Slack이 죽거나 외부 감시가 멈춘 사실은 Slack이 아닌 이메일로 알려야 한다(감사 F8)."""
+    monitoring = (PROJECT_ROOT / "terraform" / "monitoring.tf").read_text()
+
+    scheduler = terraform_block(
+        monitoring, 'resource "google_monitoring_alert_policy" "watchdog_scheduler_failures"'
+    )
+    assert r'resource.type=\"cloud_scheduler_job\"' in scheduler
+    assert "google_cloud_scheduler_job.watchdog_heartbeat.name" in scheduler
+    assert "google_cloud_scheduler_job.watchdog_publish_check.name" in scheduler
+    assert "google_monitoring_notification_channel.email[0].id" in scheduler
+    assert 'period = "3600s"' in scheduler
+
+    slack_path = terraform_block(
+        monitoring, 'resource "google_monitoring_alert_policy" "slack_path_failures"'
+    )
+    assert r'jsonPayload.message:\"pipeline watchdog\"' in slack_path
+    assert r'jsonPayload.message:\"ops alert email\"' in slack_path
+    assert '${var.app_name}-api' in slack_path
+    # Worker의 '보낼 채널 없음'·운영 경보 메일 실패는 worker_beat_errors(모든 worker ERROR)가 이미 이메일로 보낸다.
+    assert '${var.app_name}-worker' not in slack_path
+    assert "No live Slack channel" not in slack_path
+    assert "google_monitoring_notification_channel.email[0].id" in slack_path
+    # 로그 기반 정책은 조건 하나만 허용한다.
+    assert slack_path.count("condition_matched_log") == 1
