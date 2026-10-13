@@ -121,12 +121,7 @@ from app.services.hospital_states import (
     serialize_availability,
 )
 from app.services.hospital_usage import LEDGER_KINDS, aggregate_usage
-from app.services.keyword_analysis import (
-    analyze_keyword,
-)
-from app.services.keyword_analysis import (
-    normalize as normalize_keyword,
-)
+from app.services.keyword_analysis import region_mixed_keywords
 from app.services.public_asset_ref import is_public_asset_path
 from app.services.public_surface_intents import enqueue_public_surface_intent
 from app.services.readiness_operator_copy import readiness_next_actions
@@ -791,21 +786,7 @@ async def update_profile(
 
     if body.keywords is not None:
         regions = body.region if body.region is not None else (h.region or [])
-        invalid_keywords = []
-        for keyword in body.keywords:
-            analysis = analyze_keyword(keyword, regions)
-            normalized = normalize_keyword(keyword)
-            if analysis.embedded_region is not None:
-                invalid_keywords.append(
-                    {
-                        "keyword": keyword,
-                        "suggested_keyword": (
-                            analysis.canonical_term
-                            if analysis.canonical_term and analysis.canonical_term != normalized
-                            else None
-                        ),
-                    }
-                )
+        invalid_keywords = region_mixed_keywords(body.keywords, regions)
         if invalid_keywords:
             raise HTTPException(
                 status_code=422,

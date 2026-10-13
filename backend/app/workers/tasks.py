@@ -4731,12 +4731,17 @@ def reconcile_essence_snapshots(self) -> dict[str, int]:
         )
         queued += 1
     initial_schedules_created = _ensure_initial_schedules()
+    # Phase 4(E3): 프로필 완료 승격과 자동 입력 회수 스윕도 이 틱에 붙는다 — RedBeat 변경 없음.
+    from app.workers.profile_autofill_tasks import run_onboarding_sweeps
+
+    onboarding = run_onboarding_sweeps()
     return {
         "queued": queued,
         "initial_schedules_created": initial_schedules_created,
         "source_fetches_redispatched": redispatched_fetches,
         "source_runs_created": len(created_source_runs),
         "source_runs_resumed": resumed_source_runs,
+        **onboarding,
     }
 
 
