@@ -125,6 +125,7 @@ from app.services.reference_publication import (
     unverified_reference_details,
     verify_publication_references,
 )
+from app.services.reference_requirement import stamp_reference_requirement
 from app.services.reference_verification import (
     REASON_NOT_VERIFIED,
     ReferenceVerifier,
@@ -1367,6 +1368,8 @@ async def publish_content(
     item.active_revision_id = None
     item.pending_revision = None
     if isinstance(db, AsyncSession):
+        # 판 SQL이 D23(진료비·병원 선택 글의 참고자료 선택)을 이 판정 그대로 읽게 한다(0089).
+        stamp_reference_requirement(item)
         await db.flush()
         revision_write = await reconcile_content_revisions(db, content_item_id=item.id)
         await db.refresh(item, attribute_names=["active_revision_id"])

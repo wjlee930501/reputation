@@ -15,7 +15,7 @@ main `c1ce0494`(PR #245 `claude/autonomy-p3`)을 API·Worker·Beat에 배포했�
 후속 배포: main `42c2b119`(PR #247 Essence 검수 출력 상한 1600→4000)를 16:26~16:31 KST에 API·Worker·Beat에 올려 현재 리비전은 api `00245-9dg`,
 worker `00235-vnd`, beat `00230-vzv`다(readiness 18/18, +10분 ERROR 0). `nyupeulraenyeoseongyiweon`의 Essence 검수는 17:21 KST에 잘림 없이 끝나 보류
 (ESCALATED, 재검수 예산 안 RETRYING)로 넘어갔다. 18:00 복구 스윕에서 진료비 보류 슬롯 2개가 원고를 얻었고, **예상 밖으로 6슬롯이
-`LEGACY_SPEND_UNKNOWN`/`OPERATOR_REQUIRED`가 됐다(원인 미조사, 개발 확인 필요)**. 상세는 [Phase 3 배포 기록](docs/releases/2026-10-13-autonomy-phase3-production.md).
+`LEGACY_SPEND_UNKNOWN`/`OPERATOR_REQUIRED`가 됐다** — 원인은 교정 PASS가 시도 기록과 함께 슬롯 예산을 지운 것이라 main `1090df18`(PR #249)로 고쳐 19:36~19:45 KST에 배포했고(api `00246-bv7`, worker `00236-b6t`, beat `00231-fw6`) 5슬롯은 `legacy_budget_reset --ids`로 되살렸다(q4 2). 이어 D23 글이 승인 판 SQL의 참고자료 조건에 막혀 발행되지 않던 것을 마이그레이션 `0089_allow_optional_reference_revisions`(발행 경로가 적은 제목 결합 표지만 인정)로 고쳤다 — **DB head는 `0089`**. 상세는 [Phase 3 배포 기록](docs/releases/2026-10-13-autonomy-phase3-production.md)의 '긴급 수정'.
 
 ## 이전 운영 배포 — 2026-10-13 Phase 2 자율성 보완
 
@@ -216,7 +216,7 @@ BaseEssence의 일반 자료 추가 drift는 재합성하지 않는다. 명시�
 Site/Admin IAM 분리는 단계적으로 적용한다. 구 revision 종료 전 legacy grants를 회수하지 않는다.
 
 
-문서 버전: **2.27** · 갱신일: **2026-10-13 (Asia/Seoul)**
+문서 버전: **2.28** · 갱신일: **2026-10-13 (Asia/Seoul)**
 소스 기준선: **`4db1b69` 이후 커밋 이력 정합성 보완**
 구현 상태: **체크포인트 2(`a774851`) 운영 배포 완료. 그 뒤 main의 stable-base Essence(`8c59141`) 등 31개 커밋과 콘텐츠 수율 버전업 v2.7(`claude/system-performance-review-x6vtn4`, [계획](docs/plans/2026-09-12-content-yield-versionup-plan.md))은 미배포**
 

@@ -400,7 +400,10 @@ from app.services.reference_publication import (
     reference_outage_alert_due,
     refresh_publication_references,
 )
-from app.services.reference_requirement import references_left_to_operator
+from app.services.reference_requirement import (
+    references_left_to_operator,
+    stamp_reference_requirement,
+)
 from app.services.reference_verification import ReferenceVerifier
 from app.services.report_artifact_validation import DoctorPdfValidationError
 from app.services.report_attribution import (
@@ -8382,6 +8385,8 @@ def _auto_publish_one(
         if isinstance(item, ContentItem):
             item.active_revision_id = None
             item.pending_revision = None
+            # 판 SQL이 D23(진료비·병원 선택 글의 참고자료 선택)을 이 판정 그대로 읽게 한다(0089).
+            stamp_reference_requirement(item)
             db.flush()
             revision_write = db.execute(
                 text("SELECT * FROM reconcile_content_revisions(:content_item_id)"),
