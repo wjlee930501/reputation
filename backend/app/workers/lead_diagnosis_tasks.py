@@ -22,7 +22,7 @@ import threading
 from datetime import datetime, timedelta, timezone
 
 from celery import current_task
-from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy import String, and_, cast, exists, func, or_, select, update
 
 from app.core.celery_app import celery_app
 from app.core.config import settings
@@ -37,6 +37,7 @@ from app.models.lead_diagnosis import (
     LeadReportArtifact,
     ReportStatus,
 )
+from app.models.operations import Incident
 from app.services import (
     inquiry_diagnosis,
     lead_delivery,
@@ -45,7 +46,7 @@ from app.services import (
     lead_report,
     notifier,
 )
-from app.services.ops_incident_alerts import open_ops_incident
+from app.services.ops_incident_alerts import open_ops_incident, open_ops_incident_in
 from app.workers.dispatch_auth import require_dispatch
 from app.workers.lead_recovery_incidents import (
     mark_lead_recovery_failed,
@@ -88,12 +89,36 @@ LEAD_NOTIFICATION_FAILED = "FAILED"
 
 # 도입문의 접수 알림을 drain이 다시 보내는 기간. 넘으면 FAILED로 끝내고 운영 채널 사고로 올린다.
 LEAD_INTAKE_NOTIFY_RETRY_WINDOW = timedelta(hours=1)
+# 접수 API가 Slack을 보내는 동안 상태는 NULL이다. 보내기는 몇 초면 끝나므로 15분 넘은 NULL은
+# 리드 커밋과 상태 쓰기 사이에 API가 죽은 행이다 — PENDING처럼 다시 보낸다(두 번 갈 수 없다).
+LEAD_INTAKE_NULL_STATUS_GRACE = timedelta(minutes=15)
+# SENDING은 창이 끝나도 이만큼 더 기다린 뒤에만 만료한다 — 59분에 집어 보내는 중인 행을
+# 60분에 FAILED로 덮지 않는다(claim에서 기록까지는 몇 초다).
+LEAD_INTAKE_SENDING_EXPIRY_MARGIN = timedelta(minutes=15)
+# FAILED만 남고 사고가 없는 리드를 drain이 메우는 범위. NULL 만료도 이 범위만 본다 —
+# 상태 칸이 생기기 전의 오래된 리드를 한꺼번에 사고로 올리지 않는다.
+LEAD_SIDE_EFFECT_REPAIR_HORIZON = timedelta(days=7)
+
+INTAKE_NOTICE_INCIDENT_TYPE = "LEAD_INTAKE_NOTIFICATION_FAILED"
+
+
+def _is_inquiry():
+    return func.upper(func.trim(SalesLead.source)) == LEAD_SOURCE_INQUIRY
+
+
+def _stale_public_null_status(now: datetime):
+    """접수 API가 상태를 쓰기 전에 죽은 공개 접수. Admin이 만든 리드(동의 없음)는 알림 대상이 아니다."""
+    return and_(
+        SalesLead.notification_status.is_(None),
+        SalesLead.privacy.is_(True),
+        SalesLead.created_at < now - LEAD_INTAKE_NULL_STATUS_GRACE,
+    )
 
 
 def _intake_notification_claimable(now: datetime):
-    """무료 진단은 NULL/PENDING, 도입문의는 창 안의 명시적 PENDING만.
+    """무료 진단은 NULL/PENDING, 도입문의는 창 안의 PENDING(또는 15분 넘은 공개 접수의 NULL).
 
-    도입문의는 접수 API가 Slack을 보내는 동안 상태가 NULL이다 — drain이 NULL을 집으면 두 번 간다.
+    도입문의는 접수 API가 Slack을 보내는 동안 상태가 NULL이다 — drain이 갓 생긴 NULL을 집으면 두 번 간다.
     """
     return or_(
         and_(
@@ -104,10 +129,35 @@ def _intake_notification_claimable(now: datetime):
             ),
         ),
         and_(
-            func.upper(func.trim(SalesLead.source)) == LEAD_SOURCE_INQUIRY,
-            SalesLead.notification_status == LEAD_NOTIFICATION_PENDING,
+            _is_inquiry(),
+            or_(
+                SalesLead.notification_status == LEAD_NOTIFICATION_PENDING,
+                _stale_public_null_status(now),
+            ),
             SalesLead.purged_at.is_(None),
             SalesLead.created_at >= now - LEAD_INTAKE_NOTIFY_RETRY_WINDOW,
+        ),
+    )
+
+
+def _intake_notice_expirable(now: datetime):
+    """창 안에 보내지 못한 도입문의 접수 알림. 선택과 CAS UPDATE가 같은 술어를 쓴다."""
+    window_closed = SalesLead.created_at < now - LEAD_INTAKE_NOTIFY_RETRY_WINDOW
+    return and_(
+        _is_inquiry(),
+        SalesLead.purged_at.is_(None),
+        or_(
+            and_(SalesLead.notification_status == LEAD_NOTIFICATION_PENDING, window_closed),
+            and_(
+                _stale_public_null_status(now),
+                window_closed,
+                SalesLead.created_at >= now - LEAD_SIDE_EFFECT_REPAIR_HORIZON,
+            ),
+            and_(
+                SalesLead.notification_status == LEAD_NOTIFICATION_SENDING,
+                SalesLead.created_at
+                < now - LEAD_INTAKE_NOTIFY_RETRY_WINDOW - LEAD_INTAKE_SENDING_EXPIRY_MARGIN,
+            ),
         ),
     )
 
@@ -227,17 +277,28 @@ async def _notify_lead_intake_in(session, lead_id: str) -> dict:
             admin_url=f"{settings.ADMIN_BASE_URL.rstrip('/')}/leads",
         )
     if sent:
-        lead.notification_status = LEAD_NOTIFICATION_SENT
+        outcome = LEAD_NOTIFICATION_SENT
     else:
         # 도입문의는 창 안에서 다시 보낸다(만료는 drain이 FAILED+사고로 끝낸다). 무료 진단은 종전대로 FAILED.
-        lead.notification_status = (
-            LEAD_NOTIFICATION_PENDING if inquiry else LEAD_NOTIFICATION_FAILED
+        outcome = LEAD_NOTIFICATION_PENDING if inquiry else LEAD_NOTIFICATION_FAILED
+    # CAS — 보내는 사이 만료 스윕이 이 행을 FAILED로 끝내고 사고를 열었다면 그 결정을 덮지 않는다.
+    recorded = (
+        await session.execute(
+            update(SalesLead)
+            .where(SalesLead.id == pk, SalesLead.notification_status == LEAD_NOTIFICATION_SENDING)
+            .values(
+                notification_status=outcome,
+                notification_error=(
+                    None if sent else "Slack/webhook delivery failed or is not configured."
+                ),
+            )
+            .returning(SalesLead.id)
         )
-    lead.notification_error = (
-        None if sent else "Slack/webhook delivery failed or is not configured."
-    )
+    ).scalar_one_or_none()
     await session.commit()
-    return {"sent": sent, "lead_id": str(lead.id)}
+    if recorded is None:
+        logger.warning("lead intake notification %s finished after its row was settled", pk)
+    return {"sent": sent, "lead_id": str(pk), "recorded": recorded is not None}
 
 
 @celery_app.task(name="app.workers.lead_diagnosis_tasks.notify_lead_intake")
@@ -757,29 +818,144 @@ async def _lead_notifications_to_dispatch(session) -> list[str]:
     return [str(row) for row in rows]
 
 
-async def _expire_inquiry_notifications(session, *, now: datetime | None = None) -> list[SalesLead]:
-    """창 안에 보내지 못한 도입문의 접수 알림을 FAILED로 끝낸다(사고는 호출자가 연다).
+async def _open_intake_notice_incident(session, lead_id) -> None:
+    """도입문의 접수 알림 실패 사고. 호출자의 트랜잭션에 쓰고 커밋하지 않는다."""
+    await open_ops_incident_in(
+        session,
+        pipeline="lead_intake_notification",
+        object_type="lead",
+        object_id=str(lead_id),
+        incident_type=INTAKE_NOTICE_INCIDENT_TYPE,
+        safe_error_code=INTAKE_NOTICE_INCIDENT_TYPE,
+        problem="도입문의 접수 알림을 1시간 동안 보내지 못했습니다.",
+        customer_impact="새 도입문의를 담당자가 Slack으로 받지 못했습니다.",
+        next_action=(
+            "상담 요청 화면에서 새 문의를 확인해 담당자를 정하세요. "
+            "처리를 시작하면 자동으로 닫힙니다."
+        ),
+        source_type="SALES_LEAD",
+        # 병원명·연락처를 사고 제목·Slack에 새로 싣지 않는다(처리방침 고지 범위 유지).
+        hospital_name="도입문의",
+        admin_path="/leads",
+        actor="lead-intake-worker",
+    )
 
-    SENDING도 포함한다 — 보내는 도중 워커가 죽은 행은 drain이 다시 집지 못해 영원히 남는다.
-    파기된 리드는 알릴 대상이 아니다.
+
+async def _expired_inquiry_candidates(session, now: datetime) -> list:
+    return list(
+        (
+            await session.execute(
+                select(SalesLead.id)
+                .where(_intake_notice_expirable(now))
+                .order_by(SalesLead.created_at.asc())
+                .limit(DRAIN_BATCH_SIZE)
+            )
+        ).scalars().all()
+    )
+
+
+async def _expire_inquiry_notice(session, lead_id, now: datetime) -> bool:
+    """한 리드의 FAILED와 그 사고·열림 알림을 한 커밋으로 쓴다. 이미 끝난 행이면 False.
+
+    UPDATE는 선택과 같은 술어의 CAS다 — 선택 뒤 발송 워커가 SENT를 커밋했다면 덮지 않는다.
+    사고 쓰기가 실패하면 상태도 되돌려 다음 tick이 다시 만료한다(상태만 남는 틈이 없다).
+    """
+    try:
+        expired = (
+            await session.execute(
+                update(SalesLead)
+                .where(SalesLead.id == lead_id, _intake_notice_expirable(now))
+                .values(notification_status=LEAD_NOTIFICATION_FAILED)
+                .returning(SalesLead.id)
+                .execution_options(synchronize_session=False)
+            )
+        ).scalar_one_or_none()
+        if expired is None:
+            await session.commit()  # 쓴 것이 없다 — rollback은 호출자가 쥔 ORM 객체를 만료시킨다.
+            return False
+        await _open_intake_notice_incident(session, lead_id)
+        await session.commit()
+        return True
+    except Exception:  # noqa: BLE001 — 한 리드의 실패가 drain을 멈추지 않는다. 다음 tick이 다시 본다.
+        await session.rollback()
+        logger.warning("lead intake notice expiry failed for %s", lead_id, exc_info=True)
+        return False
+
+
+async def _expire_inquiry_notifications(session, *, now: datetime | None = None) -> list:
+    """창 안에 보내지 못한 도입문의 접수 알림을 FAILED와 운영 사고로 끝낸다. 끝낸 리드 id 목록.
+
+    PENDING, 상태를 쓰기 전에 API가 죽은 공개 접수의 NULL, 보내는 도중 워커가 죽은 SENDING
+    (창 + 여유 뒤)을 본다. 파기된 리드는 알릴 대상이 아니다.
     """
     observed = now or datetime.now(timezone.utc)
-    rows = (
-        await session.execute(
-            select(SalesLead).where(
-                func.upper(func.trim(SalesLead.source)) == LEAD_SOURCE_INQUIRY,
-                SalesLead.notification_status.in_(
-                    (LEAD_NOTIFICATION_PENDING, LEAD_NOTIFICATION_SENDING)
-                ),
-                SalesLead.purged_at.is_(None),
-                SalesLead.created_at < observed - LEAD_INTAKE_NOTIFY_RETRY_WINDOW,
+    expired = []
+    for lead_id in await _expired_inquiry_candidates(session, observed):
+        if await _expire_inquiry_notice(session, lead_id, observed):
+            expired.append(lead_id)
+    return expired
+
+
+def _lacks_incident(kind: str):
+    return ~exists().where(
+        Incident.source_id == cast(SalesLead.id, String),
+        Incident.incident_type == kind,
+    )
+
+
+async def _repair_missing_lead_incidents(session, *, now: datetime | None = None) -> int:
+    """FAILED로 끝난 접수 알림·안내 문자인데 사고가 없는 최근 리드에 사고 하나를 연다.
+
+    정상 경로는 상태와 사고를 한 커밋으로 쓰지만, 옛 코드가 남긴 행이나 사고 쓰기가 실패한 접수
+    응답은 상태만 남는다. FAILED 행은 다시 읽히지 않으므로 여기서 메운다. 사람이 이미 맡은
+    리드(상태 ≠ NEW)는 근거가 곧바로 닫을 일이라 열지 않는다. tick당 상한이 있다.
+    """
+    from app.services import inquiry_sms
+
+    observed = now or datetime.now(timezone.utc)
+    recent_untaken = (
+        _is_inquiry(),
+        SalesLead.purged_at.is_(None),
+        func.coalesce(SalesLead.status, "NEW") == "NEW",
+        SalesLead.created_at >= observed - LEAD_SIDE_EFFECT_REPAIR_HORIZON,
+    )
+    targets = (
+        (
+            and_(
+                SalesLead.notification_status == LEAD_NOTIFICATION_FAILED,
+                _lacks_incident(INTAKE_NOTICE_INCIDENT_TYPE),
+            ),
+            _open_intake_notice_incident,
+        ),
+        (
+            and_(
+                SalesLead.ack_sms_status == inquiry_sms.SMS_FAILED,
+                _lacks_incident(inquiry_sms.SMS_FAILURE_INCIDENT_TYPE),
+            ),
+            lambda db, lead_id: inquiry_sms.open_failure_incident(
+                db, lead_id, actor="lead-intake-worker"
+            ),
+        ),
+    )
+    repaired = 0
+    for predicate, opener in targets:
+        lead_ids = (
+            await session.execute(
+                select(SalesLead.id)
+                .where(*recent_untaken, predicate)
+                .order_by(SalesLead.created_at.asc())
+                .limit(DRAIN_BATCH_SIZE)
             )
-        )
-    ).scalars().all()
-    for lead in rows:
-        lead.notification_status = LEAD_NOTIFICATION_FAILED
-    await session.commit()
-    return list(rows)
+        ).scalars().all()
+        for lead_id in lead_ids:
+            try:
+                await opener(session, lead_id)
+                await session.commit()
+                repaired += 1
+            except Exception:  # noqa: BLE001 — 다음 tick이 다시 메운다.
+                await session.rollback()
+                logger.warning("lead side-effect incident repair failed for %s", lead_id)
+    return repaired
 
 
 async def _reclaim_stalled(session) -> int:
@@ -856,8 +1032,13 @@ async def _drain() -> dict:
         reclaimed += await _reclaim_stalled_reports(session)
         exhausted = await _exhausted_to_failed(session)
         await session.commit()
-        expired_notices = await _expire_inquiry_notifications(session)
 
+    # 리드 한 건씩 커밋·롤백하므로 위의 진단 객체(exhausted)와 세션을 나눈다 — 롤백이 그 객체를 만료시킨다.
+    async with sessionmaker_() as notice_session:
+        expired_notices = await _expire_inquiry_notifications(notice_session)
+        repaired_incidents = await _repair_missing_lead_incidents(notice_session)
+
+    async with sessionmaker_() as session:
         purged = await lead_query_cache.purge_expired(session)
         await session.commit()
 
@@ -909,29 +1090,6 @@ async def _drain() -> dict:
         except Exception:  # noqa: BLE001 — 알림 실패가 드레인을 멈추지 않는다.
             logger.warning("lead delivery abandon alert delivery failed")
 
-    for lead in expired_notices:
-        try:
-            await open_ops_incident(
-                pipeline="lead_intake_notification",
-                object_type="lead",
-                object_id=str(lead.id),
-                incident_type="LEAD_INTAKE_NOTIFICATION_FAILED",
-                safe_error_code="LEAD_INTAKE_NOTIFICATION_FAILED",
-                problem="도입문의 접수 알림을 1시간 동안 보내지 못했습니다.",
-                customer_impact="새 도입문의를 담당자가 Slack으로 받지 못했습니다.",
-                next_action=(
-                    "상담 요청 화면에서 새 문의를 확인해 담당자를 정하세요. "
-                    "처리를 시작하면 자동으로 닫힙니다."
-                ),
-                source_type="SALES_LEAD",
-                # 병원명·연락처를 사고 제목·Slack에 새로 싣지 않는다(처리방침 고지 범위 유지).
-                hospital_name="도입문의",
-                admin_path="/leads",
-                actor="lead-intake-worker",
-            )
-        except Exception:  # noqa: BLE001 — 알림 실패가 드레인을 멈추지 않는다.
-            logger.warning("lead intake notification failure alert delivery failed")
-
     for diagnosis in exhausted:
         try:
             await open_ops_incident(
@@ -956,6 +1114,7 @@ async def _drain() -> dict:
         "deliveries": len(deliveries),
         "lead_notifications": len(lead_notifications),
         "expired_intake_notices": len(expired_notices),
+        "repaired_incidents": repaired_incidents,
         "abandoned_deliveries": len(stuck["abandoned"]),
         "reclaimed": reclaimed,
         "failed": len(exhausted),

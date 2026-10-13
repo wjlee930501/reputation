@@ -17,7 +17,6 @@ from app.services.inquiry_diagnosis import (
     DIAGNOSIS_NOTE_QUEUED,
     DIAGNOSIS_NOTE_REFUSED,
 )
-from app.services.ops_incident_alerts import open_ops_incident
 
 logger = logging.getLogger(__name__)
 
@@ -139,28 +138,6 @@ class LeadCreate(BaseModel):
         return values
 
 
-async def _open_inquiry_sms_incident(lead_id: str) -> None:
-    """안내 문자가 끝내 나가지 못했다 — 원장님께 사람이 직접 연락해야 한다. 접수 응답 뒤에 연다."""
-    try:
-        await open_ops_incident(
-            pipeline="inquiry_sms",
-            object_type="lead",
-            object_id=lead_id,
-            incident_type="INQUIRY_SMS_FAILED",
-            safe_error_code="INQUIRY_SMS_FAILED",
-            problem="도입문의 접수 안내 문자를 보내지 못했습니다.",
-            customer_impact="원장님이 접수 안내 문자를 받지 못했습니다.",
-            next_action="상담 요청 화면에서 원장님께 직접 연락하세요. 처리를 시작하면 자동으로 닫힙니다.",
-            source_type="SALES_LEAD",
-            # 병원명·연락처를 사고 제목·Slack에 새로 싣지 않는다(처리방침 고지 범위 유지).
-            hospital_name="도입문의",
-            admin_path="/leads",
-            actor="public-inquiry",
-        )
-    except Exception:  # noqa: BLE001 - 사고 기록 실패가 접수 응답을 바꾸지 않는다.
-        logger.warning("inquiry SMS failure incident could not be recorded for lead %s", lead_id)
-
-
 @router.post("")
 @limiter.limit(settings.PUBLIC_LEAD_RATE_LIMIT)
 async def create_lead(
@@ -249,10 +226,12 @@ async def create_lead(
 
     # ── 접수 안내 문자. Slack 뒤에 보낸다 — AE 알림이 문자 사업자 장애에 묶이면 안 된다.
     sms = await inquiry_sms.acknowledge_inquiry(db, lead)
-    await db.commit()
     # 미설정·휴대전화 아님·중복 억제(SKIPPED)는 사고가 아니다(readiness `facts.inquiry_sms`가 보인다).
+    # 리드는 위에서 이미 커밋됐다. 실패 상태와 그 사고는 이 한 커밋에 묶는다 — 응답 뒤 작업으로
+    # 미루면 프로세스가 그 사이에 죽을 때 사고가 사라진다(남으면 drain이 메운다).
     if sms.status == inquiry_sms.SMS_FAILED:
-        background_tasks.add_task(_open_inquiry_sms_incident, str(lead.id))
+        await inquiry_sms.record_failure_incident(db, lead.id)
+    await db.commit()
 
     return {
         "ok": True,

@@ -63,65 +63,119 @@ async def open_ops_incident(
 
     sessions = get_async_sessionmaker()
     async with sessions() as db:
-        key = build_incident_key(pipeline, object_type, object_id, fingerprint)
-        previous_state = await db.scalar(select(Incident.state).where(Incident.dedupe_key == key))
-        incident = await open_or_touch_incident(
+        incident_id = await open_ops_incident_in(
             db,
-            IncidentOpenRequest(
-                pipeline=pipeline,
-                object_type=object_type,
-                object_id=object_id,
-                fingerprint=fingerprint,
-                incident_type=incident_type,
-                severity=severity,
-                customer_impact=customer_impact,
-                source_type=source_type,
-                next_action=next_action,
-                admin_path=admin_path,
-                hospital_id=hospital_id,
-                operation_run_id=operation_run_id,
-                source_id=object_id,
-                safe_error_code=safe_error_code,
-                safe_error_message=problem,
-                retry_until=retry_until,
-            ),
+            pipeline=pipeline,
+            object_type=object_type,
+            object_id=object_id,
+            incident_type=incident_type,
+            safe_error_code=safe_error_code,
+            problem=problem,
+            customer_impact=customer_impact,
+            next_action=next_action,
+            source_type=source_type,
+            hospital_name=hospital_name,
+            hospital_id=hospital_id,
+            operation_run_id=operation_run_id,
+            admin_path=admin_path,
+            fingerprint=fingerprint,
             actor=actor,
-            reason="operational failure observed",
+            sla_label=sla_label,
+            notify=notify,
+            severity=severity,
+            retry_until=retry_until,
         )
-        if notify and (
-            previous_state is None
-            or previous_state
-            in {
-                IncidentState.RECOVERED.value,
-                IncidentState.ACKNOWLEDGED.value,
-            }
-        ):
-            await enqueue_notification(
-                db,
-                build_open_incident_notification(
-                    IncidentSlackProjection(
-                        incident_id=incident.id,
-                        hospital_name=hospital_name,
-                        severity=incident.severity,
-                        customer_impact=incident.customer_impact,
-                        next_action=incident.next_action,
-                        admin_path=incident.admin_path,
-                        # 자동 배정된 담당자를 그대로 싣는다 — 주인이 정해진 예외를
-                        # Slack이 "미지정"으로 알리면 아무도 자기 일로 보지 않는다.
-                        owner_label=await owner_label(db, incident.owner_id),
-                        sla_label=sla_label,
-                        hospital_id=incident.hospital_id,
-                        operation_run_id=incident.operation_run_id,
-                        version=incident.version,
-                        problem=incident.safe_error_message or problem,
-                        episode_seq=incident.episode_seq,
-                        incident_type=incident_type_of(incident),
-                    ),
-                    settings.ADMIN_BASE_URL,
-                ),
-            )
         await db.commit()
-        return incident.id
+        return incident_id
+
+
+async def open_ops_incident_in(
+    db: AsyncSession,
+    *,
+    pipeline: str,
+    object_type: str,
+    object_id: str,
+    incident_type: str,
+    safe_error_code: str,
+    problem: str,
+    customer_impact: str,
+    next_action: str,
+    source_type: str,
+    hospital_name: str = "시스템 공통 작업",
+    hospital_id: uuid.UUID | None = None,
+    operation_run_id: uuid.UUID | None = None,
+    admin_path: str = "/operations",
+    fingerprint: IncidentFingerprint = IncidentFingerprint.UNKNOWN,
+    actor: str = "system",
+    sla_label: str = "확인 필요",
+    notify: bool = True,
+    severity: IncidentSeverity = IncidentSeverity.HIGH,
+    retry_until: datetime | None = None,
+) -> uuid.UUID:
+    """`open_ops_incident`와 같지만 호출자의 트랜잭션 안에서 쓰고 커밋하지 않는다.
+
+    업무 상태(예: 도입문의 알림 FAILED)와 그 사고·열림 알림을 한 커밋에 묶어야 할 때 쓴다 —
+    둘 사이에서 프로세스가 죽어 상태만 남고 사고가 사라지는 일을 없앤다.
+    """
+
+    key = build_incident_key(pipeline, object_type, object_id, fingerprint)
+    previous_state = await db.scalar(select(Incident.state).where(Incident.dedupe_key == key))
+    incident = await open_or_touch_incident(
+        db,
+        IncidentOpenRequest(
+            pipeline=pipeline,
+            object_type=object_type,
+            object_id=object_id,
+            fingerprint=fingerprint,
+            incident_type=incident_type,
+            severity=severity,
+            customer_impact=customer_impact,
+            source_type=source_type,
+            next_action=next_action,
+            admin_path=admin_path,
+            hospital_id=hospital_id,
+            operation_run_id=operation_run_id,
+            source_id=object_id,
+            safe_error_code=safe_error_code,
+            safe_error_message=problem,
+            retry_until=retry_until,
+        ),
+        actor=actor,
+        reason="operational failure observed",
+    )
+    if notify and (
+        previous_state is None
+        or previous_state
+        in {
+            IncidentState.RECOVERED.value,
+            IncidentState.ACKNOWLEDGED.value,
+        }
+    ):
+        await enqueue_notification(
+            db,
+            build_open_incident_notification(
+                IncidentSlackProjection(
+                    incident_id=incident.id,
+                    hospital_name=hospital_name,
+                    severity=incident.severity,
+                    customer_impact=incident.customer_impact,
+                    next_action=incident.next_action,
+                    admin_path=incident.admin_path,
+                    # 자동 배정된 담당자를 그대로 싣는다 — 주인이 정해진 예외를
+                    # Slack이 "미지정"으로 알리면 아무도 자기 일로 보지 않는다.
+                    owner_label=await owner_label(db, incident.owner_id),
+                    sla_label=sla_label,
+                    hospital_id=incident.hospital_id,
+                    operation_run_id=incident.operation_run_id,
+                    version=incident.version,
+                    problem=incident.safe_error_message or problem,
+                    episode_seq=incident.episode_seq,
+                    incident_type=incident_type_of(incident),
+                ),
+                settings.ADMIN_BASE_URL,
+            ),
+        )
+    return incident.id
 
 
 async def extend_retrying_deadline(

@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.models.lead import SalesLead
+from app.services.ops_incident_alerts import open_ops_incident_in
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,8 @@ ACK_SMS_BODY = "\n".join(
 SMS_SENT = "SENT"
 SMS_FAILED = "FAILED"
 SMS_SKIPPED = "SKIPPED"
+
+SMS_FAILURE_INCIDENT_TYPE = "INQUIRY_SMS_FAILED"
 
 # 요청이 사업자에 닿지 않았거나(연결 실패) 처리를 거절한(429·503) 경우만 한 번 다시 보낸다.
 # 읽기 시간 초과·그 밖의 5xx는 이미 발송됐을 수 있어 재시도하면 원장 휴대전화에 문자가 두 번 간다.
@@ -210,3 +213,41 @@ async def acknowledge_inquiry(db: AsyncSession, lead: SalesLead) -> AckSmsOutcom
     lead.ack_sms_error = None if outcome.sent else outcome.detail
     lead.ack_sms_sent_at = datetime.now(timezone.utc) if outcome.sent else None
     return outcome
+
+
+async def open_failure_incident(db: AsyncSession, lead_id, *, actor: str) -> None:
+    """안내 문자가 끝내 나가지 못했다 — 원장님께 사람이 직접 연락해야 한다.
+
+    호출자의 트랜잭션에 사고와 열림 알림을 쓰고 커밋하지 않는다. 접수 응답과 drain의 메우기가 같이 쓴다.
+    """
+    await open_ops_incident_in(
+        db,
+        pipeline="inquiry_sms",
+        object_type="lead",
+        object_id=str(lead_id),
+        incident_type=SMS_FAILURE_INCIDENT_TYPE,
+        safe_error_code=SMS_FAILURE_INCIDENT_TYPE,
+        problem="도입문의 접수 안내 문자를 보내지 못했습니다.",
+        customer_impact="원장님이 접수 안내 문자를 받지 못했습니다.",
+        next_action="상담 요청 화면에서 원장님께 직접 연락하세요. 처리를 시작하면 자동으로 닫힙니다.",
+        source_type="SALES_LEAD",
+        # 병원명·연락처를 사고 제목·Slack에 새로 싣지 않는다(처리방침 고지 범위 유지).
+        hospital_name="도입문의",
+        admin_path="/leads",
+        actor=actor,
+    )
+
+
+async def record_failure_incident(db: AsyncSession, lead_id) -> bool:
+    """접수 응답 안에서 실패 상태와 같은 커밋에 사고를 싣는다. 실패해도 접수를 바꾸지 않는다.
+
+    savepoint 안에서 쓰므로 사고 쓰기가 실패해도 상태 쓰기는 살아남고, 사고 없는 FAILED는
+    drain(`_repair_missing_lead_incidents`)이 다음 tick에 메운다.
+    """
+    try:
+        async with db.begin_nested():
+            await open_failure_incident(db, lead_id, actor="public-inquiry")
+        return True
+    except Exception:  # noqa: BLE001 - 사고 기록 실패가 접수 응답을 바꾸지 않는다.
+        logger.warning("inquiry SMS failure incident could not be recorded for lead %s", lead_id)
+        return False

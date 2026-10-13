@@ -523,50 +523,90 @@ def test_diagnosis_fields_are_cleaned_and_screened():
         _inquiry_body(core_keywords=["가" * 51])
 
 
-async def test_a_failed_sms_opens_one_operator_incident_after_the_response(monkeypatch):
+class _OrderedDB(FakeDB):
+    """커밋 순서를 기록한다 — 사고가 실패 상태와 같은 커밋에 실리는지 본다."""
+
+    def __init__(self):
+        super().__init__()
+        self.events = []
+
+    async def commit(self):
+        self.events.append("commit")
+        await super().commit()
+
+
+async def test_a_failed_sms_records_its_incident_in_the_status_commit(monkeypatch):
     _silence_notifier(monkeypatch)
     _sms_result(monkeypatch, "FAILED")
-    opened = []
+    db = _OrderedDB()
 
-    async def fake_open(**kwargs):
-        opened.append(kwargs)
+    async def fake_record(target_db, lead_id):
+        assert target_db is db
+        db.events.append(("incident", lead_id))
+        return True
 
-    monkeypatch.setattr(leads_api, "open_ops_incident", fake_open)
+    monkeypatch.setattr(inquiry_sms, "record_failure_incident", fake_record)
     tasks = BackgroundTasks()
 
     await _create_lead(
         request=FakeRequest(),
         body=_inquiry_body(specialty=None, region_keyword=None, core_keywords=None),
         background_tasks=tasks,
-        db=FakeDB(),
+        db=db,
     )
-    assert opened == []  # 접수 응답 전에는 열지 않는다
-    await tasks()
 
-    assert [item["incident_type"] for item in opened] == ["INQUIRY_SMS_FAILED"]
-    assert opened[0]["object_id"] == "lead-id"
-    assert opened[0]["hospital_name"] == "도입문의"  # 병원명·연락처를 사고 제목에 싣지 않는다
+    # 리드 커밋이 먼저, 그다음 실패 상태와 사고가 한 커밋. 응답 뒤 작업으로 미루지 않는다.
+    assert db.events == ["commit", ("incident", "lead-id"), "commit"]
+    assert tasks.tasks == []
 
 
 async def test_skipped_sms_opens_nothing(monkeypatch):
     _silence_notifier(monkeypatch)
     _sms_result(monkeypatch, "SKIPPED")
-    monkeypatch.setattr(leads_api, "open_ops_incident", lambda **_k: pytest.fail("no incident"))
-    tasks = BackgroundTasks()
+
+    async def forbidden(*_a, **_k):
+        pytest.fail("no incident")
+
+    monkeypatch.setattr(inquiry_sms, "record_failure_incident", forbidden)
 
     await _create_lead(
         request=FakeRequest(),
         body=_inquiry_body(specialty=None, region_keyword=None, core_keywords=None),
-        background_tasks=tasks,
+        background_tasks=BackgroundTasks(),
         db=FakeDB(),
     )
-    await tasks()
 
 
 async def test_an_incident_failure_never_breaks_the_intake(monkeypatch):
-    async def broken_open(**_kwargs):
+    class _Nested:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    class _DB:
+        def begin_nested(self):
+            return _Nested()
+
+    async def broken_open(*_args, **_kwargs):
         raise RuntimeError("db down")
 
-    monkeypatch.setattr(leads_api, "open_ops_incident", broken_open)
+    monkeypatch.setattr(inquiry_sms, "open_ops_incident_in", broken_open)
 
-    await leads_api._open_inquiry_sms_incident("lead-id")
+    assert await inquiry_sms.record_failure_incident(_DB(), "lead-id") is False
+
+
+async def test_the_sms_incident_keeps_the_privacy_scope(monkeypatch):
+    opened = []
+
+    async def capture(_db, **kwargs):
+        opened.append(kwargs)
+
+    monkeypatch.setattr(inquiry_sms, "open_ops_incident_in", capture)
+
+    await inquiry_sms.open_failure_incident(object(), "lead-id", actor="public-inquiry")
+
+    assert [item["incident_type"] for item in opened] == ["INQUIRY_SMS_FAILED"]
+    assert opened[0]["object_id"] == "lead-id"
+    assert opened[0]["hospital_name"] == "도입문의"  # 병원명·연락처를 사고 제목에 싣지 않는다
