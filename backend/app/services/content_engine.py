@@ -66,6 +66,7 @@ from app.utils.authority_sources import (
 from app.utils.medical_filter import (
     check_forbidden,
     check_forbidden_content_fields,
+    check_forbidden_markdown,
     forbidden_vocabulary_for_prompt,
 )
 
@@ -1472,10 +1473,11 @@ def _validate_generated_result(
             "; ".join(all_findings),
         )
 
-    # 금지 표현이 하나라도 있으면 이 결과는 폐기한다. 문장 일부를 삭제·치환하면 문법과
-    # 의료 의미가 달라질 수 있으므로, tenacity가 공급자를 다시 호출해 공개 필드 전체가
-    # 완전한 새 응답인 결과만 반환하게 한다. 재시도 소진 시 호출자는 결과를 저장하지 않고
-    # 기존 생성 실패 incident/outbox 경로를 연다.
+    # 금지 표현이 하나라도 있으면 이 결과는 이대로 저장하지 않는다. 본문 문장에만 있으면
+    # 생성 루프가 그 문장을 통째로 지우는 결정적 치유를 먼저 한다(`_heal_forbidden_sentences`,
+    # 문장 일부를 고쳐 쓰지 않는다 — 지우기만 하므로 새 주장이 생기지 않는다). 제목·메타·FAQ·
+    # 참고자료 제목에 있거나 치유 뒤에도 남으면 직전 사유로 다시 쓰게 하고, 소진 시 호출자는
+    # 결과를 저장하지 않고 기존 생성 실패 incident/outbox 경로를 연다.
     violations = check_forbidden_content_fields(result, FORBIDDEN_CHECK_FIELDS)
     # 모델이 붙인 제목을 먼저 기관 표기로 고쳐 본 뒤, **모든** 제목을 예외 없이
     # 검사한다. 발행·공개 게이트도 같은 기준으로 모든 제목을 다시 검사한다(방어 심층).
@@ -1491,12 +1493,21 @@ def _validate_generated_result(
         )
     )
     if violations:
+        outside_body = check_forbidden_content_fields(
+            result, tuple(field for field in FORBIDDEN_CHECK_FIELDS if field != "body")
+        ) or bool(reference_titles and check_forbidden_content_fields(
+            {REFERENCE_TITLES_FIELD: reference_titles}, (REFERENCE_TITLES_FIELD,)
+        ))
         logger.warning(
-            "Forbidden expressions found labels=%s — discarding the complete response and "
-            "regenerating all public fields",
+            "Forbidden expressions found labels=%s body_only=%s",
             ",".join(violations),
+            not outside_body,
         )
-        raise ValueError(f"Forbidden medical expressions require complete regeneration: {violations}")
+        raise ForbiddenExpressionError(
+            f"Forbidden medical expressions require complete regeneration: {violations}",
+            result,
+            body_only=not outside_body,
+        )
 
     _validate_must_use_verbatim(result.get("body"), must_use_messages, result=result)
 
@@ -1765,6 +1776,62 @@ def _heal_missing_hospital_name(
     return result
 
 
+# 금지 표현 치유가 한 응답에서 지울 수 있는 문장 수. 이보다 많으면 글의 논조 자체가 광고라 다시 쓴다.
+FORBIDDEN_SENTENCE_HEAL_LIMIT = 3
+_HEAL_SENTENCE_SPLIT = re.compile(r"(?<=[.?!。])\s+")
+_HEAL_LINE_PREFIX = re.compile(r"^\s*(?:[-*+]\s+|\d+[.)]\s+|>\s*)?")
+
+
+def _heal_forbidden_sentences(
+    error: ForbiddenExpressionError, hospital: Hospital, *, must_use_messages: list[str]
+) -> dict | None:
+    """본문에서 금지 표현이 든 문장만 통째로 지운다. 고칠 수 없으면 None(재작성으로 간다).
+
+    - 금지 표현이 제목·메타·FAQ·참고자료 제목에 있으면 맡지 않는다.
+    - 제목(#)·표(|) 줄, 필수 문구가 든 문장, 문장 경계를 넘는 강조처럼 문장 하나로 짚을 수 없는
+      위반은 맡지 않는다.
+    - 지운 문장이 `FORBIDDEN_SENTENCE_HEAL_LIMIT`를 넘거나, 지운 뒤 본문이 분량 하한
+      (`CONTENT_BODY_MIN_CHARS`) 아래면 맡지 않는다.
+    문장을 고쳐 쓰지 않고 지우기만 하므로 새 사실·주장이 생기지 않는다. 결과는 같은 게이트 전체
+    (`_validate_generated_result`)를 다시 지나고, 저장 전 독립 검수가 최종 본문을 다시 본다.
+    """
+
+    if not error.body_only:
+        return None
+    result = error.result
+    must_use = [normalize_verbatim(message) for message in must_use_messages or []]
+    kept_lines: list[str] = []
+    removed = 0
+    for line in str(result.get("body") or "").split("\n"):
+        if not check_forbidden_markdown(line):
+            kept_lines.append(line)
+            continue
+        if line.lstrip().startswith(("#", "|")):
+            return None
+        prefix = _HEAL_LINE_PREFIX.match(line).group(0)
+        sentences = _HEAL_SENTENCE_SPLIT.split(line[len(prefix):])
+        kept = [sentence for sentence in sentences if not check_forbidden_markdown(sentence)]
+        dropped = [sentence for sentence in sentences if check_forbidden_markdown(sentence)]
+        if not dropped:
+            return None  # 위반이 문장 경계를 넘는다 — 문장 하나로 짚을 수 없다
+        if any(
+            key and key in normalize_verbatim(sentence) for sentence in dropped for key in must_use
+        ):
+            return None
+        removed += len(dropped)
+        if kept:
+            kept_lines.append(prefix + " ".join(kept))
+    if removed == 0 or removed > FORBIDDEN_SENTENCE_HEAL_LIMIT:
+        return None
+    healed_body = "\n".join(kept_lines)
+    if body_plain_length(healed_body) < CONTENT_BODY_MIN_CHARS:
+        # 지우고 나니 분량 하한 아래다 — 최소 교정 패스와 같은 선이다. 작가가 다시 쓴다.
+        return None
+    logger.info("Deleted %d sentence(s) carrying forbidden expressions", removed)
+    result["body"] = healed_body
+    return result
+
+
 def _heal_missing_must_use(
     error: MissingMustUseMessagesError, hospital: Hospital, *, must_use_messages: list[str]
 ) -> dict | None:
@@ -1785,6 +1852,7 @@ def _heal_missing_must_use(
 _DETERMINISTIC_HEALS = {
     DirectorNameMissingError: _heal_missing_director_name,
     HospitalNameMissingError: _heal_missing_hospital_name,
+    ForbiddenExpressionError: _heal_forbidden_sentences,
     MissingMustUseMessagesError: _heal_missing_must_use,
 }
 

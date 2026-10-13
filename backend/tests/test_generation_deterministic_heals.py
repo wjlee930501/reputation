@@ -11,6 +11,9 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
+from app.services import content_engine
 from tests.test_content_engine_must_use_verbatim import (
     MUST_USE_2CM,
     MUST_USE_SCREENING,
@@ -19,6 +22,45 @@ from tests.test_content_engine_must_use_verbatim import (
     _payload,
     _Writer,
 )
+
+AD_SENTENCE = "저희 병원은 최고의 의료진이 진료합니다."
+
+
+async def test_a_forbidden_sentence_in_the_body_is_deleted_without_a_rewrite(monkeypatch):
+    writer = _Writer([_payload(f"검사 전날 식단을 조절합니다. {AD_SENTENCE} 물을 충분히 드세요.")])
+    _install_writer(monkeypatch, writer)
+
+    saved = await _generate([])
+
+    assert len(writer.calls) == 1
+    assert AD_SENTENCE not in saved["body"]
+    assert "검사 전날 식단을 조절합니다. 물을 충분히 드세요." in saved["body"]
+
+
+async def test_a_forbidden_title_still_buys_a_complete_rewrite(monkeypatch):
+    bad = _payload("검사 전날 식단을 조절합니다.")
+    bad["title"] = "최고의 대장내시경 준비 안내"
+    writer = _Writer([bad, _payload("검사 전날 식단을 조절합니다.")])
+    _install_writer(monkeypatch, writer)
+
+    saved = await _generate([])
+
+    assert len(writer.calls) == 2
+    assert saved["title"] == "대장내시경 검사 전 준비 안내"
+
+
+async def test_too_many_forbidden_sentences_are_not_deleted(monkeypatch):
+    promotional = " ".join(
+        [AD_SENTENCE, "부작용 없는 검사입니다.", "100% 안전합니다.", "국내 최초 장비입니다."]
+    )
+    writer = _Writer([_payload(promotional), _payload("검사 전날 식단을 조절합니다.")])
+    _install_writer(monkeypatch, writer)
+
+    saved = await _generate([])
+
+    assert len(writer.calls) == 2
+    assert content_engine.FORBIDDEN_SENTENCE_HEAL_LIMIT == 3
+    assert AD_SENTENCE not in saved["body"]
 
 
 async def test_a_missing_must_use_message_is_appended_verbatim(monkeypatch):
@@ -42,3 +84,32 @@ async def test_a_missing_hospital_name_is_appended(monkeypatch):
 
     assert len(writer.calls) == 1
     assert saved["body"].rstrip().endswith("이 글은 테스트의원에서 안내합니다.")
+
+
+def test_heal_registry_covers_every_deterministic_error():
+    assert set(content_engine._DETERMINISTIC_HEALS) == {
+        content_engine.DirectorNameMissingError,
+        content_engine.HospitalNameMissingError,
+        content_engine.ForbiddenExpressionError,
+        content_engine.MissingMustUseMessagesError,
+    }
+    # 분류기는 종전 문구로 사유를 가른다 — 새 예외도 같은 메시지 머리를 쓴다.
+    error = content_engine.ForbiddenExpressionError(
+        "Forbidden medical expressions require complete regeneration: ['최고']",
+        SimpleNamespace(),
+        body_only=True,
+    )
+    assert isinstance(error, ValueError)
+
+
+async def test_deletion_that_drops_the_body_below_the_floor_is_not_applied(monkeypatch):
+    short = _payload("")
+    short["body"] = "## 안내\n테스트의원 김의사 원장이 노원에서 안내합니다. " + AD_SENTENCE + "\n\n## 주의\n짧습니다."
+    writer = _Writer([short, _payload("검사 전날 식단을 조절합니다.")])
+    _install_writer(monkeypatch, writer)
+
+    saved = await _generate([])
+
+    assert len(writer.calls) == 2  # 하한 아래로 줄이는 삭제 대신 작가가 다시 썼다
+    assert "Forbidden medical expressions" in writer.calls[1]["messages"][1]["content"]
+    assert AD_SENTENCE not in saved["body"]
