@@ -12,8 +12,15 @@ Phase 1의 `0088_add_outbox_open_pairing_index` 그대로이고 RedBeat 버전�
 배포 전에 운영 리비전·DB head를 다시 확인한다. 배포 대상은 API·Worker·Beat와 Admin(병원 정보 화면의 자동 입력 초안)이고, 배포일 절차
 (Terraform 경보 2종 `-target` 적용, `PIPELINE_WATCHDOG_TOKEN` 확인, `OPS_ALERT_EMAIL`, 첫 `--accept-env-diff`, 잠금 버킷 확인)는 배포 안내의
 Phase 2 항목을 따른다. 배치 시간대 밖이면 하루 여러 번 배포할 수 있다(2026-10-13 대표 결정). 플래그 `ONBOARDING_SOURCE_FETCH_ALERTS_ENABLED`·
-`PROFILE_GATE_OPTIONAL_ENRICHMENT`는 기본 꺼짐(대표 결정 전)이다. **롤백**: 마이그레이션이 없어 트래픽 롤백으로 충분하다. Phase 0의 롤백
-금지(Worker `00223` 이하)는 그대로다. 아래 계약 문장은 이 브랜치 기준이다.
+`PROFILE_GATE_OPTIONAL_ENRICHMENT`는 기본 꺼짐(대표 결정 전)이다. 배포 근거는 MasterPlan의 최신 결정이다 — D26(처리 ERROR 필수 자료의
+Essence 제외는 '즉시'가 아니라 다른 필수 자료가 PROCESSED면 1시간, ERROR뿐이면 6시간 뒤), D27(대기 도메인 DNS 확인은 14일 창 뒤에도 15분마다
+계속, 하루 1회로 줄이지 않음), D28(배치 시간대 밖 하루 여러 번 배포). 배포 smoke는 slug·canonical_host·Site 리비전을 비교하고 hospital ID는
+보지 않는다. **롤백(알려진 한계)**: 마이그레이션은 없지만 트래픽 롤백만으로 안전하지 않다. Phase 2 이전 Worker는 그 달 약속 편수를
+요금제 편수로 계산하므로, 안분된 첫 달(예: PLAN_12 9편, 게시 요일 없는 달 0편)이 있는 채로 되돌리면 21:30 KST 당월 조정이 그 달을
+요금제 편수까지 채우고(초과 배정·초과 비용), 옛 보고서·현황은 안분을 모른다. 호환 리비전은 만들지 않았다 — 롤백하면 읽기 전용
+`ops_sql_report --only=q8`로 대상 병원과 초과 배정(`topped_up_slots`, 옛 코드가 채운 슬롯은 `total_count`가 안분 편수보다 크다)을 찾고,
+21:30 조정이 돌았으면 그날 23:00 전에 `q8b`의 미생성 슬롯을 기존 취소 API로 CANCELLED 처리한다(전용 CLI 없음, 수동). 절차는 배포
+안내의 Phase 2 8번. Phase 0의 롤백 금지(Worker `00223` 이하)는 그대로다. 아래 계약 문장은 이 브랜치 기준이다.
 
 ## 최신 운영 배포 — 2026-10-13 Phase 1 자율성 보완 (배포 전)
 

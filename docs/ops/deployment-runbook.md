@@ -288,6 +288,13 @@ WHERE notification_type = 'INCIDENT_OPEN';`을 먼저 실행한다 — 0088은 �
 Admin(`bash scripts/deploy.sh admin` — 병원 정보 화면의 자동 입력 초안, 시간대 규칙 없음)이다. Site 변경은 없다. Phase 1이 먼저
 배포됐는지, 운영 DB head가 `0088_add_outbox_open_pairing_index`인지 먼저 확인한다.
 
+이 릴리스의 배포 근거는 MasterPlan의 **최신 결정**이다 — 하위 초안의 문구가 아니다. D26: 처리 ERROR 필수 자료는 Essence 합성에서
+'즉시'가 아니라 다른 필수 자료가 PROCESSED면 **1시간**, ERROR뿐이면 **6시간** 뒤에 제외한다. D27: 대기 자기 도메인의 DNS 확인은
+14일 창이 지나도 **멈추지 않고 15분마다** 계속하며(하루 1회로 줄이지 않는다), 창이 지난 뒤 그 회차가 실제로 DNS 불일치를 관측했을
+때만 사람의 일 하나를 연다. D28: 배포 금지 시간대는 아래 1번이고 그 밖이면 하루 여러 번 배포할 수 있다(하루 잠금은 권고). 배포 뒤
+공개 표면 확인(`deploy_smoke.py`)은 API `release`와 병원별 **slug·canonical_host·Site 리비전**만 비교한다 — hospital ID는 보지 않으므로
+hospital ID 대조를 smoke가 했다고 기록하지 않는다(필요하면 따로 확인한다).
+
 1. **시각.** `deploy.sh`(backend·api·worker·beat·all)가 막는 KST 구간은 21:15~02:00(22시 앞뒤 45분 + 22:15~02:00 야간), 03:15~04:45,
    06:15~08:45, 11:15~12:45, 17:15~18:45다. 배포 가능 구간은 02:00~03:14, 04:46~06:14, 08:46~11:14, 12:46~17:14, 18:46~21:14.
 2. **Terraform 경보 2종(배포 코드와 독립, 먼저 적용해도 된다).** `terraform plan`이 아래 두 정책의 **추가 2건만** 보이는지 확인한 뒤
@@ -330,7 +337,38 @@ Admin(`bash scripts/deploy.sh admin` — 병원 정보 화면의 자동 입력 �
    true`), `/api/v1/health/live`의 `release`가 이번 릴리스(`deploy.sh`가 자동 확인), Beat `/live` 정상(`beat_liveness_failed` 로그 없음,
    기동 뒤 15분 유예), 새 리비전 ERROR 0건, 15분 뒤 `project_milestone_events` 결과에 `onboarding_stalls_*` 키와
    `monitor_live_custom_domains` 결과에 `pending_domains_*` 키, GCP 경보 정책 2개 존재. 트래픽이 고정돼 있으면 `--unpin`을 붙인다.
-8. **롤백.** 자동 롤백은 트래픽만 되돌리며 마이그레이션이 없어 안전하다. Phase 0의 롤백 금지(Worker `00223` 이하)는 그대로다.
+8. **롤백 — 마이그레이션이 없어도 트래픽 롤백만으로 안전하지 않다(첫 달 안분).** Phase 2 이전 Worker·API(main `08abf747` 이하)는
+   그 달 약속 편수를 언제나 요금제 편수로 계산하고, 옛 보고서·현황·계약 이행 집계도 안분을 모른다. Phase 2가 첫 일정을 만들며 첫
+   계약 월을 안분한 병원(예: PLAN_12 9편, 시작일 뒤로 게시 요일이 없는 달 0편)이 있는 채로 되돌리면, 매일 **21:30 KST 당월 조정**
+   (`current-month-slot-reconciliation`)이 그 달을 요금제 편수까지 채운다(9 → 12편, 0편 달은 남은 날에 한 달 편수를 몰아 넣는다).
+   채워진 슬롯은 23:00 야간 생성이 사서 쓰고 자동 발행한다 — **초과 배정·초과 비용**이다. 옛 코드가 만든 그 달 월간 보고서·현황은
+   요금제 편수를 약속으로 보여 준다(9편을 다 내도 "12편 중 9편"). 호환 리비전은 만들지 않았다. 자동 롤백(readiness·smoke 실패)도
+   같다 — 새 Worker·Beat는 API 승격 전에 15분 tick을 돌므로 실패한 배포도 첫 일정을 만들었을 수 있다. 롤백하면 다음을 한다.
+   1. **대상 확인(읽기 전용).** 안분된 첫 달이 있는 병원과 그 달 슬롯 수를 본다. `q8` 행이 없거나 모든 행의 첫 달이 지난달 이전이면
+      당월 조정과는 무관하다(지난달 보고서 재생성만 4번을 본다).
+
+      ```bash
+      gcloud run jobs execute reputation-migrate --region=asia-northeast3 --project=mso-platform-481505 --wait \
+        --args=python,-m,app.utils.ops_sql_report,--only=q8
+      ```
+
+      결과는 Cloud Logging의 그 실행 로그에 `{"q": "q8", ...}`(병원·첫 달·`first_month_target`·`month_slots`·`topped_up_slots`)와
+      `{"q": "q8b", ...}`(취소 후보 슬롯) 한 줄씩 남는다.
+   2. **시각.** 옛 Worker가 21:30 당월 조정을 한 번이라도 돌리면 1번의 병원에 초과 배정이 생긴다. 롤백한 채 21:30을 넘기지 않거나
+      (그 전에 원인을 고쳐 Phase 2로 다시 올린다 — 단 `deploy.sh`의 배치 시간대 규칙상 21:15 이후 Backend 배포는 사유가 필요하다),
+      넘긴다면 3번을 그날 23:00 야간 생성 **전에** 반드시 한다.
+   3. **초과 배정 되돌리기(수동).** 21:30이 지난 뒤(Phase 2로 다시 올린 뒤에도) `q8`을 다시 돌려 `topped_up_slots`가 0이 아닌 병원을
+      찾는다. 옛 코드가 채운 슬롯은 `total_count`가 기록된 안분 편수보다 커서 구분된다. `q8b`가 그중 아직 생성·공개·사람 편집이
+      없는(DRAFT·본문 없음·claim 없음) 슬롯을 준다. 그 슬롯을 기존 취소 API `POST /admin/hospitals/{hospital_id}/content/{content_id}/cancel`
+      (감사 `cancel_content`)로 CANCELLED로 바꾼다 — 전용 CLI도 Admin 화면 버튼도 없어 **수동 절차**다(운영 Admin 키와
+      `X-Admin-Actor-System` 헤더로 호출해 감사에 `system:<작업명>`으로 남긴다). 행을 DELETE하지 않는다 — CANCELLED 행도 그 달 슬롯 수에
+      남아 옛 코드·새 코드 모두 다시 채우지 않는다. 이미 생성됐거나 공개된 초과 슬롯은 자동으로 되돌릴 방법이 없다 — 공개 글은 내리지
+      않는 것이 기본이고, 사람이 그 달 약속과 함께 판단한다.
+   4. **보고서.** 롤백 중 옛 코드가 만든 안분된 달의 월간 보고서는 Phase 2로 다시 올린 뒤 일반 재생성으로 다시 만든다(약속 편수가
+      달라 숫자 그대로인 `TEMPLATE_REFRESH` 대상이 아니다).
+
+   Phase 0의 롤백 금지(Worker `00223` 이하)는 그대로다. 같은 이유로 롤백 뒤 사람이 그 달 일정을 바꾸면 옛 교체 경로도 요금제 편수로
+   다시 만든다 — 롤백 중에는 안분된 병원의 일정 교체를 미룬다.
 
 **10/8 배치(PR #226, `0083_add_operation_run_not_before`) — 0083 migrate Job을 먼저 끝내고, 코드는 그 다음 배포한다.**
 새 ORM이 `operation_runs.not_before_at`을 SELECT한다. 추가형·NULL 허용이라 0083 위의 옛 코드는 안전하다.

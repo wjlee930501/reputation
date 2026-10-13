@@ -490,3 +490,47 @@ async def test_a_human_edit_of_a_zero_slot_first_month_stays_zero(
     assert _month_rows(pg_session, hospital.id, date(2026, 10, 1), date(2026, 10, 31)) == []
     october = arrow.get(date(2026, 10, 1))
     assert month_content_target_sync(pg_session, hospital.id, october, "PLAN_20") == 0
+
+
+def test_rollback_overdelivery_report_finds_old_code_top_up_slots(pg_session) -> None:
+    """Phase 2 이전 Worker의 21:30 당월 조정이 안분된 첫 달을 요금제 편수로 채운 경우를 q8이 찾는다."""
+    from sqlalchemy import text
+
+    from app.utils.ops_sql_report import QUERIES
+
+    hospital = _seed(pg_session)
+    outcome = ensure_initial_content_schedule(
+        pg_session, hospital.id, today=MID_MONTH, trigger="essence_auto_approval"
+    )
+    assert outcome.slots_created == 9
+
+    def report():
+        summary_sql, candidates_sql = QUERIES["q8"]
+        summary = [
+            row for row in pg_session.execute(text(summary_sql)).mappings().all()
+            if row["hospital_id"] == hospital.id
+        ]
+        candidates = [
+            row for row in pg_session.execute(text(candidates_sql)).mappings().all()
+            if row["hospital_id"] == hospital.id
+        ]
+        return summary, candidates
+
+    [row], candidates = report()
+    assert (row["first_month_target"], row["month_slots"], row["topped_up_slots"]) == (9, 9, 0)
+    assert candidates == []
+
+    # 옛 코드의 당월 조정이 요금제 편수(12)로 3편을 더 만든 상태(total_count=12).
+    extra = [
+        ContentItem(
+            hospital_id=hospital.id, schedule_id=outcome.schedule_id, content_type="FAQ",
+            sequence_no=seq, total_count=12, scheduled_date=date(2026, 10, 27 + seq - 10),
+        )
+        for seq in (10, 11, 12)
+    ]
+    pg_session.add_all(extra)
+    pg_session.flush()
+
+    [row], candidates = report()
+    assert (row["month_slots"], row["live_slots"], row["topped_up_slots"]) == (12, 12, 3)
+    assert {c["content_id"] for c in candidates} == {item.id for item in extra}

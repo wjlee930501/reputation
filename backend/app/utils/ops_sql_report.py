@@ -1,4 +1,4 @@
-"""읽기 전용 운영 조회: 자율 운영 지표(Q1~Q6)와 배포 전 확인(Q7)을 JSON 한 줄씩 출력한다.
+"""읽기 전용 운영 조회: 자율 운영 지표(Q1~Q6), 배포 전 확인(Q7), 롤백 점검(Q8)을 JSON 한 줄씩 출력한다.
 
 새 세션의 트랜잭션에서 첫 문장으로 `SET TRANSACTION READ ONLY`를 실행해 DB 수준에서 쓰기를 막고,
 끝나면 롤백한다. 받은 세션에 이미 열린 트랜잭션이 있으면 먼저 롤백해 새로 시작한다::
@@ -145,6 +145,69 @@ QUERIES: dict[str, tuple[str, ...]] = {
         SELECT count(*) AS outbox_rows,
                count(*) FILTER (WHERE notification_type = 'INCIDENT_OPEN') AS open_notice_rows
         FROM notification_outbox
+        """,
+    ),
+    # 롤백 점검(Phase 2 첫 달 안분): 시스템이 첫 일정을 만들며 첫 계약 월을 안분한 병원과 그 달 슬롯 수.
+    # Phase 2 이전 Worker는 약속 편수를 요금제 편수로 보므로, 그 리비전으로 롤백하면 21:30 당월 조정이
+    # 안분된 달을 요금제 편수까지 채운다(0편 달은 남은 하루에 한 달 편수를 몰아 넣는다). 옛 코드가 채운
+    # 슬롯은 `total_count`가 기록된 안분 편수보다 크다 — `topped_up_slots`가 0이 아니면 초과 배정이다.
+    # 보조(q8b): 초과 배정 중 아직 생성·공개·사람 편집이 없는 취소 후보 슬롯.
+    "q8": (
+        """
+        SELECT f.hospital_id, h.name, f.schedule_id, f.first_month_start, f.plan,
+               f.first_month_target,
+               count(ci.id) AS month_slots,
+               count(ci.id) FILTER (WHERE ci.status <> 'CANCELLED') AS live_slots,
+               count(ci.id) FILTER (
+                 WHERE ci.status <> 'CANCELLED' AND ci.total_count > f.first_month_target
+               ) AS topped_up_slots
+        FROM (
+          SELECT DISTINCT ON (a.hospital_id)
+                 a.hospital_id, a.target_id AS schedule_id,
+                 CAST(a.detail->>'active_from' AS date) AS first_month_start,
+                 CAST(a.detail->>'first_month_target' AS integer) AS first_month_target,
+                 a.detail->>'plan' AS plan
+          FROM admin_audit_logs a
+          WHERE a.action = 'set_schedule' AND a.actor = 'system:essence-auto-approval'
+            AND a.target_type = 'content_schedule' AND a.detail ? 'first_month_target'
+          ORDER BY a.hospital_id, a.created_at
+        ) f
+        JOIN hospitals h ON h.id = f.hospital_id
+        LEFT JOIN content_items ci
+          ON ci.hospital_id = f.hospital_id
+         AND coalesce(ci.carried_over_from, ci.scheduled_date)
+             >= CAST(date_trunc('month', f.first_month_start) AS date)
+         AND coalesce(ci.carried_over_from, ci.scheduled_date)
+             < CAST(date_trunc('month', f.first_month_start) + interval '1 month' AS date)
+        WHERE f.first_month_target
+              < CASE f.plan WHEN 'PLAN_12' THEN 12 WHEN 'PLAN_16' THEN 16 WHEN 'PLAN_20' THEN 20 END
+        GROUP BY f.hospital_id, h.name, f.schedule_id, f.first_month_start, f.plan,
+                 f.first_month_target
+        ORDER BY f.first_month_start, h.name
+        """,
+        """
+        SELECT ci.hospital_id, ci.id AS content_id, ci.scheduled_date, ci.total_count,
+               f.first_month_target, ci.status, ci.created_at
+        FROM (
+          SELECT DISTINCT ON (a.hospital_id)
+                 a.hospital_id,
+                 CAST(a.detail->>'active_from' AS date) AS first_month_start,
+                 CAST(a.detail->>'first_month_target' AS integer) AS first_month_target
+          FROM admin_audit_logs a
+          WHERE a.action = 'set_schedule' AND a.actor = 'system:essence-auto-approval'
+            AND a.target_type = 'content_schedule' AND a.detail ? 'first_month_target'
+          ORDER BY a.hospital_id, a.created_at
+        ) f
+        JOIN content_items ci
+          ON ci.hospital_id = f.hospital_id
+         AND coalesce(ci.carried_over_from, ci.scheduled_date)
+             >= CAST(date_trunc('month', f.first_month_start) AS date)
+         AND coalesce(ci.carried_over_from, ci.scheduled_date)
+             < CAST(date_trunc('month', f.first_month_start) + interval '1 month' AS date)
+        WHERE ci.total_count > f.first_month_target
+          AND ci.status = 'DRAFT' AND ci.body IS NULL AND ci.generation_claim_token IS NULL
+          AND ci.first_published_at IS NULL AND ci.human_edited_at IS NULL
+        ORDER BY ci.hospital_id, ci.scheduled_date, ci.sequence_no
         """,
     ),
 }
