@@ -219,7 +219,8 @@ def test_link_syntax_that_is_not_a_link_stays_visible_and_is_checked():
 
     링크로 오인해 지우면 금지 표현이 검사를 빠져나가 공개된다(미탐).
     """
-    assert check_forbidden_markdown("회복 기간[개인차 있음](통증 없는 경우도 있습니다)") == [
+    # 예시는 계속 막히는 문형이어야 한다 — 무증상 설명("통증 없는 경우")은 E3 뒤로 예외다.
+    assert check_forbidden_markdown("회복 기간[개인차 있음](통증 없이 시술하는 경우도 있습니다)") == [
         "통증 없는"
     ]
     # 반대로 진짜 링크의 목적지는 화면에 없으므로 검사하지 않는다.
@@ -419,3 +420,45 @@ def test_writer_sees_the_inducement_vocabulary_but_the_essence_safety_text_is_un
         "의료광고 공통 금지 표현을 홍보 문구로 사용하지 않습니다: " + ", ".join(FORBIDDEN_EXPRESSIONS),
     )
     assert len(FORBIDDEN_EXPRESSIONS) == 21
+
+
+# ── E3(2026-10-13): 확인된 오탐을 필터 안의 문맥 예외로 푼다(양방향) ─────────────────────
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "고혈압은 초기에 통증 없이 진행합니다.",
+        "갑상선 결절은 대부분 통증 없는 혹으로 발견됩니다.",
+        "수술 후 완전 회복까지 3개월이 걸립니다.",
+        "완전 회복까지 약 6~8주가 필요합니다.",
+        "증상이 최고조에 이릅니다.",
+        "식후 혈당이 최고치를 기록합니다.",
+        "비급여 항목은 100% 본인부담입니다.",
+        "임상시험에서 확인된 효과는 아직 제한적입니다.",
+        "첨단 장비로 정밀하게 촬영합니다.",
+    ],
+)
+def test_confirmed_false_positives_are_not_medical_ads(text):
+    assert check_forbidden(text) == []
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("통증 없이 시술합니다.", "통증 없는"),
+        ("시술 후 통증 없이 회복합니다.", "통증 없는"),
+        ("저희 병원은 통증 없는 진료를 합니다.", "통증 없는"),
+        ("수술 후 완전 회복됩니다.", "완치"),
+        ("완전 회복을 보장합니다.", "완치"),
+        ("최고치료법으로 진료합니다.", "최고"),
+        ("100% 효과가 있습니다.", "100%"),
+        ("저희 병원 임상에서 확인된 효과입니다.", "검증된"),
+        ("확인된 효과로 통증을 줄입니다.", "검증된"),
+        ("본원은 첨단 장비를 갖췄습니다.", "최첨단"),
+        ("첨단 장비를 갖춘 본원에서 검사합니다.", "최첨단"),
+        ("첨단 시술로 치료합니다.", "최첨단"),
+    ],
+)
+def test_the_same_words_stay_blocked_as_claims(text, expected):
+    assert expected in check_forbidden(text)

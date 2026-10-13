@@ -141,8 +141,9 @@ class _ContextExemption:
     trigger: re.Pattern | None = None      # 매치된 표현 자체가 이것과 완전히 일치할 때만
     preceded_by: re.Pattern | None = None  # 매치 앞 window 자 안에 이 표현이 있을 때
     followed_by: re.Pattern | None = None  # 매치 뒤 window 자 안에 이 표현이 있을 때
-    # 매치 앞 window 자 안에 이 표현이 **있으면** 예외가 아니다(병원 자기 주장 문맥).
+    # 매치 앞·뒤 window 자 안에 이 표현이 **있으면** 예외가 아니다(시술·병원 자기 주장 문맥).
     unless_preceded_by: re.Pattern | None = None
+    unless_followed_by: re.Pattern | None = None
     window: int = 30
 
     def applies(self, text: str, match: re.Match) -> bool:
@@ -160,11 +161,21 @@ class _ContextExemption:
             head = text[max(0, match.start() - self.window) : match.start()]
             if self.unless_preceded_by.search(head):
                 return False
+        if self.unless_followed_by is not None:
+            tail = text[match.end() : match.end() + self.window]
+            if self.unless_followed_by.search(tail):
+                return False
         return True
 
 
 # 병원이 스스로를 가리키는 말. 이 말이 가까이 있으면 문맥 예외를 주지 않는다.
 _HOSPITAL_SELF = re.compile(r"저희|우리\s*(?:병원|의원)|본원|당원|병원에서|의원에서")
+# 병원 자기 주장 또는 시술 결과 주장의 문맥. '첨단 장비'가 이 말 가까이 있으면 광고다.
+_CLAIM_CONTEXT = re.compile(_HOSPITAL_SELF.pattern + r"|병원|의원|시술|수술|치료")
+# 시술·진료 행위. '통증 없이'가 이 말 가까이 있으면 시술 결과를 보장하는 문장이다.
+_PROCEDURE = re.compile(
+    r"시술|수술|치료|진료|마취|주사|레이저|내시경|검사|교정|발치|임플란트|저희|본원|병원"
+)
 
 _ALLOWED_CONTEXTS: dict[str, tuple[_ContextExemption, ...]] = {
     # "사망원인 1위", "발생률 1위" 같은 역학 통계. 역학 명사가 **바로 앞에 붙어 있을
@@ -183,12 +194,33 @@ _ALLOWED_CONTEXTS: dict[str, tuple[_ContextExemption, ...]] = {
     ),
     # "최고 39도", "최고 40mg" 같은 수치 상한. 광고 최상급("최고의 진료")은 계속 차단.
     "최고": (
+        # "증상이 최고조에 이릅니다", "혈당이 최고치를 기록" — 정도의 정점이지 우위 주장이 아니다.
+        # "최고치료"처럼 붙여 쓴 광고는 계속 막는다.
+        _ContextExemption(
+            reason="정점을 뜻하는 최고조·최고치",
+            trigger=re.compile(r"최고"),
+            followed_by=re.compile(r"^(?:조|치(?!료))"),
+            window=2,
+        ),
         _ContextExemption(
             reason="수치 상한(체온·용량·연령·횟수)",
             trigger=re.compile(r"최고"),
             followed_by=re.compile(
                 r"^\s*\d+(?:\.\d+)?\s*(?:도|mg|ml|회|세|시간|일|주|개월|년|kg|cm|mm|%)"
             ),
+            window=12,
+        ),
+    ),
+    # "임상시험에서 확인된 효과는 제한적입니다" — 문헌·연구의 결과를 옮기는 문장. 병원이 스스로
+    # 확인했다는 주장("저희 병원 임상에서 확인된 효과")은 계속 막는다.
+    "검증된": (
+        _ContextExemption(
+            reason="연구·문헌 결과의 인용",
+            trigger=re.compile(r"확인[된]\s*효과"),
+            preceded_by=re.compile(
+                r"(?:임상|연구|시험|논문|문헌|진료\s*지침|학회)(?:에서|으로|를\s*통해|결과)?\s*$"
+            ),
+            unless_preceded_by=_HOSPITAL_SELF,
             window=12,
         ),
     ),
@@ -204,6 +236,17 @@ _ALLOWED_CONTEXTS: dict[str, tuple[_ContextExemption, ...]] = {
     # "완치가 어렵고", "완치되지 않습니다"처럼 완치 주장을 바로 부정·한정하는 문장.
     # "완치율", "완치 가능", "완치됩니다"는 계속 차단.
     "완치": (
+        # "수술 후 완전 회복까지 3개월이 걸립니다" — 회복 기간 안내. "완전 회복됩니다"·"완전 회복을
+        # 보장" 같은 결과 단정은 계속 막는다.
+        _ContextExemption(
+            reason="완전 회복까지 걸리는 기간 안내",
+            trigger=re.compile(r"완전\s*회복"),
+            followed_by=re.compile(
+                r"^\s*(?:까지|되기까지|하기까지)\s*(?:보통\s*|대개\s*|약\s*|대략\s*)?"
+                r"\d+(?:\s*[~～-]\s*\d+)?\s*(?:일|주|개월|달|년)"
+            ),
+            window=24,
+        ),
         _ContextExemption(
             reason="완치 주장을 바로 부정·한정",
             trigger=re.compile(r"완치"),
@@ -215,6 +258,12 @@ _ALLOWED_CONTEXTS: dict[str, tuple[_ContextExemption, ...]] = {
     ),
     # "정확도가 100%는 아닙니다", "100%로 예방할 수 없습니다" 같은 한계 설명.
     "100%": (
+        # "비급여 항목은 100% 본인부담입니다" — 부담 비율 안내이지 효과·안전 보장이 아니다.
+        _ContextExemption(
+            reason="본인부담 비율 안내",
+            followed_by=re.compile(r"^\s*(?:본인\s*부담|자기\s*부담|환자\s*부담|전액\s*본인)"),
+            window=10,
+        ),
         _ContextExemption(
             reason="100% 주장을 바로 부정",
             followed_by=re.compile(r"^(?:[는가]\s*아(?:니|닙|님)|로\s*예방할\s*수\s*없)"),
@@ -240,6 +289,16 @@ _ALLOWED_CONTEXTS: dict[str, tuple[_ContextExemption, ...]] = {
     ),
     # "첨단 기술이 효과를 보장하지 않습니다" 같은 부정. "최첨단"은 계속 차단.
     "최첨단": (
+        # "첨단 장비로 정밀하게 촬영합니다" — 병원 자기 주장이 아닌 일반 설명. "최첨단", "첨단 시술",
+        # 병원·시술을 가리키는 말이 가까이 있는 "본원은 첨단 장비를 갖췄습니다"·"첨단 기술로
+        # 시술합니다"는 계속 막는다.
+        _ContextExemption(
+            reason="병원 자기 주장이 아닌 장비·기술 설명",
+            trigger=re.compile(r"첨단[의]?\s*(?:기술|장비)"),
+            unless_preceded_by=_CLAIM_CONTEXT,
+            unless_followed_by=_CLAIM_CONTEXT,
+            window=20,
+        ),
         _ContextExemption(
             reason="첨단 기술 주장을 부정",
             trigger=re.compile(r"첨단[의]?\s*(?:기술|장비|시술)"),
@@ -261,6 +320,15 @@ _ALLOWED_CONTEXTS: dict[str, tuple[_ContextExemption, ...]] = {
     # "시술이 아프지 않을까 걱정하는 분이 많습니다" — 환자의 의문·걱정 인용.
     # "시술은 아프지 않습니다" 같은 단정은 계속 차단.
     "통증 없는": (
+        # "고혈압은 초기에 통증 없이 진행합니다", "결절은 통증 없는 혹으로 발견됩니다" — 무증상
+        # 질환 설명. 가까이에 시술·진료·병원을 가리키는 말이 있으면 결과 보장으로 보고 막는다.
+        _ContextExemption(
+            reason="무증상 질환의 경과 설명",
+            trigger=re.compile(r"통증\s*없[는이]"),
+            unless_preceded_by=_PROCEDURE,
+            unless_followed_by=_PROCEDURE,
+            window=10,
+        ),
         _ContextExemption(
             reason="환자의 의문·걱정 표현",
             trigger=re.compile(r"(?:시술|수술|치료)[은는이가]?\s*아프지\s*않"),
