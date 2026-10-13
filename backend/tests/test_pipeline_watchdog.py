@@ -1196,8 +1196,8 @@ class FakeEmailStore:
     def find_plan(self, lookup_key, *, now):
         if not self.available:
             return False
-        for key, detail in self._recent_plans(now):
-            if key == lookup_key:
+        for action, key, _at, detail in self.rows:  # 정확한 키 — 창 없이 처음 계획
+            if action == pipeline_watchdog._EMAIL_PLANNED_ACTION and key == lookup_key:
                 return pipeline_watchdog._plan_from_detail(detail)
         return None
 
@@ -1454,6 +1454,42 @@ async def test_an_episodeless_mail_is_not_resent_when_redis_returns(monkeypatch,
 
     assert first == (True,) and later == (False,) and again == (False,)
     assert len(calls) == 1
+
+
+async def test_a_linked_episode_keeps_its_first_plan_past_the_24h_window(monkeypatch, email_store):
+    """Redis 장애 키로 보낸 뒤(t0) 새 에피소드가 그 계획에 이어지고(t+20분), 25시간 뒤 프로세스가 바뀌어도
+    에피소드의 첫 계획(같은 키·본문)을 그대로 써 다시 보내지 않는다 — 정확한 키 조회에는 24시간 창이 없다."""
+    redis_up = [False]
+    monkeypatch.setattr(
+        pipeline_watchdog, "_connect_redis", lambda: FakeRedis(broken=not redis_up[0])
+    )
+    calls = _mail_recorder(monkeypatch)
+    t0 = datetime(2026, 10, 11, 0, 5, tzinfo=UTC)
+    episode = "2026-10-11T00:25:00+00:00"
+    email_store.clock = t0
+
+    first = await pipeline_watchdog.email_undelivered(
+        (_undelivered_alert("발행", episode=None),), (False,), now=t0
+    )
+    redis_up[0] = True
+    pipeline_watchdog.reset_email_memory_for_tests()
+    email_store.clock = t0 + timedelta(minutes=20)
+    linked = await pipeline_watchdog.email_undelivered(
+        (_undelivered_alert("발행", episode=episode),), (False,), now=t0 + timedelta(minutes=20)
+    )
+    pipeline_watchdog.reset_email_memory_for_tests()
+    email_store.clock = t0 + timedelta(hours=25)
+    plan_key, plan = pipeline_watchdog._email_plan(
+        _undelivered_alert("발행", episode=episode), t0 + timedelta(hours=25)
+    )
+    later = await pipeline_watchdog.email_undelivered(
+        (_undelivered_alert("발행", episode=episode),), (False,), now=t0 + timedelta(hours=25)
+    )
+
+    assert (first, linked, later) == ((True,), (False,), (False,))
+    assert len(calls) == 1
+    assert plan_key is None  # 이미 보낸 키
+    assert plan.mail_key == calls[0]["idempotency_key"] and plan.lines == calls[0]["lines"]
 
 
 async def test_a_redis_outage_across_kst_midnight_mails_once_under_one_key(monkeypatch, email_store):

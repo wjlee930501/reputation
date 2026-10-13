@@ -1398,11 +1398,22 @@ class _WatchdogEmailStore:
         )
 
     def find_plan(self, lookup_key: str, *, now: datetime) -> _MailPlan | None | bool:
-        """이 조회 키에 처음 정한 메일. 없으면 None, DB를 못 읽으면 False."""
+        """이 조회 키에 처음 정한 메일. 없으면 None, DB를 못 읽으면 False.
+
+        24시간 창을 두지 않는다 — 에피소드가 이어지는 동안(하루를 넘겨도) 처음 계획을 그대로 쓴다. 창은
+        다른 키의 계획에 잇는 `find_linked`에만 있다. 정확한 키 조회라 action·대상 종류로 좁히고 한 행만 읽는다.
+        """
         try:
             with watchdog_session() as db:
                 detail = db.scalar(
-                    self._planned_rows(now).where(AdminAuditLog.target_id == lookup_key)
+                    select(AdminAuditLog.detail)
+                    .where(
+                        AdminAuditLog.action == _EMAIL_PLANNED_ACTION,
+                        AdminAuditLog.target_type == _EMAIL_TARGET_TYPE,
+                        AdminAuditLog.target_id == lookup_key,
+                    )
+                    .order_by(AdminAuditLog.created_at, AdminAuditLog.id)
+                    .limit(1)
                 )
         except (SQLAlchemyError, OSError):
             logger.warning("pipeline watchdog: DB unavailable while reading email state")
