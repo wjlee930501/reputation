@@ -381,6 +381,51 @@ hospital ID 대조를 smoke가 했다고 기록하지 않는다(필요하면 따
    Phase 0의 롤백 금지(Worker `00223` 이하)는 그대로다. 같은 이유로 롤백 뒤 사람이 그 달 일정을 바꾸면 옛 교체 경로도 요금제 편수로
    다시 만든다 — 롤백 중에는 안분된 병원의 일정 교체를 미룬다.
 
+**Phase 3(2026-10-13 콘텐츠 게이트 조정) — 배포 전 확인.** 새 DB 리비전은 없다(head는 Phase 1의 `0088` 그대로).
+1. **금지 표현 필터(`utils/medical_filter.py`)를 바꾼 배포는 새 이미지로 영향 조회를 먼저 돌린다.** 필터는 공개 가시성·병원 공개
+   문구에도 쓰여 배포 즉시 걸리는 공개 글을 숨기고, 문맥 예외가 넓어지면 운영 필터가 숨기던 글을 **다시 보이게** 한다.
+   `scripts/deploy.sh migrate`로 migrate Job의 이미지를 새 이미지로 바꾼 뒤(이 릴리스는 alembic 변경이 없어 upgrade는 아무것도
+   하지 않는다) 운영 DB에 대해 돌린다. 조회는 글·문구마다 새 필터와 **운영 필터 동결본**(`utils/medical_filter_baseline.py`,
+   기준 이미지 `7a1e2174`의 필터 그대로)의 판정을 함께 찍는다 — 한쪽에라도 걸린 항목마다
+   `{"labels": [...], "baseline_labels": [...], "change": "newly_blocked"|"newly_unblocked"|"still_blocked"}` 한 줄, 끝에
+   `{"summary": ..., "changes": ..., "baseline": "7a1e2174"}`. 읽기 전용(READ ONLY·롤백)이다. **두 방향을 모두 본다**:
+   `newly_blocked`(배포 즉시 숨겨진다)와 `newly_unblocked`(배포 즉시 다시 공개된다 — 예외가 결과 보장·유인을 놓쳤는지 원문을
+   직접 읽는다). 둘 다 0건이거나 대표가 확인한 목록일 때만 서비스 배포를 진행한다. 출력 전체를 릴리스 기록에 보관한다.
+
+   ```bash
+   gcloud run jobs execute reputation-migrate --project mso-platform-481505 --region asia-northeast3 --wait \
+     --args=python,-m,app.utils.forbidden_impact_scan
+   ```
+
+2. `ops_sql_report --only=q4`로 게이트 카탈로그 판(`2026-10-13.1`)이 한 번 다시 평가할 종착 슬롯 수를 센다(슬롯당 작가 세션 1회분 상한).
+   판 올리기는 종착 슬롯 **전부를 한꺼번에** 다시 평가한다 — 표본을 다 쓴 슬롯도 하루 작가 2세션 예산 안에서 작가 세션을 다시 사며, 9개 병원이 23:00 배치의 상한 50을 나눠 쓰는 내일 슬롯과 자리를 다툰다. q4 건수가 상한에 가까우면 배치 시간대 밖 배포 뒤 첫 23:00 배치의 처리 건수·경고를 확인한다.
+3. `CONTENT_HARD_FINDING_IDLE_TERMINAL`(기본 `false`)은 아래 측정이 10/10 이후 같은 글의 반복 공회전을 보여 줄 때만 `.env.production`에서 켠다.
+
+   ```sql
+   SELECT date_trunc('day', r.requested_at AT TIME ZONE 'Asia/Seoul') AS day, count(*) AS runs,
+          count(DISTINCT r.request_payload->>'source_id') AS items
+   FROM operation_runs r
+   WHERE r.operation_type = 'GENERATE_CONTENT_ITEM' AND r.state = 'FAILED'
+     AND r.safe_error_code = 'CONTENT_AI_HARD_FINDING'
+     AND r.requested_at >= '2026-10-10'
+   GROUP BY 1 ORDER BY 1;
+   ```
+
+   같은 글이 하루 여러 번이면 그 글의 `human_edited_at`과 `essence_check_summary->'auto_correction'->'history'` 길이가 늘지 않았는지로
+   공회전(사람이 편집해 교정이 맡지 못한 HARD)을 가른다.
+4. **롤백은 코드만 되돌린다 — 데이터는 되돌아오지 않는다.** 배포 전에 1의 영향 ID 목록과, 그 글들의 현재 판
+   (`content_revision`·본문 hash·`essence_check_summary`)을 읽기 전용으로 떠 둔다. 롤백 때 알아 둘 것:
+   - 생성 단계의 결정적 치유(금지 표현 문장 삭제, 필수 문구·병원명 덧붙이기)로 저장된 본문은 코드 롤백으로 복원되지 않는다. 치유
+     전 후보는 저장되지 않으므로, 배포 뒤 문제가 된 글은 사람이 PATCH로 고치거나 다시 생성한다.
+   - 새 필터만으로 숨겨진 공개 글(`newly_blocked`)은 옛 리비전에서 **다시 공개된다**. 반대로 새 필터가 풀어 준 글
+     (`newly_unblocked`)은 옛 리비전에서 다시 숨는다.
+   - D23으로 참고자료 0개로 발행된 진료비·병원 선택 글은 옛 API의 공개 가시성(`public_surface_has_required_references`)에서
+     **다시 숨는다**. 롤백 전 `content_items`에서 해당 글(발행 이력 있음·참고자료 0개·진료비/병원 선택 제목)을 뽑아 두고, 롤백이
+     길어지면 대표에게 알린다.
+5. **호환 롤백 이미지는 게이트 카탈로그 판 `2026-10-13.1`을 유지해야 한다.** 판을 옛 값으로 되돌리면 입력 지문(`context`)이 다시
+   바뀌어 종착 슬롯 전부가 또 한 번 재평가된다(2의 부하가 반복된다). 롤백이 필요하면 직전 운영 이미지를 그대로 쓰지 말고, 직전
+   운영 코드에 `GENERATION_GATE_CATALOG_VERSION = "2026-10-13.1"`만 얹은 이미지를 미리 빌드해 둔다(필터·D23 동작은 옛 그대로).
+
 **10/8 배치(PR #226, `0083_add_operation_run_not_before`) — 0083 migrate Job을 먼저 끝내고, 코드는 그 다음 배포한다.**
 새 ORM이 `operation_runs.not_before_at`을 SELECT한다. 추가형·NULL 허용이라 0083 위의 옛 코드는 안전하다.
 `deploy.sh`의 Backend 대상은 4단계에서 마이그레이션을 먼저 실행하므로 표준 경로를 쓰면 순서가 지켜진다.

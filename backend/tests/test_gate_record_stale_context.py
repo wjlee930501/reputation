@@ -196,3 +196,10 @@ def test_a_current_context_exhausted_failure_stays_excluded(monkeypatch):
     assert _record(item)["next_retry_at"] is None  # 덮어도 3일 창을 이어 받는다
     assert not _loader_takes(monkeypatch, item, _NEXT_SWEEP_AT)
     assert not _loader_takes(monkeypatch, item, _kst(2026, 9, 17, 1, 0))
+
+
+def test_phase3_gate_changes_bump_the_catalog():
+    """2026-10-13 Phase 3(D23·D24·E2·E3)이 결정적 수락 기준을 바꿨다 — 이미 막힌 슬롯이 새 기준으로
+    한 번 다시 평가받도록 지문의 카탈로그 판이 바뀌어야 한다."""
+
+    assert tasks.GENERATION_GATE_CATALOG_VERSION == "2026-10-13.1"

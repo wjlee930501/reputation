@@ -32,7 +32,9 @@ from app.workers.generation_attempt_state import (
 )
 from app.workers.generation_retry_policy import (
     GENERATION_BUDGET_EXHAUSTED_CODE,
+    GENERATION_REJECTION_OTHER,
     GenerationRetryClass,
+    generation_rejection_kind,
     next_recovery_sweep,
     retry_class_for,
 )
@@ -79,6 +81,10 @@ _REJECTION_MESSAGES = {
     "must_use": (
         "승인된 필수 문구가 재작성 후에도 원문 그대로 들어가지 않았습니다. "
         "운영 센터에서 병원 정보 탭의 필수 문구를 확인해 주세요."
+    ),
+    "exam_title": (
+        "검사 이름에 '치료'를 붙인 제목이 재작성 후에도 남았습니다. "
+        "다음 자동 재시도가 제목을 다시 씁니다."
     ),
 }
 GENERATION_REJECTION_SAFE_MESSAGES = frozenset(
@@ -212,28 +218,22 @@ def safe_generation_rejection_message(message: str | None) -> str:
 
 
 def _safe_rejection_message(error: ValueError) -> str:
-    """Classify known hard gates without persisting provider or candidate text."""
+    """Classify known hard gates without persisting provider or candidate text.
 
-    detail = str(error).casefold()
-    if "truncated" in detail:
-        # 잘린 응답은 가격·지역·검색 구조 게이트 실패가 아니다. 운영자에게 틀린 원인을
-        # 보여주면 승인 자료를 고치라는 엉뚱한 조치로 이어진다.
-        return _REJECTION_MESSAGES["truncated"]
-    if "unverified fixed price or coverage" in detail:
-        return _REJECTION_MESSAGES["price"]
-    if "references is empty" in detail:
-        return _REJECTION_MESSAGES["references"]
-    if "geo hard-fail" in detail or "citable reference" in detail:
-        return _REJECTION_MESSAGES["geo"]
-    if "seo hard-fail" in detail:
-        return _REJECTION_MESSAGES["seo"]
-    if "forbidden medical expressions" in detail:
-        return _REJECTION_MESSAGES["forbidden"]
-    if "faq output requires" in detail or "faq question must" in detail:
-        return _REJECTION_MESSAGES["faq"]
-    if "must_use messages missing verbatim" in detail:
-        return _REJECTION_MESSAGES["must_use"]
-    return _DEFAULT_REJECTION_MESSAGE
+    판정은 `generation_retry_policy.generation_rejection_kind` 한 곳이다 — 잘린 응답을 가격·지역
+    게이트 실패로 보여 주면 승인 자료를 고치라는 엉뚱한 조치로 이어진다.
+    """
+
+    return _REJECTION_MESSAGES.get(generation_rejection_kind(error), _DEFAULT_REJECTION_MESSAGE)
+
+
+def rejection_kind_for_message(message: str | None) -> str:
+    """저장된 운영자 문구에서 거절 라벨을 되짚는다(분류기가 만든 문구만 안다)."""
+
+    for kind, safe_message in _REJECTION_MESSAGES.items():
+        if message == safe_message:
+            return kind
+    return GENERATION_REJECTION_OTHER
 
 
 def explicit_run_context(task: GenerationTask) -> ExplicitRunContext | None:

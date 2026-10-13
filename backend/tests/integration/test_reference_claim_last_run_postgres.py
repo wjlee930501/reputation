@@ -12,7 +12,7 @@
 """
 
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 import arrow
 import pytest
@@ -53,6 +53,8 @@ pg_session = digest.pg_session
 gate_db = digest.gate_db
 incidents = digest.incidents
 
+# 수기 목록 치유 후보가 없는 의료 글 — 참고자료가 비면 종전처럼 MISSING_REFERENCES로 보류된다.
+NO_CATALOG_TITLE = "귀지가 막혔을 때 — 집에서 해도 되는 관리"
 # 치질(치핵) 수기 목록 문서 — 진료비 글에서는 통과 기록이 있어도 빼야 하는 문서다.
 CATALOG_HEMORRHOID = (
     "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/"
@@ -148,35 +150,21 @@ def _operator_lines(db, hospital) -> int:
     return sum(_section_text(row).count(LINE_TITLE) for row in _digests_for(db, hospital))
 
 
-def test_last_run_reports_a_claimed_cost_post_once_and_leaves_the_row(
+def test_last_run_neither_holds_nor_touches_a_claimed_cost_post(
     gate_db, incidents, monkeypatch
 ):
+    """D23(2026-10-13): 진료비 글은 목록 문서를 빼 참고자료가 비어도 보류가 아니다 — 23시의 claim
+    행은 보고할 것도 없고 행도 그대로다."""
+
     db = gate_db
     hospital, item = _claimed_cost_post(db, claimed_at=_kst(TODAY, 22, 10))
     before = _stored(db, item)
 
     fetcher = _publisher_run(db, monkeypatch, _kst(TODAY, 23))
 
-    assert fetcher.calls == []
-    assert [(call["item_id"], call["code"]) for call in incidents] == [
-        (item.id, "MISSING_REFERENCES")
-    ]
-    [row] = _digests_for(db, hospital)
-    text = _section_text(row)
-    assert text.count(LINE_TITLE) == 1 and f"{LINE_TITLE} 1편" in text
+    assert fetcher.calls == [] and incidents == []
+    assert _digests_for(db, hospital) == []
     assert _stored(db, item) == before
-    assert before[3] is ContentStatus.DRAFT
-
-    # 다음 날: claim은 만료됐다(TTL 2h). 07:45·08:00이 종전처럼 판정하고 인시던트를 이어가지만
-    # 지난 예정일이라 운영자 줄은 다시 싣지 않는다.
-    next_day = TODAY + timedelta(days=1)
-    for moment in (_kst(next_day, 7, 45), _kst(next_day, 8)):
-        incidents.clear()
-        _publisher_run(db, monkeypatch, moment)
-        assert [call["code"] for call in incidents] == ["MISSING_REFERENCES"]
-    assert _operator_lines(db, hospital) == 1
-    db.refresh(item)
-    assert item.references_list == []  # claim이 풀린 뒤에는 종전처럼 목록 문서를 뺐다
 
 
 def test_a_claimed_cost_post_at_noon_is_skipped_with_nothing_reported(
@@ -193,34 +181,23 @@ def test_a_claimed_cost_post_at_noon_is_skipped_with_nothing_reported(
     assert _stored(db, item) == before
 
 
-def test_s2_a_claimed_cost_post_with_a_dead_outside_url_is_reported_once(
+def test_s2_a_claimed_cost_post_with_a_dead_outside_url_is_not_held(
     gate_db, incidents, monkeypatch
 ):
-    """리뷰어 S2 그대로 — 진료비 글의 유일한 참고자료가 신선한 통과 없는 목록 밖 죽은 주소(404)."""
+    """리뷰어 S2의 글(D23 뒤) — 유일한 참고자료가 죽은 목록 밖 주소여도 진료비 글은 보류가 아니다."""
 
     db = gate_db
     hospital, schedule = _hospital(db)
     item = _written(db, hospital, schedule, title=COST_TITLE, scheduled_date=TODAY, sequence_no=1)
     _claim(db, item, _kst(TODAY, 22, 10))
     before = _stored(db, item)
-    assert before[1] == [{"title": "추측 주소", "url": DEAD_URL}] and before[2] is None
 
     fetcher = _publisher_run(db, monkeypatch, _kst(TODAY, 23))
 
     assert fetcher.calls == [DEAD_URL]  # 종전 23시처럼 잠금 전 GET
-    assert [(call["item_id"], call["code"]) for call in incidents] == [
-        (item.id, "MISSING_REFERENCES")
-    ]
-    [row] = _digests_for(db, hospital)
-    assert _section_text(row).count(LINE_TITLE) == 1
+    assert incidents == []
+    assert _digests_for(db, hospital) == []
     assert _stored(db, item) == before
-
-    next_day = TODAY + timedelta(days=1)
-    for moment in (_kst(next_day, 7, 45), _kst(next_day, 8), _kst(next_day, 9)):
-        incidents.clear()
-        _publisher_run(db, monkeypatch, moment)
-        assert [call["code"] for call in incidents] == ["MISSING_REFERENCES"]
-    assert _operator_lines(db, hospital) == 1  # 다음 날 중복 줄 없음
 
 
 def test_a_claimed_row_whose_site_is_down_at_the_last_run_is_deferred_like_an_unclaimed_one(
@@ -327,49 +304,37 @@ def _item_incidents(db, item) -> list[Incident]:
 def test_the_real_incident_does_not_write_a_live_claimed_row_at_the_last_run(
     real_incidents, monkeypatch
 ):
-    """A2 — 23시 사본 판정 뒤의 실제 인시던트도 claim이 살아 있는 행은 쓰지 않는다."""
+    """A2 — 23시 사본 판정 뒤의 실제 인시던트도 claim이 살아 있는 행은 쓰지 않는다.
+
+    D23 뒤로 진료비 글은 보류되지 않으므로, 보류되는 의료 글(수기 목록 치유 후보 없음)로 본다.
+    """
 
     db = real_incidents
-    hospital, item = _claimed_cost_post(db, claimed_at=_kst(TODAY, 22, 10))
-    item.essence_check_summary = {"generation_attempt": _decided_attempt()}
-    db.commit()
+    hospital, schedule = _hospital(db)
+    item = _written(
+        db, hospital, schedule, title=NO_CATALOG_TITLE, scheduled_date=TODAY, sequence_no=1
+    )
+    _claim(db, item, _kst(TODAY, 22, 10))
     before = _row_json(db, item)
 
     _publisher_run(db, monkeypatch, _kst(TODAY, 23))
 
-    assert _row_json(db, item) == before  # 모든 열이 바이트 그대로(시도 기록의 기한 키 포함)
+    assert _row_json(db, item) == before  # 모든 열이 바이트 그대로
     [incident] = _item_incidents(db, item)
-    assert (incident.state, incident.safe_error_code, incident.sla_due_at) == (
-        "OPEN",
-        "MISSING_REFERENCES",
-        None,
-    )
-    assert _operator_lines(db, hospital) == 1
+    assert incident.safe_error_code == "MISSING_REFERENCES"
 
 
-@pytest.mark.parametrize(
-    "claimed_hour", [None, 20], ids=["unclaimed", "expired_claim"]
-)
-def test_the_real_incident_still_drops_the_deadline_of_an_unowned_row(
-    real_incidents, monkeypatch, claimed_hour
+def test_the_real_incident_opens_nothing_for_a_cost_post_with_a_pre_d23_operator_record(
+    real_incidents, monkeypatch
 ):
-    """대조 — claim이 없거나 만료된(TTL 2h) 행은 종전처럼 인시던트가 기한 키를 지운다."""
+    """D23 이전에 남은 '사람이 정하는 참고자료 보류' 기록이 있어도 진료비 글은 이제 보류가 아니다."""
 
     db = real_incidents
-    hospital, item = _claimed_cost_post(db, claimed_at=_kst(TODAY, claimed_hour or 22, 10))
+    hospital, item = _claimed_cost_post(db, claimed_at=_kst(TODAY, 20, 10))
     item.essence_check_summary = {"generation_attempt": _decided_attempt()}
-    if claimed_hour is None:
-        item.generation_claim_token = None
-        item.generation_claimed_at = None
     db.commit()
 
     _publisher_run(db, monkeypatch, _kst(TODAY, 23))
 
-    db.expire_all()
-    db.refresh(item)
-    attempt = item.essence_check_summary["generation_attempt"]
-    assert attempt["reason"] == "MISSING_REFERENCES"
-    assert "next_retry_at" not in attempt
-    [incident] = _item_incidents(db, item)
-    assert (incident.state, incident.sla_due_at) == ("OPEN", None)
-    assert _operator_lines(db, hospital) == 1
+    assert _item_incidents(db, item) == []
+    assert _operator_lines(db, hospital) == 0

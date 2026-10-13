@@ -530,6 +530,7 @@ from app.workers.generation_retry_policy import (
     BODY_REPAIR_STATE_KEY,
     DAILY_RESET_ENVIRONMENT_CODES,
     ENVIRONMENT_SINCE_KEY,
+    HARD_FINDING_IDLE_KEY,
     OPERATOR_DECIDES_KEY,
     REVIEW_UNAVAILABLE_CODE,
     SAMPLE_EXHAUSTED_DAY_LIMIT,
@@ -562,6 +563,7 @@ from app.workers.generation_run_control import (
     finish_explicit_run,
     finish_item_run,
     mark_operation_run_queued,
+    rejection_kind_for_message,
     safe_generation_rejection_message,
 )
 from app.workers.monthly_artifact_incident_control import (
@@ -591,6 +593,7 @@ from app.workers.nightly_generation_batch import (
     load_stuck_claims,
     release_generation_claim,
     release_unfinished_claims,
+    stored_body_awaits_only_optional_references,
     write_back_generated_content,
     write_back_generated_image,
     write_back_published_image_certificate,
@@ -647,7 +650,7 @@ _GENERATION_ATTEMPT_KEY = "generation_attempt"
 # price/coverage rules, curated KDCA catalog selection, or GEO/season semantics.  The
 # token lets already rejected slots receive one bounded re-evaluation after a deploy;
 # the newly stored context then restores H-08's identical-input loop suppression.
-GENERATION_GATE_CATALOG_VERSION = "2026-10-02.1"
+GENERATION_GATE_CATALOG_VERSION = "2026-10-13.1"
 _STORED_EMPTY_CONTENT_BLOCK_CODES = frozenset(
     {"MISSING_APPROVED_ESSENCE", "COST_BLOCKED", "GENERATION_REJECTED"}
 )
@@ -1067,7 +1070,13 @@ def _auto_correct_blocked_body(
     review = _stored_ai_review(item)
     candidate = _stored_candidate(item)
     must_use = required_must_use_messages(philosophy)
-    plan = plan_corrections(candidate, review, must_use_messages=must_use)
+    # 모델이 HARD로 단정한 판정에 함께 나온 인용 UNCERTAIN도 같은 패스가 고친다 — HARD만 고치면
+    # 남은 UNCERTAIN이 교정본의 재검수를 다시 막는다. UNCERTAIN만 남은 차단은 종전대로 재검수·
+    # 표본 사다리가 맡는다(공개 모드는 이미 늘 켠다).
+    include_uncertain = _stored_model_declared_hard(item)
+    plan = plan_corrections(
+        candidate, review, must_use_messages=must_use, include_uncertain=include_uncertain
+    )
     state = _stored_auto_correction_state(item)
     if not plan.applicable:
         if _stored_model_declared_hard(item):
@@ -1098,6 +1107,7 @@ def _auto_correct_blocked_body(
                 propose=propose_sentence_corrections,
                 review=review_generated_content,
             ),
+            include_uncertain=include_uncertain,
         )
     )
     if outcome.status == "NOT_APPLICABLE":
@@ -1242,7 +1252,9 @@ def _generation_attempt_is_unchanged(
 
 
 def _terminal_attempt_is_unchanged(
-    item: ContentItem, philosophy: HospitalContentPhilosophy | None
+    item: ContentItem,
+    philosophy: HospitalContentPhilosophy | None,
+    hospital: Hospital | None = None,
 ) -> bool:
     """종착 기록(`attempt_is_terminal`)이 그 판정 때의 입력 그대로인가.
 
@@ -1255,6 +1267,9 @@ def _terminal_attempt_is_unchanged(
     if not attempt_is_terminal(previous):
         return False
     if previous.get("context") != _generation_attempt_context(item, philosophy):
+        return False
+    if previous.get(HARD_FINDING_IDLE_KEY) and _approved_facts_changed_since_block(item, hospital):
+        # 사실·안전 HARD는 승인 자료가 풀므로, 사람이 그 자료를 채웠으면 다시 집는다.
         return False
     edited_at = getattr(item, "human_edited_at", None)
     observed_raw = previous.get("observed_at")
@@ -1297,6 +1312,9 @@ def _generation_retry_is_eligible(db):
             philosophies[hospital_id] = _generation_philosophy_sync(db, hospital_id)
         # 종착 기록이 입력 그대로면 본문이 있어도 집지 않는다 — 워커의 같은 판정과 짝이다.
         if _terminal_attempt_is_unchanged(item, philosophies[hospital_id]):
+            return False
+        # 진료비·병원 선택 글의 빈 참고자료만 남은 본문은 고칠 것이 없다(D23) — 워커의 같은 판정과 짝이다.
+        if stored_body_awaits_only_optional_references(item, philosophies[hospital_id]):
             return False
         if getattr(item, "body", None):
             return True
@@ -1434,6 +1452,8 @@ def _remember_generation_attempt(
         attempt[ENVIRONMENT_SINCE_KEY] = (carried or observed_at).isoformat()
     if reason == "GENERATION_REJECTED":
         attempt["message"] = safe_generation_rejection_message(message)
+        # 거절 사유의 기계 라벨(E5) — 금지 표현·참고자료·제목 등 몫을 숫자로 센다.
+        attempt["rejection_kind"] = rejection_kind_for_message(attempt["message"])
     # 이 차단이 어떤 승인 사실 위에서 내려졌는지 남긴다. 사람이 그 자료를 채우면 스윕이
     # 그 사실을 관측해 한 번의 재생성을 준다. 읽지 못한 실행이 기존 지문을 지우지 않는다.
     approved_facts = _hospital_review_facts(item) or previous.get("approved_facts")
@@ -5879,12 +5899,28 @@ def _run_generation_item(
     philosophy = None
 
     try:
-        if _terminal_attempt_is_unchanged(item, _generation_philosophy_sync(db, hospital.id)):
+        if _terminal_attempt_is_unchanged(
+            item, _generation_philosophy_sync(db, hospital.id), hospital
+        ):
             # 로더가 claim 전에 거르는 규칙(`_generation_retry_is_eligible`)과 같다. 재배달·직접
             # 호출로 이 자리에 와도 종착 판정을 같은 입력으로 다시 돌리지 않는다.
             previous = _stored_generation_attempt(item)
             code = str(previous["reason"])
             message = "종착 판정 뒤 입력이 달라지지 않아 자동 재시도를 건너뛰었습니다."
+            recorder.record(
+                item.id,
+                GenerationItemState.SKIPPED,
+                safe_error_code=code,
+                safe_error_message=message,
+            )
+            return GenerationItemState.SKIPPED, code, message
+        if stored_body_awaits_only_optional_references(
+            item, _generation_philosophy_sync(db, hospital.id)
+        ):
+            # 로더가 claim 전에 거르는 규칙과 같다(재배달·직접 호출). 진료비·병원 선택 글의 참고자료는
+            # D23 뒤로 선택이라 빈 목록은 고칠 것이 아니다 — 쓰기 없이 물러난다.
+            code = "REFERENCES_OPTIONAL"
+            message = "진료비·병원 선택 글이라 참고자료 없이도 발행할 수 있어 다시 쓰지 않았습니다."
             recorder.record(
                 item.id,
                 GenerationItemState.SKIPPED,
@@ -6253,6 +6289,9 @@ def _run_generation_item(
         db.rollback()
         db.expire_all()
         unwritten = not getattr(item, "body", None)
+        # D23(2026-10-13) 뒤로 진료비·병원 선택 제목은 참고자료가 비어도 생성이 거절하지 않으므로
+        # (`references_block_when_empty`) 이 갈래에 닿지 않는다. 옛 기록을 읽는 경로와 함께 배포
+        # +약 1주에 걷어낼 예정이다(계획 Q7).
         operator_decides = unwritten and _generation_left_references_to_operator(e, item)
         if operator_decides:
             # 작가 회차를 다 쓰고도 통과한 참고자료가 없는 진료비·병원 선택 슬롯이다. 다시 써도
@@ -7212,6 +7251,7 @@ def _generate_single_content_item(
                     stored_assessment.code,
                     stored_assessment.message,
                 )
+        correction_ran = False
         if (
             stored_assessment.code == "CONTENT_AI_HARD_FINDING"
             # 운영자 재검수 전용 실행은 교정(공급자 호출)을 하지 않는다. 교정은 자동 스윕이 맡는다.
@@ -7226,6 +7266,7 @@ def _generate_single_content_item(
             if isinstance(corrected, tuple):
                 return corrected
             if corrected is not None:
+                correction_ran = True
                 stored_assessment = assess_content_publication(item, philosophy)
         repairable_body = (
             stored_assessment.code in _AUTOMATIC_BODY_REPAIR_CODES
@@ -7266,6 +7307,24 @@ def _generate_single_content_item(
         }:
             # Fact/medical-safety findings remain fail-closed with their concrete
             # finding and approved-data gap; no writer or image budget is spent.
+            if (
+                stored_assessment.code == "CONTENT_AI_HARD_FINDING"
+                and not review_only
+                and not correction_ran
+                and _stored_model_declared_hard(item)
+                and settings.CONTENT_HARD_FINDING_IDLE_TERMINAL
+            ):
+                # 이번 실행은 아무것도 맡지 못했다(사람 편집으로 교정 불가 등). 같은 입력으로는
+                # 다음 스윕도 같은 결과이므로 종착으로 표시한다 — 입력·사람 편집·승인 사실이
+                # 바뀌면 로더가 다시 집는다(`_terminal_attempt_is_unchanged`).
+                _remember_generation_attempt(
+                    db,
+                    item,
+                    philosophy,
+                    stored_assessment.code,
+                    count_attempt=False,
+                    extra={HARD_FINDING_IDLE_KEY: True},
+                )
             return (
                 GenerationItemState.FAILED,
                 stored_assessment.code,

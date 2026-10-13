@@ -697,3 +697,30 @@ async def test_caller_model_confident_pass_uses_one_call(monkeypatch) -> None:
 
     assert [call["model"] for call in harness.calls] == ["anthropic/fictional-sonnet"]
     assert result.payload()["model"] == "anthropic/fictional-sonnet"
+
+
+# ── E1(2026-10-13): 최소 교정의 재검수는 직전 지적과 교정 전·후 문장을 함께 본다 ──────────
+
+
+def test_correction_context_is_carried_only_when_given() -> None:
+    kwargs = dict(
+        hospital=SimpleNamespace(name="병원"),
+        philosophy=SimpleNamespace(),
+        content={"title": "안내", "body": "본문"},
+        content_brief=None,
+    )
+    plain = content_ai_review.content_review_input_payload(**kwargs)
+    assert "correction_context" not in plain  # 교정 밖의 검수 입력 바이트는 종전과 같다
+
+    addressed = [
+        {"finding": f"지적 {index}", "before": "가" * 400, "after": ""} for index in range(12)
+    ]
+    data = content_ai_review.content_review_input_payload(
+        **kwargs, correction_context={"addressed": addressed}
+    )
+    context = data["correction_context"]["addressed"]
+    assert len(context) == 10 and context[-1]["finding"] == "지적 11"
+    assert len(context[0]["before"]) == 300
+    assert data["candidate_sha256"] == plain["candidate_sha256"]
+    assert "correction_context" in content_ai_review._SYSTEM_PROMPT
+    assert "판정을 바꿀 근거가 없으면 다시 지적하지 마세요" in content_ai_review._SYSTEM_PROMPT

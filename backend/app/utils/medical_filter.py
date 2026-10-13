@@ -5,6 +5,7 @@
 """
 import re
 import unicodedata
+from bisect import bisect_left, bisect_right
 from dataclasses import dataclass
 
 # Zero-width / 비표시 문자 — 금지 표현 사이에 끼워 넣어 정규식을 회피하는 우회를 차단.
@@ -59,7 +60,8 @@ FORBIDDEN_PATTERNS: dict[str, re.Pattern] = {
     "특허": re.compile(r"특허[를]?\s*(보유|획득|취득|출원|등록)"),
     "독보적": re.compile(r"독보적[인]?|비교\s*불가"),
     # 2025 신규 — 의협 심의회 사례 + GEO 콘텐츠에 자주 새는 표현.
-    "노하우": re.compile(r"(저희|우리|병원|원장)[\w가-힣]*\s*만[의]?\s*노하우|차별화된\s*노하우"),
+    # 낱말 꼬리는 10자까지만 본다 — 상한이 없으면 "병원"*8000에서 0.8초가 걸렸다(위치마다 끝까지 훑는다).
+    "노하우": re.compile(r"(저희|우리|병원|원장)[\w가-힣]{0,10}\s*만[의]?\s*노하우|차별화된\s*노하우"),
     "효과 보장": re.compile(r"효과[를]?\s*(보장|확실|약속)|보장[된]?\s*효과"),
     "최첨단": re.compile(r"최첨단|첨단[의]?\s*(기술|장비|시술)"),
     "안전한 시술": re.compile(r"안전[한]?\s*(시술|수술|치료)[이가]?\s*보장|100%\s*안전"),
@@ -69,6 +71,33 @@ FORBIDDEN_PATTERNS: dict[str, re.Pattern] = {
         r"|(?:시술|수술|치료)[은는이가]?\s*아프지\s*않"
     ),
     "흉터 없는": re.compile(r"흉터\s*(없|zero|제로|걱정\s*없|남지\s*않)"),
+    # 2026-10-13 대표 결정(D24) — 가격 우위·할인·이벤트·무료 유인(의료법 제56조 제2항 제13호,
+    # 제27조 제3항). 생성 단계 전용 가격 검사(`content_engine.UNVERIFIED_PRICE_PATTERNS`)와 달리
+    # 발행 게이트·공개 가시성·관리자 PATCH가 모두 이 패턴을 쓴다. 의학 용어와 겹치는 낱말
+    # ('심혈관 이벤트가', '최저혈압', '국가 암검진은 무료')은 패턴 모양과 아래 문맥 예외로 비켜 간다.
+    # 어휘 경계는 법무 확인 권장(계획 Q1).
+    #
+    # 정규식은 위치마다 한 번만 시도되는 모양이어야 한다 — 숫자열 앞에 경계가 없는 `\d+%\s*할인`은
+    # 16,000자 숫자열에서 3초가 걸렸다(PATCH 본문에는 길이 상한이 없다). 백분율은 세 자리
+    # 이하·숫자 토큰의 시작에서만 시작한다.
+    # 앞의 대안이 먼저 시도된다: 할인·무료·면제와 같은 문장의 예약 권유, 혜택을 주겠다는 활용형은
+    # 짧은 '무료 검사' 매치보다 먼저 긴 매치로 잡아 공적 제도 예외의 trigger에 걸리지 않게 한다.
+    "할인·유인": re.compile(
+        r"(?:면제|무료(?!\s*주차)|할인)[^.?!\n]{0,30}?예약(?:을|도)?\s*(?:하세요|받습니다|받아요|주세요|해\s*주세요)"
+        r"|최저가(?!\s*(?:되|돼|될|된))|최저\s*(?:가격|비용|수가)|업계\s*최저|(?:가장|제일)\s*(?:저렴|싸)"
+        r"|(?:타|다른)\s*(?:병원|의원|곳)\s*(?:보다|대비)[^.?!\n]{0,12}(?:저렴|(?<!비)싸|낮은\s*(?:가격|비용))"
+        r"|(?<![\d.])\d{1,3}(?:\.\d{1,2})?\s*%\s*할인|할인가|할인\s*(?:이벤트|행사|혜택|쿠폰|가격|율|중)"
+        r"|할인(?:을|도|이)?\s*(?:해\s*드|제공|적용|받으)"
+        r"|특가|반값|파격\s*(?:가|할인)|땡처리|페이백"
+        r"|(?:오픈|개원|런칭|시즌|기념|감사|할인|봄맞이|여름맞이|가을맞이|겨울맞이)\s*이벤트"
+        r"|이벤트\s*(?:가격|기간|진행\s*중|혜택|참여|신청|특가)"
+        r"|무료(?:로)?\s*(?:(?:상담|검사|검진|진료|시술)(?:을|를)?\s*)?(?:해\s*드|드립니다|드려요|제공|이벤트)"
+        r"|무료\s*(?:상담|시술|진료|검사|검진|체험|시술권|이용권|쿠폰|이벤트)"
+        r"|(?:상담|시술|진료|검사)\s*(?:비\s*|비용\s*)?(?:전액\s*)?무료"
+        r"|본인\s*부담금?(?:을|를|은|는|이|가)?\s*(?:전액\s*)?(?:면제|할인|감면|대납|환급|0\s*원)"
+        r"(?!\s*(?:되지|하지|해\s*주지)\s*않)"
+        r"|사은품|경품|선착순|체험단"
+    ),
 }
 
 
@@ -92,6 +121,12 @@ FORBIDDEN_PATTERN_VARIANTS: tuple[str, ...] = (
     "첨단 기술", "첨단 장비", "첨단 시술",
     "무통 시술", "아프지 않은 시술", "흉터 남지 않",
     "국내 최초", "아시아 최초", "특허 보유",
+    # 할인·유인(D24, 법무 확인 권장). 표시용 FORBIDDEN_EXPRESSIONS에는 넣지 않는다 — 그 목록은
+    # Essence의 필수 안전 문구(`essence_engine.MANDATORY_AVOID_MESSAGES`)에 문자열로 이어 붙어
+    # 있어, 바꾸면 기존 초안·승인본이 모두 "필수 안전 규칙 없음"으로 승인·자동 검수에서 막힌다.
+    "최저가", "가장 저렴", "% 할인", "할인 이벤트", "특가", "반값", "페이백",
+    "개원 이벤트", "무료 상담", "무료 시술", "무료 검사", "본인부담금 면제",
+    "사은품", "경품", "선착순", "체험단",
 )
 
 
@@ -110,18 +145,41 @@ def forbidden_vocabulary_for_prompt() -> tuple[str, ...]:
 # 임상·통계·부정 문장까지 막으면 정상 글이 버려지므로, **문장 자체가 광고 주장을
 # 부정하거나 수치 단위를 말하는** 좁은 문맥만 예외로 둔다. 각 예외는 광고 문형이
 # 계속 막히는 양성 테스트와 임상 문형이 통과하는 음성 테스트를 함께 가진다.
+#
+# 같은 문장 검사(양성 근거·병원 자기 지칭·혜택·예약·결과 보장)는 매치 앞뒤 몇 글자가 아니라 **문장
+# 전체**에서, 방향과 무관하게 본다(2026-10-13 교차 검토 2회차 — 200자 창 밖의 '보장'과 40자 창 밖의
+# '저희 병원'이 통과했다). 문장 구간과 검사 결과는 텍스트마다 한 번만 만든다(`_SentenceIndex`).
 @dataclass(frozen=True)
 class _ContextExemption:
     """한 매치를 '광고가 아님'으로 판정하는 좁은 문맥 규칙."""
 
     reason: str
     trigger: re.Pattern | None = None      # 매치된 표현 자체가 이것과 완전히 일치할 때만
-    preceded_by: re.Pattern | None = None  # 매치 앞 window 자 안에 이 표현이 있을 때
-    followed_by: re.Pattern | None = None  # 매치 뒤 window 자 안에 이 표현이 있을 때
+    # 매치 바로 앞·뒤 window 자 안의 **인접** 문형(앵커 `$`·`^`로 붙어 있는 말). 같은 문장 검사가 아니다.
+    preceded_by: re.Pattern | None = None
+    followed_by: re.Pattern | None = None
+    unless_preceded_by: re.Pattern | None = None
+    unless_followed_by: re.Pattern | None = None
+    # 매치가 든 **문장 안 어디에든** 이 표현이 있어야 예외다(양성 근거가 앞뒤 어느 쪽에 와도 된다).
+    in_sentence: re.Pattern | None = None
+    # 문장 안 어디에든 이 표현 중 **하나라도** 있으면 예외가 아니다(병원 자기 지칭·혜택·예약 권유 등).
+    unless_in_sentence_any: tuple[re.Pattern, ...] = ()
+    # 문장 안에 이 표현들이 **모두** 있으면 예외가 아니다(예: 병원 자기 지칭 + '제공').
+    unless_in_sentence: tuple[re.Pattern, ...] = ()
     window: int = 30
 
-    def applies(self, text: str, match: re.Match) -> bool:
+    def applies(
+        self, text: str, match: re.Match, sentences: "_SentenceIndex", span: tuple[int, int]
+    ) -> bool:
         if self.trigger is not None and not self.trigger.fullmatch(match.group(0)):
+            return False
+        if self.in_sentence is not None and not sentences.contains(self.in_sentence, span):
+            return False
+        if any(sentences.contains(pattern, span) for pattern in self.unless_in_sentence_any):
+            return False
+        if self.unless_in_sentence and all(
+            sentences.contains(pattern, span) for pattern in self.unless_in_sentence
+        ):
             return False
         if self.preceded_by is not None:
             head = text[max(0, match.start() - self.window) : match.start()]
@@ -131,8 +189,76 @@ class _ContextExemption:
             tail = text[match.end() : match.end() + self.window]
             if not self.followed_by.search(tail):
                 return False
+        if self.unless_preceded_by is not None:
+            head = text[max(0, match.start() - self.window) : match.start()]
+            if self.unless_preceded_by.search(head):
+                return False
+        if self.unless_followed_by is not None:
+            tail = text[match.end() : match.end() + self.window]
+            if self.unless_followed_by.search(tail):
+                return False
         return True
 
+
+# 같은 문장 검사에 쓰는 정규식은 모두 위치마다 한 번만 시도되는 모양이어야 한다 — 이제 문장 전체(길이
+# 상한 없음)를 넘기므로 `[^.]*$`처럼 위치마다 끝까지 훑는 꼬리나 경계 없는 `\d+`를 두지 않는다.
+#
+# 병원이 스스로를 가리키는 말. '지정 병원에서'(국가검진 지정 기관)는 자기 지칭이 아니다.
+_HOSPITAL_SELF = re.compile(
+    r"저희|우리\s*(?:병원|의원)|본원|당원|(?<!지정)(?<!지정\s)(?:병원|의원)에서"
+)
+# 병원 자기 주장 또는 시술 결과 주장의 문맥. '첨단 장비'가 이 말 가까이 있으면 광고다.
+_CLAIM_CONTEXT = re.compile(_HOSPITAL_SELF.pattern + r"|병원|의원|시술|수술|치료")
+# 시술·진료 행위. '통증 없이'가 이 말 가까이 있으면 시술 결과를 보장하는 문장이다.
+_PROCEDURE = re.compile(
+    r"시술|수술|치료|진료|마취|주사|레이저|내시경|검사|교정|발치|임플란트|저희|본원|병원"
+)
+
+# 공적 제도·기관. '무료 검진'이 이 말과 함께 나오면 병원의 유인이 아니라 제도 안내다. '대상'·'연령'
+# 같은 말만으로는 근거가 되지 않는다 — "신규 고객 대상 무료 검사"는 병원의 유인이다.
+_PUBLIC_PROGRAM = re.compile(
+    r"국가|공단|보건소|국민\s*건강\s*보험|건강\s*보험|건강\s*검진|암\s*검진|지자체|정부"
+    r"|의료\s*급여|차상위|산정\s*특례|상한제|제도"
+)
+# 본인부담 면제·환급·0원이 제도 안내라는 양성 근거. 병원 자기 지칭이 없다는 것만으로는 풀지 않는다 —
+# "본인부담금 면제! 지금 예약하세요."는 주어가 생략된 병원의 유인이다.
+_COPAY_PROGRAM = re.compile(
+    r"상한제|산정\s*특례|의료\s*급여|차상위|건강\s*보험|공단|국가|보건소|제도"
+)
+# 공적 제도 말이 나와도 그 제도와 **거리를 두는** 문장은 제도 안내가 아니다 — "국가검진 대상이 아니어도
+# 무료 검사", "건강보험과 관계없이 무료 상담", "무료 검진은 건강검진 상품입니다", "건강검진 고객에게".
+_PROGRAM_DISTANCING = re.compile(
+    r"아니어도|아니라도|아니더라도|관계\s*없이|상관\s*없이|별도로|옆에서|상품|고객|서비스"
+)
+# 병원이 혜택을 주겠다는 말.
+_OFFERING = re.compile(r"해\s*드|드립니다|드려요|혜택|이벤트|특가|증정|모십니다|모셔|오세요")
+# 예약·신청 권유. 정중형·권유형 활용("예약 바랍니다", "예약을 권합니다", "예약하시면", "예약해 보세요")과
+# 접수·신청, 무료 상담을 받으라는 권유도 같다.
+_BOOKING = re.compile(
+    r"예약(?:을|도|은|이)?\s*(?:하세요|하십시오|받습니다|받아요|받고|주세요|해\s*주세요|바랍니다"
+    r"|권합니다|권해\s*드|하시면|하면|해\s*보세요|해\s*주십시오|하시기|가능|신청|접수)"
+    r"|(?:신청|접수)\s*(?:하세요|받습니다|중)"
+    r"|무료\s*상담(?:을|를)?\s*받으세요"
+)
+# '제공'은 주체가 갈린다 — "보건소에서 무료 검사를 제공합니다"는 제도 안내이고, 병원 자기 지칭과
+# 같은 문장에 있으면 병원의 유인이다(공적 근거가 없는 문장은 애초에 예외가 아니다).
+_NEUTRAL_OFFER = re.compile(r"제공")
+# 정기 검진 대상의 연령·주기. "만 40세 이상은 2년마다 무료 검진 대상입니다"의 양성 근거다. 숫자는
+# 숫자 토큰의 시작에서만, 세 자리까지만 본다(16,000자 숫자열에서 위치마다 끝까지 훑지 않게).
+_SCREENING_SCHEDULE = re.compile(
+    r"(?<!\d)\d{1,3}\s*세|(?<!\d)\d{1,2}\s*년\s*(?:마다|주기|에\s*한\s*번)|연령|주기"
+)
+# '무료 검진·검사·상담' 매치의 모양. 공적 기관이 '제공'하는 문형까지 같은 예외로 판정한다.
+_PUBLIC_FREE_TRIGGER = re.compile(
+    r"무료(?:로)?\s*(?:(?:검진|검사|상담)(?:을|를)?\s*)?(?:제공)?"
+    r"|(?:상담|검사)\s*(?:비\s*|비용\s*)?(?:전액\s*)?무료"
+)
+# 본인부담 면제·감면·환급·0원 매치의 모양(조사 포함).
+_COPAY_RELIEF_TRIGGER = re.compile(
+    r"본인\s*부담금?(?:을|를|은|는|이|가)?\s*(?:전액\s*)?(?:면제|감면|환급|0\s*원)"
+)
+# 제도 안내 예외를 무효로 만드는 같은 문장의 말: 병원 자기 지칭, 혜택·예약 권유, 제도와 거리 두기.
+_INDUCEMENT_IN_SENTENCE = (_HOSPITAL_SELF, _OFFERING, _BOOKING, _PROGRAM_DISTANCING)
 
 _ALLOWED_CONTEXTS: dict[str, tuple[_ContextExemption, ...]] = {
     # "사망원인 1위", "발생률 1위" 같은 역학 통계. 역학 명사가 **바로 앞에 붙어 있을
@@ -151,6 +277,14 @@ _ALLOWED_CONTEXTS: dict[str, tuple[_ContextExemption, ...]] = {
     ),
     # "최고 39도", "최고 40mg" 같은 수치 상한. 광고 최상급("최고의 진료")은 계속 차단.
     "최고": (
+        # "증상이 최고조에 이릅니다", "혈당이 최고치를 기록" — 정도의 정점이지 우위 주장이 아니다.
+        # "최고치료"처럼 붙여 쓴 광고는 계속 막는다.
+        _ContextExemption(
+            reason="정점을 뜻하는 최고조·최고치",
+            trigger=re.compile(r"최고"),
+            followed_by=re.compile(r"^(?:조|치(?!료))"),
+            window=2,
+        ),
         _ContextExemption(
             reason="수치 상한(체온·용량·연령·횟수)",
             trigger=re.compile(r"최고"),
@@ -158,6 +292,19 @@ _ALLOWED_CONTEXTS: dict[str, tuple[_ContextExemption, ...]] = {
                 r"^\s*\d+(?:\.\d+)?\s*(?:도|mg|ml|회|세|시간|일|주|개월|년|kg|cm|mm|%)"
             ),
             window=12,
+        ),
+    ),
+    # "임상시험에서 확인된 효과는 제한적입니다" — 문헌·연구의 결과를 옮기는 문장. 병원이 스스로
+    # 확인했다는 주장("저희 병원 임상에서 확인된 효과")은 문장 어디에 있어도 막는다.
+    "검증된": (
+        _ContextExemption(
+            reason="연구·문헌 결과의 인용",
+            trigger=re.compile(r"확인[된]\s*효과"),
+            preceded_by=re.compile(
+                r"(?:임상|연구|시험|논문|문헌|진료\s*지침|학회)(?:에서|으로|를\s*통해|결과)?\s*$"
+            ),
+            unless_in_sentence_any=(_HOSPITAL_SELF,),
+            window=60,
         ),
     ),
     # "탁월한 효과를 기대하기 어렵습니다"처럼 우월 주장을 바로 부정하는 문장.
@@ -172,6 +319,17 @@ _ALLOWED_CONTEXTS: dict[str, tuple[_ContextExemption, ...]] = {
     # "완치가 어렵고", "완치되지 않습니다"처럼 완치 주장을 바로 부정·한정하는 문장.
     # "완치율", "완치 가능", "완치됩니다"는 계속 차단.
     "완치": (
+        # "수술 후 완전 회복까지 3개월이 걸립니다" — 회복 기간 안내. "완전 회복됩니다"·"완전 회복을
+        # 보장" 같은 결과 단정은 계속 막는다.
+        _ContextExemption(
+            reason="완전 회복까지 걸리는 기간 안내",
+            trigger=re.compile(r"완전\s*회복"),
+            followed_by=re.compile(
+                r"^\s*(?:까지|되기까지|하기까지)(?:는)?\s*(?:보통\s*|대개\s*|약\s*|대략\s*)?"
+                r"(?:\d+(?:\s*[~～-]\s*\d+)?|수)\s*(?:일|주|개월|달|년)"
+            ),
+            window=24,
+        ),
         _ContextExemption(
             reason="완치 주장을 바로 부정·한정",
             trigger=re.compile(r"완치"),
@@ -183,6 +341,12 @@ _ALLOWED_CONTEXTS: dict[str, tuple[_ContextExemption, ...]] = {
     ),
     # "정확도가 100%는 아닙니다", "100%로 예방할 수 없습니다" 같은 한계 설명.
     "100%": (
+        # "비급여 항목은 100% 본인부담입니다" — 부담 비율 안내이지 효과·안전 보장이 아니다.
+        _ContextExemption(
+            reason="본인부담 비율 안내",
+            followed_by=re.compile(r"^\s*(?:본인\s*부담|자기\s*부담|환자\s*부담|전액\s*본인)"),
+            window=10,
+        ),
         _ContextExemption(
             reason="100% 주장을 바로 부정",
             followed_by=re.compile(r"^(?:[는가]\s*아(?:니|닙|님)|로\s*예방할\s*수\s*없)"),
@@ -208,6 +372,19 @@ _ALLOWED_CONTEXTS: dict[str, tuple[_ContextExemption, ...]] = {
     ),
     # "첨단 기술이 효과를 보장하지 않습니다" 같은 부정. "최첨단"은 계속 차단.
     "최첨단": (
+        # "첨단 장비로 정밀하게 촬영합니다" — 촬영·판독 과정을 설명하는 문장만 예외다(양성 근거).
+        # 병원·시술을 가리키는 말이 없다는 것만으로는 풀지 않는다 — "첨단 장비를 갖추고 있습니다"는
+        # 주어가 생략된 병원 자기 주장이다. "최첨단", "첨단 시술", "본원은 첨단 장비를 갖췄습니다",
+        # "첨단 기술로 시술합니다"는 계속 막는다. 병원 자기 지칭은 문장 어디에 있어도 막는다.
+        _ContextExemption(
+            reason="촬영·판독 과정의 장비 설명",
+            trigger=re.compile(r"첨단[의]?\s*(?:기술|장비)"),
+            followed_by=re.compile(r"^\s*(?:으)?로\s*(?:정밀|촬영|판독)"),
+            unless_preceded_by=_CLAIM_CONTEXT,
+            unless_followed_by=_CLAIM_CONTEXT,
+            unless_in_sentence_any=(_HOSPITAL_SELF,),
+            window=20,
+        ),
         _ContextExemption(
             reason="첨단 기술 주장을 부정",
             trigger=re.compile(r"첨단[의]?\s*(?:기술|장비|시술)"),
@@ -215,9 +392,73 @@ _ALLOWED_CONTEXTS: dict[str, tuple[_ContextExemption, ...]] = {
             window=20,
         ),
     ),
+    # "국가에서 시행하는 무료 검진", "보건소에서 무료 검사", "본인부담금 면제 대상" — 공적 제도
+    # 안내는 병원의 무료 유인이 아니다. 같은 문장 **어디에든** 병원 자기 지칭(저희·본원·병원에서)·
+    # 혜택을 주겠다는 말(해 드립니다·혜택·이벤트)·예약 권유·제도와 거리 두는 말(아니어도·관계없이·
+    # 별도로·상품·고객)이 있으면 예외가 아니다 — "국가 암검진 대상자가 아니어도 무료 검진을 해
+    # 드립니다", "예약하세요, 국가검진 무료 검사"는 계속 막는다. 대표 정책상 혜택·예약 문형은 HARD라
+    # "보건소는 무료 검사 예약을 받습니다"도 막힌다(계획 Q1).
+    "할인·유인": (
+        _ContextExemption(
+            reason="공적 제도의 무료 검진·검사·상담 안내",
+            trigger=_PUBLIC_FREE_TRIGGER,
+            in_sentence=_PUBLIC_PROGRAM,
+            unless_in_sentence_any=_INDUCEMENT_IN_SENTENCE,
+            unless_in_sentence=(_HOSPITAL_SELF, _NEUTRAL_OFFER),
+        ),
+        # "만 40세 이상은 2년마다 무료 검진 대상입니다" — 기관 이름 없이 정기 검진의 연령·주기를
+        # 말하는 문장. '검진 대상'과 같은 문장의 연령·주기가 함께 있어야 한다("신규 고객 대상 무료
+        # 검사"는 계속 막는다).
+        _ContextExemption(
+            reason="연령·주기로 정한 정기 검진 대상 안내",
+            trigger=re.compile(r"무료\s*검진"),
+            in_sentence=_SCREENING_SCHEDULE,
+            followed_by=re.compile(r"^\s*대상"),
+            unless_in_sentence_any=_INDUCEMENT_IN_SENTENCE,
+            window=40,
+        ),
+        # "본인부담상한제에 따라 본인부담금 환급", "차상위 계층은 본인부담금 면제 대상" — 건강보험
+        # 제도 안내. 같은 문장에 제도·기관의 양성 근거가 있어야 하고, 병원이 깎아 주거나 대신 내 주겠다는
+        # 말("본인부담금 면제 혜택을 드립니다")과 할인·대납은 계속 막는다.
+        _ContextExemption(
+            reason="건강보험 제도의 본인부담 면제·환급 안내",
+            trigger=_COPAY_RELIEF_TRIGGER,
+            in_sentence=_COPAY_PROGRAM,
+            unless_in_sentence_any=_INDUCEMENT_IN_SENTENCE,
+            unless_in_sentence=(_HOSPITAL_SELF, _NEUTRAL_OFFER),
+        ),
+        # "본인부담금 환급 대상입니다" — 바로 뒤의 '대상'은 자격을 말하는 문장이라 그 자체가 양성 근거다
+        # (2026-10-13 오케스트레이터 결정). 병원 자기 지칭("본인부담금 환급 대상은 우리 병원 고객입니다")이나
+        # 혜택·예약 권유("혜택으로 본인부담금 면제 대상입니다")가 같은 문장 어디에든 있으면 계속 막는다.
+        _ContextExemption(
+            reason="본인부담 면제·환급 자격(대상) 안내",
+            trigger=_COPAY_RELIEF_TRIGGER,
+            followed_by=re.compile(r"^\s*대상"),
+            unless_in_sentence_any=_INDUCEMENT_IN_SENTENCE,
+            unless_in_sentence=(_HOSPITAL_SELF, _NEUTRAL_OFFER),
+            window=40,
+        ),
+    ),
     # "시술이 아프지 않을까 걱정하는 분이 많습니다" — 환자의 의문·걱정 인용.
     # "시술은 아프지 않습니다" 같은 단정은 계속 차단.
     "통증 없는": (
+        # "고혈압은 초기에 통증 없이 진행합니다", "결절은 대부분 통증 없는 혹으로 발견됩니다" — 무증상
+        # 질환 설명. 질환·증상 주어가 **바로 앞에** 있을 때만 예외다(양성 근거). 주어가 없는
+        # "통증 없이 편안하게 받으실 수 있습니다"는 생략된 시술 결과 보장이라 계속 막고, 가까이에
+        # 시술·진료·병원을 가리키는 말이 있거나 문장 어디에든 병원 자기 지칭이 있어도 막는다.
+        _ContextExemption(
+            reason="무증상 질환의 경과 설명",
+            trigger=re.compile(r"통증\s*없[는이]"),
+            preceded_by=re.compile(
+                r"(?:(?:질환|질병|증상|결절|혹|병변|종양|무증상)[은는이가의]?\s*"
+                r"(?:대부분\s*|흔히\s*|초기에(?:는)?\s*)?"
+                r"|초기에(?:는)?\s*)$"
+            ),
+            unless_preceded_by=_PROCEDURE,
+            unless_followed_by=_PROCEDURE,
+            unless_in_sentence_any=(_HOSPITAL_SELF,),
+            window=12,
+        ),
         _ContextExemption(
             reason="환자의 의문·걱정 표현",
             trigger=re.compile(r"(?:시술|수술|치료)[은는이가]?\s*아프지\s*않"),
@@ -228,13 +469,137 @@ _ALLOWED_CONTEXTS: dict[str, tuple[_ContextExemption, ...]] = {
 }
 
 
-def _blocking_match_exists(label: str, pattern: re.Pattern, text: str) -> bool:
-    """이 라벨의 매치 중 문맥 예외가 아닌 것이 하나라도 있는가."""
+# ── 결과 보장 표지 — 어떤 문맥 예외보다 먼저 본다 ─────────────────────────────────
+# "완전 회복까지 1주를 보장합니다", "증상은 통증 없이 사라짐을 보장합니다"처럼 예외의 양성 근거(기간·
+# 질환 주어)를 갖췄어도 같은 문장(앞뒤 어디든)이 결과를 보장하면 광고다. 예외마다 따로 막지 않고 평가기
+# 한 곳에서 예외 적용 전에 판정한다. 보장을 **부정**하는 말("보장할 수 없습니다", "확실하지 않습니다")은
+# 표지가 아니다. 보험·비용이 주어인 말('건강보험의 보장은', '100% 본인부담이 확실합니다'), 보험 용어
+# '보장성·보장 범위', 일정 약속('상담 약속을 잡으세요'), 권고형 '반드시 상담하세요'도 아니다. 단
+# '반드시' 뒤 같은 문장에 치료 결과 술어(낫다·사라지다·회복·해결…)가 오면 권고 예외를 주지 않는다 —
+# "반드시 낫습니다, 상담하세요"의 '반드시'는 결과를 꾸민다.
+_GUARANTEE_NEGATION = (
+    r"\s{0,3}(?:[을를이가은는도]\s{0,3})?"
+    r"(?:(?:하지|되지|치)(?:는|도)?|(?:할|될|드릴)\s{0,3}수(?:는|도)?"
+    r"|하기|되기|(?:한|된|하는|되는)\s{0,3}(?:것은|건))?"
+    r"\s{0,3}(?:않|없|못|어렵|어려|아니|아닙|아님)"
+)
+_ADVICE_PREDICATE = r"(?:상담|확인|문의|방문|받으세요|받아야|하세요|해야|필요|주의)"
+_OUTCOME_GUARANTEE = re.compile(
+    r"(?:보장(?!\s*(?:성|범위|항목|내용|률|율|비율|한도|대상))"
+    r"|확실|무조건|틀림없|장담|약속|책임\s*지(?:고|겠)|완벽(?:하게|히)"
+    r"|(?:100\s*(?:%|퍼센트|프로|퍼)|백\s*(?:퍼센트|프로))"
+    r"(?!\s*(?:본인|자기|환자|전액)\s*(?:부담|본인))"
+    rf"|반드시(?![^.?!\n]{{0,20}}?{_ADVICE_PREDICATE})"
+    rf"|(?P<advice>반드시)(?=[^.?!\n]{{0,20}}?{_ADVICE_PREDICATE}))"
+    rf"(?!{_GUARANTEE_NEGATION})"
+)
+# 치료 결과 술어. 권고형 '반드시' 뒤 같은 문장에 오면 그 '반드시'는 결과 보장이다.
+_OUTCOME_PREDICATE = re.compile(
+    r"낫|나아|사라지|사라집|사라져|회복|완치|해결|호전|좋아지|좋아집|없어지|없어집|치유|치료됩|치료되"
+    r"|건강해|건강을\s?되찾|정상으로\s?돌아|재발\s?없|재발하지\s?않|문제\s?없"
+)
+# 보장·확실·약속의 주어가 보험·비용이면 결과 보장이 아니다("건강보험의 보장은", "본인부담이 확실합니다").
+_COST_SUBJECT_BEFORE = re.compile(
+    r"(?:보험|부담(?:금|률|율)?|비용|진료비|수가|급여)(?:의|이|가|은|는|을|를|에서|에|도)?\s*$"
+)
+# 일정 약속("상담 약속을 잡으세요", "약속 시간")은 결과 보장이 아니다.
+_APPOINTMENT_BEFORE = re.compile(r"(?:상담|진료|예약|방문|면담|검사|외래)\s*$")
+_APPOINTMENT_AFTER = re.compile(r"^(?:을|를|이|가|은|는)?\s*(?:잡|정하|변경|취소|시간|일정|날짜)")
+_MARKER_CONTEXT = 12
+# 문장 경계: 물음표·느낌표·말줄임·마침표와 줄바꿈. 마침표는 **양쪽이 모두 숫자**일 때만 경계가
+# 아니다(소수점 '1.5'). "최고입니다.1등입니다."는 두 문장이다.
+_SENTENCE_BOUNDARY = re.compile(r"[?!…。\n]|(?<!\d)\.|\.(?!\d)")
+
+
+class _SentenceIndex:
+    """한 텍스트의 문장 경계·보장 표지 위치와 문장 단위 검사 결과. 처음 필요할 때 한 번만 만든다."""
+
+    def __init__(self, text: str):
+        self.text = text
+        self._boundary_starts: list[int] | None = None
+        self._boundary_ends: list[int] = []
+        self._guarantees: list[tuple[int, int]] = []
+        self._guarantee_starts: list[int] = []
+        self._contains: dict[tuple[str, int, int], bool] = {}
+
+    def _build(self) -> None:
+        if self._boundary_starts is not None:
+            return
+        boundaries = [(m.start(), m.end()) for m in _SENTENCE_BOUNDARY.finditer(self.text)]
+        self._boundary_starts = [start for start, _ in boundaries]
+        self._boundary_ends = [end for _, end in boundaries]
+        outcomes = [m.start() for m in _OUTCOME_PREDICATE.finditer(self.text)]
+        for marker in _OUTCOME_GUARANTEE.finditer(self.text):
+            if self._is_guarantee(marker, outcomes):
+                self._guarantees.append((marker.start(), marker.end()))
+        self._guarantee_starts = [start for start, _ in self._guarantees]
+
+    def _is_guarantee(self, marker: re.Match, outcomes: list[int]) -> bool:
+        word = marker.group(0)
+        before = self.text[max(0, marker.start() - _MARKER_CONTEXT) : marker.start()]
+        if word.startswith(("보장", "확실", "약속")) and _COST_SUBJECT_BEFORE.search(before):
+            return False
+        if word.startswith("약속") and (
+            _APPOINTMENT_BEFORE.search(before)
+            or _APPOINTMENT_AFTER.match(self.text, marker.end(), marker.end() + _MARKER_CONTEXT)
+        ):
+            return False
+        if marker.group("advice") is None:
+            return True
+        # 권고형 '반드시' — 뒤 같은 문장에 결과 술어가 있으면 결과 보장이다.
+        sentence_end = self._sentence_end(marker.end())
+        index = bisect_left(outcomes, marker.end())
+        return index < len(outcomes) and outcomes[index] < sentence_end
+
+    def _sentence_end(self, position: int) -> int:
+        index = bisect_left(self._boundary_starts, position)
+        return self._boundary_starts[index] if index < len(self._boundary_starts) else len(self.text)
+
+    def sentence_span(self, match: re.Match) -> tuple[int, int]:
+        """매치가 든 문장 전체의 [시작, 끝). 길이를 자르지 않는다."""
+        self._build()
+        index = bisect_right(self._boundary_ends, match.start()) - 1
+        start = self._boundary_ends[index] if index >= 0 else 0
+        return start, self._sentence_end(match.end())
+
+    def contains(self, pattern: re.Pattern, span: tuple[int, int]) -> bool:
+        """이 문장 안 어디에든 `pattern`이 있는가(문장·패턴마다 한 번만 검색한다)."""
+        key = (pattern.pattern, span[0], span[1])
+        found = self._contains.get(key)
+        if found is None:
+            found = pattern.search(self.text[span[0] : span[1]]) is not None
+            self._contains[key] = found
+        return found
+
+    def guarantees_outcome(self, match: re.Match, span: tuple[int, int]) -> bool:
+        """매치 자신을 뺀 같은 문장 안(앞뒤 어디든)에 결과 보장 표지가 있는가."""
+        self._build()
+        index = bisect_left(self._guarantee_starts, span[0])
+        while index < len(self._guarantees):
+            start, end = self._guarantees[index]
+            if start >= span[1]:
+                return False
+            if end <= match.start() or start >= match.end():
+                return True
+            index += 1
+        return False
+
+
+def _blocking_match_exists(
+    label: str, pattern: re.Pattern, text: str, sentences: _SentenceIndex
+) -> bool:
+    """이 라벨의 매치 중 문맥 예외가 아닌 것이 하나라도 있는가.
+
+    예외는 같은 문장이 결과를 보장하지 않을 때만 적용된다(`_OUTCOME_GUARANTEE`).
+    """
     exemptions = _ALLOWED_CONTEXTS.get(label, ())
     for match in pattern.finditer(text):
         if not exemptions:
             return True
-        if not any(exemption.applies(text, match) for exemption in exemptions):
+        span = sentences.sentence_span(match)
+        if not any(exemption.applies(text, match, sentences, span) for exemption in exemptions):
+            return True
+        if sentences.guarantees_outcome(match, span):
             return True
     return False
 
@@ -260,9 +625,10 @@ def check_forbidden(text: str) -> list[str]:
     if not text:
         return []
     normalized = normalize_for_check(text)
+    sentences = _SentenceIndex(normalized)
     found = []
     for label, pattern in FORBIDDEN_PATTERNS.items():
-        if _blocking_match_exists(label, pattern, normalized):
+        if _blocking_match_exists(label, pattern, normalized, sentences):
             found.append(label)
     return found
 

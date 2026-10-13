@@ -154,6 +154,23 @@ def appears_as_standalone_sentence(text: object, message: object) -> bool:
     return _contains_run(_sentences(text), _sentences(message))
 
 
+def sentence_holds_must_use(sentence: object, messages: Iterable[str]) -> bool:
+    """문장이 필수 문구를 담거나, 여러 문장짜리 필수 문구의 **한 문장**인가.
+
+    문장 하나를 지우거나 고치는 결정적 경로(생성 치유·최소 교정)가 필수 문구를 건드리지 않게 하는
+    공통 판정이다. 문구 전체가 문장 안에 들어 있는지만 보면 두 문장짜리 문구의 한 문장을 놓친다.
+    """
+
+    normalized = normalize_verbatim(sentence)
+    if not normalized:
+        return False
+    return any(
+        ((key := normalize_verbatim(message)) and key in normalized)
+        or appears_as_standalone_sentence(message, sentence)
+        for message in messages
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class ExcludedMustUseMessage:
     """승인본에 있지만 원문 그대로 요구할 수 없어 뺀 필수 문구 하나.

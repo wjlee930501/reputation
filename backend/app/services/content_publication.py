@@ -24,7 +24,8 @@ from app.services.image_engine import (
 )
 from app.services.reference_requirement import (
     REFERENCES_REQUIRED_TYPES,
-    references_required,
+    references_block_when_empty,
+    topic_without_authoritative_source,
 )
 from app.utils.authority_sources import is_citable_reference_url
 from app.utils.medical_filter import check_forbidden_content_fields
@@ -87,7 +88,8 @@ def has_required_references(item: ContentItem) -> bool:
     (`reference_publication.publication_references_current`) — 둘을 합치면 "확인된 참고
     자료 1개 이상"이다.
     """
-    if not references_required(item):
+    if not references_block_when_empty(item):
+        # 참고자료가 선택인 글 — 순수 운영 공지와 진료비·병원 선택 글(D23).
         return True
     return count_citable_references(item) > 0
 
@@ -104,7 +106,8 @@ def public_surface_has_required_references(item: ContentItem) -> bool:
     if content_type is not None and _type_value(content_type) not in _REFERENCES_REQUIRED_VALUES:
         return True
     if count_citable_references(item) <= 0:
-        return False
+        # 진료비·병원 선택 글은 참고자료 0개로 발행될 수 있다(D23) — 그 글을 숨기지 않는다.
+        return topic_without_authoritative_source(getattr(item, "title", None)) is not None
     if not hasattr(item, "approval_status"):
         return True
     from app.services.reference_publication import publication_references_current
@@ -414,6 +417,8 @@ def apply_publication_assessment(item: ContentItem, assessment: PublicationAsses
         for key in (
             "automatic_remediation_attempts",
             "reviewer_driven_rewrites",
+            # 생성 세션의 결정적 거절 횟수(E5) — 측정용 기록이다.
+            "generation_rejections",
             "ai_review",
             # Scheduled generation uses this durable JSON fragment to avoid
             # paying again for the same unchanged body/image failure.
@@ -469,6 +474,7 @@ def apply_essence_revalidation(
         for key in (
             "automatic_remediation_attempts",
             "reviewer_driven_rewrites",
+            "generation_rejections",
             "ai_review",
             "generation_attempt",
             BODY_REPAIR_STATE_KEY,

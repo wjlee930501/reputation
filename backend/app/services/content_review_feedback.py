@@ -35,17 +35,36 @@ _HARD_REMOVAL_INSTRUCTION = (
 
 
 def hard_removal_findings(review: Any) -> list[str]:
-    """Turn model-declared fact/safety HARD findings into one removal instruction."""
+    """Turn model-declared fact/safety HARD findings into one removal instruction.
+
+    HARD 사실·안전 지적이 있을 때만 만든다. 그때 같은 판정에 함께 나온 UNCERTAIN 사실·안전
+    지적도 **문장을 인용했으면** 같은 지시에 싣는다 — 빼면 재작성이 HARD만 고치고, 그대로 남은
+    UNCERTAIN이 다음 검수에서 다시 발행을 막는다(2026-10 운영 차단 2편). 인용 없는 UNCERTAIN
+    (확신도 부족으로 붙은 합성 지적 포함)은 고칠 문장이 없어 싣지 않는다.
+    """
 
     def _label(value: object) -> str:
         return str(getattr(value, "value", value) or "").upper()
 
-    messages = [
-        str(getattr(finding, "message", "")).strip()
-        for finding in getattr(review, "blocking_findings", ())
-        if _label(getattr(finding, "severity", None)) == "HARD"
-        and _label(getattr(finding, "kind", None)) in _HARD_REMOVAL_KINDS
+    def _fact_or_safety(finding: Any) -> bool:
+        return _label(getattr(finding, "kind", None)) in _HARD_REMOVAL_KINDS
+
+    blocking = tuple(getattr(review, "blocking_findings", ()) or ())
+    hard = [
+        finding
+        for finding in blocking
+        if _label(getattr(finding, "severity", None)) == "HARD" and _fact_or_safety(finding)
     ]
+    if not hard:
+        return []
+    co_occurring = [
+        finding
+        for finding in blocking
+        if _label(getattr(finding, "severity", None)) == "UNCERTAIN"
+        and _fact_or_safety(finding)
+        and str(getattr(finding, "quote", "") or "").strip()
+    ]
+    messages = [str(getattr(finding, "message", "")).strip() for finding in (*hard, *co_occurring)]
     messages = [message for message in messages if message]
     if not messages:
         return []

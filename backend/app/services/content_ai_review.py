@@ -11,7 +11,7 @@ import json
 import logging
 import math
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Any
@@ -90,6 +90,13 @@ DATA_BLOCK의 deterministic_gates_passed는 이 후보가 결정적 검증기를
 규칙으로 이미 승인됐으므로 다시 지적하지 마세요. 특히 그 목록이 허용한 통계·수치·출처를
 근거 부족으로 다시 올리지 마세요. approved_essence와 hospital_profile에 있는 내용은
 승인된 병원 사실이므로 근거가 있는 것으로 취급합니다.
+
+DATA_BLOCK에 correction_context가 있으면 이 후보는 직전 검수의 지적을 문장 단위로 교정한
+결과입니다. addressed의 각 항목은 직전 지적(finding)과 그 문장의 교정 전(before)·후(after)
+입니다(after가 빈 문자열이면 그 문장을 지웠습니다). 판정 기준은 위와 같습니다. 교정한 문장과
+그 주변에 같은 문제가 남았는지 확인하세요. 교정하지 않은 문장은 직전 검수가 같은 기준으로
+이미 본 문장입니다 — 그 문장 자체에서 사실·안전 문제를 구체적으로 짚을 수 있을 때만
+지적하고, 같은 기준에서 판정을 바꿀 근거가 없으면 다시 지적하지 마세요.
 
 각 finding은 후보의 문장 하나만 다루고, quote에 그 문장을 후보에서 한 글자도 바꾸지 말고
 그대로 복사하세요. 특정 문장을 짚을 수 없는 지적이면 quote를 빈 문자열로 두세요.
@@ -613,12 +620,32 @@ def hospital_review_facts_fingerprint(hospital: Hospital | None) -> str | None:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
+# 재검수에 싣는 직전 교정 기록의 상한. 교정은 글(주제)당 패스 2회·패스당 지적 5개 안이다.
+_CORRECTION_CONTEXT_LIMIT = 10
+
+
+def _bounded_correction_context(value: object) -> dict[str, Any] | None:
+    if not isinstance(value, Mapping):
+        return None
+    addressed = [
+        {
+            "finding": _bounded_text(entry.get("finding"), 300),
+            "before": _bounded_text(entry.get("before"), 300),
+            "after": _bounded_text(entry.get("after"), 300),
+        }
+        for entry in (value.get("addressed") or [])
+        if isinstance(entry, Mapping)
+    ][-_CORRECTION_CONTEXT_LIMIT:]
+    return {"addressed": addressed} if addressed else None
+
+
 def content_review_input_payload(
     *,
     hospital: Hospital,
     philosophy: HospitalContentPhilosophy,
     content: dict[str, Any],
     content_brief: dict[str, Any] | None,
+    correction_context: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     safety_policy = effective_safety_policy(philosophy)
     candidate = candidate_review_payload(content)
@@ -647,7 +674,7 @@ def content_review_input_payload(
                 optional_value, limit=12, item_limit=300
             )
 
-    return {
+    payload: dict[str, Any] = {
         "hospital_profile": hospital_profile,
         "approved_essence": approved_essence,
         "deterministic_gates_passed": deterministic_gates_passed(candidate),
@@ -667,6 +694,11 @@ def content_review_input_payload(
         "candidate_sha256": candidate_sha256(candidate),
         "coverage": candidate_review_coverage(candidate),
     }
+    # 최소 교정의 재검수에서만 싣는다. 없으면 입력 바이트가 종전과 같다(백필 재시도 지문 보존).
+    bounded_context = _bounded_correction_context(correction_context)
+    if bounded_context is not None:
+        payload["correction_context"] = bounded_context
+    return payload
 
 
 # Compatibility for focused tests and internal callers that predate the public
@@ -1003,8 +1035,11 @@ async def review_generated_content(
     model: str | None = None,
     attempt_counter: dict[str, int] | None = None,
     transport_observer: Callable[[], None] | None = None,
+    correction_context: Mapping[str, Any] | None = None,
 ) -> ContentAiReview:
     """Return bounded advisory findings; provider/cost failures never grant PASS.
+
+    `correction_context`는 최소 교정 패스의 재검수만 넘긴다(직전 지적과 교정 전·후 문장).
 
     `model`은 첫 판정 모델이다. 비우면 검수 모델(`CLAUDE_MODEL_REVIEW`)이다. 사후검수처럼
     발행 전 검수를 이미 통과한 글은 값싼 모델로 먼저 보고, 확신도 부족으로 애매하면 아래
@@ -1038,6 +1073,7 @@ async def review_generated_content(
             philosophy=philosophy,
             content=content,
             content_brief=content_brief,
+            correction_context=correction_context,
         )
     )
     try:

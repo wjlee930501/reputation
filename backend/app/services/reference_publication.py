@@ -52,6 +52,7 @@ from app.services.content_ai_review import (
 )
 from app.services.post_publish_review_policy import AUTO_PUBLISHABLE_STATUSES
 from app.services.reference_requirement import (
+    references_block_when_empty,
     references_left_to_operator,
     references_required,
 )
@@ -139,6 +140,8 @@ class PublicationReferenceRefresh:
     # 일시 장애로 미룬 목록 밖 URL(비어 있으면 실행당 GET 한도로 미룬 것).
     site_unreachable_urls: tuple[str, ...] = ()
     # 진료비·병원 선택 글이라 치유하지 않고 비웠다 — 보류는 사람이 정한다.
+    # D23(2026-10-13) 뒤로 이 값을 읽는 곳이 없다 — 진료비·병원 선택 글은 비어도 보류하지 않는다.
+    # 옛 기록이 다 풀린 뒤(배포 +약 1주) 걷어낼 예정이다(계획 Q7).
     operator_decides: bool = False
 
 
@@ -171,7 +174,7 @@ def publication_references_current(item: object, *, now: datetime | None = None)
 def publication_references_missing(item: object) -> bool:
     """참고자료가 필수인 글에 주소가 있는 항목이 하나도 없는가(치유 또는 MISSING_REFERENCES 대상)."""
 
-    if not references_required(item):
+    if not references_block_when_empty(item):
         return False
     entries, _malformed = split_reference_entries(getattr(item, "references_list", None))
     return not entries
@@ -184,7 +187,7 @@ def bind_reference_checks_to_revision(item: object) -> list[dict[str, Any]] | No
     if malformed:
         return None
     if not entries:
-        return None if references_required(item) else []
+        return None if references_block_when_empty(item) else []
     if not publication_references_current(item):
         return None
     indexed = index_reference_checks(getattr(item, "reference_checks", None))
@@ -298,7 +301,7 @@ async def refresh_publication_references(
     )
     if (
         publication_references_current(item, now=observed)
-        and not (required and not references)
+        and not (references_block_when_empty(item) and not references)
         and not strip_curated
     ):
         return PublicationReferenceRefresh(
@@ -342,6 +345,8 @@ async def refresh_publication_references(
         # 이번 GET에서 목록 문서로 리다이렉트된 주소도 목록 문서를 인용한 것과 같다.
         kept = [entry for entry in kept if not names_curated_document(entry, outcome.checks)]
     healed = False
+    # 진료비·병원 선택 글은 비어도 수기 목록으로 채우지 않는다(9/29 결정, 계획 Q2) — 이 판정은 살아 있다.
+    # 결과의 `operator_decides` 필드만 D23(2026-10-13) 뒤로 읽는 곳이 없어 배포 +약 1주에 걷어낸다(Q7).
     operator_decides = not kept and references_left_to_operator(item)
     if not kept and required and not operator_decides:
         failed_urls = {

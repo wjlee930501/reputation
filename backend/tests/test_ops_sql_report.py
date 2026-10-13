@@ -82,7 +82,7 @@ def test_only_accepts_repeats_and_comma_lists(argv, expected) -> None:
     assert ops_sql_report.parse_args(argv).only == expected
 
 
-@pytest.mark.parametrize("argv", [["--only=q9"], ["--only=q1", "--only=q9"], ["--only="]])
+@pytest.mark.parametrize("argv", [["--only=q99"], ["--only=q1", "--only=q99"], ["--only="]])
 def test_unknown_query_names_are_rejected(argv) -> None:
     with pytest.raises(SystemExit):
         ops_sql_report.parse_args(argv)
@@ -98,3 +98,16 @@ def test_every_query_is_a_read() -> None:
     for statements in ops_sql_report.QUERIES.values():
         for sql in statements:
             assert sql.lstrip().upper().startswith("SELECT")
+
+
+def test_gate_measurement_queries_are_registered_read_only_selects() -> None:
+    """E5(2026-10-13): 사후 검수 FLAGGED 분포(q9)와 생성 거절 사유(q10)."""
+
+    assert [len(ops_sql_report.QUERIES[name]) for name in ("q9", "q10")] == [2, 2]
+    for name in ("q9", "q10"):
+        for sql in ops_sql_report.QUERIES[name]:
+            assert sql.strip().upper().startswith("SELECT")
+    assert "structured_findings" in ops_sql_report.QUERIES["q9"][0]
+    assert "rejection_kind" in ops_sql_report.QUERIES["q10"][0]
+    assert "generation_rejections" in ops_sql_report.QUERIES["q10"][1]
+    assert ops_sql_report.parse_args(["--only=q9", "--only=q10"]).only == ["q9", "q10"]

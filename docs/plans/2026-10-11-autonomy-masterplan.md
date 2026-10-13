@@ -21,6 +21,7 @@
 | P1-B | [Phase 1 월간·리드](2026-10-11-p1-monthly-leads.md) | 1-6a/b/c, 1-7a/b, 1-9a/b/c-1/c-2 — **완료**: 1-6a `24825750`, 1-6b `fd5ec07b`, 1-7a `f2c035a9`, 1-6c `b5784dd9`, 1-7b `f44cd4b1`, 1-9a `32df68af`, 1-9b `7669a954`, 1-9c-1 `fd52e84e`, 1-9c-2 `ba9ca7ec`, 품질 검토 후속 `5a1ccdde`, main 병합 `3d624ae5`, 계약 문서는 Phase 1 문서 커밋 | F5, F6, F12 | `tasks.py`, `weekly_sov_incident_control.py`, `monthly_report_gap_notifications.py`, `lead_diagnosis_tasks.py`, RedBeat 버전 |
 | P2-A | [Phase 2 온보딩](2026-10-11-p2-onboarding.md) | 2-3a~d, 2-1a~c(+D3 안분 태스크 2-1d), 2-2a~c, 2-4a/b/(c 플래그), 2-5a/b — **완료**: 2-3a `ede9e5ae`, 2-3b `58477b64`, 2-3c `cc80b088`, 2-3d `9e2df85b`, 2-1a `36c10f4e`, 2-1b `f2c9eaa0`, 2-1c `3fa85d0c`, 2-1d `a0cae5fe`, 2-2a `ed8d28b0`, 2-2b `34937178`, 2-2c `579990e6`, 2-4a `6e1ec4ce`, 2-4b `20677f1b`, 2-4c `b2d26dee`, 2-5a `e0760c03`, 2-5b `80a118eb`, 검토 후속 `d5588836`·`5485ab14`·`42820b0d`·`41cdc760` | F7 | `essence_auto_review.py`, `content.py`, 새 모듈 2개, `tasks.py` |
 | P2-B | [Phase 2 인프라·배포](2026-10-11-p2-infra-deploy.md) | 2-6a~d, 2-7, 2-8a/b, 2-9-0~e, 2-10(개요) — **완료**: 2-6a `a1bdaef8`, 2-6b `048c3b92`, 2-6c `0d5bedec`, 2-6d `8f3e4076`, 2-7 `2fc29a6d`, 2-8a `00539714`, 2-8b `b722cdd0`, 2-9-0 `218fca59`, 2-9a `8ff087a5`, 2-9b `8d20d271`, 2-9c `34530666`, 2-9d `e298b92e`, 2-9e `6375b228`, 2-10 개요 `c5728e34`, 검토 후속 `69d59a70`·`6bd8816a`, P2-A와 병합 `7c1c02fd`, main 병합 `c1db2137`, 계약 문서는 Phase 2 문서 커밋 | F8, F11 | `scripts/deploy.sh`, `terraform/*.tf`, `health_server.py`, `cost_guard.py` |
+| P3 | [Phase 3 콘텐츠 게이트](2026-10-13-p3-content-gates.md) (2026-10-13 추가, 브랜치 `claude/autonomy-p3`) | 3-1~3-15 (D23·D24, 엔지니어링 기본값 E1~E5) | 게이트 공회전·필터 오탐·진료비 참고자료 보류 | `utils/medical_filter.py`, `utils/forbidden_impact_scan.py`, `services/content_engine.py`, `services/reference_*.py`, `workers/tasks.py`(게이트 카탈로그 판 `2026-10-13.1`) |
 
 **실행 규칙**
 - Phase 안에서 파일이 겹치는 서브 계획은 **직렬**(P0-A → P0-B), 겹치지 않는 것은 **병렬 worktree**(P0-C는 P0-A/B와 병렬). Phase 1은 P1-A → P1-B 직렬(둘 다 `tasks.py`·사고 서비스). Phase 2는 P2-A ∥ P2-B 병렬.
@@ -55,10 +56,15 @@
 | D19 (구현 중 확정) | V0 자동 재실행의 사고 기한 유예(`V0_AUTO_RERUN_GRACE`)는 **6시간**(초안 2시간). 재실행이 비용 창 때문에 다시 미뤄지면 RETRYING 사고 기한을 미룸 시각 + 6시간으로 민다(`ops_incident_alerts.extend_retrying_deadline`, 사고가 없으면 만들지 않음). 재실행 1회 = 시도 1회(저장된 실패 횟수가 이미 상한이라 첫 예외에 최종 실패 경로로 간다) | P1-B 1-9a `32df68af`, 후속 `5a1ccdde` |
 | D20 (구현 중 확정) | `SITE_BUILD_RETRIES_EXHAUSTED`(하루 자동 재실행 예산 소진)는 **개발 대상**이며 알림 문구가 운영센터의 연결 작업 '작업 다시 시도' 버튼 경로를 말한다. 사람이 누른 재시도의 실패(`SITE_BUILD_FAILED`)는 운영 대상 그대로 | P1-A 1-8 `34e87398`, 후속 `4ecf8e71` |
 | D21 (수용) | 주간 측정 실패(`WEEKLY_SOV_MEASUREMENT_FAILED`)를 조용한 상태로 바꾸면서, 같은 사고에 묶인 2026-09 주간 측정 기준표 정책 전환 안내(Report)도 Slack에 가지 않는다 — 사고 행 문구는 남고 사람의 일은 월간 측정 실패·코호트 공백이 따로 연다 | P1-A 1-8 `34e87398` |
+| D22 (2026-10-13 대표 결정) | 10/9 이전에 만든 빈 슬롯 **23건**(10/12~15 예정, `LEGACY_SPEND_UNKNOWN` 11 + 게이트가 `CONTENT_NOT_GENERATED`로 덮은 12)의 레거시 예산을 운영센터 버튼과 같은 교체 함수(`generation_attempt_state.replace_legacy_budget_and_release`)를 시스템 actor로 부르는 CLI(`app.utils.legacy_budget_reset`, dry-run 기본)로 **한 번만** 교체한다. 이후의 레거시 슬롯은 버튼으로 처리 | main `8cf31b22`(PR #242), [배포 안내](../ops/deployment-runbook.md) Phase 0 배포 뒤 1회 조치 |
+| D23 (2026-10-13 대표 결정) | 진료비·병원 선택 글(제목 기준)은 필수 유형이어도 참고자료가 **선택**이다 — 비어도 생성·발행·공개를 막지 않고, 있으면 같은 실제 문서 검증을 거친다. 비었을 때 수기 목록으로 채우지 않는다(9/29 결정 유지) | P3 3-6, `reference_requirement.references_block_when_empty` |
+| D24 (2026-10-13 대표 결정) | 치료 결과 보장, 최저가·가격 최상급, 노골적 할인·이벤트·무료 유인은 공통 필터(`medical_filter`, 라벨 `할인·유인`)로 **하드 차단**한다(생성·발행·공개·PATCH 공통). 그 밖의 문형은 유연하게 두되 의료 안전 차단은 어디서도 풀지 않는다 — 문맥 예외는 같은 문장의 양성 근거를 요구하고, 같은 문장이 결과를 보장하면 어떤 예외도 적용하지 않는다. 어휘 경계는 법무 확인 권장(P3 계획 Q1) | P3 3-1·3-2·3-10, 교차 검토 반영 |
 | D25 (구현 중 확정) | `COST_GUARD_FAIL_OPEN`(비용 가드가 Redis를 읽지 못해 상한 확인 없이 통과)과 `PROVIDER_USAGE_SPOOL_TRUNCATED`는 **개발 대상** — D6(`COST_GUARD_*` 운영 대상 유지)의 예외. 비용 한도 도달(`COST_GUARD_LIMIT_REACHED`)은 대표 결정이라 운영 대상 그대로이지만 fail-open은 AE가 고칠 수 없는 인프라 사실이다. `INCIDENT_TYPE_POLICIES`에 등록 | P2-B 2-8a `00539714`, 2-8b `b722cdd0`, main 병합 `c1db2137` |
 | D26 (구현 중 확정) | 처리 ERROR 필수 자료의 Essence 제외는 다른 필수 자료가 PROCESSED면 **1시간 유예**(`ERROR_SOURCE_EXCLUSION_GRACE`) 뒤, ERROR뿐이면 6시간(`ERROR_SOURCE_EXCLUSION_AFTER`) 뒤 — 2-3c 초안의 '즉시'를 대체한다(처리 직후 일시 오류로 근거가 빠지지 않게) | P2-A 2-3c `cc80b088`, 후속 `d5588836` |
 | D27 (구현 중 확정) | 대기 자기 도메인의 DNS 확인은 14일(`DOMAIN_DNS_POLL_MAX_DAYS`) 창이 지나도 **멈추지 않는다** — 창이 지나면 사람의 일 `CUSTOM_DOMAIN_DNS_NOT_CONFIGURED`를 한 번 열 뿐이고, 늦게 맞춘 병원도 수동 확인과 같은 경로로 열린다(DNS 조회는 비용이 없다) | P2-A 2-5b `80a118eb`, 후속 `d5588836` |
 | D28 (2026-10-13 대표 결정) | 배포 금지 배치 시간대는 KST 22:15~02:00 전체와 04·07·08·12·18·22시 앞뒤 45분(**22시 포함**). 배포 횟수는 완화 — 배치 시간대 밖이면 **하루 여러 번** 가능하고, `deploy.sh`의 하루 1회 잠금은 권고(경고 + `--override-reason` 사유 기록)다. D4·D13의 '하루 1회'를 대체한다 | P2-B 2-9b `8d20d271`·`69d59a70`, Phase 2 문서 커밋 |
+
+D18~D22는 main에 먼저 기록됐다(D18~D21은 Phase 1 문서 커밋, D22는 PR #242의 배포 안내). 이 브랜치의 기준 커밋(`7a1e2174`)에 없어 같은 문장을 옮겨 둔다.
 
 ## 3. 감사 가정을 조사가 바로잡은 것 (서브 계획이 따르는 사실)
 
@@ -86,6 +92,8 @@
 **Phase 1** — (a)(b)(d)(e) 동일, (c) 사전 조회 Q1(OPEN 나이 분포)·Q2(알림 14일) 저장, (f) 배포 뒤: `sla_due_at IS NULL`인 RETRYING 0행(MISSING_APPROVED_ESSENCE 제외), 7일 넘은 OPEN 0, 다음 월초(11/1~8) 오탐 사고 3종 0, 일일 요약 "사람의 일"이 실제 OPEN·기한 지난 건수와 일치.
 
 **Phase 2** — (a)(b)(d)(e) 동일, (c) PENDING_DOMAIN 병원 목록·`schedule_set=false` ACTIVE 병원 목록 사전 기록, (f) 배포 뒤: Essence 자동 승인 → 일정 자동 생성 감사행 확인(신규 병원 없으면 테스트 병원으로 리허설), Beat `/live` 정상, GCP 경보 정책 2개 ENABLED, `deploy.sh`가 env diff·시간대 잠금·smoke를 실제로 거친 배포 기록.
+
+**Phase 3** (콘텐츠 게이트, 브랜치 `claude/autonomy-p3`, [계획](2026-10-13-p3-content-gates.md)) — (a)(b)(d)(e) 동일, (c) 배포 전: 새 이미지로 `app.utils.forbidden_impact_scan`을 돌려 운영 필터 동결본 대비 **새로 막히는 글과 새로 풀리는 글**을 모두 기록하고, 영향 글 ID와 그 글들의 기존 승인 공개 판(`content_revision`·본문 hash·`essence_check_summary`)을 읽기 전용으로 보관한다(생성 중 결정적 치유 전 후보는 저장되지 않으므로 보관 대상이 아니다 — 치유로 저장된 본문은 롤백으로 돌아오지 않고 사람의 PATCH나 재생성으로 고친다, [런북](../ops/deployment-runbook.md) Phase 3 4번), `CONTENT_HARD_FINDING_IDLE_TERMINAL=false` 유지 확인, (f) 배포 뒤: 첫 복구 스윕과 07:45·08:00 발행 뒤 참고자료 0개 진료비·병원 선택 글의 공개 여부·차단 이유·재집기 횟수, `ops_sql_report --only=q10`의 거절 사유·치유 횟수, 롤백 이미지가 게이트 카탈로그 판 `2026-10-13.1`을 유지하는지.
 
 ## 6. 성공 지표 (감사 §5와 동일, 측정은 `ops_sql_report`)
 
