@@ -398,15 +398,42 @@ def claimable_notifications_stmt(*, claimed_at: datetime, limit: int):
     )
 
 
+# 사고 알림 키의 에피소드 꼬리(`INCIDENT_OPEN:{id}:e{n}`). 옛 키에는 없다.
+_EPISODE_SUFFIX = r":e([0-9]+)$"
+
+
+def _same_episode_open(open_row):
+    """이 복구 알림(`NotificationOutbox`)의 짝이 될 수 있는 열림 알림.
+
+    두 키에 모두 에피소드가 있으면 같은 에피소드만 짝이다 — 1회차의 나간 열림이 2회차 복구를
+    내보내는 근거가 되면, 2회차 열림이 발송 전에 종결됐는데도 채널에 짝 없는 복구 줄이 남는다.
+    에피소드가 없는 옛 키는 종전 규칙(복구보다 먼저 만든 열림)을 따른다.
+    """
+    recovered_episode = func.substring(NotificationOutbox.dedupe_key, _EPISODE_SUFFIX)
+    open_episode = func.substring(open_row.dedupe_key, _EPISODE_SUFFIX)
+    return or_(
+        and_(
+            recovered_episode.isnot(None),
+            open_episode.isnot(None),
+            open_episode == recovered_episode,
+        ),
+        and_(
+            or_(recovered_episode.is_(None), open_episode.is_(None)),
+            open_row.created_at <= NotificationOutbox.created_at,
+        ),
+    )
+
+
 async def settle_incident_notices(db: AsyncSession, *, now: datetime) -> None:
     """채널에 닿지 않을 짝을 종결한다(`INCIDENT_RESOLVED_BEFORE_SEND`).
 
     1. 열림 알림: 사고가 발송 전에 복구·확인됐거나, 사고가 그 뒤 다시 열려 지난 에피소드의 것이
        됐다(현재 에피소드 시작보다 먼저 만들었고 현재 에피소드 키가 아니다). 지난 에피소드의 '조치
        필요'를 지금 보내면 새 에피소드의 보류(스윕 소유 기한)를 앞질러 사람을 부른다.
-    2. 복구 알림: 그보다 먼저 만든 열림 알림이 있었고 그중 채널에 닿았을 수 있는 것(PENDING·
+    2. 복구 알림: 같은 에피소드의 열림 알림이 있었고 그중 채널에 닿았을 수 있는 것(PENDING·
        SENDING·RETRYING·HOLD·SENT)이 하나도 없다 — 모두 FAILED(발송 전 종결·전송 실패)다.
-       나중 에피소드의 열림은 이 복구의 짝이 아니므로 세지 않는다.
+       다른 에피소드의 열림은 이 복구의 짝이 아니므로 세지 않는다(에피소드 없는 옛 키는
+       복구보다 먼저 만든 열림을 짝으로 본다).
     짝 계약("나간 OPEN에는 반드시 RECOVERED가 따른다")은 그대로다.
     """
 
@@ -455,7 +482,7 @@ async def settle_incident_notices(db: AsyncSession, *, now: datetime) -> None:
             unreached.incident_id == NotificationOutbox.incident_id,
             unreached.notification_type == "INCIDENT_OPEN",
             unreached.state == NotificationOutboxState.FAILED.value,
-            unreached.created_at <= NotificationOutbox.created_at,
+            _same_episode_open(unreached),
         )
         .exists()
     )
@@ -465,7 +492,7 @@ async def settle_incident_notices(db: AsyncSession, *, now: datetime) -> None:
             reached.incident_id == NotificationOutbox.incident_id,
             reached.notification_type == "INCIDENT_OPEN",
             reached.state.in_(_MAY_HAVE_REACHED_STATES),
-            reached.created_at <= NotificationOutbox.created_at,
+            _same_episode_open(reached),
         )
         .exists()
     )

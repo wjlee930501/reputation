@@ -37,7 +37,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from celery import current_task
-from sqlalchemy import and_, case, func, or_, select
+from sqlalchemy import DateTime, and_, case, cast, func, literal, or_, select
 from sqlalchemy.orm import joinedload
 
 from app.core.celery_app import celery_app
@@ -182,10 +182,45 @@ def _withheld_stmt(limit: int):
     )
 
 
-def _uncertain_settled_stmt(limit: int):
-    """교정이 끝났는데 FLAGGED로 남고 아직 상위 재검수를 받지 않은 공개 글."""
+# `datetime.isoformat()`이 남기는 시간대 붙은 시각. 이 꼴일 때만 SQL이 timestamptz로 바꾼다 —
+# 깨진 값은 형 변환 오류 대신 '묵지 않음'으로 본다(`settled_long_enough`와 같은 판정).
+_AWARE_ISO_TIMESTAMP = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?([+-]\d{2}:\d{2}|Z)$"
+
+
+def _uncertain_settled_stmt(limit: int, *, now: datetime, days: int):
+    """교정이 끝났는데 UNCERTAIN만 남아 `days`일 묵었고 아직 상위 재검수를 받지 않은 공개 글.
+
+    UNCERTAIN만·묵음 조건을 LIMIT 앞 SQL에 건다 — 파이썬에서 거르면 오래된 HARD 글이 상한을 다
+    차지해 UNCERTAIN 글이 영영 뽑히지 않는다. 판정은 `uncertain_only`·`settled_long_enough`와 같다.
+    """
 
     flag = ContentItem.essence_check_summary[POST_PUBLISH_FLAG_KEY]
+    findings = flag["structured_findings"]
+    as_array = case(
+        (func.jsonb_typeof(findings) == "array", findings),
+        else_=func.jsonb_build_array(),
+    )
+    finding = func.jsonb_array_elements(as_array).table_valued("value").alias("finding")
+    not_uncertain = (
+        select(literal(1))
+        .select_from(finding)
+        .where(
+            or_(
+                func.jsonb_typeof(finding.c.value) != "object",
+                func.upper(func.coalesce(finding.c.value.op("->>")("severity"), ""))
+                != "UNCERTAIN",
+            )
+        )
+        .exists()
+    )
+    checked_text = flag["checked_at"].as_string()
+    checked_at = case(
+        (
+            checked_text.op("~")(_AWARE_ISO_TIMESTAMP),
+            cast(checked_text, DateTime(timezone=True)),
+        ),
+        else_=None,
+    )
     return (
         select(ContentItem)
         .join(Hospital, ContentItem.hospital_id == Hospital.id)
@@ -198,6 +233,10 @@ def _uncertain_settled_stmt(limit: int):
             flag["status"].as_string() == POST_PUBLISH_FLAGGED,
             flag["correction"]["finished"].as_string() == "true",
             flag[POST_PUBLISH_SENIOR_REREVIEW_KEY].as_string().is_(None),
+            func.jsonb_typeof(findings) == "array",
+            func.jsonb_array_length(as_array) > 0,
+            ~not_uncertain,
+            checked_at <= now - timedelta(days=days),
         )
         .order_by(ContentItem.published_at, ContentItem.id)
         .options(joinedload(ContentItem.hospital))
@@ -830,7 +869,13 @@ def review_post_publish_samples() -> dict[str, int]:
         if correction_cap > 0 and rereview_days > 0:
             rereview_now = datetime.now(UTC)
             settled = list(
-                db.execute(_uncertain_settled_stmt(correction_cap * _FLAG_SCAN_MULTIPLIER))
+                db.execute(
+                    _uncertain_settled_stmt(
+                        correction_cap * _FLAG_SCAN_MULTIPLIER,
+                        now=rereview_now,
+                        days=rereview_days,
+                    )
+                )
                 .unique()
                 .scalars()
                 .all()

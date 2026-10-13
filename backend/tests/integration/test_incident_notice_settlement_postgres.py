@@ -205,3 +205,48 @@ async def test_a_recovery_is_not_sent_after_an_open_slack_never_received(pg_asyn
 
     assert recovered.id not in await _claimed_ids(db)
     assert (await _row(db, recovered)).safe_error_code == RESOLVED_BEFORE_SEND_CODE
+
+
+async def test_a_later_episode_recovery_is_settled_when_its_own_open_never_went_out(
+    pg_async_session,
+):
+    """짝은 에피소드 단위다 — 1회차의 나간 열림이 2회차 복구를 내보내는 근거가 되지 않는다(Codex HOLD P2)."""
+
+    db = pg_async_session
+    incident = _incident("CONTENT_GENERATION_FAILED", "RECOVERED")
+    incident.episode_seq = 2
+    db.add(incident)
+    await db.flush()
+    e1_open = _notice(incident, state="SENT", episode=1, created_at=NOW - timedelta(hours=5))
+    e1_recovered = _notice(
+        incident, "INCIDENT_RECOVERED", state="SENT", episode=1, created_at=NOW - timedelta(hours=4)
+    )
+    e2_open = _notice(
+        incident, state="FAILED", episode=2, created_at=NOW - timedelta(minutes=50),
+        safe_error_code=RESOLVED_BEFORE_SEND_CODE,
+    )
+    e2_recovered = _notice(
+        incident, "INCIDENT_RECOVERED", episode=2, created_at=NOW - timedelta(minutes=20)
+    )
+    db.add_all([e1_open, e1_recovered, e2_open, e2_recovered])
+    await db.flush()
+
+    assert e2_recovered.id not in await _claimed_ids(db)
+    row = await _row(db, e2_recovered)
+    assert row.state == "FAILED" and row.safe_error_code == RESOLVED_BEFORE_SEND_CODE
+
+
+async def test_a_legacy_recovery_key_without_an_episode_keeps_the_time_ordered_rule(
+    pg_async_session,
+):
+    db = pg_async_session
+    incident = _incident("CONTENT_GENERATION_FAILED", "RECOVERED")
+    db.add(incident)
+    await db.flush()
+    sent_open = _notice(incident, state="SENT", created_at=NOW - timedelta(hours=2))
+    legacy = _notice(incident, "INCIDENT_RECOVERED", created_at=NOW - timedelta(minutes=20))
+    legacy.dedupe_key = f"INCIDENT_RECOVERED:{incident.id}:v3"
+    db.add_all([sent_open, legacy])
+    await db.flush()
+
+    assert legacy.id in await _claimed_ids(db)
