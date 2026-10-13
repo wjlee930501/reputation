@@ -197,10 +197,17 @@ class TruncatedProviderOutputError(ValueError):
 class MissingMustUseMessagesError(ValueError):
     """승인된 필수 문구가 본문에 원문 그대로 들어가지 않았다.
 
-    다른 결정적 거절과 같이 기존 재작성 루프(GENERATION_REMEDIATION_ROUNDS·
-    GENERATION_PROVIDER_CALL_BUDGET)가 빠진 문구를 작가에게 넘겨 다시 쓰게 한다.
-    끝내 빠지면 GENERATION_REJECTED(본문 표본 실패) 경로를 탄다.
+    생성 루프는 빠진 문구를 본문 끝에 원문 그대로 덧붙이는 결정적 치유를 먼저 한다
+    (`_heal_missing_must_use`). 치유 뒤 다른 게이트가 걸리면 기존 재작성 루프가 그 사유로
+    다시 쓰게 하고, 끝내 실패하면 GENERATION_REJECTED(본문 표본 실패) 경로를 탄다.
     """
+
+    def __init__(
+        self, message: str, result: dict | None = None, missing: tuple[str, ...] = ()
+    ):
+        super().__init__(message)
+        self.result = result
+        self.missing = missing
 
 
 class DirectorNameMissingError(ValueError):
@@ -209,6 +216,27 @@ class DirectorNameMissingError(ValueError):
     def __init__(self, message: str, result: dict):
         super().__init__(message)
         self.result = result
+
+
+class HospitalNameMissingError(ValueError):
+    """병원명이 본문에 없다 — 승인된 병원명 한 줄로 결정적으로 고친다(작가를 다시 사지 않는다)."""
+
+    def __init__(self, message: str, result: dict):
+        super().__init__(message)
+        self.result = result
+
+
+class ForbiddenExpressionError(ValueError):
+    """금지 표현이 공개 필드에 있다. 본문 문장에만 있으면 그 문장을 지우는 결정적 치유 대상이다.
+
+    메시지는 종전 그대로("Forbidden medical expressions …")다 — 실행 분류기가 이 문구로 거절
+    사유를 가른다(`generation_run_control._safe_rejection_message`).
+    """
+
+    def __init__(self, message: str, result: dict, *, body_only: bool):
+        super().__init__(message)
+        self.result = result
+        self.body_only = body_only
 
 
 client = openrouter.sync_client(timeout=90.0)  # max_retries=0 — tenacity가 재시도를 소유
@@ -281,7 +309,8 @@ __MANDATORY_SAFETY_RULES__
   본문에 넣으세요.
   각 문구를 한 글자도 바꾸지 말고(조사·어미·쉼표·숫자·단위 포함) 독립된 문장으로 쓰며,
   문구 앞뒤에 말을 덧붙여 한 문장으로 잇거나 따옴표로 감싸지 마세요. 설명이 더 필요하면
-  다음 문장에서 이어 씁니다. 시스템이 생성 후 원문 포함 여부를 검사하며 빠지면 저장되지 않습니다.
+  다음 문장에서 이어 씁니다. 시스템이 생성 후 원문 포함 여부를 검사하며, 빠지면 원문을 글 끝에
+  따로 덧붙이므로 문맥이 어색해집니다 — 본문 흐름 안에 넣으세요.
   avoid_messages는 피합니다.
 - 회복기간·입원·마취 후 경과 등은 프로파일/가이드의 실제 운영 방침과 어긋나지 않게 적습니다.
 
@@ -1469,7 +1498,7 @@ def _validate_generated_result(
         )
         raise ValueError(f"Forbidden medical expressions require complete regeneration: {violations}")
 
-    _validate_must_use_verbatim(result.get("body"), must_use_messages)
+    _validate_must_use_verbatim(result.get("body"), must_use_messages, result=result)
 
     # references는 GEO 검증 전에 이미 정규화됨(list[{title,url,source_type}]) — 중복 정규화 불필요.
 
@@ -1486,7 +1515,9 @@ def _validate_generated_result(
 _MUST_USE_EXCERPT_CHARS = 24
 
 
-def _validate_must_use_verbatim(body: object, must_use_messages: list[str] | None) -> None:
+def _validate_must_use_verbatim(
+    body: object, must_use_messages: list[str] | None, *, result: dict | None = None
+) -> None:
     """승인된 필수 문구가 본문에 원문 그대로, 독립된 문장으로 들어 있는지 검사한다.
 
     판정 규칙은 독립 검수가 필수 문구 지적을 가려낼 때와 같다(`must_use_verbatim`).
@@ -1502,7 +1533,9 @@ def _validate_must_use_verbatim(body: object, must_use_messages: list[str] | Non
     raise MissingMustUseMessagesError(
         f"Required must_use messages missing verbatim ({len(missing)}): "
         "must_use_messages의 필수 문구를 의역하지 말고 원문 그대로 독립된 문장으로 "
-        f"본문에 넣으세요 — {excerpts}"
+        f"본문에 넣으세요 — {excerpts}",
+        result,
+        tuple(missing),
     )
 
 
@@ -1605,27 +1638,27 @@ async def generate_content(
                         attempt_context.get("http_attempt") or 0
                     )
                     return healed
-        except DirectorNameMissingError as exc:
-            # 승인된 원장명 한 줄은 결정적으로 붙일 수 있다. 본문이 그 한 가지만
-            # 빼고 완전한데도 재작성을 두 번 더 사면 정상 글 한 편에 세 번 결제한다.
-            last_error = exc
-            try:
-                healed = _heal_missing_director_name(
-                    exc,
-                    hospital,
-                    content_type,
-                    content_brief,
-                    must_use_messages=must_use_messages,
+        except (
+            DirectorNameMissingError,
+            HospitalNameMissingError,
+            ForbiddenExpressionError,
+            MissingMustUseMessagesError,
+        ) as exc:
+            # 승인된 원장명·병원명 한 줄, 금지 표현이 든 본문 문장 삭제, 빠진 필수 문구 원문
+            # 덧붙이기는 결정적으로 고칠 수 있다. 본문이 그 한 가지만 빼고 완전한데도 재작성을
+            # 두 번 더 사면 정상 글 한 편에 세 번 결제한다.
+            healed, last_error = _apply_deterministic_heals(
+                exc,
+                hospital,
+                content_type,
+                content_brief,
+                must_use_messages=must_use_messages,
+            )
+            if healed is not None:
+                healed["_provider_http_attempts"] = int(
+                    attempt_context.get("http_attempt") or 0
                 )
-            except ValueError as heal_error:
-                # 이름을 붙였더니 다른 게이트가 걸렸다 — 그 사유로 다시 쓰게 한다.
-                last_error = heal_error
-            else:
-                if healed is not None:
-                    healed["_provider_http_attempts"] = int(
-                        attempt_context.get("http_attempt") or 0
-                    )
-                    return healed
+                return healed
         except ValueError as exc:
             last_error = exc
         logger.info(
@@ -1695,12 +1728,7 @@ def _heal_from_curated_catalog(
 
 
 def _heal_missing_director_name(
-    error: DirectorNameMissingError,
-    hospital: Hospital,
-    content_type: ContentType,
-    content_brief: dict | None,
-    *,
-    must_use_messages: list[str] | None = None,
+    error: DirectorNameMissingError, hospital: Hospital, *, must_use_messages: list[str]
 ) -> dict | None:
     """Append the approved director name once, in the same round, or give up.
 
@@ -1714,9 +1742,95 @@ def _heal_missing_director_name(
     if not director or director in body:
         return None
     result["body"] = f"{body}\n\n{hospital.name}의 원장은 {director}입니다."
-    return _validate_generated_result(
-        result, hospital, content_type, content_brief, must_use_messages=must_use_messages
+    return result
+
+
+def _heal_missing_hospital_name(
+    error: HospitalNameMissingError, hospital: Hospital, *, must_use_messages: list[str]
+) -> dict | None:
+    """승인된 병원명 한 줄을 덧붙인다. 원장명도 빠졌으면 두 이름이 함께 든 원장명 줄로 붙인다."""
+
+    result = error.result
+    name = (hospital.name or "").strip()
+    body = (result.get("body") or "").rstrip()
+    if not name or name in body:
+        return None
+    director = (hospital.director_name or "").strip()
+    line = (
+        f"{name}의 원장은 {director}입니다."
+        if director and director not in body
+        else f"이 글은 {name}에서 안내합니다."
     )
+    result["body"] = f"{body}\n\n{line}"
+    return result
+
+
+def _heal_missing_must_use(
+    error: MissingMustUseMessagesError, hospital: Hospital, *, must_use_messages: list[str]
+) -> dict | None:
+    """빠진 승인 필수 문구를 본문 끝에 원문 그대로, 한 문단에 한 문구씩 덧붙인다.
+
+    필수 문구 집합은 작가 검증과 같다(현재 APPROVED 승인본, 금지 표현이 든 문구는 이미 제외).
+    """
+
+    result = error.result
+    if result is None or not error.missing:
+        return None
+    body = (result.get("body") or "").rstrip()
+    appended = "\n\n".join(message.strip() for message in error.missing)
+    result["body"] = f"{body}\n\n{appended}"
+    return result
+
+
+_DETERMINISTIC_HEALS = {
+    DirectorNameMissingError: _heal_missing_director_name,
+    HospitalNameMissingError: _heal_missing_hospital_name,
+    MissingMustUseMessagesError: _heal_missing_must_use,
+}
+
+
+def _apply_deterministic_heals(
+    error: ValueError,
+    hospital: Hospital,
+    content_type: ContentType,
+    content_brief: dict | None,
+    *,
+    must_use_messages: list[str],
+) -> tuple[dict | None, ValueError]:
+    """결정적 치유를 이어서 적용하고 같은 게이트 전체로 다시 검증한다(공급자 호출 없음).
+
+    한 치유가 다른 치유 대상을 드러낼 수 있다 — 금지 표현 문장을 지웠더니 병원명이 빠졌다, 병원명을
+    붙였더니 필수 문구가 없다. 치유 종류 수만큼만 잇는다. 고치지 못하면 (None, 다음 회차에 넘길
+    거절)을 돌려준다. 문장을 지운 치유가 끼었으면 그 뒤의 거절은 우리가 만든 것이므로 원래 거절을
+    넘긴다(작가가 지운 적 없는 병원명을 빼먹었다고 듣지 않게).
+    """
+
+    current = error
+    deleted = False
+    for _ in range(len(_DETERMINISTIC_HEALS)):
+        healer = _DETERMINISTIC_HEALS.get(type(current))
+        patched = (
+            healer(current, hospital, must_use_messages=must_use_messages)
+            if healer is not None
+            else None
+        )
+        if patched is None:
+            break
+        deleted = deleted or isinstance(current, ForbiddenExpressionError)
+        try:
+            return (
+                _validate_generated_result(
+                    patched,
+                    hospital,
+                    content_type,
+                    content_brief,
+                    must_use_messages=must_use_messages,
+                ),
+                error,
+            )
+        except ValueError as next_error:
+            current = next_error
+    return None, (error if deleted else current)
 
 
 # Keep the transport retry controller observable/configurable at the public seam used by
@@ -2088,7 +2202,7 @@ def _validate_geo(
     # ── HARD: 승인된 엔티티 정확 표기 ────────────────────────────────
     hospital_name = (hospital.name or "").strip()
     if hospital_name and hospital_name not in body:
-        raise ValueError(f"GEO hard-fail: 병원명 '{hospital_name}' body 미포함")
+        raise HospitalNameMissingError(f"GEO hard-fail: 병원명 '{hospital_name}' body 미포함", result)
 
     # ── HARD: 원장명 공출현 ──────────────────────────────────────────
     director = (hospital.director_name or "").strip()
