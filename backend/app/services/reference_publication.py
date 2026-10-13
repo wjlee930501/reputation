@@ -140,6 +140,8 @@ class PublicationReferenceRefresh:
     # 일시 장애로 미룬 목록 밖 URL(비어 있으면 실행당 GET 한도로 미룬 것).
     site_unreachable_urls: tuple[str, ...] = ()
     # 진료비·병원 선택 글이라 치유하지 않고 비웠다 — 보류는 사람이 정한다.
+    # D23(2026-10-13) 뒤로 이 값을 읽는 곳이 없다 — 진료비·병원 선택 글은 비어도 보류하지 않는다.
+    # 옛 기록이 다 풀린 뒤(배포 +약 1주) 걷어낼 예정이다(계획 Q7).
     operator_decides: bool = False
 
 
@@ -343,6 +345,8 @@ async def refresh_publication_references(
         # 이번 GET에서 목록 문서로 리다이렉트된 주소도 목록 문서를 인용한 것과 같다.
         kept = [entry for entry in kept if not names_curated_document(entry, outcome.checks)]
     healed = False
+    # 진료비·병원 선택 글은 비어도 수기 목록으로 채우지 않는다(9/29 결정, 계획 Q2) — 이 판정은 살아 있다.
+    # 결과의 `operator_decides` 필드만 D23(2026-10-13) 뒤로 읽는 곳이 없어 배포 +약 1주에 걷어낸다(Q7).
     operator_decides = not kept and references_left_to_operator(item)
     if not kept and required and not operator_decides:
         failed_urls = {
