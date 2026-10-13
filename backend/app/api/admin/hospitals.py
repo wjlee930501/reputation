@@ -9,6 +9,7 @@ PATCH  /admin/hospitals/{id}/activate   — ACTIVE 전환
 """
 
 import asyncio
+import copy
 import logging
 import re
 import uuid
@@ -55,7 +56,12 @@ from app.models.operations import OperationRun
 from app.models.report import V0_REPORT_TYPE, MonthlyReport
 from app.models.sov import SovRecord
 from app.schemas.hospital import HospitalDetail, HospitalListItem
-from app.services import cost_guard, profile_channel_sources, profile_completion
+from app.services import (
+    cost_guard,
+    profile_channel_sources,
+    profile_completion,
+    profile_provenance,
+)
 from app.services.asset_storage import store_asset_bytes
 from app.services.audit_log import default_actor, write_audit_log
 from app.services.clinic_visual_readiness import evaluate_visual_readiness
@@ -931,6 +937,12 @@ async def update_profile(
     # 이 저장이 비운 항목만 완료를 되돌린다. 저장 전 이미 비어 있던 항목(레거시)까지 세면,
     # 무관한 칸 하나를 고치려다 공개 중인 병원이 차단되거나 완료가 풀린다.
     missing_before = set(missing_profile_requirement_keys(h))
+    # 출처 원장(D30): 이 저장이 실제로 바꾼 필드만 마케터 입력으로 적는다. 화면이 전체 객체를
+    # 다시 보내 생긴 표기 차이(빈 요일 키 등)는 바꾼 것으로 보지 않는다.
+    values_before = {
+        field: copy.deepcopy(getattr(h, field, None))
+        for field in (*PROFILE_FIELDS, "director_name", "director_career", "director_philosophy")
+    }
     changed_fields: list[str] = []
     for field, value in update_data.items():
         if field not in PROFILE_FIELDS:
@@ -961,6 +973,19 @@ async def update_profile(
             if getattr(h, field, None) != value:
                 changed_fields.append(field)
             setattr(h, field, value)
+
+    profile_provenance.record_operator_fields(
+        h,
+        [
+            field
+            for field in changed_fields
+            if field in values_before
+            and profile_provenance.semantically_changed(
+                values_before[field], getattr(h, field, None)
+            )
+        ],
+        actor=default_actor(),
+    )
 
     # 완료 여부는 body가 아니라 저장 결과에서 파생한다 — 화면에 '완료로 표시'가 없으므로
     # 손으로 만든 요청이 불완전한 병원을 완료 처리할 경로도 함께 사라진다(설계 §4.5).
@@ -1758,6 +1783,9 @@ def serialize_hospital_detail(h: Hospital) -> dict:
         "image_style_direction": getattr(h, "image_style_direction", None),
         "site_access_mode": getattr(h, "site_access_mode", None),
         "treatments": h.treatments,
+        # 필드별 출처(마케터 입력·자동 입력·출처 모름)와 자동 수집 값과의 충돌. 정보 화면의
+        # "자동 입력" 배지와 회색 충돌 줄이 이 값을 그린다 — 사람의 일이 아니다.
+        "profile_field_provenance": profile_provenance.serialize_ledger(h),
         "profile_complete": h.profile_complete,
         # 화면은 "남은 필수 항목 N개"만 그린다 — 판정과 라벨을 서버가 한 곳에서 준다.
         "missing_profile_requirements": [

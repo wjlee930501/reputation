@@ -136,6 +136,9 @@ class HospitalDetail(HospitalItemBase):
     site_access_mode: Optional[str] = None
     director_credentials: Optional[Any] = None
     treatments: list
+    # 필드별 출처 원장(0091) — {field: {"origin": "OPERATOR"|"AUTOFILL"|"LEGACY", ...,
+    # "conflict"?: {"source", "value", "observed_at"}}}.
+    profile_field_provenance: dict[str, Any] = {}
     # 이번 저장이 등록·건너뜀·실패한 자료. 다른 조회 응답에는 없다.
     source_registration: Optional[list[SourceRegistrationItem]] = None
     # 주소는 저장했지만 좌표를 찾지 못했을 때만 실린다. 저장 실패가 아니다(ADM-05).
