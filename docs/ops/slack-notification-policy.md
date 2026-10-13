@@ -150,9 +150,7 @@ Celery 밖 pipeline watchdog은 **조건 집합 에피소드당 한 번** 알린
 **운영 경보 메일(2차 경로, 2026-10 Phase 2).** Slack이 닿지 않을 때만 `OPS_ALERT_EMAIL`로 Resend 메일을 보낸다
 (`ops_alert_email.send_ops_alert`, 결정적 `idempotency_key`). 값이 비어 있으면 보내지 않고 ERROR 로그(`ops alert email: …`)만
 남긴다. 운영 값은 Terraform `alert_email`(GCP 경보 이메일 채널)과 같은 주소이며 주소를 코드에 두지 않는다. 보내는 경우는 둘뿐이다.
-(1) 외부 감시의 경보가 Slack에 전달되지 않았을 때 — 에피소드당 한 통(`watchdog:{audience}:{episode_id}`, 에피소드가 없으면 KST
-날짜+조건 서명). 메일 전달(Resend 2xx)은 Slack 상태와 별개로 Redis에 7일 기록해(다시 볼 때마다 연장) Slack 장애가 Resend의 24시간
-멱등 창보다 길어져도 같은 에피소드 메일을 다시 보내지 않고, 재시도 본문은 에피소드의 첫 본문으로 고정한다. 복구는 메일로 보내지
+(1) 외부 감시의 경보가 Slack에 전달되지 않았을 때 — 에피소드당 한 통(`watchdog:{audience}:{episode_id}`; Redis가 없어 에피소드를 모르면 `watchdog:{audience}:nr:{조건 서명}:{처음 시각}` — 같은 수신자·조건 집합의 24시간 안 기록을 같은 장애로 이어 써 KST 자정을 넘겨도 새 키를 만들지 않고, 장애가 더 길면 24시간마다 한 통). 메일 발송 기록의 정본은 Slack 상태와 별개인 DB 감사행(`watchdog_ops_email_planned`·`watchdog_ops_email_sent`, append-only)이고 Redis(7일)는 캐시일 뿐이라, Slack 장애가 Resend의 24시간 멱등 창보다 길어지거나 메일을 보내는 그때 Redis가 내려가 있어도 같은 에피소드 메일을 다시 보내지 않는다. 본문은 Slack 문구(판정마다 바뀌는 건수)가 아니라 경보 번호(키)와 조건 집합으로 정해지는 고정 문구라 재시도가 같은 본문을 보낸다(409 반복 없음). DB와 Redis가 모두 없으면 프로세스 메모리로 프로세스 수명 동안(24시간 안) 수신자·조건 집합당 한 통이다 — 인스턴스가 바뀌거나 여럿이면 인스턴스마다 다시 보낼 수 있는 알려진 한계다. 복구는 메일로 보내지
 않으며 감시의 판정·에피소드 기록을 바꾸지 않는다. (2) 운영 채널 전송 사고가 열렸는데 대신
 받을 살아 있는 개발 채널도 없을 때 — 사고 episode당 한 통(`ops-channel-down:{incident_id}:e{episode_seq}`, 감사
 `ops_alert_email_sent`로 중복 방지). 실패하면 프로세스 안에서 15분 뒤 같은 키로 다시 시도하며 outbox·사고 상태는 바꾸지 않는다.

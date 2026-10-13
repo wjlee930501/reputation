@@ -1301,58 +1301,180 @@ async def deliver_all(decisions: tuple[AlertDecision, ...]) -> tuple[bool, ...]:
 
 _EMAIL_TITLE: Final = "외부 감시 경보를 Slack에 전달하지 못했습니다"
 
-
-def _email_key(decision: AlertDecision, *, now: datetime) -> str:
-    """에피소드당 하나. Redis가 없어 에피소드가 없으면 KST 날짜와 조건 집합으로 묶는다."""
-    if decision.episode_id:
-        return f"watchdog:{decision.audience}:{decision.episode_id}"
-    kst_date = now.astimezone(KST).date().isoformat()
-    return f"watchdog:{decision.audience}:{kst_date}:{_signature(decision.conditions)}"
-
-
-# 메일 전달 기록·고정 본문의 보관 기간. Slack 장애가 Resend의 24시간 멱등 창보다 길게 이어져도
-# 같은 에피소드의 메일을 다시 보내지 않도록 그보다 길게 두고, 다시 볼 때마다 연장한다.
+# 메일 발송 기록의 정본은 DB(감사행, append-only)다. Redis는 캐시일 뿐이다 — 메일을 보내는 때가 곧
+# Redis가 없는 때일 수 있다(감시 에피소드도 Redis에 있다).
+_EMAIL_PLANNED_ACTION: Final = "watchdog_ops_email_planned"
+_EMAIL_SENT_ACTION: Final = "watchdog_ops_email_sent"
+_EMAIL_TARGET_TYPE: Final = "watchdog_alert_email"
+_EMAIL_ACTOR: Final = "system:pipeline-watchdog"
+# Redis가 없어 에피소드를 모를 때, 같은 수신자·조건 집합의 메일을 같은 장애로 묶는 기간. 장애가 이보다
+# 길면 이 기간마다 한 통(같은 날짜 경계로 다시 보내지 않는다 — 23:40→00:00에 이어진 장애는 한 통이다).
+_EPISODELESS_EMAIL_WINDOW: Final = timedelta(hours=24)
+# Redis 캐시의 보관 기간. Slack 장애가 Resend의 24시간 멱등 창보다 길어도 다시 보내지 않게 그보다 길다.
 _EMAIL_RECORD_TTL_SECONDS: Final = 7 * 24 * 3600
+# DB와 Redis가 모두 없을 때만 쓰는 프로세스 메모리 — 프로세스 수명 동안 (수신자, 조건 집합)당 한 통.
+# 알려진 한계: API 인스턴스가 바뀌거나 여러 개면 인스턴스마다 한 통이 나갈 수 있다.
+_PROCESS_EMAIL_KEYS: dict[tuple[str, str], tuple[str, datetime]] = {}
+_PROCESS_EMAILED: set[str] = set()
+
+_CONDITION_EMAIL_LABELS: Final = {
+    CONDITION_BEAT_DOWN: "예약 실행기(Beat) 정지",
+    CONDITION_PUBLISH_MISSING: "오늘 예정 글 발행 0건",
+    CONDITION_PUBLISH_GATE_RESIDUAL: "오늘 예정 글 안전검사 보류",
+}
+
+
+def reset_email_memory_for_tests() -> None:
+    _PROCESS_EMAIL_KEYS.clear()
+    _PROCESS_EMAILED.clear()
+
+
+def _condition_email_label(condition: str) -> str:
+    if condition.startswith(f"{CONDITION_QUEUE_STALE}:"):
+        return f"작업 대기열 정지({condition.split(':', 1)[1]})"
+    return _CONDITION_EMAIL_LABELS.get(condition, condition)
+
+
+def _email_lines(decision: AlertDecision, mail_key: str) -> tuple[str, ...]:
+    """메일 본문 — 키(에피소드)와 조건 집합만으로 정해지는 고정 문구다.
+
+    Slack 문구(`decision.text`)는 건수·표본이 판정마다 바뀐다. 그대로 쓰면 재시도 본문이 달라져 Resend가
+    같은 키에 409를 주고 전달을 확인할 수 없다. 같은 키는 언제나 같은 조건 집합을 가리킨다(키에 조건
+    서명 또는 에피소드가 들어 있다).
+    """
+    audience = "운영" if decision.audience == AUDIENCE_OPERATOR else "개발"
+    conditions = ", ".join(_condition_email_label(c) for c in decision.conditions) or "확인 필요"
+    return (
+        f"외부 감시가 {audience} 담당 경보를 Slack에 전달하지 못해 메일로 알립니다.",
+        f"감지된 조건: {conditions}",
+        f"경보 번호: {mail_key}",
+        "같은 경보 동안 이 메일은 한 번만 보냅니다. 지금 상태와 건수는 운영센터와 Cloud Run 로그에서 확인해 주세요.",
+    )
+
+
+def _episodeless_prefix(audience: str, signature: str) -> str:
+    return f"watchdog:{audience}:nr:{signature}:"
+
+
+class _WatchdogEmailStore:
+    """감사행(`admin_audit_logs`, append-only)에 둔 메일 발송 기록. 실패하면 None을 돌려준다."""
+
+    def find_episodeless_key(self, audience: str, signature: str, *, now: datetime) -> str | None | bool:
+        """같은 수신자·조건 집합의 최근 메일 키. 없으면 None, DB를 못 읽으면 False."""
+        prefix = _episodeless_prefix(audience, signature)
+        try:
+            with watchdog_session() as db:
+                return db.scalar(
+                    select(AdminAuditLog.target_id)
+                    .where(
+                        AdminAuditLog.action.in_((_EMAIL_PLANNED_ACTION, _EMAIL_SENT_ACTION)),
+                        AdminAuditLog.target_type == _EMAIL_TARGET_TYPE,
+                        AdminAuditLog.target_id.startswith(prefix, autoescape=True),
+                        AdminAuditLog.created_at >= now - _EPISODELESS_EMAIL_WINDOW,
+                    )
+                    .order_by(AdminAuditLog.created_at, AdminAuditLog.id)
+                    .limit(1)
+                )
+        except (SQLAlchemyError, OSError):
+            logger.warning("pipeline watchdog: DB unavailable while reading email state")
+            return False
+
+    def was_sent(self, mail_key: str) -> bool | None:
+        try:
+            with watchdog_session() as db:
+                found = db.scalar(
+                    select(AdminAuditLog.id)
+                    .where(
+                        AdminAuditLog.action == _EMAIL_SENT_ACTION,
+                        AdminAuditLog.target_type == _EMAIL_TARGET_TYPE,
+                        AdminAuditLog.target_id == mail_key,
+                    )
+                    .limit(1)
+                )
+        except (SQLAlchemyError, OSError):
+            logger.warning("pipeline watchdog: DB unavailable while reading email state")
+            return None
+        return found is not None
+
+    def record(self, action: str, mail_key: str, decision: AlertDecision) -> bool:
+        try:
+            with watchdog_session() as db:
+                db.add(
+                    AdminAuditLog(
+                        actor=_EMAIL_ACTOR,
+                        action=action,
+                        target_type=_EMAIL_TARGET_TYPE,
+                        target_id=mail_key,
+                        detail={"audience": decision.audience, "conditions": list(decision.conditions)},
+                    )
+                )
+                db.commit()
+        except (SQLAlchemyError, OSError):
+            logger.warning("pipeline watchdog: DB unavailable while recording email state")
+            return False
+        return True
+
+
+_email_store = _WatchdogEmailStore()
 
 
 def _emailed_key(mail_key: str) -> str:
     return f"{_KEY_NAMESPACE}:emailed:{mail_key}"
 
 
-def _email_body_key(mail_key: str) -> str:
-    return f"{_KEY_NAMESPACE}:email_body:{mail_key}"
-
-
-def _email_plan(mail_key: str, lines: tuple[str, ...]) -> tuple[bool, tuple[str, ...]]:
-    """(이 에피소드의 메일이 이미 전달됐는가, 이 에피소드에 고정한 본문).
-
-    Slack 상태(`record_deliveries`)와 별개의 키다. 본문은 에피소드의 첫 시도 것을 고정한다 —
-    재시도 본문이 바뀌면 Resend가 같은 키에 409를 주고 전달을 확인할 수 없다. Redis가 없으면
-    기억할 곳이 없으므로 이번 본문으로 보낸다(fail-open 키는 KST 날짜에 묶인다).
-    """
+def _redis_says_emailed(mail_key: str) -> bool:
     try:
         with _connect_redis() as client:
-            if client.get(_emailed_key(mail_key)):
-                client.set(_emailed_key(mail_key), "1", ex=_EMAIL_RECORD_TTL_SECONDS)
-                return True, lines
-            body_key = _email_body_key(mail_key)
-            client.set(body_key, "\n".join(lines), nx=True, ex=_EMAIL_RECORD_TTL_SECONDS)
-            stored = client.get(body_key)
+            return bool(client.get(_emailed_key(mail_key)))
     except RedisError:
-        logger.warning("pipeline watchdog: Redis unavailable while reading email state")
-        return False, lines
-    if stored is None:
-        return False, lines
-    text = stored.decode("utf-8") if isinstance(stored, bytes) else str(stored)
-    return False, tuple(text.split("\n"))
+        return False
 
 
-def _record_email_delivered(mail_key: str) -> None:
+def _email_key(decision: AlertDecision, *, now: datetime) -> str:
+    """에피소드당 하나. Redis가 없어 에피소드를 모르면 DB에서 같은 장애의 키를 찾아 이어 쓴다.
+
+    찾지 못하면 새 키를 만들고 DB에 남긴다(다음 판정이 이어 쓴다). DB도 없으면 이 프로세스 안에서
+    같은 (수신자, 조건 집합)에 24시간 안에 만든 키를 쓴다.
+    """
+    if decision.episode_id:
+        return f"watchdog:{decision.audience}:{decision.episode_id}"
+    signature = _signature(decision.conditions)
+    found = _email_store.find_episodeless_key(decision.audience, signature, now=now)
+    slot = (decision.audience, signature)
+    remembered = _PROCESS_EMAIL_KEYS.get(slot)
+    if isinstance(found, str) and found:
+        # 다음에 DB를 못 읽어도 같은 키를 이어 쓰도록 기억한다.
+        if remembered is None or remembered[0] != found:
+            _PROCESS_EMAIL_KEYS[slot] = (found, now)
+        return found
+    if found is False and remembered is not None and now - remembered[1] < _EPISODELESS_EMAIL_WINDOW:
+        return remembered[0]  # DB를 못 읽는다 — 이 프로세스가 이 장애에 쓴 키를 이어 쓴다.
+    key = f"{_episodeless_prefix(decision.audience, signature)}{now.astimezone(UTC):%Y%m%dT%H%M}"
+    if found is None:
+        _email_store.record(_EMAIL_PLANNED_ACTION, key, decision)
+    _PROCESS_EMAIL_KEYS[slot] = (key, now)
+    return key
+
+
+def _email_plan(decision: AlertDecision, now: datetime) -> tuple[str | None, tuple[str, ...]]:
+    """(이번에 보낼 메일 키 — 이미 전달됐으면 None, 그 키의 고정 본문)."""
+    mail_key = _email_key(decision, now=now)
+    lines = _email_lines(decision, mail_key)
+    if mail_key in _PROCESS_EMAILED or _redis_says_emailed(mail_key):
+        return None, lines
+    if _email_store.was_sent(mail_key):
+        return None, lines
+    return mail_key, lines
+
+
+def _record_email_delivered(mail_key: str, decision: AlertDecision) -> None:
+    _PROCESS_EMAILED.add(mail_key)
+    _email_store.record(_EMAIL_SENT_ACTION, mail_key, decision)
     try:
         with _connect_redis() as client:
             client.set(_emailed_key(mail_key), "1", ex=_EMAIL_RECORD_TTL_SECONDS)
     except RedisError:
-        logger.warning("pipeline watchdog: Redis unavailable while recording email delivery")
+        logger.warning("pipeline watchdog: Redis unavailable while caching email delivery")
 
 
 async def email_undelivered(
@@ -1360,10 +1482,14 @@ async def email_undelivered(
 ) -> tuple[bool, ...]:
     """Slack이 받지 않은 ALERT를 운영 경보 메일로 보낸다(2차 경로).
 
-    전달되지 않은 ALERT는 15분마다 다시 판정되므로 이 함수도 다시 불린다. 메일 전달(Resend 2xx)은
-    Slack 상태와 별개로 에피소드마다 기록해, Slack 장애가 24시간 멱등 창보다 길게 이어져도 같은
-    에피소드의 메일을 다시 보내지 않는다. 결과 불명(409)·실패는 기록하지 않고 다음 판정이 같은
-    키·고정 본문으로 다시 보낸다. RECOVERY는 메일로 보내지 않는다. 메일은 판정·에피소드 기록을
+    전달되지 않은 ALERT는 15분마다 다시 판정되므로 이 함수도 다시 불린다. 메일은 에피소드마다 한 통이다:
+    전달(Resend 2xx)은 Slack 상태와 별개로 DB 감사행(`watchdog_ops_email_sent`)에 남기고 Redis는 캐시로만
+    쓴다 — Slack 장애가 24시간 멱등 창보다 길어지거나 Redis가 내려가 있어도 같은 에피소드의 메일을 다시
+    보내지 않는다. Redis가 없어 에피소드를 모르면 같은 수신자·조건 집합의 24시간 안 기록을 같은 장애로
+    이어 쓴다(KST 날짜가 바뀌어도 새 키를 만들지 않는다). 본문은 키와 조건 집합으로 정해지는 고정 문구라
+    재시도가 같은 본문을 보낸다. DB와 Redis가 모두 없으면 프로세스 메모리로 프로세스 수명 동안 한 통이다
+    (알려진 한계 — 인스턴스가 바뀌면 다시 보낼 수 있다). 결과 불명(409)·실패는 기록하지 않고 다음 판정이
+    같은 키·같은 본문으로 다시 보낸다. RECOVERY는 메일로 보내지 않는다. 메일은 판정·에피소드 기록을
     바꾸지 않는다(알림 성공과 저장 성공을 섞지 않는다).
     """
     results: list[bool] = []
@@ -1371,17 +1497,14 @@ async def email_undelivered(
         if ok or not (decision.send and decision.kind == "ALERT" and decision.text):
             results.append(False)
             continue
-        mail_key = _email_key(decision, now=now)
-        already, lines = await anyio.to_thread.run_sync(
-            _email_plan, mail_key, tuple(decision.text.splitlines())
-        )
-        if already:
+        mail_key, lines = await anyio.to_thread.run_sync(_email_plan, decision, now)
+        if mail_key is None:
             results.append(False)
             continue
         result = await ops_alert_email.send_ops_alert(
             idempotency_key=mail_key, title=_EMAIL_TITLE, lines=lines
         )
         if result.delivered:
-            await anyio.to_thread.run_sync(_record_email_delivered, mail_key)
+            await anyio.to_thread.run_sync(_record_email_delivered, mail_key, decision)
         results.append(result.delivered)
     return tuple(results)
