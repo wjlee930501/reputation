@@ -69,6 +69,23 @@ FORBIDDEN_PATTERNS: dict[str, re.Pattern] = {
         r"|(?:시술|수술|치료)[은는이가]?\s*아프지\s*않"
     ),
     "흉터 없는": re.compile(r"흉터\s*(없|zero|제로|걱정\s*없|남지\s*않)"),
+    # 2026-10-13 대표 결정(D24) — 가격 우위·할인·이벤트·무료 유인(의료법 제56조 제2항 제13호,
+    # 제27조 제3항). 생성 단계 전용 가격 검사(`content_engine.UNVERIFIED_PRICE_PATTERNS`)와 달리
+    # 발행 게이트·공개 가시성·관리자 PATCH가 모두 이 패턴을 쓴다. 의학 용어와 겹치는 낱말
+    # ('심혈관 이벤트가', '최저혈압', '국가 암검진은 무료')은 패턴 모양과 아래 문맥 예외로 비켜 간다.
+    # 어휘 경계는 법무 확인 권장(계획 Q1).
+    "할인·유인": re.compile(
+        r"최저가|최저\s*(?:가격|비용|수가)|업계\s*최저|(?:가장|제일)\s*(?:저렴|싸)"
+        r"|(?:타|다른)\s*(?:병원|의원|곳)\s*(?:보다|대비)[^.?!\n]{0,12}(?:저렴|싸|낮은\s*(?:가격|비용))"
+        r"|\d+(?:\.\d+)?\s*%\s*할인|할인가|할인\s*(?:이벤트|행사|혜택|쿠폰|가격|율|중)"
+        r"|특가|반값|파격\s*(?:가|할인)|땡처리|페이백"
+        r"|(?:오픈|개원|런칭|시즌|기념|감사|할인|봄맞이|여름맞이|가을맞이|겨울맞이)\s*이벤트"
+        r"|이벤트\s*(?:가격|기간|진행\s*중|혜택|참여|신청|특가)"
+        r"|무료\s*(?:상담|시술|진료|검사|검진|체험|시술권|이용권|쿠폰|이벤트)"
+        r"|(?:상담|시술|진료|검사)\s*(?:비\s*|비용\s*)?(?:전액\s*)?무료"
+        r"|본인\s*부담금?\s*(?:면제|할인|감면|대납|환급|0\s*원)"
+        r"|사은품|경품|선착순|체험단"
+    ),
 }
 
 
@@ -92,6 +109,12 @@ FORBIDDEN_PATTERN_VARIANTS: tuple[str, ...] = (
     "첨단 기술", "첨단 장비", "첨단 시술",
     "무통 시술", "아프지 않은 시술", "흉터 남지 않",
     "국내 최초", "아시아 최초", "특허 보유",
+    # 할인·유인(D24, 법무 확인 권장). 표시용 FORBIDDEN_EXPRESSIONS에는 넣지 않는다 — 그 목록은
+    # Essence의 필수 안전 문구(`essence_engine.MANDATORY_AVOID_MESSAGES`)에 문자열로 이어 붙어
+    # 있어, 바꾸면 기존 초안·승인본이 모두 "필수 안전 규칙 없음"으로 승인·자동 검수에서 막힌다.
+    "최저가", "가장 저렴", "% 할인", "할인 이벤트", "특가", "반값", "페이백",
+    "개원 이벤트", "무료 상담", "무료 시술", "무료 검사", "본인부담금 면제",
+    "사은품", "경품", "선착순", "체험단",
 )
 
 
@@ -118,6 +141,8 @@ class _ContextExemption:
     trigger: re.Pattern | None = None      # 매치된 표현 자체가 이것과 완전히 일치할 때만
     preceded_by: re.Pattern | None = None  # 매치 앞 window 자 안에 이 표현이 있을 때
     followed_by: re.Pattern | None = None  # 매치 뒤 window 자 안에 이 표현이 있을 때
+    # 매치 앞 window 자 안에 이 표현이 **있으면** 예외가 아니다(병원 자기 주장 문맥).
+    unless_preceded_by: re.Pattern | None = None
     window: int = 30
 
     def applies(self, text: str, match: re.Match) -> bool:
@@ -131,8 +156,15 @@ class _ContextExemption:
             tail = text[match.end() : match.end() + self.window]
             if not self.followed_by.search(tail):
                 return False
+        if self.unless_preceded_by is not None:
+            head = text[max(0, match.start() - self.window) : match.start()]
+            if self.unless_preceded_by.search(head):
+                return False
         return True
 
+
+# 병원이 스스로를 가리키는 말. 이 말이 가까이 있으면 문맥 예외를 주지 않는다.
+_HOSPITAL_SELF = re.compile(r"저희|우리\s*(?:병원|의원)|본원|당원|병원에서|의원에서")
 
 _ALLOWED_CONTEXTS: dict[str, tuple[_ContextExemption, ...]] = {
     # "사망원인 1위", "발생률 1위" 같은 역학 통계. 역학 명사가 **바로 앞에 붙어 있을
@@ -212,6 +244,17 @@ _ALLOWED_CONTEXTS: dict[str, tuple[_ContextExemption, ...]] = {
             reason="첨단 기술 주장을 부정",
             trigger=re.compile(r"첨단[의]?\s*(?:기술|장비|시술)"),
             followed_by=re.compile(r"기대하기\s*어(?:렵|려)|보장하지\s*않"),
+            window=20,
+        ),
+    ),
+    # "국가에서 시행하는 무료 검진" — 공적 검진 제도 안내는 병원의 무료 유인이 아니다.
+    # 같은 문장이라도 병원이 주는 무료 상담·시술·진료는 계속 막는다.
+    "할인·유인": (
+        _ContextExemption(
+            reason="공적 검진 제도의 무료 안내",
+            trigger=re.compile(r"무료\s*검진"),
+            preceded_by=re.compile(r"(?:국가|공단|보건소|국민\s*건강\s*보험|일반\s*건강\s*검진)"),
+            unless_preceded_by=_HOSPITAL_SELF,
             window=20,
         ),
     ),

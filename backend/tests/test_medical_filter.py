@@ -342,3 +342,80 @@ def test_forbidden_vocabulary_for_prompt_covers_pattern_only_expressions():
     # 정적 시스템 블록(프롬프트 캐시 접두어)에 들어가므로 호출마다 동일해야 한다.
     assert forbidden_vocabulary_for_prompt() == vocabulary
     assert len(set(vocabulary)) == len(vocabulary)
+
+
+# ── D24(2026-10-13 대표 결정): 가격 우위·할인·이벤트·무료 유인은 모든 경로에서 하드 차단 ──────
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "지역 최저가로 임플란트를 제공합니다.",
+        "업계 최저 비용으로 모십니다.",
+        "타 병원보다 30% 저렴한 비용으로 시술합니다.",
+        "가장 저렴한 비용으로 받을 수 있습니다.",
+        "이번 달 20% 할인 이벤트를 진행합니다.",
+        "할인가로 제공합니다.",
+        "１０％ 할인",  # 전각 우회
+        "개원 이벤트 특가로 모십니다.",
+        "이벤트 기간에만 드리는 혜택입니다.",
+        "첫 방문 무료 상담을 드립니다.",
+        "도수치료 시술 전액 무료입니다.",
+        "본인부담금 면제 혜택을 드립니다.",
+        "선착순 10명 사은품 증정",
+        "체험단을 모집합니다.",
+        "페이백 혜택을 드립니다.",
+        # 공적 검진 문맥이 가까이 있어도 병원 자기 주장이면 계속 막는다.
+        "본원은 국가 검진과 함께 무료 검진을 해 드립니다.",
+    ],
+)
+def test_price_discount_and_inducement_claims_are_blocked(text):
+    assert "할인·유인" in check_forbidden(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "최저혈압이 90 이상이면 진료가 필요합니다.",
+        "최저 기온이 영하로 내려가면 혈압이 오릅니다.",
+        "심혈관 이벤트가 발생할 위험이 커집니다.",
+        "심혈관 이벤트 중 가장 흔한 것은 심근경색입니다.",
+        "국가건강검진은 무료로 받을 수 있습니다.",
+        "국가에서 시행하는 무료 검진 대상인지 확인하세요.",
+        "의료급여 수급자는 본인부담금이 면제되는 경우가 있습니다.",
+        "비용은 의료기관마다 다릅니다.",
+        "무료 주차가 가능합니다.",
+    ],
+)
+def test_public_programs_and_clinical_terms_are_not_inducement(text):
+    assert check_forbidden(text) == []
+
+
+def test_inducement_label_is_enforced_by_every_publication_field_and_the_markdown_body():
+    """생성·발행 게이트·공개 가시성·PATCH가 쓰는 같은 필드 검사기에서 걸린다."""
+
+    fields = {
+        "title": "허리 통증 안내",
+        "body": "## 안내\n이번 달 **무료 상담**을 드립니다.",
+        "meta_description": "허리 통증 안내",
+        "faq_question": None,
+        "faq_answer_summary": None,
+    }
+    assert "할인·유인" in check_forbidden_content_fields(fields, FORBIDDEN_CHECK_FIELDS)
+    title_only = dict(fields, body="## 안내\n본문", title="개원 이벤트 — 허리 통증 안내")
+    assert "할인·유인" in check_forbidden_content_fields(title_only, FORBIDDEN_CHECK_FIELDS)
+
+
+def test_writer_sees_the_inducement_vocabulary_but_the_essence_safety_text_is_unchanged():
+    """작가 프롬프트에는 새 어휘를 보이되, Essence 필수 안전 문구의 원문은 바꾸지 않는다."""
+
+    from app.services.essence_engine import MANDATORY_AVOID_MESSAGES
+
+    vocabulary = forbidden_vocabulary_for_prompt()
+    for expression in ("최저가", "무료 상담", "할인 이벤트", "본인부담금 면제", "선착순"):
+        assert expression in vocabulary
+    assert "최저가" not in FORBIDDEN_EXPRESSIONS
+    assert MANDATORY_AVOID_MESSAGES == (
+        "의료광고 공통 금지 표현을 홍보 문구로 사용하지 않습니다: " + ", ".join(FORBIDDEN_EXPRESSIONS),
+    )
+    assert len(FORBIDDEN_EXPRESSIONS) == 21
