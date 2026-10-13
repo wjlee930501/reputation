@@ -1,8 +1,12 @@
 """PENDING_DOMAIN 병원의 자기 도메인 DNS를 주기적으로 확인해 수동 확인과 같은 경로로 연다.
 
 판정·잠금·활성화·감사·인증서 작업은 전부 `verify_domain_for_hospital`이 한다. 여기는
-대상 고르기와 창(기본 14일) 판정만 맡는다. 폴링은 창이 지난 뒤에도 계속하고, 창이 지나면
-사고를 한 번만 연다.
+대상 고르기와 창(기본 14일) 판정만 맡는다. 폴링은 창이 지난 뒤에도 계속하고, 창이 지났고
+**이번 확인이 실제로 DNS 불일치를 관측했을 때만** 사고를 한 번 연다. DNS는 맞았는데 게이트 미충족·
+도메인 변경·인증서 진행 중(409)이거나 브로커 장애(503)·예외였던 확인은 DNS 미설정의 근거가 아니다.
+
+사고는 병원·도메인 쌍(`{hospital_id}:{domain}`)에 묶인다. 병원이 도메인을 바꾸면 옛 도메인의
+사고는 원인이 사라진 것이므로 조용히 닫는다(`recover_settled_dns_incidents`).
 """
 
 from __future__ import annotations
@@ -91,8 +95,10 @@ async def poll_pending_domains(
             summary.verified += 1
             await recover(target)
             continue
-        if response is not None:
-            summary.not_ready += 1
+        if response is None:
+            # DNS 불일치를 관측하지 못한 확인(게이트·인프라)은 창이 지나도 사고의 근거가 아니다.
+            continue
+        summary.not_ready += 1
         if expired:
             # 사고는 한 번만 연다(이미 열려 있으면 `escalate`가 건드리지 않는다).
             await escalate(target)
@@ -216,37 +222,47 @@ async def _verify(target: PendingDomain):
 
 async def recover_settled_dns_incidents(
     targets: Sequence[PendingDomain],
-    flagged: Sequence[tuple[uuid.UUID, str]],
+    flagged: Sequence[tuple[uuid.UUID, str, str | None]],
     *,
     recover: Callable[[uuid.UUID, str], Awaitable[object]],
+    recover_pair: Callable[[str, str], Awaitable[object]],
 ) -> int:
-    """더 이상 도메인 대기가 아닌 병원(사람이 직접 확인해 공개했거나 상태가 바뀜)의 만료 사고를 닫는다.
+    """원인이 사라진 만료 사고를 닫는다. `flagged`는 (병원, 병원명, 사고의 병원·도메인 쌍)이다.
 
     폴러는 창이 지난 뒤에도 계속 묻고 DNS가 맞으면 성공 경로로 사고를 닫는다. 그러나 사람이
     수동 확인으로 먼저 열었거나 상태가 바뀌어 대기 목록에서 빠진 병원은 폴러가 다시 묻지 않으므로
-    그 경로로 닫히지 않는다. 대기 목록에서 빠진 병원은 원인이 사라진 것이다.
+    그 경로로 닫히지 않는다 — 대기 목록에서 빠진 병원은 원인이 사라진 것이다. 아직 대기 중이어도
+    도메인을 바꾼 병원의 옛 도메인 사고는 폴러가 다시 묻지 않는 쌍이라 같은 이유로 닫는다.
     """
 
     pending_ids = {target.hospital_id for target in targets}
-    settled = [(hospital_id, name) for hospital_id, name in flagged if hospital_id not in pending_ids]
-    for hospital_id, name in settled:
+    current_pairs = {_object_id(target) for target in targets}
+    settled: dict[uuid.UUID, str] = {}
+    stale_pairs: list[tuple[str, str]] = []
+    for hospital_id, name, pair in flagged:
+        if hospital_id not in pending_ids:
+            settled.setdefault(hospital_id, name)
+        elif pair not in current_pairs:
+            stale_pairs.append((pair or "", name))
+    for hospital_id, name in settled.items():
         await recover(hospital_id, name)
-    return len(settled)
+    for pair, name in stale_pairs:
+        await recover_pair(pair, name)
+    return len(settled) + len(stale_pairs)
 
 
-async def _hospitals_with_active_dns_incident(db: AsyncSession) -> list[tuple[uuid.UUID, str]]:
+async def _active_dns_incidents(db: AsyncSession) -> list[tuple[uuid.UUID, str, str | None]]:
     rows = (
         await db.execute(
-            select(Incident.hospital_id, Hospital.name)
+            select(Incident.hospital_id, Hospital.name, Incident.source_id)
             .join(Hospital, Hospital.id == Incident.hospital_id)
             .where(
                 Incident.incident_type == DOMAIN_DNS_INCIDENT_TYPE,
                 Incident.state.in_((IncidentState.OPEN.value, IncidentState.RETRYING.value)),
             )
-            .distinct()
         )
     ).all()
-    return [(hospital_id, name) for hospital_id, name in rows]
+    return [(hospital_id, name, source_id) for hospital_id, name, source_id in rows]
 
 
 async def _recover_hospital(hospital_id: uuid.UUID, hospital_name: str) -> None:
@@ -257,6 +273,19 @@ async def _recover_hospital(hospital_id: uuid.UUID, hospital_name: str) -> None:
         hospital_name=hospital_name,
         actor=DOMAIN_DNS_POLL_ACTOR,
         reason="hospital is no longer waiting for its custom domain",
+        notify=False,
+    )
+
+
+async def _recover_stale_pair(pair: str, hospital_name: str) -> None:
+    await recover_ops_incident(
+        pipeline=DOMAIN_DNS_POLL_PIPELINE,
+        object_type=DOMAIN_DNS_POLL_OBJECT_TYPE,
+        object_id=pair,
+        fingerprint=IncidentFingerprint.MISSING_PREREQUISITE,
+        hospital_name=hospital_name,
+        actor=DOMAIN_DNS_POLL_ACTOR,
+        reason="hospital changed its custom domain",
         notify=False,
     )
 
@@ -280,6 +309,8 @@ async def poll_pending_custom_domains_once(now: datetime) -> DomainPollSummary:
         recover=_recover,
     )
     async with sessions() as db:
-        flagged = await _hospitals_with_active_dns_incident(db)
-    await recover_settled_dns_incidents(targets, flagged, recover=_recover_hospital)
+        flagged = await _active_dns_incidents(db)
+    await recover_settled_dns_incidents(
+        targets, flagged, recover=_recover_hospital, recover_pair=_recover_stale_pair
+    )
     return summary

@@ -2,6 +2,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
+import pytest
 from fastapi import HTTPException
 
 from app.workers.domain_dns_poll import (
@@ -177,11 +178,92 @@ async def test_settled_hospitals_close_their_expired_dns_incident_quietly() -> N
     async def recover(hospital_id, name):
         recovered.append((hospital_id, name))
 
+    async def recover_pair(pair, name):
+        pytest.fail(f"no stale pair expected: {pair}")
+
     closed = await recover_settled_dns_incidents(
         [still_waiting],
-        [(still_waiting.hospital_id, "대기"), (activated_by_hand, "수동공개")],
+        [
+            (still_waiting.hospital_id, "대기", f"{still_waiting.hospital_id}:{still_waiting.domain}"),
+            (activated_by_hand, "수동공개", f"{activated_by_hand}:www.manual.example"),
+        ],
         recover=recover,
+        recover_pair=recover_pair,
     )
 
     assert closed == 1
     assert recovered == [(activated_by_hand, "수동공개")]
+
+
+async def test_a_domain_change_closes_the_old_domains_incident_but_keeps_the_new_one() -> None:
+    """사고는 병원·도메인 쌍이다 — 대기 중에 도메인을 바꾸면 옛 도메인의 사고만 닫는다."""
+    from app.workers.domain_dns_poll import recover_settled_dns_incidents
+
+    changed = _target("도메인변경")  # 지금 도메인은 www.clinic.example
+    old_pair = f"{changed.hospital_id}:old.clinic.example"
+    current_pair = f"{changed.hospital_id}:{changed.domain}"
+    hospitals: list = []
+    pairs: list = []
+
+    async def recover(hospital_id, name):
+        hospitals.append(hospital_id)
+
+    async def recover_pair(pair, name):
+        pairs.append((pair, name))
+
+    closed = await recover_settled_dns_incidents(
+        [changed],
+        [(changed.hospital_id, "도메인변경", old_pair), (changed.hospital_id, "도메인변경", current_pair)],
+        recover=recover,
+        recover_pair=recover_pair,
+    )
+
+    assert closed == 1
+    assert hospitals == []
+    assert pairs == [(old_pair, "도메인변경")]
+
+
+async def _poll_one_expired(verify_outcome):
+    stale = _target("만료")
+    escalated: list = []
+
+    async def poll_started_at(_t):
+        return NOW - timedelta(days=30)
+
+    async def verify(_t):
+        if isinstance(verify_outcome, Exception):
+            raise verify_outcome
+        return verify_outcome
+
+    async def escalate(target):
+        escalated.append(target)
+
+    async def noop(_t):
+        return None
+
+    summary = await poll_pending_domains(
+        [stale], NOW, max_days=14,
+        poll_started_at=poll_started_at, verify=verify, escalate=escalate, recover=noop,
+    )
+    return summary, escalated
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        HTTPException(status_code=409, detail="activation gate not ready"),  # DNS는 맞았다
+        HTTPException(status_code=409, detail="certificate job in progress"),
+        HTTPException(status_code=503, detail="broker unavailable"),
+        RuntimeError("resolver crashed"),
+    ],
+)
+async def test_gate_and_infra_errors_never_open_the_dns_incident(outcome) -> None:
+    summary, escalated = await _poll_one_expired(outcome)
+    assert escalated == []
+    assert (summary.skipped, summary.expired, summary.not_ready) == (1, 0, 0)
+
+
+async def test_an_observed_dns_mismatch_after_the_window_opens_the_incident() -> None:
+    summary, escalated = await _poll_one_expired(SimpleNamespace(dns_verified=False))
+    assert len(escalated) == 1
+    assert (summary.not_ready, summary.expired) == (1, 1)
