@@ -1,28 +1,26 @@
 # Re:putation — 현재 프로젝트 개발 안내
 
-## 최신 운영 배포 — Phase 2 (배포 전)
+## 최신 운영 배포 — 2026-10-13 Phase 2 자율성 보완
 
-**이 절은 배포 기록이 아니다.** 운영 기록은 아래 배포 절들을 따르고, 배포는 [운영 배포 절차](docs/ops/deployment-runbook.md)의 별도 검증으로
-기록한다. 브랜치 `claude/autonomy-p2`(온보딩 P2-A + 인프라 P2-B, main `3926561c` 병합)가 [자율 운영 보완 MasterPlan](docs/plans/2026-10-11-autonomy-masterplan.md)의
-Phase 2를 구현했다 — Essence 자동 재검수 1h/4h/12h·상충/주입 의심 보류는 곧바로 사람·처리 오류 자료 제외, Essence 자동 승인 뒤 첫 발행
-일정 자동 생성과 첫 달 안분, 온보딩 정체 사고 4종, 계약 등록 때 리드 시드·자동 입력 초안, 대기 중인 자기 도메인의 15분 DNS 확인(P2-A),
-readiness 감시 토큰 검사(18개 검사)·GCP 이메일 경보 2종·운영 경보 메일(`OPS_ALERT_EMAIL`)·Beat liveness·비용 가드 fail-open과 사용량
-spool 잘림 개발 사고·`deploy.sh` 규칙 코드화(env 정본·배치 시간대·자동 롤백·`--unpin`)(P2-B). **마이그레이션은 없다** — DB head는
-Phase 1의 `0088_add_outbox_open_pairing_index` 그대로이고 RedBeat 버전도 그대로다. Phase 1은 운영에 배포됐다(아래 절) —
-배포 전에 운영 리비전·DB head를 다시 확인한다. 배포 대상은 API·Worker·Beat와 Admin(병원 정보 화면의 자동 입력 초안)이고, 배포일 절차
-(Terraform 경보 2종 `-target` 적용, `PIPELINE_WATCHDOG_TOKEN` 확인, `OPS_ALERT_EMAIL`, 첫 `--accept-env-diff`, 잠금 버킷 확인)는 배포 안내의
-Phase 2 항목을 따른다. 배치 시간대 밖이면 하루 여러 번 배포할 수 있다(2026-10-13 대표 결정). 플래그 `ONBOARDING_SOURCE_FETCH_ALERTS_ENABLED`·
-`PROFILE_GATE_OPTIONAL_ENRICHMENT`는 기본 꺼짐(대표 결정 전)이다. 배포 근거는 MasterPlan의 최신 결정이다 — D26(처리 ERROR 필수 자료의
-Essence 제외는 '즉시'가 아니라 다른 필수 자료가 PROCESSED면 1시간, ERROR뿐이면 6시간 뒤), D27(대기 도메인 DNS 확인은 14일 창 뒤에도 15분마다
-계속, 하루 1회로 줄이지 않음), D28(배치 시간대 밖 하루 여러 번 배포). 배포 smoke는 slug·canonical_host·Site 리비전을 비교하고 hospital ID는
-보지 않는다. **롤백(알려진 한계)**: 마이그레이션은 없지만 트래픽 롤백만으로 안전하지 않다. Phase 2 이전 Worker는 그 달 약속 편수를
-요금제 편수로 계산하므로, 안분된 첫 달(예: PLAN_12 9편, 게시 요일 없는 달 0편)이 있는 채로 되돌리면 21:30 KST 당월 조정이 그 달을
-요금제 편수까지 채우고(초과 배정·초과 비용), 옛 보고서·현황은 안분을 모른다. 호환 리비전은 만들지 않았다 — 롤백하면 읽기 전용
-`ops_sql_report --only=q8`로 대상 병원과 초과 배정(`topped_up_slots`, 옛 코드가 채운 슬롯은 `total_count`가 안분 편수보다 크다)을 찾고,
-21:30 조정이 돌았으면 그날 23:00 전에 `q8b`의 미생성 슬롯을 기존 취소 API로 CANCELLED 처리한다(전용 CLI 없음, 수동). 절차는 배포
-안내의 Phase 2 8번. Phase 0의 롤백 금지(Worker `00223` 이하)는 그대로다. 아래 계약 문장은 이 브랜치 기준이다.
+main `d6b85c96`(PR #244 `claude/autonomy-p2`)을 API·Worker·Beat·Admin에 배포했다(2026-10-13 15:03~15:13 KST, 같은 날 세 번째 배포 —
+대표 지시 "준비되는 즉시", 배치 시간대 밖 D28). 현재 리비전은 api `00243-mx4`, worker `00233-9k7`, beat `00228-jlm`, admin `00107-d26`이고
+Site는 그대로, **마이그레이션은 없다 — DB head는 `0088_add_outbox_open_pairing_index`**, RedBeat `2026-10-12.1` 그대로(재조정 clean).
+[자율 운영 보완 MasterPlan](docs/plans/2026-10-11-autonomy-masterplan.md)의 Phase 2 — Essence 자동 재검수 1h/4h/12h·상충/주입 의심 보류는 곧바로
+사람·처리 오류 자료 제외(D26: 다른 필수 자료가 PROCESSED면 1시간, ERROR뿐이면 6시간 뒤), Essence 자동 승인 뒤 첫 발행 일정 자동 생성과 첫 달 안분,
+온보딩 정체 사고 4종, 계약 등록 때 리드 시드·자동 입력 초안, 대기 자기 도메인의 15분 DNS 확인(D27: 14일 창 뒤에도 15분마다)(P2-A),
+readiness 감시 토큰 검사(18개 검사)·운영 경보 메일(`OPS_ALERT_EMAIL`)·Beat liveness·비용 가드 fail-open과 사용량 spool 잘림 개발 사고·
+`deploy.sh` 규칙 코드화(운영 env 정본·배치 시간대·자동 롤백·`--unpin`)(P2-B)다. readiness 18/18, 병원 11곳 헬스 200. 첫 15분 틱에서 예상한
+온보딩 정체 사고 1건(세종다온신경과의원, 프로필 미완료)이 열렸고, 예측 밖으로 `nyupeulraenyeoseongyiweon`의 Essence 자동 재검수가 LLM 출력 잘림(`length`)으로
+세 번 실패해 `ESSENCE_AUTO_REVIEW_FAILED`(새 리비전 ERROR 1건, Slack 1건)가 열렸다(원인 미조사). **보류**: Terraform 경보 정책 2종은 작업 PC의 terraform
+1.5.7이 plan을 못 돌려 적용하지 않았고, `OPS_ALERT_EMAIL`은 비워 두었다(readiness는 통과, `facts.ops_alert_email_configured=false`). 플래그
+`ONBOARDING_SOURCE_FETCH_ALERTS_ENABLED`·`PROFILE_GATE_OPTIONAL_ENRICHMENT`는 기본 꺼짐(대표 결정 전)이다. 배포 smoke는 slug·canonical_host·Site
+리비전을 비교하고 hospital ID는 보지 않는다. **롤백(알려진 한계)**: 마이그레이션은 없지만 트래픽 롤백만으로 안전하지 않다. Phase 2 이전 Worker는
+그 달 약속 편수를 요금제 편수로 계산하므로, 안분된 첫 달이 있는 채로 되돌리면 21:30 KST 당월 조정이 그 달을 요금제 편수까지 채운다(초과
+배정·초과 비용). 롤백하면 읽기 전용 `ops_sql_report --only=q8`로 대상 병원과 초과 배정을 찾고, 21:30 조정이 돌았으면 그날 23:00 전에 `q8b`의
+미생성 슬롯을 기존 취소 API로 CANCELLED 처리한다(수동, 배포 안내 Phase 2 8번). 배포 직후 q8은 행이 없었다. **이후 Worker를 `00223` 이하로
+롤백하지 않는다.** 상세는 [Phase 2 배포 기록](docs/releases/2026-10-13-autonomy-phase2-production.md).
 
-## 최신 운영 배포 — 2026-10-13 Phase 1 자율성 보완
+## 이전 운영 배포 — 2026-10-13 Phase 1 자율성 보완
 
 main `08abf747`(PR #241 Phase 1 + PR #242 레거시 예산 교체 CLI)을 API·Worker·Beat·Admin에 배포했다(2026-10-13 13:03~13:12 KST,
 같은 날 두 번째 배포 — 대표 승인). 현재 리비전은 api `00242-jsw`, worker `00232-vx2`, beat `00227-2mv`, admin `00106-psm`이고
@@ -202,7 +200,7 @@ BaseEssence의 일반 자료 추가 drift는 재합성하지 않는다. 명시�
 Site/Admin IAM 분리는 단계적으로 적용한다. 구 revision 종료 전 legacy grants를 회수하지 않는다.
 
 
-문서 버전: **2.24** · 갱신일: **2026-10-13 (Asia/Seoul)**
+문서 버전: **2.25** · 갱신일: **2026-10-13 (Asia/Seoul)**
 소스 기준선: **`4db1b69` 이후 커밋 이력 정합성 보완**
 구현 상태: **체크포인트 2(`a774851`) 운영 배포 완료. 그 뒤 main의 stable-base Essence(`8c59141`) 등 31개 커밋과 콘텐츠 수율 버전업 v2.7(`claude/system-performance-review-x6vtn4`, [계획](docs/plans/2026-09-12-content-yield-versionup-plan.md))은 미배포**
 
