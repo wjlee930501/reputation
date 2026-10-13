@@ -1182,28 +1182,61 @@ class FakeEmailStore:
 
     def __init__(self, *, available=True):
         self.available = available
-        self.rows: list[tuple[str, str, datetime]] = []  # (action, key, recorded_at)
+        self.rows: list[tuple[str, str, datetime, dict]] = []  # (action, key, recorded_at, detail)
         self.clock = datetime(2026, 1, 1, tzinfo=UTC)
 
-    def find_episodeless_key(self, audience, signature, *, now):
+    def _recent_plans(self, now):
+        window = pipeline_watchdog._EPISODELESS_EMAIL_WINDOW
+        return [
+            (key, detail)
+            for action, key, at, detail in reversed(self.rows)
+            if action == pipeline_watchdog._EMAIL_PLANNED_ACTION and at >= now - window
+        ]
+
+    def find_plan(self, lookup_key, *, now):
         if not self.available:
             return False
-        prefix = pipeline_watchdog._episodeless_prefix(audience, signature)
-        window = pipeline_watchdog._EPISODELESS_EMAIL_WINDOW
-        for _action, key, at in self.rows:
-            if key.startswith(prefix) and at >= now - window:
-                return key
+        for key, detail in self._recent_plans(now):
+            if key == lookup_key:
+                return pipeline_watchdog._plan_from_detail(detail)
+        return None
+
+    def find_linked(self, audience, signature, *, now, episodeless_only):
+        if not self.available:
+            return False
+        for key, detail in self._recent_plans(now):
+            if episodeless_only:
+                hit = key.startswith(pipeline_watchdog._episodeless_prefix(audience, signature))
+            else:
+                hit = key.startswith(f"watchdog:{audience}:") and detail.get("signature") == signature
+            if hit:
+                return pipeline_watchdog._plan_from_detail(detail)
         return None
 
     def was_sent(self, mail_key):
         if not self.available:
             return None
-        return any(a == pipeline_watchdog._EMAIL_SENT_ACTION and k == mail_key for a, k, _ in self.rows)
+        return any(
+            a == pipeline_watchdog._EMAIL_SENT_ACTION and k == mail_key for a, k, _, _ in self.rows
+        )
 
-    def record(self, action, mail_key, _decision):
+    def record_plan(self, lookup_key, plan, decision, signature):
         if not self.available:
             return False
-        self.rows.append((action, mail_key, self.clock))
+        detail = {
+            "audience": decision.audience,
+            "signature": signature,
+            "mail_key": plan.mail_key,
+            "subject": plan.subject,
+            "lines": list(plan.lines),
+        }
+        self.rows.append((pipeline_watchdog._EMAIL_PLANNED_ACTION, lookup_key, self.clock, detail))
+        return True
+
+    def record_sent(self, mail_key, _decision):
+        if not self.available:
+            return False
+        self.rows.append((pipeline_watchdog._EMAIL_SENT_ACTION, mail_key, self.clock, {}))
         return True
 
 
@@ -1269,7 +1302,7 @@ async def test_undelivered_alerts_are_emailed_once_per_episode(monkeypatch, emai
         "같은 경보 동안 이 메일은 한 번만 보냅니다. 지금 상태와 건수는 운영센터와 Cloud Run 로그에서 확인해 주세요.",
     )
     # 전달은 DB 기록(정본)에 남는다.
-    sent = [k for a, k, _ in email_store.rows if a == pipeline_watchdog._EMAIL_SENT_ACTION]
+    sent = [k for a, k, _, _ in email_store.rows if a == pipeline_watchdog._EMAIL_SENT_ACTION]
     assert sent == [call["idempotency_key"] for call in calls]
 
 
@@ -1338,6 +1371,89 @@ async def test_an_unconfirmed_email_retries_with_the_same_fixed_body(monkeypatch
     assert calls[0]["lines"] == calls[1]["lines"]
     # 판정마다 바뀌는 건수(Slack 문구)는 메일 본문에 들어가지 않는다.
     assert not any("1건" in line or "3건" in line for line in calls[0]["lines"])
+
+
+async def test_a_shrunken_condition_set_retries_with_the_first_body(monkeypatch, email_store):
+    """{Beat, 대기열} 에피소드의 첫 메일이 결과 불명이면, 집합이 {Beat}로 줄어도 같은 키·같은 제목·본문이다."""
+    monkeypatch.setattr(pipeline_watchdog, "_connect_redis", lambda: FakeRedis())
+    calls = _mail_recorder(
+        monkeypatch,
+        [
+            pipeline_watchdog.ops_alert_email.OpsAlertResult.UNKNOWN,
+            pipeline_watchdog.ops_alert_email.OpsAlertResult.SENT,
+        ],
+    )
+    now = datetime(2026, 10, 11, 0, 5, tzinfo=UTC)
+    email_store.clock = now
+    both = _undelivered_alert("인프라", conditions=("beat_down", "queue_stale:content"))
+    only_beat = _undelivered_alert("인프라", conditions=("beat_down",))
+
+    first = await pipeline_watchdog.email_undelivered((both,), (False,), now=now)
+    # 새 프로세스(메모리 유실)여도 DB 계획이 처음 본문을 기억한다.
+    pipeline_watchdog.reset_email_memory_for_tests()
+    second = await pipeline_watchdog.email_undelivered(
+        (only_beat,), (False,), now=now + timedelta(minutes=15)
+    )
+
+    assert first == (False,) and second == (True,)
+    assert calls[0]["idempotency_key"] == calls[1]["idempotency_key"]
+    assert calls[0]["title"] == calls[1]["title"]
+    assert calls[0]["lines"] == calls[1]["lines"]
+    assert any("작업 대기열 정지(content)" in line for line in calls[1]["lines"])
+
+
+async def test_an_episode_mail_is_not_resent_when_redis_goes_down(monkeypatch, email_store):
+    """에피소드 E로 보낸 뒤 Redis가 내려가 에피소드 없는 판정이 와도 같은 장애로 보고 다시 보내지 않는다."""
+    redis_up = [True]
+    monkeypatch.setattr(
+        pipeline_watchdog, "_connect_redis", lambda: FakeRedis(broken=not redis_up[0])
+    )
+    calls = _mail_recorder(monkeypatch)
+    now = datetime(2026, 10, 11, 0, 5, tzinfo=UTC)
+    email_store.clock = now
+
+    first = await pipeline_watchdog.email_undelivered((_undelivered_alert("발행"),), (False,), now=now)
+    redis_up[0] = False
+    pipeline_watchdog.reset_email_memory_for_tests()
+    email_store.clock = now + timedelta(minutes=20)
+    later = await pipeline_watchdog.email_undelivered(
+        (_undelivered_alert("발행", episode=None),), (False,), now=now + timedelta(minutes=20)
+    )
+
+    assert first == (True,) and later == (False,)
+    assert len(calls) == 1
+
+
+async def test_an_episodeless_mail_is_not_resent_when_redis_returns(monkeypatch, email_store):
+    """Redis 장애 동안(에피소드 없는 키) 보낸 뒤 Redis가 돌아와 새 에피소드가 열려도 다시 보내지 않는다."""
+    redis_up = [False]
+    monkeypatch.setattr(
+        pipeline_watchdog, "_connect_redis", lambda: FakeRedis(broken=not redis_up[0])
+    )
+    calls = _mail_recorder(monkeypatch)
+    now = datetime(2026, 10, 11, 0, 5, tzinfo=UTC)
+    email_store.clock = now
+
+    first = await pipeline_watchdog.email_undelivered(
+        (_undelivered_alert("발행", episode=None),), (False,), now=now
+    )
+    redis_up[0] = True
+    pipeline_watchdog.reset_email_memory_for_tests()
+    email_store.clock = now + timedelta(minutes=20)
+    later = await pipeline_watchdog.email_undelivered(
+        (_undelivered_alert("발행", episode="2026-10-11T00:20:00+00:00"),),
+        (False,),
+        now=now + timedelta(minutes=20),
+    )
+    # 그 에피소드의 다음 판정도 같은 계획(에피소드 없는 키)을 이어 쓴다.
+    again = await pipeline_watchdog.email_undelivered(
+        (_undelivered_alert("발행", episode="2026-10-11T00:20:00+00:00"),),
+        (False,),
+        now=now + timedelta(minutes=35),
+    )
+
+    assert first == (True,) and later == (False,) and again == (False,)
+    assert len(calls) == 1
 
 
 async def test_a_redis_outage_across_kst_midnight_mails_once_under_one_key(monkeypatch, email_store):

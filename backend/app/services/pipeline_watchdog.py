@@ -1314,7 +1314,9 @@ _EPISODELESS_EMAIL_WINDOW: Final = timedelta(hours=24)
 _EMAIL_RECORD_TTL_SECONDS: Final = 7 * 24 * 3600
 # DB와 Redis가 모두 없을 때만 쓰는 프로세스 메모리 — 프로세스 수명 동안 (수신자, 조건 집합)당 한 통.
 # 알려진 한계: API 인스턴스가 바뀌거나 여러 개면 인스턴스마다 한 통이 나갈 수 있다.
-_PROCESS_EMAIL_KEYS: dict[tuple[str, str], tuple[str, datetime]] = {}
+_PROCESS_EMAIL_KEYS: dict[tuple[str, str], tuple[_MailPlan, datetime]] = {}
+# DB를 못 읽을 때 에피소드의 처음 계획을 이어 쓰는 프로세스 메모리(같은 한계).
+_PROCESS_EMAIL_PLANS: dict[str, _MailPlan] = {}
 _PROCESS_EMAILED: set[str] = set()
 
 _CONDITION_EMAIL_LABELS: Final = {
@@ -1326,6 +1328,7 @@ _CONDITION_EMAIL_LABELS: Final = {
 
 def reset_email_memory_for_tests() -> None:
     _PROCESS_EMAIL_KEYS.clear()
+    _PROCESS_EMAIL_PLANS.clear()
     _PROCESS_EMAILED.clear()
 
 
@@ -1336,11 +1339,11 @@ def _condition_email_label(condition: str) -> str:
 
 
 def _email_lines(decision: AlertDecision, mail_key: str) -> tuple[str, ...]:
-    """메일 본문 — 키(에피소드)와 조건 집합만으로 정해지는 고정 문구다.
+    """메일 본문 — 키와 처음 정할 때의 조건 집합으로 정하는 고정 문구다.
 
     Slack 문구(`decision.text`)는 건수·표본이 판정마다 바뀐다. 그대로 쓰면 재시도 본문이 달라져 Resend가
-    같은 키에 409를 주고 전달을 확인할 수 없다. 같은 키는 언제나 같은 조건 집합을 가리킨다(키에 조건
-    서명 또는 에피소드가 들어 있다).
+    같은 키에 409를 주고 전달을 확인할 수 없다. 에피소드는 조건 집합이 줄어도 키를 유지하므로, 처음 정한
+    제목·본문을 계획 행(`_MailPlan`)에 남겨 같은 키의 재시도가 그대로 다시 쓴다.
     """
     audience = "운영" if decision.audience == AUDIENCE_OPERATOR else "개발"
     conditions = ", ".join(_condition_email_label(c) for c in decision.conditions) or "확인 필요"
@@ -1356,28 +1359,82 @@ def _episodeless_prefix(audience: str, signature: str) -> str:
     return f"watchdog:{audience}:nr:{signature}:"
 
 
-class _WatchdogEmailStore:
-    """감사행(`admin_audit_logs`, append-only)에 둔 메일 발송 기록. 실패하면 None을 돌려준다."""
+@dataclass(frozen=True)
+class _MailPlan:
+    """한 경보 메일의 고정 내용 — 처음 정한 키·제목·본문을 그대로 다시 쓴다."""
 
-    def find_episodeless_key(self, audience: str, signature: str, *, now: datetime) -> str | None | bool:
-        """같은 수신자·조건 집합의 최근 메일 키. 없으면 None, DB를 못 읽으면 False."""
-        prefix = _episodeless_prefix(audience, signature)
+    mail_key: str
+    subject: str
+    lines: tuple[str, ...]
+
+
+def _plan_from_detail(detail: object) -> _MailPlan | None:
+    if not isinstance(detail, dict):
+        return None
+    mail_key, subject, lines = detail.get("mail_key"), detail.get("subject"), detail.get("lines")
+    if not (isinstance(mail_key, str) and mail_key and isinstance(subject, str) and isinstance(lines, list)):
+        return None
+    return _MailPlan(mail_key, subject, tuple(str(line) for line in lines))
+
+
+class _WatchdogEmailStore:
+    """감사행(`admin_audit_logs`, append-only)에 둔 메일 계획·발송 기록.
+
+    계획 행(`watchdog_ops_email_planned`)은 조회 키(에피소드 키 또는 에피소드 없는 키)마다 한 번 쓰고,
+    처음 정한 메일 키·제목·본문과 수신자·조건 서명을 담는다. 조회는 action·대상 종류·최근 24시간으로
+    좁히고 한 행만 읽는다(복합 인덱스는 후속 검토 — 운영 배포 안내 참고).
+    """
+
+    def _planned_rows(self, now: datetime):
+        return (
+            select(AdminAuditLog.detail)
+            .where(
+                AdminAuditLog.action == _EMAIL_PLANNED_ACTION,
+                AdminAuditLog.target_type == _EMAIL_TARGET_TYPE,
+                AdminAuditLog.created_at >= now - _EPISODELESS_EMAIL_WINDOW,
+            )
+            .order_by(AdminAuditLog.created_at.desc(), AdminAuditLog.id.desc())
+            .limit(1)
+        )
+
+    def find_plan(self, lookup_key: str, *, now: datetime) -> _MailPlan | None | bool:
+        """이 조회 키에 처음 정한 메일. 없으면 None, DB를 못 읽으면 False."""
         try:
             with watchdog_session() as db:
-                return db.scalar(
-                    select(AdminAuditLog.target_id)
-                    .where(
-                        AdminAuditLog.action.in_((_EMAIL_PLANNED_ACTION, _EMAIL_SENT_ACTION)),
-                        AdminAuditLog.target_type == _EMAIL_TARGET_TYPE,
-                        AdminAuditLog.target_id.startswith(prefix, autoescape=True),
-                        AdminAuditLog.created_at >= now - _EPISODELESS_EMAIL_WINDOW,
-                    )
-                    .order_by(AdminAuditLog.created_at, AdminAuditLog.id)
-                    .limit(1)
+                detail = db.scalar(
+                    self._planned_rows(now).where(AdminAuditLog.target_id == lookup_key)
                 )
         except (SQLAlchemyError, OSError):
             logger.warning("pipeline watchdog: DB unavailable while reading email state")
             return False
+        return _plan_from_detail(detail)
+
+    def find_linked(
+        self, audience: str, signature: str, *, now: datetime, episodeless_only: bool
+    ) -> _MailPlan | None | bool:
+        """같은 수신자·조건 서명의 24시간 안 가장 최근 메일 계획. 없으면 None, DB를 못 읽으면 False.
+
+        `episodeless_only`면 Redis가 없을 때 만든 계획만 본다(에피소드 사이를 잇지 않는다).
+        """
+        stmt = self._planned_rows(now)
+        if episodeless_only:
+            stmt = stmt.where(
+                AdminAuditLog.target_id.startswith(
+                    _episodeless_prefix(audience, signature), autoescape=True
+                )
+            )
+        else:
+            stmt = stmt.where(
+                AdminAuditLog.target_id.startswith(f"watchdog:{audience}:", autoescape=True),
+                AdminAuditLog.detail["signature"].as_string() == signature,
+            )
+        try:
+            with watchdog_session() as db:
+                detail = db.scalar(stmt)
+        except (SQLAlchemyError, OSError):
+            logger.warning("pipeline watchdog: DB unavailable while reading email state")
+            return False
+        return _plan_from_detail(detail)
 
     def was_sent(self, mail_key: str) -> bool | None:
         try:
@@ -1396,7 +1453,30 @@ class _WatchdogEmailStore:
             return None
         return found is not None
 
-    def record(self, action: str, mail_key: str, decision: AlertDecision) -> bool:
+    def record_plan(
+        self, lookup_key: str, plan: _MailPlan, decision: AlertDecision, signature: str
+    ) -> bool:
+        return self._add(
+            _EMAIL_PLANNED_ACTION,
+            lookup_key,
+            {
+                "audience": decision.audience,
+                "conditions": list(decision.conditions),
+                "signature": signature,
+                "mail_key": plan.mail_key,
+                "subject": plan.subject,
+                "lines": list(plan.lines),
+            },
+        )
+
+    def record_sent(self, mail_key: str, decision: AlertDecision) -> bool:
+        return self._add(
+            _EMAIL_SENT_ACTION,
+            mail_key,
+            {"audience": decision.audience, "conditions": list(decision.conditions)},
+        )
+
+    def _add(self, action: str, target_id: str, detail: dict) -> bool:
         try:
             with watchdog_session() as db:
                 db.add(
@@ -1404,8 +1484,8 @@ class _WatchdogEmailStore:
                         actor=_EMAIL_ACTOR,
                         action=action,
                         target_type=_EMAIL_TARGET_TYPE,
-                        target_id=mail_key,
-                        detail={"audience": decision.audience, "conditions": list(decision.conditions)},
+                        target_id=target_id,
+                        detail=detail,
                     )
                 )
                 db.commit()
@@ -1430,46 +1510,81 @@ def _redis_says_emailed(mail_key: str) -> bool:
         return False
 
 
-def _email_key(decision: AlertDecision, *, now: datetime) -> str:
-    """에피소드당 하나. Redis가 없어 에피소드를 모르면 DB에서 같은 장애의 키를 찾아 이어 쓴다.
+def _fresh_plan(decision: AlertDecision, mail_key: str) -> _MailPlan:
+    return _MailPlan(mail_key, _EMAIL_TITLE, _email_lines(decision, mail_key))
 
-    찾지 못하면 새 키를 만들고 DB에 남긴다(다음 판정이 이어 쓴다). DB도 없으면 이 프로세스 안에서
-    같은 (수신자, 조건 집합)에 24시간 안에 만든 키를 쓴다.
+
+def _episode_plan(decision: AlertDecision, now: datetime) -> _MailPlan:
+    """에피소드의 메일은 처음 정한 계획을 그대로 쓴다 — 조건 집합이 줄어도 본문이 바뀌지 않는다.
+
+    처음이면 Redis 장애 동안 같은 수신자·조건 서명으로 이미 정한 메일(에피소드 없는 키)에 잇는다.
     """
-    if decision.episode_id:
-        return f"watchdog:{decision.audience}:{decision.episode_id}"
+    lookup = f"watchdog:{decision.audience}:{decision.episode_id}"
+    found = _email_store.find_plan(lookup, now=now)
+    if isinstance(found, _MailPlan):
+        _PROCESS_EMAIL_PLANS[lookup] = found
+        return found
+    if found is False:  # DB를 못 읽는다 — 이 프로세스가 정한 계획을 이어 쓴다.
+        remembered = _PROCESS_EMAIL_PLANS.get(lookup)
+        if remembered is not None:
+            return remembered
+        plan = _fresh_plan(decision, lookup)
+        _PROCESS_EMAIL_PLANS[lookup] = plan
+        return plan
     signature = _signature(decision.conditions)
-    found = _email_store.find_episodeless_key(decision.audience, signature, now=now)
+    linked = _email_store.find_linked(
+        decision.audience, signature, now=now, episodeless_only=True
+    )
+    plan = linked if isinstance(linked, _MailPlan) else _fresh_plan(decision, lookup)
+    _email_store.record_plan(lookup, plan, decision, signature)
+    _PROCESS_EMAIL_PLANS[lookup] = plan
+    return plan
+
+
+def _episodeless_plan(decision: AlertDecision, now: datetime) -> _MailPlan:
+    """Redis가 없어 에피소드를 모를 때. DB에서 같은 수신자·조건 서명의 24시간 안 계획을 이어 쓴다.
+
+    그 계획이 에피소드 키로 정해졌어도(Redis가 내려가기 전에 보낸 메일) 같은 장애로 본다. 찾지 못하면
+    새 키를 만들고 DB에 남긴다. DB도 없으면 이 프로세스 안에서 같은 (수신자, 조건 집합)에 24시간 안에
+    정한 계획을 쓴다.
+    """
+    signature = _signature(decision.conditions)
+    found = _email_store.find_linked(
+        decision.audience, signature, now=now, episodeless_only=False
+    )
     slot = (decision.audience, signature)
     remembered = _PROCESS_EMAIL_KEYS.get(slot)
-    if isinstance(found, str) and found:
-        # 다음에 DB를 못 읽어도 같은 키를 이어 쓰도록 기억한다.
+    if isinstance(found, _MailPlan):
+        # 다음에 DB를 못 읽어도 같은 계획을 이어 쓰도록 기억한다.
         if remembered is None or remembered[0] != found:
             _PROCESS_EMAIL_KEYS[slot] = (found, now)
         return found
     if found is False and remembered is not None and now - remembered[1] < _EPISODELESS_EMAIL_WINDOW:
-        return remembered[0]  # DB를 못 읽는다 — 이 프로세스가 이 장애에 쓴 키를 이어 쓴다.
+        return remembered[0]
     key = f"{_episodeless_prefix(decision.audience, signature)}{now.astimezone(UTC):%Y%m%dT%H%M}"
+    plan = _fresh_plan(decision, key)
     if found is None:
-        _email_store.record(_EMAIL_PLANNED_ACTION, key, decision)
-    _PROCESS_EMAIL_KEYS[slot] = (key, now)
-    return key
+        _email_store.record_plan(key, plan, decision, signature)
+    _PROCESS_EMAIL_KEYS[slot] = (plan, now)
+    return plan
 
 
-def _email_plan(decision: AlertDecision, now: datetime) -> tuple[str | None, tuple[str, ...]]:
-    """(이번에 보낼 메일 키 — 이미 전달됐으면 None, 그 키의 고정 본문)."""
-    mail_key = _email_key(decision, now=now)
-    lines = _email_lines(decision, mail_key)
+def _email_plan(decision: AlertDecision, now: datetime) -> tuple[str | None, _MailPlan]:
+    """(이번에 보낼 메일 키 — 이미 전달됐으면 None, 그 키의 고정 계획)."""
+    plan = (
+        _episode_plan(decision, now) if decision.episode_id else _episodeless_plan(decision, now)
+    )
+    mail_key = plan.mail_key
     if mail_key in _PROCESS_EMAILED or _redis_says_emailed(mail_key):
-        return None, lines
+        return None, plan
     if _email_store.was_sent(mail_key):
-        return None, lines
-    return mail_key, lines
+        return None, plan
+    return mail_key, plan
 
 
 def _record_email_delivered(mail_key: str, decision: AlertDecision) -> None:
     _PROCESS_EMAILED.add(mail_key)
-    _email_store.record(_EMAIL_SENT_ACTION, mail_key, decision)
+    _email_store.record_sent(mail_key, decision)
     try:
         with _connect_redis() as client:
             client.set(_emailed_key(mail_key), "1", ex=_EMAIL_RECORD_TTL_SECONDS)
@@ -1486,8 +1601,9 @@ async def email_undelivered(
     전달(Resend 2xx)은 Slack 상태와 별개로 DB 감사행(`watchdog_ops_email_sent`)에 남기고 Redis는 캐시로만
     쓴다 — Slack 장애가 24시간 멱등 창보다 길어지거나 Redis가 내려가 있어도 같은 에피소드의 메일을 다시
     보내지 않는다. Redis가 없어 에피소드를 모르면 같은 수신자·조건 집합의 24시간 안 기록을 같은 장애로
-    이어 쓴다(KST 날짜가 바뀌어도 새 키를 만들지 않는다). 본문은 키와 조건 집합으로 정해지는 고정 문구라
-    재시도가 같은 본문을 보낸다. DB와 Redis가 모두 없으면 프로세스 메모리로 프로세스 수명 동안 한 통이다
+    이어 쓴다(KST 날짜가 바뀌어도 새 키를 만들지 않는다 — 에피소드 키로 보낸 메일과 에피소드 없는 키의
+    메일도 수신자·조건 서명으로 서로 잇는다). 처음 정한 제목·본문은 DB 계획 행에 남기고 같은 키의
+    재시도가 그대로 다시 쓴다(조건 집합이 줄어도 본문이 바뀌지 않는다). DB와 Redis가 모두 없으면 프로세스 메모리로 프로세스 수명 동안 한 통이다
     (알려진 한계 — 인스턴스가 바뀌면 다시 보낼 수 있다). 결과 불명(409)·실패는 기록하지 않고 다음 판정이
     같은 키·같은 본문으로 다시 보낸다. RECOVERY는 메일로 보내지 않는다. 메일은 판정·에피소드 기록을
     바꾸지 않는다(알림 성공과 저장 성공을 섞지 않는다).
@@ -1497,12 +1613,12 @@ async def email_undelivered(
         if ok or not (decision.send and decision.kind == "ALERT" and decision.text):
             results.append(False)
             continue
-        mail_key, lines = await anyio.to_thread.run_sync(_email_plan, decision, now)
+        mail_key, plan = await anyio.to_thread.run_sync(_email_plan, decision, now)
         if mail_key is None:
             results.append(False)
             continue
         result = await ops_alert_email.send_ops_alert(
-            idempotency_key=mail_key, title=_EMAIL_TITLE, lines=lines
+            idempotency_key=mail_key, title=plan.subject, lines=plan.lines
         )
         if result.delivered:
             await anyio.to_thread.run_sync(_record_email_delivered, mail_key, decision)

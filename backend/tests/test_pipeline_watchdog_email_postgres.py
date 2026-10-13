@@ -94,3 +94,70 @@ async def test_redis_down_outage_mails_once_and_the_db_remembers_across_processe
     finally:
         pipeline_watchdog.reset_email_memory_for_tests()
         engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_the_first_mail_payload_is_kept_in_the_db_and_links_across_redis_outages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """에피소드의 첫 메일이 결과 불명이면 조건 집합이 줄어도 DB 계획의 제목·본문을 그대로 다시 보낸다.
+
+    보낸 뒤 Redis가 내려가 에피소드 없는 판정이 와도(JSON 서명 조회) 같은 장애로 보고 다시 보내지 않는다.
+    """
+    engine = create_engine(require_db_url("OPERATIONS_TEST_DATABASE_URL"), poolclass=NullPool)
+    monkeypatch.setattr(pipeline_watchdog, "_watchdog_engine", engine)
+    redis_up = [True]
+
+    class _UpRedis(_DownRedis):
+        def get(self, _key):
+            return None
+
+        def set(self, *_args, **_kwargs):
+            return True
+
+    monkeypatch.setattr(
+        pipeline_watchdog, "_connect_redis", lambda: _UpRedis() if redis_up[0] else _DownRedis()
+    )
+    pipeline_watchdog.reset_email_memory_for_tests()
+    calls: list[dict] = []
+    results = [
+        pipeline_watchdog.ops_alert_email.OpsAlertResult.UNKNOWN,
+        pipeline_watchdog.ops_alert_email.OpsAlertResult.SENT,
+    ]
+
+    async def fake_send(**kwargs):
+        calls.append(kwargs)
+        return results.pop(0) if results else pipeline_watchdog.ops_alert_email.OpsAlertResult.SENT
+
+    monkeypatch.setattr(pipeline_watchdog.ops_alert_email, "send_ops_alert", fake_send)
+    tag = uuid.uuid4().hex[:12]
+    first_set = (f"queue_stale:a-{tag}", f"queue_stale:b-{tag}")
+    episode = f"ep-{tag}"
+
+    def alert(conditions, episode_id):
+        return pipeline_watchdog.AlertDecision(
+            True, "ALERT", "developer", "인프라", "new_condition_set",
+            "https://hooks.slack.com/ops", conditions, episode_id,
+        )
+
+    now = datetime.now(pipeline_watchdog.KST)
+    try:
+        first = await pipeline_watchdog.email_undelivered((alert(first_set, episode),), (False,), now=now)
+        pipeline_watchdog.reset_email_memory_for_tests()
+        second = await pipeline_watchdog.email_undelivered(
+            (alert(first_set[:1], episode),), (False,), now=now + timedelta(minutes=15)
+        )
+        redis_up[0] = False
+        pipeline_watchdog.reset_email_memory_for_tests()
+        third = await pipeline_watchdog.email_undelivered(
+            (alert(first_set, None),), (False,), now=now + timedelta(minutes=30)
+        )
+
+        assert (first, second, third) == ((False,), (True,), (False,))
+        assert len(calls) == 2
+        assert calls[0]["idempotency_key"] == calls[1]["idempotency_key"]
+        assert (calls[0]["title"], calls[0]["lines"]) == (calls[1]["title"], calls[1]["lines"])
+        assert any(f"b-{tag}" in line for line in calls[1]["lines"])
+    finally:
+        pipeline_watchdog.reset_email_memory_for_tests()
+        engine.dispose()
