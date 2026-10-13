@@ -11,6 +11,8 @@ from app.models.hospital import Hospital, HospitalStatus
 from app.services.reference_requirement import (
     QUERY_TARGET_TOPIC_FIELDS,
     REFERENCES_REQUIRED_TYPES,
+    references_block_when_empty,
+    references_required,
 )
 
 NIGHTLY_GENERATION_CAP = 50
@@ -413,6 +415,80 @@ def _needs_generation_recovery():
             ContentItem.essence_status != "ALIGNED",
         ),
     )
+
+
+def _label(value: object) -> str:
+    return str(getattr(value, "value", value) or "")
+
+
+def _stored_ai_review_unresolved(item: ContentItem) -> bool:
+    """`_needs_generation_recovery`의 `unresolved_ai_review`와 같은 판정(파이썬)."""
+
+    summary = getattr(item, "essence_check_summary", None)
+    review = summary.get("ai_review") if isinstance(summary, dict) else None
+    if not isinstance(review, dict):
+        return False
+    status = review.get("status")
+    if status == "UNAVAILABLE" or review.get("edited_after_review") is True:
+        return True
+    return status == "REVISE" and (
+        review.get("blocking") is True or review.get("schema_version") is None
+    )
+
+
+def _stored_body_needs_non_reference_repair(
+    item: ContentItem, philosophy: HospitalContentPhilosophy | None
+) -> bool:
+    """본문이 있는 행이 참고자료 말고 다른 이유로 `_needs_generation_recovery`에 걸리는가.
+
+    SQL 술어(`_needs_generation_recovery`)의 참고자료 밖 조건을 파이썬으로 옮긴 것이다 — 그 술어에
+    조건을 더하면 여기에도 더한다(`tests/test_optional_reference_reclaim.py`가 조건마다 짝을 본다).
+    Essence는 SQL보다 엄격하게 본다(현재 승인본과 다르면 수리 대상) — 틀려도 종전처럼 집을 뿐이다.
+    """
+
+    if getattr(item, "image_url", None) is None or getattr(item, "image_policy_verified_at", None) is None:
+        return True
+    if _label(getattr(item, "content_type", None)) == ContentType.FAQ.value:
+        question = getattr(item, "faq_question", None)
+        answer = getattr(item, "faq_answer_summary", None)
+        if (
+            question is None
+            or not str(question).strip().endswith("?")
+            or answer is None
+            or not str(answer).strip()
+        ):
+            return True
+    if philosophy is None or getattr(item, "content_philosophy_id", None) != getattr(
+        philosophy, "id", None
+    ):
+        return True
+    if _stored_ai_review_unresolved(item):
+        return True
+    essence_status = getattr(item, "essence_status", None)
+    return essence_status is not None and _label(essence_status) != "ALIGNED"
+
+
+def stored_body_awaits_only_optional_references(
+    item: ContentItem, philosophy: HospitalContentPhilosophy | None
+) -> bool:
+    """본문이 있는 진료비·병원 선택 글이 **빈 참고자료만으로** 복구 술어에 걸렸는가.
+
+    2026-10-13 대표 결정(D23) 뒤로 이 글의 참고자료는 선택이다 — 비어도 생성·발행을 막지 않으므로
+    다시 써도 고칠 것이 없다. 그런데 SQL 복구 술어는 유형만 보고(제목 판정은 SQL로 옮길 수 없다)
+    이 행을 매 스윕(하루 7번) 다시 골라, 상한 50의 자리를 내일 슬롯보다 먼저 차지하고 lease·
+    `GENERATE_CONTENT_ITEM` 실행을 매번 남겼다. 로더(claim 전)와 워커가 이 같은 술어로 건너뛴다.
+    이미지·FAQ·검수·Essence처럼 고칠 것이 따로 있으면 종전대로 집는다.
+    """
+
+    if not getattr(item, "body", None):
+        return False
+    references = getattr(item, "references_list", None)
+    if isinstance(references, list) and references:
+        return False
+    # SQL이 참고자료 때문에 고른 행인가(필수 유형·질문 연결 NOTICE) — 아니면 다른 이유로 골랐다.
+    if not references_required(item) or references_block_when_empty(item):
+        return False
+    return not _stored_body_needs_non_reference_repair(item, philosophy)
 
 
 def _generation_order_columns():

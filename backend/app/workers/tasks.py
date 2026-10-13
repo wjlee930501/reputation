@@ -588,6 +588,7 @@ from app.workers.nightly_generation_batch import (
     load_stuck_claims,
     release_generation_claim,
     release_unfinished_claims,
+    stored_body_awaits_only_optional_references,
     write_back_generated_content,
     write_back_generated_image,
     write_back_published_image_certificate,
@@ -1306,6 +1307,9 @@ def _generation_retry_is_eligible(db):
             philosophies[hospital_id] = _generation_philosophy_sync(db, hospital_id)
         # 종착 기록이 입력 그대로면 본문이 있어도 집지 않는다 — 워커의 같은 판정과 짝이다.
         if _terminal_attempt_is_unchanged(item, philosophies[hospital_id]):
+            return False
+        # 진료비·병원 선택 글의 빈 참고자료만 남은 본문은 고칠 것이 없다(D23) — 워커의 같은 판정과 짝이다.
+        if stored_body_awaits_only_optional_references(item, philosophies[hospital_id]):
             return False
         if getattr(item, "body", None):
             return True
@@ -5723,6 +5727,20 @@ def _run_generation_item(
                 safe_error_message=message,
             )
             return GenerationItemState.SKIPPED, code, message
+        if stored_body_awaits_only_optional_references(
+            item, _generation_philosophy_sync(db, hospital.id)
+        ):
+            # 로더가 claim 전에 거르는 규칙과 같다(재배달·직접 호출). 진료비·병원 선택 글의 참고자료는
+            # D23 뒤로 선택이라 빈 목록은 고칠 것이 아니다 — 쓰기 없이 물러난다.
+            code = "REFERENCES_OPTIONAL"
+            message = "진료비·병원 선택 글이라 참고자료 없이도 발행할 수 있어 다시 쓰지 않았습니다."
+            recorder.record(
+                item.id,
+                GenerationItemState.SKIPPED,
+                safe_error_code=code,
+                safe_error_message=message,
+            )
+            return GenerationItemState.SKIPPED, code, message
         if getattr(item, "body", None):
             state, code, message = _generate_single_content_item(db, item, hospital)
             _record_generation_batch_outcome(
@@ -6084,6 +6102,9 @@ def _run_generation_item(
         db.rollback()
         db.expire_all()
         unwritten = not getattr(item, "body", None)
+        # D23(2026-10-13) 뒤로 진료비·병원 선택 제목은 참고자료가 비어도 생성이 거절하지 않으므로
+        # (`references_block_when_empty`) 이 갈래에 닿지 않는다. 옛 기록을 읽는 경로와 함께 배포
+        # +약 1주에 걷어낼 예정이다(계획 Q7).
         operator_decides = unwritten and _generation_left_references_to_operator(e, item)
         if operator_decides:
             # 작가 회차를 다 쓰고도 통과한 참고자료가 없는 진료비·병원 선택 슬롯이다. 다시 써도
