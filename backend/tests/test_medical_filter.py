@@ -643,6 +643,10 @@ def test_every_exemption_sample_passes_but_its_guarantee_variant_is_blocked(reas
         "증상은 통증 없이 " * 1500 + "사라집니다",
         "완전 회복까지 3주 " * 1500 + "약속",
         "예약 " * 5000 + "무료 검사",
+        # 3회차: 보장 표지 뒤 긴 공백(부정 문형의 중첩 공백 백트래킹).
+        "완전 회복까지 3개월 보장" + " " * 16000 + "x",
+        "반드시" + " " * 16000 + "x",
+        "100%" + "\n " * 8000 + "x",
     ],
 )
 def test_long_adversarial_inputs_finish_quickly(text):
@@ -792,3 +796,59 @@ def test_offer_and_booking_wording_stays_hard_even_for_public_programs(text):
 )
 def test_insurance_copay_and_appointment_wording_is_not_an_outcome_guarantee(text):
     assert check_forbidden(text) == []
+
+
+def test_the_sentence_index_is_linear_after_a_marker_with_long_whitespace():
+    import time
+
+    from app.utils.medical_filter import _SentenceIndex
+
+    for text in ("완전 회복까지 3개월 보장" + " " * 16000 + "x", "확실" + " \t" * 8000 + "x"):
+        started = time.perf_counter()
+        _SentenceIndex(text)._build()
+        assert time.perf_counter() - started < 0.1
+
+
+# ── 3회차 교차 검토(2026-10-13) ───────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "완전 회복까지 1주면 반드시 치유됩니다, 상담하세요.",
+        "완전 회복까지 1주면 반드시 건강해집니다, 상담하세요.",
+        "완전 회복까지 1주면 반드시 정상으로 돌아옵니다, 상담하세요.",
+        "완전 회복까지 1주면 반드시 재발 없이 끝납니다, 상담하세요.",
+    ],
+)
+def test_bandeusi_with_a_healing_predicate_is_a_guarantee(text):
+    from app.utils import medical_filter_baseline
+
+    assert "완치" in check_forbidden(text)
+    assert "완치" in medical_filter_baseline.check_forbidden(text)
+
+
+def test_advice_bandeusi_without_an_outcome_predicate_still_passes():
+    assert check_forbidden("완전 회복까지 3개월이 걸리니 반드시 검진을 받으세요") == []
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "국가검진 무료 검사를 예약해 주십시오.",
+        "국가검진 무료 검사를 예약하면 됩니다.",
+        "국가검진 무료 검사를 예약하시면 됩니다.",
+        "국가검진 무료 검사 예약 가능합니다.",
+        "국가검진 대상이 아니라도 무료 검사 가능합니다.",
+        "건강보험이 없어도 무료 검사 가능합니다.",
+        # 앞쪽·장거리 변형
+        "예약해 주십시오, 국가검진 무료 검사입니다.",
+        "예약하면 됩니다, 국가검진 무료 검사입니다.",
+        "아니라도 됩니다, 국가검진 무료 검사입니다.",
+        "국가검진 무료 검사 " + "안내 " * 60 + "예약하면 됩니다.",
+        "국가검진 대상이 아니라도 " + "안내 " * 60 + "무료 검사 가능합니다.",
+        "본인부담금 면제 대상이니 " + "안내 " * 60 + "예약해 주십시오.",
+    ],
+)
+def test_polite_and_conditional_booking_and_ara_do_distancing_are_blocked(text):
+    assert "할인·유인" in check_forbidden(text)

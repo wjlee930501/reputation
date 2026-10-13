@@ -641,3 +641,30 @@ async def test_the_review_session_attaches_counts_when_the_provider_fails_later(
     assert getattr(raised.value, content_engine.GENERATION_REJECTIONS_KEY) == {
         "rejected": {"forbidden": 2, "price": 1}
     }
+
+
+# ── 3회차 교차 검토(2026-10-13): 여러 줄 인라인 코드 스팬 ─────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "block",
+    [
+        pytest.param("정상 `코드\n최고입니다.\n끝` 정상입니다.", id="single-backtick-span"),
+        pytest.param("정상 ``코드 ` 안\n최고입니다.\n끝`` 정상입니다.", id="double-backtick-span"),
+    ],
+)
+def test_deletion_refuses_a_violation_inside_a_multi_line_code_span(block):
+    assert _heal(_forbidden_error(block)) is None
+
+
+def test_an_unpaired_backtick_does_not_protect_the_following_lines():
+    healed = _heal(_forbidden_error("정상 `리터럴\n\n최고입니다. 정상입니다."))
+
+    assert healed is not None
+    assert "\n정상입니다.\n" in healed["body"]
+
+
+def test_code_span_lines_ignore_fenced_backticks():
+    lines = ["```", "코드", "```", "정상 `열기", "최고입니다.", "닫기` 끝"]
+    protected = content_engine._heal_protected_lines(lines)
+    assert content_engine._heal_code_span_lines(lines, protected) == {3, 4, 5}

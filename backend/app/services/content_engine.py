@@ -4,6 +4,7 @@
 - 유형별 프롬프트 분기
 - 의료광고 금지 표현 자동 필터 + 재생성
 """
+import bisect
 import hashlib
 import json
 import logging
@@ -1910,6 +1911,47 @@ def _heal_protected_lines(lines: list[str]) -> set[int]:
     return protected
 
 
+_HEAL_BACKTICK_RUN = re.compile(r"`+")
+
+
+def _heal_code_span_lines(lines: list[str], protected: set[int]) -> set[int]:
+    """여러 줄에 걸친 인라인 코드 스팬이 덮는 줄 번호.
+
+    CommonMark 코드 스팬은 같은 길이의 백틱 묶음으로 열고 닫으며 줄바꿈을 넘을 수 있다 — 위반 줄에
+    백틱이 없어도 스팬 안일 수 있다(여는 백틱 줄 · 위반 줄 · 닫는 백틱 줄). 보호된 블록(펜스 등)의
+    줄은 빈 줄로 보고 센다. 짝을 찾지 못한 백틱 묶음은 리터럴이다. 판정이 애매하면 보호 쪽으로 기운다 —
+    문단 경계(빈 줄)에서 스팬을 끊지 않는다.
+    """
+
+    visible = ["" if index in protected else line for index, line in enumerate(lines)]
+    text = "\n".join(visible)
+    runs = [(match.start(), match.end()) for match in _HEAL_BACKTICK_RUN.finditer(text)]
+    if len(runs) < 2:
+        return set()
+    by_length: dict[int, list[int]] = {}
+    for position, (start, end) in enumerate(runs):
+        by_length.setdefault(end - start, []).append(position)
+    line_starts = [0]
+    for line in visible[:-1]:
+        line_starts.append(line_starts[-1] + len(line) + 1)
+    covered: set[int] = set()
+    position = 0
+    while position < len(runs):
+        start, end = runs[position]
+        same = by_length[end - start]
+        closer_at = bisect.bisect_right(same, position)
+        if closer_at >= len(same):
+            position += 1  # 짝 없는 백틱은 리터럴이다
+            continue
+        closer = same[closer_at]
+        first_line = bisect.bisect_right(line_starts, start) - 1
+        last_line = bisect.bisect_right(line_starts, runs[closer][0]) - 1
+        if last_line > first_line:
+            covered.update(range(first_line, last_line + 1))
+        position = closer + 1
+    return covered
+
+
 def _split_heal_sentences(text: str) -> list[str]:
     """원문 구간 그대로의 문장 목록. 이어 붙이면 원문과 바이트 단위로 같다."""
 
@@ -1946,13 +1988,14 @@ def _heal_forbidden_sentences(
     must_use = [message for message in must_use_messages or [] if normalize_verbatim(message)]
     lines = str(result.get("body") or "").split("\n")
     protected = _heal_protected_lines(lines)
+    code_span_lines = _heal_code_span_lines(lines, protected)
     kept_lines: list[str] = []
     removed = 0
     for index, line in enumerate(lines):
         if not check_forbidden_markdown(line):
             kept_lines.append(line)
             continue
-        if index in protected or "`" in line:
+        if index in protected or index in code_span_lines or "`" in line:
             # 인라인 코드는 문장 경계가 코드 스팬 안에 걸릴 수 있다 — 백틱 한쪽만 남기지 않게 다시 쓴다.
             return None
         prefix = _HEAL_LINE_PREFIX.match(line).group(0)
