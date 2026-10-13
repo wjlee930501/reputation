@@ -2960,6 +2960,24 @@ def _v0_auto_reruns_used(summary: object) -> int:
     return V0_AUTO_RERUN_BUDGET
 
 
+def _v0_in_auto_rerun_stage(operation_run_id: uuid.UUID | None) -> bool:
+    """이 실행이 자동 재실행 단계(재실행 예산을 한 번 이상 쓴 OperationRun)인가.
+
+    재실행 1회 = 시도 1회다. 실패 횟수는 측정 실행(MeasurementRun)에 남는데, 측정 실행이 생기기
+    전에 실패하면 남길 곳이 없어 재실행이 Celery 즉시 재시도 예산을 0부터 다시 쓴다. 그래서 단계를
+    OperationRun에서 읽는다. 읽지 못하면 종전처럼 즉시 재시도한다.
+    """
+    if operation_run_id is None:
+        return False
+    try:
+        with SyncSessionLocal() as db:
+            run = db.get(OperationRun, operation_run_id)
+            return run is not None and _v0_auto_reruns_used(run.result_summary) >= 1
+    except Exception:  # noqa: BLE001 - 판정 실패는 종전 재시도 경로로 둔다.
+        logger.exception("V0 auto rerun stage could not be read")
+        return False
+
+
 def _schedule_v0_auto_rerun(task, *, now: datetime | None = None) -> datetime | None:
     """같은 실행을 6시간 뒤로 미룬다. 예산 소진·기록 없음·지난 사본이면 None(=지금 사람의 일).
 
@@ -5119,7 +5137,8 @@ def trigger_v0_report(self, hospital_id: str, failure_retry_count: int = 0):
             _seed_query_targets_from_matrix_sync(hospital.id)
 
             # 자동 재실행 중(RETRYING)이던 실패 사고는 성공한 이 실행이 바로 닫는다. 열림 알림이
-            # 나갔으면 복구 알림이 짝으로 따른다(백로그 근거 정리는 Slack 없이 닫는다).
+            # 나갔으면 복구 알림이 짝으로 따른다 — 백로그 근거 정리가 대신 닫아도 같다(나간 열림에는
+            # 복구 알림, 나가지 않은 열림이면 Slack 없이 닫는다).
             try:
                 _run_async(
                     recover_ops_incident(
@@ -5195,11 +5214,16 @@ def trigger_v0_report(self, hospital_id: str, failure_retry_count: int = 0):
         terminal_measurement_failure = isinstance(
             exc, (V0MeasurementUnavailable, V0MeasurementPolicyDrift)
         )
-        if terminal_measurement_failure or failure_retry_count >= self.max_retries:
+        if (
+            terminal_measurement_failure
+            or failure_retry_count >= self.max_retries
+            or _v0_in_auto_rerun_stage(v0_operation_run_id)
+        ):
             # 공급자별 재시도와 회로 차단까지 끝난 실패다. 150건 전체를 Celery가 바로 다시
             # 돌리지 않고, 같은 실행을 6시간 뒤로 미뤄 최대 3회 다시 해 본다(측정 lineage 유지 —
             # 끝난 측정은 다시 사지 않는다). 소진 뒤에만 사람에게 넘긴다.
-            # 재실행은 저장된 실패 횟수(이미 상한)를 이어받아 첫 예외에 바로 여기로 온다 — 재실행 1회 = 시도 1회.
+            # 재실행 단계의 실패는 어디서 났든(측정 실행이 생기기 전이어도) 곧바로 여기로 온다 —
+            # 재실행 1회 = 시도 1회.
             outcome = _handle_v0_final_failure(self, hospital_id, exc)
             if outcome is not None:
                 return outcome

@@ -214,14 +214,12 @@ def test_current_month_slot_failure_waits_one_reconciliation():
     assert deadline == start + DEFAULT_RETRYING_DEADLINE
 
 
-def test_monthly_sov_deadline_is_the_recovery_horizon():
-    from app.workers.tasks import _monthly_sov_recovery_deadline
-
+def test_monthly_sov_deadline_is_the_final_judgment_time():
     start = datetime(2026, 10, 25, tzinfo=UTC)
     request = _request("MONTHLY_SOV_MEASUREMENT_FAILED", f"{HOSPITAL}:2026-10")
     deadline = retry_deadline(request, episode_start=start, observed_at=start)
-    assert deadline == datetime(2026, 11, 7, 23, 59, 59, tzinfo=KST)
-    assert deadline == _monthly_sov_recovery_deadline(2026, 10)
+    # D18(구현 중 확정): 복구 마감(7일 23:59:59)이 아니라 최종화 뒤 마지막 판정 시각 8일 09:00 KST.
+    assert deadline == datetime(2026, 11, 8, 9, 0, tzinfo=KST)
     late = deadline + timedelta(seconds=1)
     assert retry_deadline(request, episode_start=start, observed_at=late) is None
 
@@ -351,7 +349,11 @@ def _monthly_slot_window(
 def _monthly_sov_window(
     request: IncidentOpenRequest, _episode_start: datetime
 ) -> datetime | None:
-    """월간 측정은 다음 달 7일 23:59:59 KST까지 catch-up이 맡는다(`tasks._monthly_sov_recovery_deadline`)."""
+    """월간 측정은 다음 달 8일 09:00 KST(`monthly_period.monthly_final_judgment_at`)까지 자동 복구가 맡는다.
+
+    D18: 계획 당시 예시는 복구 마감(다음 달 7일 23:59:59)이었으나, 00:00~00:15 사이 보류 알림이 나간 뒤
+    8일 00:15 최종화가 닫는 오탐을 막으려고 최종 판정 시각으로 옮겼다.
+    """
 
     period = _period_month(request.source_id)
     if period is None:

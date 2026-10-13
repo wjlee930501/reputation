@@ -20,7 +20,7 @@ from sqlalchemy.dialects import postgresql
 
 from app.models.hospital import Hospital, HospitalStatus
 from app.models.monthly_control import MeasurementObservationSlot, MonthlyReportArtifact
-from app.models.operations import OperationRunState
+from app.models.operations import OperationRun, OperationRunState
 from app.models.report import MonthlyReport
 from app.models.sov import MeasurementRun, QueryMatrix, SovRecord
 from app.services.measurement_slots import protocol_fingerprint
@@ -85,6 +85,7 @@ class FakeSession:
         self.commits = 0
         self.status_on_locked_get: HospitalStatus | None = None
         self.status_on_refresh: HospitalStatus | None = None
+        self.operation_runs: dict[uuid.UUID, OperationRun] = {}
 
     # -- context manager (SyncSessionPinnedConnection / SyncSessionLocal 대역) --
     def __enter__(self) -> "FakeSession":
@@ -104,6 +105,8 @@ class FakeSession:
             return next((row for row in self.measurement_runs if row.id == ident), None)
         if model is SovRecord:
             return next((row for row in self.sov_records if row.id == ident), None)
+        if model is OperationRun:
+            return self.operation_runs.get(ident)
         return None
 
     def add(self, obj: Any) -> None:
@@ -839,3 +842,62 @@ def test_a_request_without_lineage_keeps_the_six_hour_window():
 
     cutoff = now - timedelta(seconds=v0_checkpoint.V0_CHECKPOINT_MAX_AGE_SECONDS)
     assert cutoff.strftime("%Y-%m-%d %H:%M:%S") in db.statements[0]
+
+
+# ──────────────────────────────────────────────────────────────────
+# 자동 재실행 단계의 실패는 측정 실행이 생기기 전이어도 곧바로 최종 처리한다(Codex HOLD P2)
+# ──────────────────────────────────────────────────────────────────
+
+
+def _fail_before_the_measurement_run(harness, monkeypatch, *, reruns: int | None):
+    operation_run_id = uuid.uuid4()
+    harness.session.operation_runs[operation_run_id] = OperationRun(
+        id=operation_run_id,
+        result_summary={} if reruns is None else {tasks.V0_AUTO_RERUN_SUMMARY_KEY: reruns},
+    )
+
+    def _broken(*_args, **_kwargs):
+        raise RuntimeError("측정 실행을 만들지 못했습니다")
+
+    monkeypatch.setattr(tasks, "_start_measurement_run", _broken)
+    retries: list[dict] = []
+    finals: list[BaseException] = []
+
+    def _retry(**kwargs):
+        retries.append(kwargs)
+        return RuntimeError("celery retry")
+
+    def _final(_task, _hospital_id, exc):
+        finals.append(exc)
+        return {"status": "auto_rerun_scheduled"}
+
+    monkeypatch.setattr(tasks.trigger_v0_report, "retry", _retry)
+    monkeypatch.setattr(tasks, "_handle_v0_final_failure", _final)
+    try:
+        outcome = _run_task(harness.hospital.id, operation_run_id=operation_run_id)
+    except RuntimeError as exc:
+        outcome = exc
+    assert harness.session.measurement_runs == []  # 실패 횟수를 남길 측정 실행이 없다
+    return outcome, retries, finals
+
+
+def test_a_rerun_stage_failure_before_any_measurement_run_is_final_at_once(
+    harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """재실행 1회 = 시도 1회. 측정 실행이 없어 실패 횟수를 못 남겨도 Celery 즉시 재시도로 새지 않는다."""
+
+    outcome, retries, finals = _fail_before_the_measurement_run(harness, monkeypatch, reruns=1)
+
+    assert retries == []
+    assert len(finals) == 1
+    assert outcome == {"status": "auto_rerun_scheduled"}
+
+
+def test_a_first_run_failure_before_any_measurement_run_keeps_the_normal_retries(
+    harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    outcome, retries, finals = _fail_before_the_measurement_run(harness, monkeypatch, reruns=None)
+
+    assert finals == []
+    assert len(retries) == 1 and retries[0]["kwargs"]["failure_retry_count"] == 1
+    assert str(outcome) == "celery retry"

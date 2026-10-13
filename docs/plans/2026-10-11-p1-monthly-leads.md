@@ -1790,7 +1790,7 @@ def _handle_v0_final_failure(task, hospital_id: str, exc: BaseException) -> dict
 - [ ] **Step 5: 커밋**
   `git add backend/app/services/ops_incident_alerts.py backend/app/workers/v0_checkpoint.py backend/app/workers/tasks.py backend/tests/test_v0_auto_rerun.py backend/tests/test_v0_measurement_checkpoint.py backend/tests/integration/test_v0_auto_rerun_postgres.py && git commit -m "fix(v0): 최종 실패는 같은 실행으로 6시간×3회 자동 재실행하고 소진 뒤에만 알린다"`
 
-**레지스트리 항목:** `V0_REPORT_FAILED: initial_state=RETRYING if rerun scheduled else OPEN, deadline_fn=not_before+2h, resolver=_v0_report_created(+성공 경로 recover)`.
+**레지스트리 항목:** `V0_REPORT_FAILED: initial_state=RETRYING if rerun scheduled else OPEN, deadline_fn=not_before+6h, resolver=_v0_report_created(+성공 경로 recover)`.
 
 **계약 영향:** CLAUDE.md "측정·리포트"의 V0 문장("V0는 짧은 실행 구간마다 같은 작업·측정 lineage로 자동 이어가고 …") 뒤에 추가 —
 "재시도가 끝난 V0 실패는 같은 실행을 6시간 뒤로 미뤄 최대 3회 다시 돌린다(측정 기준 변경 제외). 같은 lineage는 완료 측정을 7일 안에서
