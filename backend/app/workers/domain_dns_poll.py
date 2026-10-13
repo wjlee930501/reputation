@@ -33,6 +33,7 @@ from app.services.incident_types import IncidentFingerprint
 from app.services.ops_incident_alerts import (
     open_ops_incident,
     recover_ops_incident,
+    recover_ops_incident_by_id,
     recover_ops_incidents_for_hospital,
 )
 
@@ -49,6 +50,14 @@ class PendingDomain:
     hospital_id: uuid.UUID
     hospital_name: str
     domain: str
+
+
+@dataclass(frozen=True, slots=True)
+class ActiveDnsIncident:
+    incident_id: uuid.UUID
+    hospital_id: uuid.UUID
+    hospital_name: str
+    dedupe_key: str
 
 
 @dataclass(slots=True)
@@ -159,13 +168,23 @@ def _object_id(target: PendingDomain) -> str:
     return f"{target.hospital_id}:{target.domain}"
 
 
-async def _incident_state(target: PendingDomain) -> str | None:
-    key = build_incident_key(
+def _dedupe_key(target: PendingDomain) -> str:
+    """열기(`open_ops_incident`)와 같은 함수로 만든 사고 키. 저장된 `Incident.dedupe_key`와 비교한다.
+
+    저장된 `source_id`는 비교에 쓰지 않는다 — 점이 든 `{hospital_id}:{domain}`은 저장할 때
+    `normalize_source_id`가 `sha256:…`로 바꾸므로 원래 쌍과 같아지지 않는다.
+    """
+    return build_incident_key(
         DOMAIN_DNS_POLL_PIPELINE, DOMAIN_DNS_POLL_OBJECT_TYPE, _object_id(target),
         IncidentFingerprint.MISSING_PREREQUISITE,
     )
+
+
+async def _incident_state(target: PendingDomain) -> str | None:
     async with get_async_sessionmaker()() as db:
-        return await db.scalar(select(Incident.state).where(Incident.dedupe_key == key))
+        return await db.scalar(
+            select(Incident.state).where(Incident.dedupe_key == _dedupe_key(target))
+        )
 
 
 async def _escalate(target: PendingDomain) -> None:
@@ -222,12 +241,12 @@ async def _verify(target: PendingDomain):
 
 async def recover_settled_dns_incidents(
     targets: Sequence[PendingDomain],
-    flagged: Sequence[tuple[uuid.UUID, str, str | None]],
+    flagged: Sequence[ActiveDnsIncident],
     *,
     recover: Callable[[uuid.UUID, str], Awaitable[object]],
-    recover_pair: Callable[[str, str], Awaitable[object]],
+    recover_stale: Callable[[uuid.UUID, str], Awaitable[object]],
 ) -> int:
-    """원인이 사라진 만료 사고를 닫는다. `flagged`는 (병원, 병원명, 사고의 병원·도메인 쌍)이다.
+    """원인이 사라진 만료 사고를 닫는다. `flagged`는 열려 있는 DNS 사고(id·병원·병원명·사고 키)다.
 
     폴러는 창이 지난 뒤에도 계속 묻고 DNS가 맞으면 성공 경로로 사고를 닫는다. 그러나 사람이
     수동 확인으로 먼저 열었거나 상태가 바뀌어 대기 목록에서 빠진 병원은 폴러가 다시 묻지 않으므로
@@ -236,25 +255,26 @@ async def recover_settled_dns_incidents(
     """
 
     pending_ids = {target.hospital_id for target in targets}
-    current_pairs = {_object_id(target) for target in targets}
+    # 지금 대기 중인 병원·도메인 쌍의 사고 키 — 여는 경로와 같은 함수로 만든다.
+    current_keys = {_dedupe_key(target) for target in targets}
     settled: dict[uuid.UUID, str] = {}
-    stale_pairs: list[tuple[str, str]] = []
-    for hospital_id, name, pair in flagged:
-        if hospital_id not in pending_ids:
-            settled.setdefault(hospital_id, name)
-        elif pair not in current_pairs:
-            stale_pairs.append((pair or "", name))
+    stale: list[tuple[uuid.UUID, str]] = []
+    for incident in flagged:
+        if incident.hospital_id not in pending_ids:
+            settled.setdefault(incident.hospital_id, incident.hospital_name)
+        elif incident.dedupe_key not in current_keys:
+            stale.append((incident.incident_id, incident.hospital_name))
     for hospital_id, name in settled.items():
         await recover(hospital_id, name)
-    for pair, name in stale_pairs:
-        await recover_pair(pair, name)
-    return len(settled) + len(stale_pairs)
+    for incident_id, name in stale:
+        await recover_stale(incident_id, name)
+    return len(settled) + len(stale)
 
 
-async def _active_dns_incidents(db: AsyncSession) -> list[tuple[uuid.UUID, str, str | None]]:
+async def _active_dns_incidents(db: AsyncSession) -> list[ActiveDnsIncident]:
     rows = (
         await db.execute(
-            select(Incident.hospital_id, Hospital.name, Incident.source_id)
+            select(Incident.id, Incident.hospital_id, Hospital.name, Incident.dedupe_key)
             .join(Hospital, Hospital.id == Incident.hospital_id)
             .where(
                 Incident.incident_type == DOMAIN_DNS_INCIDENT_TYPE,
@@ -262,7 +282,7 @@ async def _active_dns_incidents(db: AsyncSession) -> list[tuple[uuid.UUID, str, 
             )
         )
     ).all()
-    return [(hospital_id, name, source_id) for hospital_id, name, source_id in rows]
+    return [ActiveDnsIncident(*row) for row in rows]
 
 
 async def _recover_hospital(hospital_id: uuid.UUID, hospital_name: str) -> None:
@@ -277,12 +297,10 @@ async def _recover_hospital(hospital_id: uuid.UUID, hospital_name: str) -> None:
     )
 
 
-async def _recover_stale_pair(pair: str, hospital_name: str) -> None:
-    await recover_ops_incident(
-        pipeline=DOMAIN_DNS_POLL_PIPELINE,
-        object_type=DOMAIN_DNS_POLL_OBJECT_TYPE,
-        object_id=pair,
-        fingerprint=IncidentFingerprint.MISSING_PREREQUISITE,
+async def _recover_stale_incident(incident_id: uuid.UUID, hospital_name: str) -> None:
+    # 옛 도메인의 키는 지금 도메인으로 다시 만들 수 없다 — 조회한 사고 id로 닫는다.
+    await recover_ops_incident_by_id(
+        incident_id,
         hospital_name=hospital_name,
         actor=DOMAIN_DNS_POLL_ACTOR,
         reason="hospital changed its custom domain",
@@ -311,6 +329,6 @@ async def poll_pending_custom_domains_once(now: datetime) -> DomainPollSummary:
     async with sessions() as db:
         flagged = await _active_dns_incidents(db)
     await recover_settled_dns_incidents(
-        targets, flagged, recover=_recover_hospital, recover_pair=_recover_stale_pair
+        targets, flagged, recover=_recover_hospital, recover_stale=_recover_stale_incident
     )
     return summary

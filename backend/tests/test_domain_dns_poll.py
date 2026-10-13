@@ -168,6 +168,18 @@ def test_live_domain_monitor_also_polls_pending_domains(monkeypatch) -> None:
     assert result["pending_domains_verified"] == 1
 
 
+def _active(target_or_id, name, domain=None, *, incident_id=None):
+    from app.workers.domain_dns_poll import ActiveDnsIncident, PendingDomain, _dedupe_key
+
+    if isinstance(target_or_id, PendingDomain):
+        target = target_or_id
+    else:
+        target = PendingDomain(target_or_id, name, domain)
+    if domain is not None:
+        target = PendingDomain(target.hospital_id, name, domain)
+    return ActiveDnsIncident(incident_id or uuid.uuid4(), target.hospital_id, name, _dedupe_key(target))
+
+
 async def test_settled_hospitals_close_their_expired_dns_incident_quietly() -> None:
     from app.workers.domain_dns_poll import recover_settled_dns_incidents
 
@@ -178,17 +190,17 @@ async def test_settled_hospitals_close_their_expired_dns_incident_quietly() -> N
     async def recover(hospital_id, name):
         recovered.append((hospital_id, name))
 
-    async def recover_pair(pair, name):
-        pytest.fail(f"no stale pair expected: {pair}")
+    async def recover_stale(incident_id, name):
+        pytest.fail(f"no stale incident expected: {incident_id}")
 
     closed = await recover_settled_dns_incidents(
         [still_waiting],
         [
-            (still_waiting.hospital_id, "대기", f"{still_waiting.hospital_id}:{still_waiting.domain}"),
-            (activated_by_hand, "수동공개", f"{activated_by_hand}:www.manual.example"),
+            _active(still_waiting, "대기"),
+            _active(activated_by_hand, "수동공개", "www.manual.example"),
         ],
         recover=recover,
-        recover_pair=recover_pair,
+        recover_stale=recover_stale,
     )
 
     assert closed == 1
@@ -200,27 +212,24 @@ async def test_a_domain_change_closes_the_old_domains_incident_but_keeps_the_new
     from app.workers.domain_dns_poll import recover_settled_dns_incidents
 
     changed = _target("도메인변경")  # 지금 도메인은 www.clinic.example
-    old_pair = f"{changed.hospital_id}:old.clinic.example"
-    current_pair = f"{changed.hospital_id}:{changed.domain}"
+    old = _active(changed, "도메인변경", "old.clinic.example")
+    current = _active(changed, "도메인변경")
     hospitals: list = []
-    pairs: list = []
+    stale: list = []
 
     async def recover(hospital_id, name):
         hospitals.append(hospital_id)
 
-    async def recover_pair(pair, name):
-        pairs.append((pair, name))
+    async def recover_stale(incident_id, name):
+        stale.append((incident_id, name))
 
     closed = await recover_settled_dns_incidents(
-        [changed],
-        [(changed.hospital_id, "도메인변경", old_pair), (changed.hospital_id, "도메인변경", current_pair)],
-        recover=recover,
-        recover_pair=recover_pair,
+        [changed], [old, current], recover=recover, recover_stale=recover_stale
     )
 
     assert closed == 1
     assert hospitals == []
-    assert pairs == [(old_pair, "도메인변경")]
+    assert stale == [(old.incident_id, "도메인변경")]
 
 
 async def _poll_one_expired(verify_outcome):
