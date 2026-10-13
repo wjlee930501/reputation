@@ -125,6 +125,7 @@ from app.services.source_processing_runs import (
     serialize_source_processing_run,
     source_patch_changed_fields,
 )
+from app.services.survey_sources import mask_interview_text
 from app.utils.db_locks import acquire_hospital_advisory_lock
 from app.workers.dispatch_auth import build_dispatch_headers
 from app.workers.tasks import auto_review_essence_snapshot
@@ -463,11 +464,15 @@ class BulkEvidenceNoiseResponse(BaseModel):
 
 router = APIRouter(prefix="/admin/hospitals/{hospital_id}/essence", tags=["Admin — Essence"])
 
+EMPTY_TEXT_EXTRACTION_MESSAGE = (
+    "본문을 읽지 못했습니다(스캔 문서). 글자를 선택할 수 있는 PDF로 다시 저장해 올려 주세요."
+)
+
 SOURCE_TYPE_DISPLAY_LABELS = {
     SourceType.NAVER_BLOG: "네이버 블로그",
     SourceType.YOUTUBE: "유튜브",
     SourceType.HOMEPAGE: "병원 홈페이지",
-    SourceType.INTERVIEW: "원장 인터뷰",
+    SourceType.INTERVIEW: "원장 인터뷰 설문",
     SourceType.LANDING_PAGE: "랜딩 페이지",
     SourceType.BROCHURE: "브로슈어",
     SourceType.INTERNAL_NOTE: "내부 메모",
@@ -584,12 +589,13 @@ async def create_source(
 ):
     await _get_hospital_or_404(db, hospital_id)
     await acquire_hospital_advisory_lock(db, hospital_id)
+    raw_text = mask_interview_text(body.source_type, _clean_optional(body.raw_text))
     source = HospitalSourceAsset(
         hospital_id=hospital_id,
         source_type=body.source_type,
         title=body.title.strip(),
         url=_clean_optional(body.url),
-        raw_text=_clean_optional(body.raw_text),
+        raw_text=raw_text,
         operator_note=_clean_optional(body.operator_note),
         source_metadata=merge_source_metadata_patch(
             {}, without_source_version_authority(body.source_metadata)
@@ -597,7 +603,7 @@ async def create_source(
         content_hash=compute_source_content_hash(
             body.title.strip(),
             _clean_optional(body.url),
-            _clean_optional(body.raw_text),
+            raw_text,
             _clean_optional(body.operator_note),
         ),
         status=SourceStatus.PENDING,
@@ -646,7 +652,7 @@ async def create_source_addendum(
 
     title = (body.title or source.title).strip()
     url = _clean_optional(body.url)
-    raw_text = _clean_optional(body.raw_text)
+    raw_text = mask_interview_text(source.source_type, _clean_optional(body.raw_text))
     operator_note = _clean_optional(body.operator_note)
     addendum = HospitalSourceAsset(
         hospital_id=hospital_id,
@@ -735,6 +741,8 @@ async def patch_source(
         if field_name in {"title", "url", "raw_text", "operator_note"}:
             value = _clean_optional(value)
         setattr(source, field_name, value)
+    # 설문 본문은 저장 전에 개인정보를 가린다(E6) — 종류를 설문으로 바꾸는 수정도 같다.
+    source.raw_text = mask_interview_text(source.source_type, source.raw_text)
 
     has_text_material = bool(
         (source.url and source.url.strip()) or (source.raw_text and source.raw_text.strip())
@@ -1138,7 +1146,13 @@ async def upload_source_file(
         raw_text = await asyncio.to_thread(extract_docx_text, data) or None
     # 공백만 뽑힌 추출 결과는 본문이 아니다. 여기서 None으로 눕히지 않으면 처리도 승인도
     # 할 수 없는 자료가 "본문 있음"으로 저장된다.
-    raw_text = _clean_optional(raw_text)
+    raw_text = mask_interview_text(source_type, _clean_optional(raw_text))
+    # 글자를 하나도 읽지 못한 문서(스캔 PDF 등)는 처리되지 않는다 — 자료 행과 응답에 그 사실을 남긴다.
+    text_extraction = (
+        {"text_extraction": "EMPTY", "text_extraction_message": EMPTY_TEXT_EXTRACTION_MESSAGE}
+        if extractor_kind in {"PDF", "DOCX"} and not raw_text
+        else {}
+    )
 
     final_title = resolve_upload_title(title, file.filename)
 
@@ -1159,6 +1173,7 @@ async def upload_source_file(
             # 해상도는 저장 시점에만 알 수 있다. 원본보다 크게 표시되면 화질이
             # 뭉개지므로(S-3) 사실을 남겨 운영자가 교체 여부를 판단하게 한다.
             **(build_image_quality_metadata(data) if extractor_kind == "IMAGE" else {}),
+            **text_extraction,
         },
         file_url=file_url,
         mime_type=mime_type or None,

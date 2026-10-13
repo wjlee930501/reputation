@@ -190,6 +190,17 @@ def extract_docx_text(data: bytes) -> str:
         return ""
 
 
+GOOGLE_LOGIN_HOSTS = frozenset({"accounts.google.com"})
+GOOGLE_LOGIN_REQUIRED_MESSAGE = (
+    "Google 로그인이 필요한 링크입니다. 공유 설정을 '링크가 있는 모든 사용자'로 바꿔 주세요."
+)
+
+
+def _is_plain_text_type(content_type: str) -> bool:
+    media = (content_type or "").split(";", 1)[0].strip().lower()
+    return media in {"text/plain", "text/csv", "text/tab-separated-values"}
+
+
 async def fetch_url_text(url: str) -> tuple[str, str | None, FetchQuality | None]:
     """URL을 가져와 마크다운 형태 텍스트 + 추출 실패 사유 + 품질 신호를 반환.
 
@@ -218,6 +229,9 @@ async def fetch_url_text(url: str) -> tuple[str, str | None, FetchQuality | None
                 if not location:
                     break
                 next_url = urljoin(current_target.url, location)
+                if (urlparse(next_url).hostname or "").lower() in GOOGLE_LOGIN_HOSTS:
+                    # 공유가 꺼진 Google 문서는 로그인 페이지로 보낸다 — 그 HTML을 본문으로 저장하지 않는다.
+                    return "", GOOGLE_LOGIN_REQUIRED_MESSAGE, None
                 next_target, validation_error = await asyncio.to_thread(
                     _validate_fetch_target, next_url
                 )
@@ -238,8 +252,12 @@ async def fetch_url_text(url: str) -> tuple[str, str | None, FetchQuality | None
                 declared_encoding=response.encoding,
                 content_type=content_type,
             )
-            scoped_html = _scope_to_content_container(html)
-            text = strip_navigation_fragments(_html_to_markdown(scoped_html))
+            if _is_plain_text_type(content_type):
+                # 내보내기 텍스트·CSV(Google 문서·스프레드시트)는 HTML이 아니다 — 줄바꿈을 그대로 둔다.
+                text = html.strip()
+            else:
+                scoped_html = _scope_to_content_container(html)
+                text = strip_navigation_fragments(_html_to_markdown(scoped_html))
             quality = _assess_fetch_quality(
                 html,
                 text,
