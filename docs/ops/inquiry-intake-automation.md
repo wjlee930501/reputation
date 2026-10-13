@@ -1,6 +1,6 @@
 # 도입문의 접수 자동 처리 — 초도 노출 진단과 안내 문자
 
-문서 버전: **1.2** · 갱신일: **2026-09-22 (Asia/Seoul)**
+문서 버전: **1.3** · 갱신일: **2026-10-13 (Asia/Seoul)**
 범위: 공개 랜딩의 도입문의 폼(`POST /public/leads`)이 접수된 직후 백엔드가 자동으로 하는 두 가지 일과, 사람이 개입하는 지점.
 
 ## 랜딩의 자리
@@ -24,6 +24,13 @@ JSON을 요청한 쪽(폼)은 프록시의 `error` 문자열을 그대로 화면
 5. 원장 연락처가 휴대전화면 `services/inquiry_sms.acknowledge_inquiry`가 NHN Cloud Notification SMS(v3.0 MMS 엔드포인트, 첨부 없는 LMS)로 안내 문자를 보낸다. 발신번호는 `INQUIRY_SMS_SENDER_NO`(기본 010-2492-8543, 마케팅팀 김효진 팀장)이며 콘솔에 사전 등록돼 있어야 한다. 같은 연락처가 `INQUIRY_SMS_DEDUP_HOURS`(기본 6시간) 안에 다시 접수되면 보내지 않는다.
 6. 결과는 리드 행에 남는다. `ack_sms_status`(SENT/FAILED/SKIPPED)·`ack_sms_error`·`ack_sms_sent_at`. Admin 리드 목록이 발송 완료·미발송을 표시한다.
 
+## 실패와 자동 재시도
+
+- **접수 Slack.** 보내지 못하면 리드의 `notification_status`를 PENDING으로 남기고, 1분 drain(`lead_diagnosis_tasks`)이 접수 뒤 1시간(`LEAD_INTAKE_NOTIFY_RETRY_WINDOW`) 동안 다시 보낸다. 보내는 도중 워커가 멈춰 SENDING에 남은 행도 같은 창이 지나면 만료 대상이다(파기된 리드는 제외). 창이 지나도 못 보냈으면 FAILED로 끝내고 운영 채널에 `LEAD_INTAKE_NOTIFICATION_FAILED` 한 건을 연다. 사고 제목에는 병원명·연락처를 싣지 않는다.
+- **안내 문자.** 요청이 사업자에 닿지 않은 연결 실패와 429·503에만 한 번 다시 보낸다(이중 발송 방지). 최종 실패면 `INQUIRY_SMS_FAILED`를 연다. SKIPPED(설정 없음·휴대전화 아님·같은 연락처 중복)는 알리지 않고 리드 행에만 남으며, 문자 설정 상태는 readiness `facts.inquiry_sms`로 본다.
+- 두 사고는 사람이 그 리드를 맡으면(리드 상태가 NEW가 아니면) 근거로 닫힌다(`incident_backlog._lead_followed_up`).
+- **초도 진단 측정.** 실패하면 즉시·1·2·4시간으로 물러서 최대 5회 시도한다(`EXECUTION_RETRY_BACKOFF`, `MAX_EXECUTION_ATTEMPTS`). 짧은 공급자 장애가 사람 몫으로 넘어가지 않게 한다.
+
 ## 값이 틀렸을 때
 
 폼이 비어 있으면 자동 생성이 거절돼 Admin에서 채우면 된다. **틀린 값은 다르다** —
@@ -46,7 +53,7 @@ JSON을 요청한 쪽(폼)은 프록시의 `error` 문자열을 그대로 화면
 ## 사람이 하는 일
 
 - 자동 처리 한 줄이 `자동 시작`이 아니면 Admin 리드 화면에서 `진단 생성(내부용)`을 눌러 진료과·지역·키워드를 채운다. 폼 기본값은 리드의 `specialty`·`region_keyword`·`core_keywords`를 그대로 가져온다.
-- `원장 안내 문자 미발송`이 표시되면 직접 연락한다. 문자는 재발송 버튼이 없다 — 이미 전화로 이어지는 단계라 자동 재시도를 두지 않는다.
+- `원장 안내 문자 미발송`이 표시되면(`INQUIRY_SMS_FAILED`) 직접 연락한다. 문자는 재발송 버튼이 없다 — 닿지 않은 실패의 1회 재시도 뒤에는 이미 전화로 이어지는 단계라 더 보내지 않는다.
 - 콜용 보고서가 이미 준비됐어도(`READY`) 리드 화면의 `보고서 다시 만들기`로 최신 기준의 새 버전을 만들 수 있다. 이전 버전은 `LeadReportArtifact`로 남는다. 고객에게 나간 리드(`SENT`·`SENDING`·`FAILED`)는 대상이 아니다 — 공개 토큰 뷰가 최신 버전을 서빙하므로 이미 보낸 링크의 내용이 바뀌고, DB 제약 `ck_lead_diagnoses_delivery_requires_report`도 같은 선을 긋는다.
 
 ## 설정
@@ -63,7 +70,8 @@ JSON을 요청한 쪽(폼)은 프록시의 `error` 문자열을 그대로 화면
 
 ## 검증
 
-- 단위: `backend/tests/test_public_leads.py`, `backend/tests/test_inquiry_sms.py`
+- 단위: `backend/tests/test_public_leads.py`, `backend/tests/test_inquiry_sms.py`, `backend/tests/test_lead_diagnosis_retry_backoff.py`
+- 접수 Slack 재발송·만료: `backend/tests/integration/test_lead_intake_notification_retry.py`
 - 랜딩 폼·프록시: `site/lib/inquiry-form.test.ts`, `site/lib/inquiry-intake.test.ts`
 - 수동 생성·갈음: `backend/tests/integration/test_manual_lead_diagnosis.py`, `admin/lib/manual-diagnosis.test.ts`
 - 마이그레이션: `0080_lead_diagnosis_supersede` (`lead_diagnoses.superseded_at`, `superseded_by_id`)
