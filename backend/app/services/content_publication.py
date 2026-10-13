@@ -417,6 +417,8 @@ def apply_publication_assessment(item: ContentItem, assessment: PublicationAsses
         for key in (
             "automatic_remediation_attempts",
             "reviewer_driven_rewrites",
+            # 생성 세션의 결정적 거절 횟수(E5) — 측정용 기록이다.
+            "generation_rejections",
             "ai_review",
             # Scheduled generation uses this durable JSON fragment to avoid
             # paying again for the same unchanged body/image failure.
@@ -472,6 +474,7 @@ def apply_essence_revalidation(
         for key in (
             "automatic_remediation_attempts",
             "reviewer_driven_rewrites",
+            "generation_rejections",
             "ai_review",
             "generation_attempt",
             BODY_REPAIR_STATE_KEY,

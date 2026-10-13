@@ -558,6 +558,7 @@ from app.workers.generation_run_control import (
     finish_explicit_run,
     finish_item_run,
     mark_operation_run_queued,
+    rejection_kind_for_message,
     safe_generation_rejection_message,
 )
 from app.workers.monthly_artifact_incident_control import (
@@ -1442,6 +1443,8 @@ def _remember_generation_attempt(
         attempt[ENVIRONMENT_SINCE_KEY] = (carried or observed_at).isoformat()
     if reason == "GENERATION_REJECTED":
         attempt["message"] = safe_generation_rejection_message(message)
+        # 거절 사유의 기계 라벨(E5) — 금지 표현·참고자료·제목 등 몫을 숫자로 센다.
+        attempt["rejection_kind"] = rejection_kind_for_message(attempt["message"])
     # 이 차단이 어떤 승인 사실 위에서 내려졌는지 남긴다. 사람이 그 자료를 채우면 스윕이
     # 그 사실을 관측해 한 번의 재생성을 준다. 읽지 못한 실행이 기존 지문을 지우지 않는다.
     approved_facts = _hospital_review_facts(item) or previous.get("approved_facts")

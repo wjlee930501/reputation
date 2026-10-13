@@ -98,6 +98,33 @@ AUTO_CORRECTION_EXHAUSTED_KEY = "auto_correction_exhausted"
 HARD_FINDING_IDLE_KEY = "hard_finding_idle"
 
 
+# 결정적 생성 거절의 기계 라벨(2026-10-13 E5). 운영자 문구(`generation_run_control`)와 측정
+# (`content_generation_review`의 `generation_rejections`)이 같은 판정을 쓴다. **순서가 판정이다** —
+# 참고자료 거절 문구는 "GEO hard-fail: references is empty"라 `references`가 `geo`보다 먼저다.
+GENERATION_REJECTION_KINDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("truncated", ("truncated",)),
+    ("price", ("unverified fixed price or coverage",)),
+    ("references", ("references is empty",)),
+    ("geo", ("geo hard-fail", "citable reference")),
+    ("seo", ("seo hard-fail",)),
+    ("forbidden", ("forbidden medical expressions",)),
+    ("faq", ("faq output requires", "faq question must")),
+    ("must_use", ("must_use messages missing verbatim",)),
+    ("exam_title", ("exam title with treatment wording",)),
+)
+GENERATION_REJECTION_OTHER = "other"
+
+
+def generation_rejection_kind(error: object) -> str:
+    """결정적 거절 하나의 기계 라벨. 모르는 사유는 `other`다."""
+
+    detail = str(error).casefold()
+    for kind, markers in GENERATION_REJECTION_KINDS:
+        if any(marker in detail for marker in markers):
+            return kind
+    return GENERATION_REJECTION_OTHER
+
+
 class GenerationRetryClass(StrEnum):
     INPUT_CHANGE_REQUIRED = "INPUT_CHANGE_REQUIRED"
     ENVIRONMENT_RECOVERABLE = "ENVIRONMENT_RECOVERABLE"

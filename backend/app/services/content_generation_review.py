@@ -17,6 +17,7 @@ from app.models.hospital import Hospital
 from app.services.content_ai_review import ContentAiReview, ContentAiReviewStatus
 from app.services.content_engine import (
     EXAM_TREATMENT_TITLE_FINDING_PREFIX,
+    GENERATION_REJECTIONS_KEY,
     SEASON_MISMATCH_FINDING_PREFIX,
 )
 from app.services.content_review_feedback import (
@@ -36,6 +37,22 @@ from app.services.essence_engine import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+# 요약(`essence_check_summary`)에 남기는 결정적 거절 횟수의 열쇠. 게이트 기록이 보존한다.
+GENERATION_REJECTIONS_SUMMARY_KEY = "generation_rejections"
+
+
+def _merge_rejection_counts(total: dict[str, dict[str, int]], counts: object) -> None:
+    if not isinstance(counts, dict):
+        return
+    for bucket, kinds in counts.items():
+        if not isinstance(kinds, dict):
+            continue
+        merged = total.setdefault(str(bucket), {})
+        for kind, count in kinds.items():
+            if isinstance(count, int) and count > 0:
+                merged[str(kind)] = merged.get(str(kind), 0) + count
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,6 +102,8 @@ async def generate_reviewed_content(
     accepted_reference_findings: list[str] = []
     last_ai_review = None
     last_generation_error: Exception | None = None
+    # 세션 안 모든 작가 회차의 결정적 거절 횟수(E5, 사유별).
+    rejection_counts: dict[str, dict[str, int]] = {}
 
     def _generation_budget_left() -> bool:
         return generations < limits.max_generations
@@ -129,6 +148,7 @@ async def generate_reviewed_content(
             raise
         generations += 1
         last_generation_error = None
+        _merge_rejection_counts(rejection_counts, candidate.get(GENERATION_REJECTIONS_KEY))
 
         # 이 글이 원래 답하기로 한 측정 질문을 실제로 다뤘는가.
         # (content_engine._validate_target_alignment가 채운다)
@@ -267,6 +287,8 @@ async def generate_reviewed_content(
         summary["reviewer_driven_rewrites"] = reviewer_driven_rewrites
     if removal_rewrites > 0:
         summary["hard_removal_rewrites"] = removal_rewrites
+    if rejection_counts:
+        summary[GENERATION_REJECTIONS_SUMMARY_KEY] = rejection_counts
     if last_ai_review is not None:
         summary["ai_review"] = last_ai_review.payload()
     reviewed_screening = type(last_screening)(

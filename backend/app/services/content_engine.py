@@ -73,6 +73,7 @@ from app.utils.medical_filter import (
     check_forbidden_markdown,
     forbidden_vocabulary_for_prompt,
 )
+from app.workers.generation_retry_policy import generation_rejection_kind
 
 logger = logging.getLogger(__name__)
 
@@ -1560,6 +1561,10 @@ def _validate_must_use_verbatim(
     )
 
 
+# 생성 결과에 붙여 보내는 결정적 거절 횟수의 열쇠(E5). 생성 검수 세션이 꺼내 요약에 합친다.
+GENERATION_REJECTIONS_KEY = "_generation_rejections"
+
+
 # 엔지니어 로그에 남기는 실패 상세의 길이 상한. 우리 검증기의 메시지는 모두 이보다 짧고,
 # 상한은 예기치 못한 외부 예외가 로그를 덮는 것만 막는다.
 GENERATION_FAILURE_DETAIL_MAX_CHARS = 400
@@ -1618,6 +1623,21 @@ async def generate_content(
     # 결정적 거절을 모두 지니고 간다.
     validator_findings: list[str] = []
     last_error: ValueError | None = None
+    # 결정적 거절의 사유별 횟수(E5). 치유로 끝난 거절도 센다 — 금지 표현 필터가 작가 응답을 몇 번
+    # 막았는지가 측정 대상이다.
+    rejection_counts: dict[str, dict[str, int]] = {"rejected": {}, "healed": {}}
+
+    def _count(bucket: str, error: BaseException) -> None:
+        kind = generation_rejection_kind(error)
+        rejection_counts[bucket][kind] = rejection_counts[bucket].get(kind, 0) + 1
+
+    def _finish(generated: dict) -> dict:
+        generated["_provider_http_attempts"] = int(attempt_context.get("http_attempt") or 0)
+        if rejection_counts["rejected"]:
+            generated[GENERATION_REJECTIONS_KEY] = {
+                bucket: dict(counts) for bucket, counts in rejection_counts.items() if counts
+            }
+        return generated
     # 결정적 치유도 필수 문구 검사를 건너뛰지 않는다 — 작가 회차와 같은 집합이다.
     # 금지 표현 때문에 요구에서 뺀 승인본 문구는 여기서 경고·운영자 기록을 남긴다.
     must_use_messages = await approved_must_use_messages_with_record(hospital, philosophy)
@@ -1635,12 +1655,10 @@ async def generate_content(
                 findings,
                 attempt_context,
             )
-            generated["_provider_http_attempts"] = int(
-                attempt_context.get("http_attempt") or 0
-            )
-            return generated
+            return _finish(generated)
         except MissingCitableReferencesError as exc:
             last_error = exc
+            _count("rejected", exc)
             try:
                 healed = _heal_from_curated_catalog(
                     exc,
@@ -1655,10 +1673,8 @@ async def generate_content(
                 last_error = heal_error
             else:
                 if healed is not None:
-                    healed["_provider_http_attempts"] = int(
-                        attempt_context.get("http_attempt") or 0
-                    )
-                    return healed
+                    _count("healed", exc)
+                    return _finish(healed)
         except (
             DirectorNameMissingError,
             HospitalNameMissingError,
@@ -1668,6 +1684,7 @@ async def generate_content(
             # 승인된 원장명·병원명 한 줄, 금지 표현이 든 본문 문장 삭제, 빠진 필수 문구 원문
             # 덧붙이기는 결정적으로 고칠 수 있다. 본문이 그 한 가지만 빼고 완전한데도 재작성을
             # 두 번 더 사면 정상 글 한 편에 세 번 결제한다.
+            _count("rejected", exc)
             healed, last_error = _apply_deterministic_heals(
                 exc,
                 hospital,
@@ -1676,12 +1693,11 @@ async def generate_content(
                 must_use_messages=must_use_messages,
             )
             if healed is not None:
-                healed["_provider_http_attempts"] = int(
-                    attempt_context.get("http_attempt") or 0
-                )
-                return healed
+                _count("healed", exc)
+                return _finish(healed)
         except ValueError as exc:
             last_error = exc
+            _count("rejected", exc)
         logger.info(
             "content generation rejected deterministically; feeding the finding back: "
             "hospital=%s type=%s error=%s",

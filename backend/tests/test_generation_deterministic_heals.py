@@ -146,3 +146,61 @@ async def test_an_exam_title_with_a_standalone_treatment_word_is_fixed_before_re
 )
 def test_drop_treatment_after_exam_only_touches_a_standalone_word(title, fixed):
     assert drop_treatment_after_exam(title) == fixed
+
+
+# ── E5(2026-10-13): 결정적 거절의 사유를 센다 ───────────────────────────────────────
+
+
+async def test_rejections_and_heals_are_counted_by_kind(monkeypatch):
+    bad_title = _payload("검사 전날 식단을 조절합니다.")
+    bad_title["title"] = "최고의 대장내시경 준비 안내"
+    writer = _Writer([bad_title, _payload(f"검사 전날 식단을 조절합니다. {AD_SENTENCE}")])
+    _install_writer(monkeypatch, writer)
+
+    saved = await _generate([])
+
+    assert saved[content_engine.GENERATION_REJECTIONS_KEY] == {
+        "rejected": {"forbidden": 2},
+        "healed": {"forbidden": 1},
+    }
+
+
+@pytest.mark.parametrize(
+    ("detail", "kind"),
+    [
+        ("Provider output was truncated before completion", "truncated"),
+        ("Generated content contains an unverified fixed price or coverage claim: 3만원", "price"),
+        ("GEO hard-fail: references is empty for FAQ", "references"),
+        ("GEO hard-fail: 병원명 '테스트의원' body 미포함", "geo"),
+        ("Forbidden medical expressions require complete regeneration: ['최고']", "forbidden"),
+        ("FAQ output requires faq_question and faq_answer_summary", "faq"),
+        ("Required must_use messages missing verbatim (1): ...", "must_use"),
+        ("Exam title with treatment wording survived rewrite; regenerate the title", "exam_title"),
+        ("something else", "other"),
+    ],
+)
+def test_rejection_kind_matches_the_operator_message(detail, kind):
+    from app.workers.generation_retry_policy import generation_rejection_kind
+    from app.workers.generation_run_control import (
+        classify_generation_failure,
+        rejection_kind_for_message,
+    )
+
+    assert generation_rejection_kind(ValueError(detail)) == kind
+    code, message = classify_generation_failure(ValueError(detail))
+    assert code == "GENERATION_REJECTED"
+    assert rejection_kind_for_message(message) == kind
+
+
+def test_review_session_keeps_the_counts_in_the_saved_summary():
+    from app.services.content_generation_review import (
+        GENERATION_REJECTIONS_SUMMARY_KEY,
+        _merge_rejection_counts,
+    )
+
+    total: dict = {}
+    _merge_rejection_counts(total, {"rejected": {"forbidden": 1}, "healed": {"forbidden": 1}})
+    _merge_rejection_counts(total, {"rejected": {"forbidden": 1, "price": 1}})
+    _merge_rejection_counts(total, None)
+    assert total == {"rejected": {"forbidden": 2, "price": 1}, "healed": {"forbidden": 1}}
+    assert GENERATION_REJECTIONS_SUMMARY_KEY == "generation_rejections"
