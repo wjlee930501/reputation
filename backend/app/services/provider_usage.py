@@ -34,8 +34,18 @@ _RECOVERY_MAX_ITEMS = 10_000
 _RECOVERY_RETRY_DELAY_SECONDS = 60
 # spool이 상한을 넘겨 버린 기록 수. 잘리는 순간은 DB가 죽어 있으므로 사고는 drain이 나중에 연다.
 _RECOVERY_DROPPED_KEY = "provider_usage:recovery:dropped"
-# drain이 인수한 유실 수. 사고 커밋이 끝난 뒤에만 지운다 — 인수와 커밋 사이에 워커가 죽어도 남는다.
+# drain이 인수한 유실 수. 인수마다 고유한 키(`{이 값}:{인수 시각}:{토큰}`)에 두고, 사고 커밋이 끝난 뒤
+# 자기 키만 지운다 — 늦게 끝난 drain이 다른 drain의 인수분을 지우지 못한다. 토큰 없는 이 키 자체는
+# 옛 형식(한 개의 공유 인수 키)으로, 남아 있으면 다음 drain이 새 토큰으로 인수한다.
 _RECOVERY_DROPPED_INFLIGHT_KEY = "provider_usage:recovery:dropped:inflight"
+# 사고 기록에 실패했거나 워커가 죽어 남은 인수 키를 다시 인수하기까지의 시간. 정상 drain은 수 초 안에
+# 사고를 커밋하고 자기 키를 지우므로, 이보다 오래 남은 키는 주인이 없다고 본다.
+_RECOVERY_DROPPED_INFLIGHT_STALE_SECONDS = 300
+# 한 drain이 다시 인수하는 남은 인수 키의 상한(손상된 상태에서도 drain이 끝나게).
+_RECOVERY_DROPPED_RECLAIM_LIMIT = 20
+# 숫자로 읽을 수 없는 인수 키를 옮겨 두는 곳과 보관 기간. 새 유실 처리를 막지 않게 치운다.
+_RECOVERY_DROPPED_QUARANTINE_TTL_SECONDS = 30 * 24 * 60 * 60
+_wall_clock = time.time
 
 _HOSPITAL_KIND_BY_CATEGORY = {
     "content": HospitalUsageKind.CONTENT.value,
@@ -343,7 +353,10 @@ async def replay_deferred_attempts(
             return {"recovered": recovered, "missing": missing, "failed": failed + 1}
 
 
-async def _open_spool_truncation_incident(dropped: int, *, now: datetime) -> None:
+async def _open_spool_truncation_incident(
+    dropped: int | None, *, now: datetime, unreadable_key: str | None = None
+) -> None:
+    """버린 수(`dropped`)로 개발 사고를 연다. 인수 키를 숫자로 읽지 못하면 `dropped=None`이다(수를 모른다)."""
     from app.models.operations import IncidentSeverity  # noqa: PLC0415
     from app.services.incident_types import (  # noqa: PLC0415
         IncidentFingerprint,
@@ -371,7 +384,11 @@ async def _open_spool_truncation_incident(dropped: int, *, now: datetime) -> Non
                 admin_path="/operations",
                 source_id=kst_date,
                 safe_error_code="PROVIDER_USAGE_SPOOL_TRUNCATED",
-                safe_error_message=f"dropped={dropped} max_items={_RECOVERY_MAX_ITEMS}",
+                safe_error_message=(
+                    f"dropped={dropped} max_items={_RECOVERY_MAX_ITEMS}"
+                    if dropped is not None
+                    else f"dropped=unknown unreadable_counter={unreadable_key}"
+                ),
             ),
             actor="provider-usage-recovery",
             reason="provider usage spool truncated",
@@ -380,52 +397,139 @@ async def _open_spool_truncation_incident(dropped: int, *, now: datetime) -> Non
         await db.commit()
 
 
-async def _take_over_dropped_count(client: redis_async.Redis) -> int:
-    """처리할 유실 수를 인수 키로 옮겨 돌려준다. 앞 drain이 남긴 인수 키가 있으면 그것부터 처리한다.
+# 인수: 원본 키(새 카운터 또는 주인 없이 남은 인수 키)를 이 drain의 고유 키로 옮기고 인수 색인에 시각을
+# 단다. 한 Lua 연산이라 둘이 같은 키를 인수하면 한쪽만 성공하고, 색인 없는 인수 키가 생기지 않는다.
+_CLAIM_DROPPED_SCRIPT = """
+redis.call('ZREM', KEYS[3], KEYS[1])
+if redis.call('EXISTS', KEYS[1]) == 0 then return 0 end
+redis.call('RENAME', KEYS[1], KEYS[2])
+redis.call('ZADD', KEYS[3], ARGV[1], KEYS[2])
+return 1
+"""
+# 확인(ACK): 자기 인수 키와 그 색인만 지운다.
+_FORGET_DROPPED_SCRIPT = """
+redis.call('DEL', KEYS[1])
+redis.call('ZREM', KEYS[2], KEYS[1])
+return 1
+"""
 
-    RENAMENX라 인수 키가 이미 있으면 새 카운터를 덮어쓰지 않는다(그 사이 쌓인 유실은 다음 차례).
-    """
-    raw = await client.get(_RECOVERY_DROPPED_INFLIGHT_KEY)
-    if raw is not None:
-        if int(raw):
-            return int(raw)
-        await client.delete(_RECOVERY_DROPPED_INFLIGHT_KEY)  # 0인 인수 키가 새 인수를 막지 않게
-    try:
-        await client.renamenx(_RECOVERY_DROPPED_KEY, _RECOVERY_DROPPED_INFLIGHT_KEY)
-    except ResponseError:
-        return 0  # 카운터가 없다 — 버린 기록이 없다.
-    return int(await client.get(_RECOVERY_DROPPED_INFLIGHT_KEY) or 0)
+
+def _inflight_index_key() -> str:
+    return f"{_RECOVERY_DROPPED_INFLIGHT_KEY}_index"
+
+
+def _new_inflight_key(taken_at: float) -> str:
+    return f"{_RECOVERY_DROPPED_INFLIGHT_KEY}:{int(taken_at)}:{uuid.uuid4().hex}"
+
+
+async def _claim(client: redis_async.Redis, source: str) -> str | None:
+    """`source`를 이번 drain의 고유 인수 키로 옮긴다. 없으면(다른 drain이 이미 인수했다) None."""
+
+    taken_at = _wall_clock()
+    target = _new_inflight_key(taken_at)
+    claimed = await client.eval(
+        _CLAIM_DROPPED_SCRIPT, 3, source, target, _inflight_index_key(), int(taken_at)
+    )
+    return target if int(claimed) else None
+
+
+async def _claim_dropped_batches(client: redis_async.Redis) -> list[str]:
+    """이번 drain이 처리할 인수 키. 주인 없이 남은 인수 키(옛 형식 포함)를 먼저, 그다음 새 카운터."""
+
+    leftovers: list[str] = []
+    if await client.exists(_RECOVERY_DROPPED_INFLIGHT_KEY):  # 토큰 없는 옛 형식의 공유 인수 키
+        leftovers.append(_RECOVERY_DROPPED_INFLIGHT_KEY)
+    stale = await client.zrangebyscore(
+        _inflight_index_key(),
+        "-inf",
+        _wall_clock() - _RECOVERY_DROPPED_INFLIGHT_STALE_SECONDS,
+        start=0,
+        num=_RECOVERY_DROPPED_RECLAIM_LIMIT,
+    )
+    leftovers.extend(key.decode() if isinstance(key, bytes) else str(key) for key in stale)
+    claimed = [key for key in [await _claim(client, source) for source in leftovers] if key]
+    fresh = await _claim(client, _RECOVERY_DROPPED_KEY)
+    if fresh:
+        claimed.append(fresh)
+    return claimed
 
 
 async def report_dropped_usage(*, redis_client: redis_async.Redis | None = None) -> int:
     """spool이 버린 기록 수를 개발 사고로 바꾼다.
 
-    인수(카운터 → 인수 키) → 사고 기록(KST 하루 한 건이라 다시 해도 같은 사고를 touch할 뿐이다) →
-    커밋 뒤 인수 키 삭제 순서다. 사고 기록이 실패하거나 그 사이 워커가 강제 종료되면 인수 키가
-    남고, 다음 drain이 그것부터 다시 처리한다 — 카운터를 지운 뒤 커밋 전에 죽어 유실 수가 사라지지 않는다.
+    인수(카운터 → 이 drain의 고유 인수 키) → 사고 기록(KST 하루 한 건이라 다시 해도 같은 사고를 touch할
+    뿐이다) → 커밋 뒤 **자기** 인수 키 삭제 순서다. 사고 기록이 실패하거나 그 사이 워커가 강제 종료되면
+    인수 키가 남고, 5분 뒤 다음 drain이 새 토큰으로 다시 인수한다 — 카운터를 지운 뒤 커밋 전에 죽어 유실
+    수가 사라지지 않는다. 늦게 끝난 drain은 자기 키만 지우므로 다른 drain이 인수한 수를 지우지 못한다.
     """
     async with _recovery_redis_client(redis_client) as client:
         try:
-            dropped = await _take_over_dropped_count(client)
+            batches = await _claim_dropped_batches(client)
         except (OSError, RedisError, RuntimeError, TimeoutError, ValueError):
             logger.warning("provider usage dropped counter unavailable: redis unavailable")
             return 0
-        if not dropped:
-            return 0
+        total = 0
+        for key in batches:
+            total += await _report_batch(client, key)
+        return total
+
+
+async def _report_batch(client: redis_async.Redis, key: str) -> int:
+    try:
+        raw = await client.get(key)
+    except ResponseError:
+        raw = b"<wrong type>"  # 문자열이 아닌 키 — 숫자로 읽을 수 없다.
+    except (OSError, RedisError, RuntimeError, TimeoutError):
+        logger.warning("provider usage dropped inflight key unavailable: redis unavailable")
+        return 0  # 인수 키는 남는다 — 5분 뒤 다시 인수한다.
+    if raw is None:
+        return 0
+    try:
+        dropped = int(raw)
+    except (TypeError, ValueError):
+        await _quarantine(client, key)
+        return 0
+    if dropped > 0:
         try:
             await _open_spool_truncation_incident(dropped, now=datetime.now(UTC))
-        except Exception:  # noqa: BLE001 — 인수 키가 남아 다음 drain이 다시 시도한다.
+        except Exception:  # noqa: BLE001 — 인수 키가 남아 5분 뒤 다음 drain이 다시 시도한다.
             logger.warning("provider usage spool truncation incident not recorded: dropped=%s", dropped)
             return 0
-        await _forget_inflight(client)
-        return dropped
+    await _forget_inflight(client, key)
+    return dropped if dropped > 0 else 0
 
 
-async def _forget_inflight(client: redis_async.Redis) -> None:
+async def _quarantine(client: redis_async.Redis, key: str) -> None:
+    """숫자로 읽을 수 없는 인수 키(다른 형식·손상)는 개발 사고로 알리고 격리 키로 옮겨 치운다.
+
+    사고 기록이 먼저다 — 실패하면 키를 그대로 두고 5분 뒤 다시 인수한다. 새 카운터 인수는 키마다
+    따로라 이 키가 남아도 막히지 않는다.
+    """
+
+    quarantine_key = f"{_RECOVERY_DROPPED_KEY}:quarantine:{uuid.uuid4().hex}"
+    logger.warning(
+        "provider usage dropped inflight key unreadable: key=%s — quarantined as %s", key, quarantine_key
+    )
     try:
-        await client.delete(_RECOVERY_DROPPED_INFLIGHT_KEY)
+        await _open_spool_truncation_incident(
+            None, now=datetime.now(UTC), unreadable_key=quarantine_key
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("provider usage unreadable inflight key incident not recorded: key=%s", key)
+        return
+    try:
+        await client.rename(key, quarantine_key)
+        await client.expire(quarantine_key, _RECOVERY_DROPPED_QUARANTINE_TTL_SECONDS)
+        await client.zrem(_inflight_index_key(), key)
     except (OSError, RedisError, RuntimeError, TimeoutError):
-        # 사고는 이미 기록했다. 남은 인수 키는 다음 drain이 같은 날 사고를 한 번 더 touch할 뿐이다.
+        logger.warning("provider usage unreadable inflight key not quarantined: key=%s", key)
+
+
+async def _forget_inflight(client: redis_async.Redis, key: str) -> None:
+    try:
+        await client.eval(_FORGET_DROPPED_SCRIPT, 2, key, _inflight_index_key())
+    except (OSError, RedisError, RuntimeError, TimeoutError):
+        # 사고는 이미 기록했다. 남은 인수 키는 5분 뒤 다음 drain이 같은 날 사고를 한 번 더 touch할 뿐이다.
         logger.warning("provider usage dropped inflight key not cleared")
 
 
