@@ -60,7 +60,8 @@ FORBIDDEN_PATTERNS: dict[str, re.Pattern] = {
     "특허": re.compile(r"특허[를]?\s*(보유|획득|취득|출원|등록)"),
     "독보적": re.compile(r"독보적[인]?|비교\s*불가"),
     # 2025 신규 — 의협 심의회 사례 + GEO 콘텐츠에 자주 새는 표현.
-    "노하우": re.compile(r"(저희|우리|병원|원장)[\w가-힣]*\s*만[의]?\s*노하우|차별화된\s*노하우"),
+    # 낱말 꼬리는 10자까지만 본다 — 상한이 없으면 "병원"*8000에서 0.8초가 걸렸다(위치마다 끝까지 훑는다).
+    "노하우": re.compile(r"(저희|우리|병원|원장)[\w가-힣]{0,10}\s*만[의]?\s*노하우|차별화된\s*노하우"),
     "효과 보장": re.compile(r"효과[를]?\s*(보장|확실|약속)|보장[된]?\s*효과"),
     "최첨단": re.compile(r"최첨단|첨단[의]?\s*(기술|장비|시술)"),
     "안전한 시술": re.compile(r"안전[한]?\s*(시술|수술|치료)[이가]?\s*보장|100%\s*안전"),
@@ -221,6 +222,10 @@ _COPAY_PROGRAM = re.compile(
 )
 # 병원이 혜택을 주겠다는 말. 이 말이 매치 뒤 같은 문장에 있으면 제도 안내 예외를 주지 않는다.
 _OFFERING = re.compile(r"해\s*드|드립니다|드려요|혜택|이벤트|특가|증정|모십니다|모셔|오세요")
+# 본인부담 예외에서는 예약 권유도 유인이다("본인부담금 면제 대상이니 예약하세요").
+_OFFERING_OR_BOOKING = re.compile(
+    _OFFERING.pattern + r"|예약(?:을|도)?\s*(?:하세요|받습니다|받아요|주세요|해\s*주세요)"
+)
 # '제공'은 주체가 갈린다 — "보건소에서 무료 검사를 제공합니다"는 제도 안내이고, 병원 자기 지칭과
 # 같은 문장에 있으면 병원의 유인이다(공적 근거가 없는 문장은 애초에 예외가 아니다).
 _NEUTRAL_OFFER = re.compile(r"제공")
@@ -410,7 +415,19 @@ _ALLOWED_CONTEXTS: dict[str, tuple[_ContextExemption, ...]] = {
             trigger=re.compile(r"본인\s*부담금?\s*(?:면제|감면|환급|0\s*원)"),
             in_sentence=_COPAY_PROGRAM,
             unless_preceded_by=_earlier_in_sentence(_HOSPITAL_SELF),
-            unless_followed_by=_later_in_sentence(_OFFERING),
+            unless_followed_by=_later_in_sentence(_OFFERING_OR_BOOKING),
+            unless_in_sentence=(_HOSPITAL_SELF, _NEUTRAL_OFFER),
+            window=40,
+        ),
+        # "본인부담금 환급 대상입니다" — 바로 뒤의 '대상'은 자격을 말하는 문장이라 그 자체가 양성 근거다
+        # (2026-10-13 오케스트레이터 결정). 병원 자기 지칭("저희 병원은 본인부담금 면제 대상을 늘렸습니다")이나
+        # 혜택·예약 권유("본인부담금 면제 대상으로 모십니다")가 같은 문장에 있으면 계속 막는다.
+        _ContextExemption(
+            reason="본인부담 면제·환급 자격(대상) 안내",
+            trigger=re.compile(r"본인\s*부담금?\s*(?:면제|감면|환급|0\s*원)"),
+            followed_by=re.compile(r"^\s*대상"),
+            unless_preceded_by=_earlier_in_sentence(_HOSPITAL_SELF),
+            unless_followed_by=_later_in_sentence(_OFFERING_OR_BOOKING),
             unless_in_sentence=(_HOSPITAL_SELF, _NEUTRAL_OFFER),
             window=40,
         ),

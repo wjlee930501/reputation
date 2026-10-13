@@ -380,8 +380,6 @@ def test_forbidden_vocabulary_for_prompt_covers_pattern_only_expressions():
         "본인부담금 대납",
         # 2026-10-13 교차 검토 — 공적 근거 없는 면제·'대상'만 붙은 무료, 혜택 제공의 활용형.
         "본인부담금 면제! 지금 예약하세요.",
-        "본인부담금 면제 대상입니다.",
-        "본인부담금 환급 대상입니다.",
         "신규 고객 대상 무료 검사 예약을 받습니다.",
         "할인해 드립니다.",
         "할인을 제공합니다.",
@@ -397,6 +395,10 @@ def test_forbidden_vocabulary_for_prompt_covers_pattern_only_expressions():
         "국가 무료 검진을 본원에서 제공합니다.",
         "본원은 보건소와 함께 무료 검사를 제공합니다.",
         "1.5% 할인",
+        # 자격(대상) 문장이어도 병원 자기 지칭·혜택·예약 권유가 붙으면 유인이다.
+        "본인부담금 면제 대상으로 모십니다.",
+        "저희 병원은 본인부담금 면제 대상을 늘렸습니다.",
+        "본인부담금 면제 대상이니 지금 예약하세요.",
     ],
 )
 def test_price_discount_and_inducement_claims_are_blocked(text):
@@ -430,6 +432,9 @@ def test_price_discount_and_inducement_claims_are_blocked(text):
         "무료 검사는 보건소에서 받을 수 있습니다.",
         "건강보험 보장성 강화로 본인부담금 0원인 산정특례 항목이 있습니다.",
         "무료 주차가 가능하니 예약하세요.",
+        # 본인부담 면제·환급 '대상'은 자격 안내다(2026-10-13 결정).
+        "본인부담금 환급 대상입니다.",
+        "본인부담금 면제 대상입니다.",
     ],
 )
 def test_public_programs_and_clinical_terms_are_not_inducement(text):
@@ -575,6 +580,7 @@ _EXEMPTION_SAMPLES = {
     ),
     "연령·주기로 정한 정기 검진 대상 안내": ("할인·유인", "만 40세 이상은 2년마다 무료 검진 대상입니다."),
     "건강보험 제도의 본인부담 면제·환급 안내": ("할인·유인", "차상위 계층은 본인부담금 면제 대상입니다."),
+    "본인부담 면제·환급 자격(대상) 안내": ("할인·유인", "본인부담금 환급 대상입니다."),
     "무증상 질환의 경과 설명": ("통증 없는", "고혈압은 초기에 통증 없이 진행합니다."),
     "환자의 의문·걱정 표현": ("통증 없는", "시술이 아프지 않을까 걱정하는 분이 많습니다."),
 }
@@ -624,6 +630,8 @@ def test_every_exemption_sample_passes_but_its_guarantee_variant_is_blocked(reas
         "다른 병원보다 " * 3000,
         "최고 39도 " * 3000,
         "완전 회복까지 3개월 " * 1500 + "보장",
+        "병원" * 8000,
+        "저희" * 8000,
     ],
 )
 def test_long_adversarial_inputs_finish_quickly(text):
