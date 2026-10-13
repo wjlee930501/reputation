@@ -21,8 +21,8 @@
 
 ## 배포 일부러 하지 않은 것 (결정)
 
-- **Terraform 경보 정책 2종(`watchdog_scheduler_failures`·`slack_path_failures`) — 보류.** 작업 PC의 terraform 1.5.7로는 `plan`을 돌릴 수 없어(배포 안내 Phase 2의 2번은 `plan`이 추가 2건만 보이는지 확인한 뒤 적용) 적용하지 않았다. terraform을 실행하지 않았다. 감시 토큰 불일치·Slack 경로 실패를 알리는 GCP 이메일 경보는 아직 없다 — 후속으로 terraform 버전을 맞춘 뒤 `-target` 두 개만 적용한다.
-- **`OPS_ALERT_EMAIL`은 비워 둔다.** readiness는 비어 있어도 통과한다(`facts.ops_alert_email_configured=false`). 새 키는 코드 기본값을 쓰므로 운영 env와 `.env.production`의 차이는 0이었고(14:30 대조) `--accept-env-diff`가 필요 없었다.
+- **Terraform 경보 정책 2종(`watchdog_scheduler_failures`·`slack_path_failures`) — 적용하지 않는다.** 대표 결정 D29: 경보는 Slack 하나로 받는다 — `OPS_ALERT_EMAIL`은 의도적으로 비우고 Terraform 경보 2종은 적용하지 않는다(2026-10-13 ~18:00). 결정 전 기록: 작업 PC의 terraform 1.5.7로는 `plan`을 돌릴 수 없어(배포 안내 Phase 2의 2번은 `plan`이 추가 2건만 보이는지 확인한 뒤 적용) 적용하지 않았다. terraform을 실행하지 않았다. 감시 토큰 불일치·Slack 경로 실패를 알리는 GCP 이메일 경보는 아직 없다 — 후속으로 terraform 버전을 맞춘 뒤 `-target` 두 개만 적용한다.
+- **`OPS_ALERT_EMAIL`은 비워 둔다** — 대표 결정 D29: 경보는 Slack 하나로 받는다 — `OPS_ALERT_EMAIL`은 의도적으로 비우고 Terraform 경보 2종은 적용하지 않는다. readiness는 비어 있어도 통과한다(`facts.ops_alert_email_configured=false`). 새 키는 코드 기본값을 쓰므로 운영 env와 `.env.production`의 차이는 0이었고(14:30 대조) `--accept-env-diff`가 필요 없었다.
 - **`.gitleaksignore` 예외 1줄**(`5690cb70`): `scripts/test_deploy_runtime.py`의 `--unpin` 테스트가 단언하는 Cloud Run 리비전 이름(공개 메타데이터)이 `generic-api-key`로 잡힌 오탐을 정확한 commit/path/line(`6375b228…:scripts/test_deploy_runtime.py:generic-api-key:2251`)으로만 예외 처리했다. 오케스트레이터 검토·승인.
 
 ## 배포 절차와 증거
@@ -63,7 +63,7 @@ api `reputation-api-00242-jsw` · worker `reputation-worker-00232-vx2` · beat `
 
 ## 남은 것
 
-- Terraform 경보 2종 적용(terraform 버전 정리 뒤), `OPS_ALERT_EMAIL` 값 결정 — 둘 다 대표·개발 후속.
+- ~~Terraform 경보 2종 적용, `OPS_ALERT_EMAIL` 값 결정~~ — 대표 결정 D29: 경보는 Slack 하나로 받는다 — `OPS_ALERT_EMAIL`은 의도적으로 비우고 Terraform 경보 2종은 적용하지 않는다(후속 없음).
 - Admin 새 화면(병원 정보의 자동 입력 초안)은 로그인이 필요해 사람이 1회 확인한다.
 - 세종다온신경과의원 프로필 완료(사람의 일 — 온보딩 정체 사고가 부른다).
 - `nyupeulraenyeoseongyiweon` Essence 자동 재검수 실패(`stop_reason=length`) 원인 조사 — 배포 뒤 처음 나온 오류이고 운영 채널에 '조치 필요' 1건이 나갔다.
