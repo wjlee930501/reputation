@@ -111,3 +111,13 @@ def test_gate_measurement_queries_are_registered_read_only_selects() -> None:
     assert "rejection_kind" in ops_sql_report.QUERIES["q10"][0]
     assert "generation_rejections" in ops_sql_report.QUERIES["q10"][1]
     assert ops_sql_report.parse_args(["--only=q9", "--only=q10"]).only == ["q9", "q10"]
+
+
+def test_fallback_narrative_query_is_a_registered_read() -> None:
+    """0090(2026-10-13): 범용 서술 각도 글의 검수 hash·승인 판 상태."""
+
+    [sql] = ops_sql_report.QUERIES["q11"]
+    assert sql.strip().upper().startswith("SELECT")
+    assert "'fallback'" in sql
+    assert "candidate_sha256" in sql
+    assert ops_sql_report.parse_args(["--only=q11"]).only == ["q11"]

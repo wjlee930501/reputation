@@ -57,9 +57,10 @@ HISTORICAL_PUBLICATIONS = "0086_preserve_historical_publications"
 OPERATION_RUN_REDISPATCH_COUNT = "0087_add_operation_run_redispatch_count"
 OUTBOX_OPEN_PAIRING_INDEX = "0088_add_outbox_open_pairing_index"
 OPTIONAL_REFERENCE_REVISIONS = "0089_allow_optional_reference_revisions"
+FALLBACK_NARRATIVE_REVISIONS = "0090_allow_fallback_treatment_narrative"
 
 PRODUCTION_STAMP = CONTENT_CUSTOMIZATION
-HEAD = OPTIONAL_REFERENCE_REVISIONS
+HEAD = FALLBACK_NARRATIVE_REVISIONS
 
 
 def _script_directory() -> ScriptDirectory:
@@ -139,6 +140,7 @@ def test_hardening_revisions_keep_their_recovered_parents() -> None:
         OPERATION_RUN_REDISPATCH_COUNT,
         OUTBOX_OPEN_PAIRING_INDEX,
         OPTIONAL_REFERENCE_REVISIONS,
+        FALLBACK_NARRATIVE_REVISIONS,
     )
     parents = {
         revision: script.get_revision(revision).down_revision for revision in recovered
@@ -182,6 +184,7 @@ def test_hardening_revisions_keep_their_recovered_parents() -> None:
         OPERATION_RUN_REDISPATCH_COUNT: HISTORICAL_PUBLICATIONS,
         OUTBOX_OPEN_PAIRING_INDEX: OPERATION_RUN_REDISPATCH_COUNT,
         OPTIONAL_REFERENCE_REVISIONS: OUTBOX_OPEN_PAIRING_INDEX,
+        FALLBACK_NARRATIVE_REVISIONS: OPTIONAL_REFERENCE_REVISIONS,
     }
 
 
@@ -193,6 +196,7 @@ def test_upgrade_from_the_production_stamp_runs_the_linear_tail() -> None:
     ]
 
     assert pending == [
+        FALLBACK_NARRATIVE_REVISIONS,
         OPTIONAL_REFERENCE_REVISIONS,
         OUTBOX_OPEN_PAIRING_INDEX,
         OPERATION_RUN_REDISPATCH_COUNT,
@@ -239,7 +243,7 @@ def test_fresh_database_applies_the_whole_chain_in_order() -> None:
     ]
 
     assert len(applied) == len(set(applied))
-    assert applied[-38:] == [
+    assert applied[-39:] == [
         PHOTO_PROVENANCE,
         IMAGE_POLICY,
         CONTENT_CUSTOMIZATION,
@@ -278,4 +282,5 @@ def test_fresh_database_applies_the_whole_chain_in_order() -> None:
         OPERATION_RUN_REDISPATCH_COUNT,
         OUTBOX_OPEN_PAIRING_INDEX,
         OPTIONAL_REFERENCE_REVISIONS,
+        FALLBACK_NARRATIVE_REVISIONS,
     ]

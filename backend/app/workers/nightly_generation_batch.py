@@ -8,6 +8,10 @@ from sqlalchemy.orm import joinedload
 from app.models.content import ContentItem, ContentStatus, ContentType
 from app.models.essence import HospitalContentPhilosophy, PhilosophyStatus
 from app.models.hospital import Hospital, HospitalStatus
+from app.services.content_publication import (
+    FALLBACK_TREATMENT_NARRATIVE_SOURCE,
+    fallback_narrative_requires_bound_review,
+)
 from app.services.reference_requirement import (
     QUERY_TARGET_TOPIC_FIELDS,
     REFERENCES_REQUIRED_TYPES,
@@ -400,6 +404,20 @@ def _needs_generation_recovery():
                     ai_review["schema_version"].as_string().is_(None),
                 ),
             ),
+            # 범용 서술 각도의 미공개 글은 현재 본문 hash에 묶인 검수가 있어야 발행된다
+            # (`content_publication.fallback_narrative_requires_bound_review`). 검수 기록이 없거나
+            # hash 없는 기록이면 게이트가 STALE로 막으므로 여기서 집어 재검수한다.
+            and_(
+                ContentItem.content_brief["treatment_narrative"]["source"].as_string()
+                == FALLBACK_TREATMENT_NARRATIVE_SOURCE,
+                ContentItem.first_published_at.is_(None),
+                or_(
+                    func.coalesce(ai_review["status"].as_string(), "").not_in(
+                        ("PASS", "REVISE", "UNAVAILABLE")
+                    ),
+                    func.coalesce(ai_review["candidate_sha256"].as_string(), "") == "",
+                ),
+            ),
         ),
     )
     return or_(
@@ -426,6 +444,12 @@ def _stored_ai_review_unresolved(item: ContentItem) -> bool:
 
     summary = getattr(item, "essence_check_summary", None)
     review = summary.get("ai_review") if isinstance(summary, dict) else None
+    if fallback_narrative_requires_bound_review(item) and (
+        not isinstance(review, dict)
+        or review.get("status") not in ("PASS", "REVISE", "UNAVAILABLE")
+        or not review.get("candidate_sha256")
+    ):
+        return True
     if not isinstance(review, dict):
         return False
     status = review.get("status")

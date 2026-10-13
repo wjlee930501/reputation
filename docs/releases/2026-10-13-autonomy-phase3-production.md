@@ -85,3 +85,10 @@ api `reputation-api-00243-mx4` · worker `reputation-worker-00233-9k7` · beat `
    유형·제목 hash가 행과 같음)`으로 읽는다. 제목 규칙을 SQL에 다시 쓰지 않고, 제목이 바뀐 뒤의 옛 표지는 무효다. 나머지 검사는
    그대로다. 의료 글은 표지가 '막음'이라 종전처럼 판이 없다(발행 게이트·공개 가시성과 같은 판정). **롤백**: `alembic downgrade`
    (0089→0088)는 0086 함수를 다시 설치해 엄격한 조건으로 돌아간다 — D23 글은 다시 발행되지 않는다. 이미 만들어진 판은 남는다.
+3. **범용 서술 각도 초안이 발행되지 않음** — 같은 함수가 `content_brief.treatment_narrative.source`로 `approved_philosophy`·`hospital_profile`만
+   받아, 주제의 진료가 승인 서술·병원 진료 어디에도 맞지 않아 범용 각도(`fallback`)로 쓰인 초안 6건(`f717bcb8`·`8344b365`·`d4f35742`·
+   `cd8f401a`·`a6e62936`·`ab196937`)이 매 틱 `approved_revision_not_created`로 건너뛰어졌다. 서술 각도는 작성 힌트이지 승인 근거가 아니므로
+   마이그레이션 `0090_allow_fallback_treatment_narrative`의 함수는 `fallback`도 받고(비어 있지 않은 `angle`·승인 Essence 검사는 그대로),
+   발행 게이트는 공개된 적 없는 범용 각도 글에 **현재 본문 hash에 묶인** 독립 검수 PASS(또는 비차단 REVISE)를 요구한다 — 없거나 hash 없는
+   옛 기록이면 `CONTENT_AI_REVIEW_STALE`로 막고 복구 스윕(`_needs_generation_recovery`)이 그 행을 집어 재검수한다. **롤백**: 0090→0089는
+   엄격한 조건을 다시 설치한다.

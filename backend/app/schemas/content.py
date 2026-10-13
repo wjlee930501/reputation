@@ -18,7 +18,7 @@ class RevisionSourceReference(BaseModel):
 class RevisionTreatmentNarrative(BaseModel):
     model_config = ConfigDict(extra="allow", frozen=True)
 
-    source: Literal["approved_philosophy", "hospital_profile"]
+    source: Literal["approved_philosophy", "hospital_profile", "fallback"]
     angle: str = Field(min_length=1)
 
 
