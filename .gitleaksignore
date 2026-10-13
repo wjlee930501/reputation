@@ -12,3 +12,7 @@ c5bb1279e76d922592dc4d1601d4bf9738334a6a:backend/tests/test_notification_outbox.
 # Both the original commit/path and the moved path are listed so the scanner's commit-range scan stays clean.
 c210a5d162ccd20e9ee85b8d7e31e60bb74144ec:docs/superpowers/plans/2026-10-11-p2-infra-deploy.md:generic-api-key:3200
 a3158b8b1f493fa64d5f226f4543d9af63cb2bb2:docs/plans/2026-10-11-p2-infra-deploy.md:generic-api-key:3200
+
+# False positive: a Cloud Run revision name (public metadata) asserted in the deploy --unpin test, not an API key.
+# This exception covers only the exact commit/path/line reported by the scanner.
+6375b22842af9e99dabf2d6d8068a81b95f3bd3b:scripts/test_deploy_runtime.py:generic-api-key:2251
