@@ -34,9 +34,11 @@ import time
 import uuid
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, NamedTuple
 
+import redis
 from celery import current_task
+from redis.exceptions import RedisError
 from sqlalchemy import and_, case, func, literal, or_, select
 from sqlalchemy.orm import joinedload
 
@@ -185,19 +187,40 @@ def _withheld_stmt(limit: int):
 # UNCERTAIN만 남은 후보를 id 키셋으로 넘겨 보는 쪽 크기와 한 번에 보는 쪽 수의 상한.
 _UNCERTAIN_SCAN_PAGE_SIZE = 100
 _UNCERTAIN_SCAN_MAX_PAGES = 10
+# `checked_at_epoch`가 없는 옛 표시를 훑는 키셋 커서. tick 사이에 이어 가야 앞쪽의 묵지 않은·시각을
+# 읽을 수 없는 표시 1,000건이 뒤쪽 글을 영영 가리지 않는다. 만료 없이 두고 끝에 닿으면 지운다(처음부터).
+_UNCERTAIN_SCAN_CURSOR_KEY = "post_publish_ai_review:uncertain_scan_cursor"
+_EPOCH_KEY = "checked_at_epoch"
 
 
-def _uncertain_only_stmt(page_size: int, *, after_id: uuid.UUID | None = None):
-    """교정이 끝났는데 UNCERTAIN만 남았고 아직 상위 재검수를 받지 않은 공개 글(id 키셋 한 쪽).
+class UncertainSelection(NamedTuple):
+    items: list[ContentItem]
+    # 옛 표시 훑기를 다음 tick이 이어 갈 id. None이면 끝에 닿았다 — 다음 tick은 처음부터.
+    next_cursor: uuid.UUID | None
+
+
+def _uncertain_only_stmt(
+    page_size: int,
+    *,
+    after_id: uuid.UUID | None = None,
+    settled_before_epoch: int | None = None,
+):
+    """교정이 끝났는데 UNCERTAIN만 남았고 아직 상위 재검수를 받지 않은 공개 글.
 
     UNCERTAIN만 조건을 LIMIT 앞 SQL에 건다 — 파이썬에서 거르면 오래된 HARD 글이 상한을 다 차지해
-    UNCERTAIN 글이 영영 뽑히지 않는다. 묵음(`checked_at`) 판정은 SQL에서 하지 않는다: Postgres에는
-    try_cast가 없어 정규식을 통과한 2월 30일·13월 같은 값의 `::timestamptz`가 스윕 전체를 깨뜨린다.
-    그 판정은 `settled_long_enough`가 파이썬에서 한다(`_uncertain_settled_items`).
+    UNCERTAIN 글이 영영 뽑히지 않는다.
+
+    - `settled_before_epoch`가 있으면 쓰는 쪽이 정한 숫자 시각(`checked_at_epoch`)이 그 값 이하인
+      표시만 고른다 — 묵음 판정까지 SQL이 하므로 앞쪽 백로그와 무관하다. 형이 숫자일 때만 CASE
+      안에서 형 변환한다.
+    - 없으면 숫자 시각이 없는 옛 표시를 id 키셋 한 쪽씩 읽는다. 그 묵음(`checked_at` ISO 문자열)
+      판정은 SQL에서 하지 않는다: Postgres에는 try_cast가 없어 정규식을 통과한 2월 30일·13월 같은
+      값의 `::timestamptz`가 스윕 전체를 깨뜨린다. 판정은 `settled_long_enough`가 파이썬에서 한다.
     """
 
     flag = ContentItem.essence_check_summary[POST_PUBLISH_FLAG_KEY]
     findings = flag["structured_findings"]
+    epoch = flag[_EPOCH_KEY]
     as_array = case(
         (func.jsonb_typeof(findings) == "array", findings),
         else_=func.jsonb_build_array(),
@@ -232,37 +255,82 @@ def _uncertain_only_stmt(page_size: int, *, after_id: uuid.UUID | None = None):
             ~not_uncertain,
         )
     )
-    if after_id is not None:
-        stmt = stmt.where(ContentItem.id > after_id)
+    if settled_before_epoch is not None:
+        epoch_value = case((func.jsonb_typeof(epoch) == "number", epoch.as_float()), else_=None)
+        stmt = stmt.where(epoch_value <= settled_before_epoch)
+    else:
+        stmt = stmt.where(func.jsonb_typeof(epoch).is_distinct_from("number"))
+        if after_id is not None:
+            stmt = stmt.where(ContentItem.id > after_id)
     return stmt.order_by(ContentItem.id).options(joinedload(ContentItem.hospital)).limit(page_size)
 
 
-def _uncertain_settled_items(db, limit: int, *, now: datetime, days: int) -> list[ContentItem]:
+def _uncertain_settled_items(
+    db, limit: int, *, now: datetime, days: int, after_id: uuid.UUID | None = None
+) -> UncertainSelection:
     """UNCERTAIN만 남아 `days`일 묵은 글을 `limit`개까지 모은다.
 
-    UNCERTAIN만 후보를 id 키셋으로 쪽마다 읽어(상한 `_UNCERTAIN_SCAN_MAX_PAGES`쪽) 묵음 판정을
-    파이썬에서 건다. 아직 묵지 않았거나 시각을 읽을 수 없는 글이 앞쪽을 채워도 뒤쪽의 묵은 글을 찾는다.
+    숫자 시각이 있는 표시는 SQL이 묵음까지 판정해 바로 고른다. 남은 자리는 숫자 시각 없는 옛 표시를
+    `after_id` 뒤부터 id 키셋으로 쪽마다 읽어(상한 `_UNCERTAIN_SCAN_MAX_PAGES`쪽) 파이썬에서 판정해
+    채운다. 마지막으로 읽은 id를 `next_cursor`로 돌려주고, 끝에 닿으면 None이다(다음은 처음부터).
     """
 
-    eligible: list[ContentItem] = []
-    after_id = None
+    cutoff = int(now.timestamp()) - days * 86400
+    eligible: list[ContentItem] = [
+        item
+        for item in db.execute(_uncertain_only_stmt(limit, settled_before_epoch=cutoff))
+        .unique()
+        .scalars()
+        .all()
+        if uncertain_only((item.essence_check_summary or {}).get(POST_PUBLISH_FLAG_KEY))
+    ][:limit]
+    cursor = after_id
     for _ in range(_UNCERTAIN_SCAN_MAX_PAGES):
+        if len(eligible) >= limit:
+            break
         page = list(
-            db.execute(_uncertain_only_stmt(_UNCERTAIN_SCAN_PAGE_SIZE, after_id=after_id))
+            db.execute(_uncertain_only_stmt(_UNCERTAIN_SCAN_PAGE_SIZE, after_id=cursor))
             .unique()
             .scalars()
             .all()
         )
         for item in page:
+            cursor = item.id
             marker = (item.essence_check_summary or {}).get(POST_PUBLISH_FLAG_KEY)
             if uncertain_only(marker) and settled_long_enough(marker, now, days):
                 eligible.append(item)
                 if len(eligible) >= limit:
-                    return eligible
+                    return UncertainSelection(eligible, cursor)
         if len(page) < _UNCERTAIN_SCAN_PAGE_SIZE:
-            break
-        after_id = page[-1].id
-    return eligible
+            return UncertainSelection(eligible, None)
+    return UncertainSelection(eligible, cursor)
+
+
+def _load_uncertain_scan_cursor() -> uuid.UUID | None:
+    """저장된 옛 표시 훑기 커서. 읽지 못하면 처음부터(None) — 커서는 공정성일 뿐 정확성이 아니다."""
+
+    try:
+        with redis.Redis.from_url(
+            settings.REDIS_URL, socket_connect_timeout=5, socket_timeout=5
+        ) as client:
+            raw = client.get(_UNCERTAIN_SCAN_CURSOR_KEY)
+        return uuid.UUID(raw.decode() if isinstance(raw, bytes) else str(raw)) if raw else None
+    except (RedisError, ValueError):
+        logger.warning("post-publish uncertain scan cursor unreadable; scanning from the start")
+        return None
+
+
+def _save_uncertain_scan_cursor(cursor: uuid.UUID | None) -> None:
+    try:
+        with redis.Redis.from_url(
+            settings.REDIS_URL, socket_connect_timeout=5, socket_timeout=5
+        ) as client:
+            if cursor is None:
+                client.delete(_UNCERTAIN_SCAN_CURSOR_KEY)
+            else:
+                client.set(_UNCERTAIN_SCAN_CURSOR_KEY, str(cursor))
+    except RedisError:
+        logger.warning("post-publish uncertain scan cursor not saved; next run may rescan")
 
 
 def uncertain_only(marker: object) -> bool:
@@ -278,8 +346,15 @@ def uncertain_only(marker: object) -> bool:
 
 
 def settled_long_enough(marker: object, now: datetime, days: int) -> bool:
-    """마지막 검수(`checked_at`)에서 `days`일이 지났는가. 시각을 읽을 수 없으면 아니다."""
+    """마지막 검수에서 `days`일이 지났는가. 시각을 읽을 수 없으면 아니다.
 
+    숫자 시각(`checked_at_epoch`)이 있으면 그것이 정본이다(SQL 판정과 같다). 없으면 옛 ISO 문자열
+    `checked_at`을 읽는다.
+    """
+
+    epoch = marker.get(_EPOCH_KEY) if isinstance(marker, dict) else None
+    if isinstance(epoch, (int, float)) and not isinstance(epoch, bool):
+        return now.timestamp() - epoch >= days * 86400
     try:
         checked = datetime.fromisoformat(str((marker or {}).get("checked_at")))
     except (TypeError, ValueError, AttributeError):
@@ -299,6 +374,8 @@ def _flag_payload(
         "status": POST_PUBLISH_FLAGGED,
         "candidate_sha256": reviewed_hash,
         "checked_at": now.isoformat(),
+        # 묵음 판정을 SQL이 할 수 있도록 쓰는 쪽이 형식을 정한 숫자 시각(초).
+        _EPOCH_KEY: int(now.timestamp()),
         "findings": [finding.message for finding in review.blocking_findings if finding.message][
             :5
         ],
@@ -889,13 +966,15 @@ def review_post_publish_samples() -> dict[str, int]:
         rereview_days = int(settings.POST_PUBLISH_UNCERTAIN_REREVIEW_DAYS)
         if correction_cap > 0 and rereview_days > 0:
             rereview_now = datetime.now(UTC)
-            settled = _uncertain_settled_items(
+            selection = _uncertain_settled_items(
                 db,
                 correction_cap * _FLAG_SCAN_MULTIPLIER,
                 now=rereview_now,
                 days=rereview_days,
+                after_id=_load_uncertain_scan_cursor(),
             )
-            for item in settled:
+            _save_uncertain_scan_cursor(selection.next_cursor)
+            for item in selection.items:
                 if corrections >= correction_cap or out_of_budget():
                     break
                 hospital = item.hospital

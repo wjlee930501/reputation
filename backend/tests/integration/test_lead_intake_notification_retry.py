@@ -721,8 +721,6 @@ async def _status(sessions, lead_id):
 async def test_expiry_skips_a_row_locked_elsewhere_and_finishes_the_others(
     committed_sessions, monkeypatch
 ):
-    import time
-
     from sqlalchemy import text
 
     opened = []
@@ -738,14 +736,12 @@ async def test_expiry_skips_a_row_locked_elsewhere_and_finishes_the_others(
             select(SalesLead.id).where(SalesLead.id == locked).with_for_update()
         )
         async with committed_sessions() as sweep:
-            # 예전처럼 잠긴 행을 기다리면 이 제한에 걸려 tick이 3초를 쓴다.
-            await sweep.execute(text("SET lock_timeout = '3s'"))
-            started = time.monotonic()
+            # 잠긴 행을 기다리면 lock_timeout이 터져 tick 전체가 롤백되고 빈 목록을 돌려준다 —
+            # 시계가 아니라 그 결과로 '기다리지 않았다'를 본다.
+            await sweep.execute(text("SET lock_timeout = '1s'"))
             expired = await leadgen._expire_inquiry_notifications(sweep)
-            elapsed = time.monotonic() - started
         await holder.rollback()
 
-    assert elapsed < 2
     assert set(expired) == {first, last}
     assert sorted(opened) == sorted([first, last])
     assert await _status(committed_sessions, locked) == "PENDING"  # 다음 tick이 끝낸다
@@ -777,3 +773,70 @@ async def test_incident_repair_skips_a_row_locked_elsewhere(committed_sessions, 
 
     assert free in opened
     assert locked not in opened
+
+
+async def _aged_lead(sessions, age):
+    (lead_id,) = await _committed_leads(sessions, "PENDING", age=age)
+    return lead_id
+
+
+@pytest.mark.asyncio
+async def test_a_later_lead_whose_incident_write_fails_rolls_back_alone(
+    committed_sessions, monkeypatch
+):
+    """리드마다 savepoint다 — 앞 리드의 만료는 남고, 사고 쓰기가 실패한 뒤 리드만 되돌아간다."""
+
+    earlier = await _aged_lead(committed_sessions, timedelta(hours=3))
+    later = await _aged_lead(committed_sessions, timedelta(hours=2))
+    opened = []
+
+    async def incident_fails_for_the_later(_db, lead_id, **_kwargs):
+        if lead_id == later:
+            raise RuntimeError("incident write failed")
+        opened.append(lead_id)
+
+    monkeypatch.setattr(leadgen, "_open_intake_notice_incident", incident_fails_for_the_later)
+    async with committed_sessions() as sweep:
+        expired = await leadgen._expire_inquiry_notifications(sweep)
+
+    assert expired == [earlier] and opened == [earlier]
+    assert await _status(committed_sessions, earlier) == "FAILED"
+    assert await _status(committed_sessions, later) == "PENDING"  # 상태도 사고와 함께 되돌아갔다
+
+    async def record_incident(_db, lead_id, **_kwargs):
+        opened.append(lead_id)
+
+    monkeypatch.setattr(leadgen, "_open_intake_notice_incident", record_incident)
+    async with committed_sessions() as sweep:
+        assert await leadgen._expire_inquiry_notifications(sweep) == [later]
+    assert await _status(committed_sessions, later) == "FAILED"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_final_commit_rolls_back_the_whole_batch_and_the_next_tick_converges(
+    committed_sessions, monkeypatch
+):
+    first, second = await _committed_leads(committed_sessions, "PENDING", "PENDING")
+    opened = []
+
+    async def record_incident(_db, lead_id, **_kwargs):
+        opened.append(lead_id)
+
+    monkeypatch.setattr(leadgen, "_open_intake_notice_incident", record_incident)
+    async with committed_sessions() as sweep:
+
+        async def commit_lost():
+            raise RuntimeError("commit lost")
+
+        monkeypatch.setattr(sweep, "commit", commit_lost)
+        assert await leadgen._expire_inquiry_notifications(sweep) == []
+
+    assert await _status(committed_sessions, first) == "PENDING"
+    assert await _status(committed_sessions, second) == "PENDING"
+
+    async with committed_sessions() as sweep:
+        expired = await leadgen._expire_inquiry_notifications(sweep)
+
+    assert set(expired) == {first, second}
+    assert await _status(committed_sessions, first) == "FAILED"
+    assert await _status(committed_sessions, second) == "FAILED"

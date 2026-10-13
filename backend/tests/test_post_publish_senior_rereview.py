@@ -165,8 +165,8 @@ def test_unavailable_rereview_does_not_spend_the_daily_cap(monkeypatch):
 
     class _Db(_SweepDb):
         def __init__(self):
-            # FLAGGED 조회(없음) → 상위 재검수 대상 → 비공개 → 표본
-            self._batches = [[], [first, second], [], []]
+            # FLAGGED 조회(없음) → 숫자 시각 표시(없음) → 옛 표시 한 쪽 → 비공개 → 표본
+            self._batches = [[], [], [first, second], [], []]
 
     seen: list = []
 
@@ -176,6 +176,8 @@ def test_unavailable_rereview_does_not_spend_the_daily_cap(monkeypatch):
 
     monkeypatch.setattr(sweep, "require_dispatch", lambda *_a, **_k: None)
     monkeypatch.setattr(sweep, "SyncSessionLocal", _Db)
+    monkeypatch.setattr(sweep, "_load_uncertain_scan_cursor", lambda: None)
+    monkeypatch.setattr(sweep, "_save_uncertain_scan_cursor", lambda _cursor: None)
     monkeypatch.setattr(tasks_module, "_generation_philosophy_sync", lambda *_a: object())
     monkeypatch.setattr(sweep, "senior_rereview_flagged", fake_senior)
     monkeypatch.setattr(settings, "POST_PUBLISH_AUTO_CORRECTION_DAILY_CAP", 1)
@@ -185,3 +187,45 @@ def test_unavailable_rereview_does_not_spend_the_daily_cap(monkeypatch):
     sweep.review_post_publish_samples.run()
 
     assert seen == [first.id, second.id]
+
+
+def test_the_sweep_resumes_the_legacy_scan_where_the_last_run_stopped(monkeypatch):
+    """옛 표시 훑기 커서를 저장소에서 읽어 넘기고, 이번 실행이 멈춘 자리를 다시 저장한다(R3-2)."""
+
+    from tests.test_published_auto_correction_sweep import _SweepDb
+
+    stored, resumed_at = uuid.uuid4(), uuid.uuid4()
+    passed: list = []
+    saved: list = []
+
+    def fake_select(_db, _limit, *, now, days, after_id=None):
+        passed.append(after_id)
+        return sweep.UncertainSelection([], resumed_at)
+
+    class _Db(_SweepDb):
+        def __init__(self):
+            self._batches = [[], [], []]  # FLAGGED → 비공개 → 표본 (선택은 가짜로 대신한다)
+
+    monkeypatch.setattr(sweep, "require_dispatch", lambda *_a, **_k: None)
+    monkeypatch.setattr(sweep, "SyncSessionLocal", _Db)
+    monkeypatch.setattr(sweep, "_uncertain_settled_items", fake_select)
+    monkeypatch.setattr(sweep, "_load_uncertain_scan_cursor", lambda: stored)
+    monkeypatch.setattr(sweep, "_save_uncertain_scan_cursor", saved.append)
+    monkeypatch.setattr(settings, "POST_PUBLISH_AUTO_CORRECTION_DAILY_CAP", 1)
+    monkeypatch.setattr(settings, "POST_PUBLISH_AI_REVIEW_DAILY_CAP", 0)
+    monkeypatch.setattr(settings, "POST_PUBLISH_UNCERTAIN_REREVIEW_DAYS", 7)
+
+    sweep.review_post_publish_samples.run()
+
+    assert passed == [stored]
+    assert saved == [resumed_at]
+
+
+def test_a_new_flag_carries_a_numeric_checked_at_for_sql_selection():
+    review = _review(_flagged(), status=ContentAiReviewStatus.PASS)
+
+    payload = sweep._flag_payload(review, "hash", NOW)
+
+    assert payload["checked_at_epoch"] == int(NOW.timestamp())
+    assert sweep.settled_long_enough(payload, NOW + timedelta(days=7), 7)
+    assert not sweep.settled_long_enough(payload, NOW + timedelta(days=6), 7)

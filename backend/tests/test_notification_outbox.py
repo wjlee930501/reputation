@@ -1633,8 +1633,6 @@ async def test_operations_center_and_retry_target_the_row_a_delivery_incident_de
 async def test_a_settle_candidate_locked_elsewhere_does_not_stall_the_claim(outbox_sessions) -> None:
     """발송 전 종결 후보가 다른 트랜잭션에 잠겨 있어도 다른 알림의 claim은 기다리지 않는다(Codex R2-4)."""
 
-    import time
-
     # Given: a recovered incident whose unsent OPEN notice is a settle candidate, and an unrelated due row
     async with outbox_sessions() as db:
         incident = Incident(
@@ -1674,15 +1672,13 @@ async def test_a_settle_candidate_locked_elsewhere_does_not_stall_the_claim(outb
             .with_for_update()
         )
         async with outbox_sessions() as claimer:
-            # 예전 무제한 UPDATE는 잠긴 행을 기다려 이 제한에 걸린다.
-            await claimer.execute(text("SET lock_timeout = '3s'"))
-            started = time.monotonic()
+            # 예전 무제한 UPDATE는 잠긴 행을 기다려 이 제한에 걸려 LockNotAvailable로 끝났다 —
+            # 시계가 아니라 claim이 예외 없이 끝나는 것으로 '기다리지 않았다'를 본다.
+            await claimer.execute(text("SET lock_timeout = '1s'"))
             claimed = await claim_notification_batch(claimer, "worker-settle", now=_NOW, limit=50)
-            elapsed = time.monotonic() - started
         await holder.rollback()
 
     # Then: the unrelated row is leased at once; the locked candidate waits for the next tick
-    assert elapsed < 2
     assert free.id in {row.id for row in claimed}
     assert stale_open.id not in {row.id for row in claimed}
     async with outbox_sessions() as verify:
