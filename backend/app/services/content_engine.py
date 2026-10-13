@@ -39,7 +39,11 @@ from app.services.must_use_verbatim import (
     required_must_use_messages,
 )
 from app.services.openrouter import NON_RETRYABLE_LLM_ERRORS
-from app.services.question_wellformed import question_is_wellformed, treatment_applied_to_exam
+from app.services.question_wellformed import (
+    drop_treatment_after_exam,
+    question_is_wellformed,
+    treatment_applied_to_exam,
+)
 from app.services.reference_requirement import (
     REFERENCES_REQUIRED_TYPES,
     references_block_when_empty_for,
@@ -1345,6 +1349,11 @@ async def _generate_content_attempt(
         )
 
     result = _extract_generated_result(response)
+    # 검사 이름 뒤에 낱말로 붙은 '치료'("갑상선초음파 치료 비용")는 참고자료 주제 대조 전에
+    # 결정적으로 지운다 — 보완 재작성·결제한 후보 폐기로 가지 않는다.
+    fixed_title = drop_treatment_after_exam(result.get("title"))
+    if fixed_title:
+        result["title"] = fixed_title
 
     _validate_unverified_price_claims(result.get("body"))
 

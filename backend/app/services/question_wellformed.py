@@ -52,6 +52,30 @@ def treatment_applied_to_exam(text: object) -> bool:
     )
 
 
+# 검사 이름 뒤에 **낱말로 떨어져** 붙은 '치료'("갑상선초음파 치료 비용"). '치료가'·'치료비'처럼
+# 조사·어미가 붙은 꼴은 지우면 문장이 깨지므로 결정적으로 고치지 않는다(작가 보완 재작성 몫).
+_EXAM_STANDALONE_TREATMENT_RE = re.compile(
+    r"(?P<exam>[0-9A-Za-z가-힣]*(?:내시경|초음파|촬영|조영술|검사|검진|골밀도|심전도|"
+    r"[Cc][Tt]|[Mm][Rr][Ii]|엑스레이))\s+치료(?=\s|$|[,.?!·:—\-~)])"
+)
+
+
+def drop_treatment_after_exam(text: object) -> str | None:
+    """검사 이름 바로 뒤의 낱말 '치료'를 지운 제목. 고칠 수 없거나 고칠 것이 없으면 None.
+
+    "갑상선초음파 치료 비용, 얼마나 드나요?" → "갑상선초음파 비용, 얼마나 드나요?". 지운 뒤에도
+    `treatment_applied_to_exam`이 참이면(다른 꼴이 남았다) None이다.
+    """
+
+    value = str(text or "")
+    if not treatment_applied_to_exam(value):
+        return None
+    fixed = re.sub(r"\s{2,}", " ", _EXAM_STANDALONE_TREATMENT_RE.sub(r"\g<exam>", value)).strip()
+    if fixed == value.strip() or treatment_applied_to_exam(fixed):
+        return None
+    return fixed
+
+
 def question_problems(text: object, *, keyword: str | None = None) -> list[str]:
     """문장의 결함 코드 목록. 비어 있으면 정상이다.
 

@@ -13,7 +13,10 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from app.services import content_engine
+from app.services.question_wellformed import drop_treatment_after_exam
 from tests.test_content_engine_must_use_verbatim import (
     MUST_USE_2CM,
     MUST_USE_SCREENING,
@@ -113,3 +116,33 @@ async def test_deletion_that_drops_the_body_below_the_floor_is_not_applied(monke
     assert len(writer.calls) == 2  # 하한 아래로 줄이는 삭제 대신 작가가 다시 썼다
     assert "Forbidden medical expressions" in writer.calls[1]["messages"][1]["content"]
     assert AD_SENTENCE not in saved["body"]
+
+
+async def test_an_exam_title_with_a_standalone_treatment_word_is_fixed_before_review(monkeypatch):
+    payload = _payload("검사 전날 식단을 조절합니다.")
+    payload["title"] = "대장내시경 치료 전 준비 안내"
+    writer = _Writer([payload])
+    _install_writer(monkeypatch, writer)
+
+    saved = await _generate([])
+
+    assert len(writer.calls) == 1
+    assert saved["title"] == "대장내시경 전 준비 안내"
+
+
+@pytest.mark.parametrize(
+    ("title", "fixed"),
+    [
+        ("갑상선초음파 치료 비용, 얼마나 드나요?", "갑상선초음파 비용, 얼마나 드나요?"),
+        ("대장내시경 치료 전 준비 안내", "대장내시경 전 준비 안내"),
+        ("심장 MRI 치료 안내", "심장 MRI 안내"),
+        # 조사·어미가 붙은 꼴은 결정적으로 고치지 않는다(작가 보완 재작성 몫).
+        ("위내시경 치료가 필요한 경우", None),
+        ("갑상선초음파 치료비 안내", None),
+        # 시술은 치료와 자연스럽게 붙는다 — 고칠 것이 없다.
+        ("임플란트 치료 비용 안내", None),
+        ("허리 디스크 치료 방법", None),
+    ],
+)
+def test_drop_treatment_after_exam_only_touches_a_standalone_word(title, fixed):
+    assert drop_treatment_after_exam(title) == fixed
