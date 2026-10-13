@@ -59,7 +59,14 @@ def _attach_rejection_counts(error: BaseException, counts: dict[str, dict[str, i
     """세션이 최종 실패로 끝날 때 세션 전체의 누적 거절 횟수를 예외에 싣는다."""
 
     if counts:
-        setattr(error, GENERATION_REJECTIONS_KEY, {bucket: dict(kinds) for bucket, kinds in counts.items()})
+        try:
+            setattr(
+                error,
+                GENERATION_REJECTIONS_KEY,
+                {bucket: dict(kinds) for bucket, kinds in counts.items()},
+            )
+        except (AttributeError, TypeError):  # pragma: no cover - 표준 예외는 속성을 받는다
+            pass
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,115 +127,126 @@ async def generate_reviewed_content(
             remediation_rewrites < limits.remediation_generations - 1 and _generation_budget_left()
         )
 
-    while _generation_budget_left():
-        if generations > 0:
-            decision = await dependencies.check_cost("content")
-            if not decision.allowed:
-                logger.info(
-                    "Automatic content remediation stopped by cost guard: hospital=%s",
-                    hospital.id,
-                )
-                break
-            automatic_rewrites += 1
+    try:
+        while _generation_budget_left():
+            if generations > 0:
+                decision = await dependencies.check_cost("content")
+                if not decision.allowed:
+                    logger.info(
+                        "Automatic content remediation stopped by cost guard: hospital=%s",
+                        hospital.id,
+                    )
+                    break
+                automatic_rewrites += 1
 
-        try:
-            candidate = await dependencies.generate(
-                hospital,
-                item.content_type,
-                existing_titles,
-                philosophy,
-                approved_brief,
-                remediation_findings=findings,
-            )
-        except ValueError as exc:
+            try:
+                candidate = await dependencies.generate(
+                    hospital,
+                    item.content_type,
+                    existing_titles,
+                    philosophy,
+                    approved_brief,
+                    remediation_findings=findings,
+                )
+            except ValueError as exc:
+                generations += 1
+                last_generation_error = exc
+                # 실패한 회차의 결정적 거절도 센다(작가 호출 안에서 치유·재작성을 다 쓴 경우).
+                _merge_rejection_counts(rejection_counts, getattr(exc, GENERATION_REJECTIONS_KEY, None))
+                findings = [f"생성 안전검사 실패: {' '.join(str(exc).split())[:300]}"]
+                if accepted_content is not None:
+                    # 앞선 회차가 만들어 둔(이미 결제된) 후보가 있다. 보완 재작성이 실패했다고
+                    # 그 후보까지 버리면 정상 글 한 편을 돈만 쓰고 폐기하는 셈이다.
+                    last_generation_error = None
+                    break
+                if _remediation_budget_left():
+                    remediation_rewrites += 1
+                    continue
+                _attach_rejection_counts(exc, rejection_counts)
+                raise
+            except Exception as exc:
+                # 공급자 오류(시간 초과 등) — 이 회차 작가 호출이 실어 보낸 거절 횟수를 합친다. 세션 누적치는
+                # 아래 루프 경계가 싣는다.
+                _merge_rejection_counts(rejection_counts, getattr(exc, GENERATION_REJECTIONS_KEY, None))
+                raise
             generations += 1
-            last_generation_error = exc
-            # 실패한 회차의 결정적 거절도 센다(작가 호출 안에서 치유·재작성을 다 쓴 경우).
-            _merge_rejection_counts(rejection_counts, getattr(exc, GENERATION_REJECTIONS_KEY, None))
-            findings = [f"생성 안전검사 실패: {' '.join(str(exc).split())[:300]}"]
-            if accepted_content is not None:
-                # 앞선 회차가 만들어 둔(이미 결제된) 후보가 있다. 보완 재작성이 실패했다고
-                # 그 후보까지 버리면 정상 글 한 편을 돈만 쓰고 폐기하는 셈이다.
-                last_generation_error = None
+            last_generation_error = None
+            _merge_rejection_counts(rejection_counts, candidate.get(GENERATION_REJECTIONS_KEY))
+
+            # 이 글이 원래 답하기로 한 측정 질문을 실제로 다뤘는가.
+            # (content_engine._validate_target_alignment가 채운다)
+            bounded_soft_findings = list(candidate.get("target_alignment_findings") or []) + [
+                finding
+                for finding in (candidate.get("seo_geo_findings") or [])
+                if str(finding).startswith(SEASON_MISMATCH_FINDING_PREFIX)
+            ]
+
+            screening = dependencies.screen(screening_probe(candidate), philosophy)
+            accepted_content, accepted_screening, last_ai_review = candidate, screening, None
+            accepted_reference_findings = []
+            if screening.status != ESSENCE_STATUS_ALIGNED:
+                screen_findings = review_findings(screening.summary)
+                if screen_findings and _remediation_budget_left():
+                    remediation_rewrites += 1
+                    findings = screen_findings
+                    continue
                 break
-            if _remediation_budget_left():
-                remediation_rewrites += 1
-                continue
-            _attach_rejection_counts(exc, rejection_counts)
-            raise
-        generations += 1
-        last_generation_error = None
-        _merge_rejection_counts(rejection_counts, candidate.get(GENERATION_REJECTIONS_KEY))
 
-        # 이 글이 원래 답하기로 한 측정 질문을 실제로 다뤘는가.
-        # (content_engine._validate_target_alignment가 채운다)
-        bounded_soft_findings = list(candidate.get("target_alignment_findings") or []) + [
-            finding
-            for finding in (candidate.get("seo_geo_findings") or [])
-            if str(finding).startswith(SEASON_MISMATCH_FINDING_PREFIX)
-        ]
-
-        screening = dependencies.screen(screening_probe(candidate), philosophy)
-        accepted_content, accepted_screening, last_ai_review = candidate, screening, None
-        accepted_reference_findings = []
-        if screening.status != ESSENCE_STATUS_ALIGNED:
-            screen_findings = review_findings(screening.summary)
-            if screen_findings and _remediation_budget_left():
-                remediation_rewrites += 1
-                findings = screen_findings
-                continue
-            break
-
-        last_ai_review = await dependencies.review(
-            hospital=hospital,
-            philosophy=philosophy,
-            content=candidate,
-            content_brief=approved_brief,
-        )
-        if last_ai_review.status == ContentAiReviewStatus.UNAVAILABLE:
-            # UNAVAILABLE never grants approval: it merely leaves the candidate to
-            # the deterministic generation and publication gates below.
-            break
-        # 참고자료 주제 불일치(SOFT+REFERENCE)는 유료 재작성이 아니라 결정적 제거로 푼다.
-        accepted_reference_findings = apply_reference_review_findings(candidate, last_ai_review)
-        if last_ai_review.status == ContentAiReviewStatus.PASS:
-            # 중복 주제도 문체성 지적과 같은 한 번의 보완 예산을 나눠 쓴다. 새 예산을
-            # 만들지 않으며, 고치지 못해도 글은 통과시키고 기록만 남긴다.
-            duplicate_remediation = (
-                duplicate_topic_remediation(
-                    duplicate_topic_matches(candidate, existing_titles, approved_brief)
-                )
-                if soft_rewrites < limits.soft_rewrites
-                else []
+            last_ai_review = await dependencies.review(
+                hospital=hospital,
+                philosophy=philosophy,
+                content=candidate,
+                content_brief=approved_brief,
             )
-            soft_findings = bounded_soft_findings + duplicate_remediation
-            if soft_findings and soft_rewrites < limits.soft_rewrites and _generation_budget_left():
-                soft_rewrites += 1
-                findings = soft_findings
+            if last_ai_review.status == ContentAiReviewStatus.UNAVAILABLE:
+                # UNAVAILABLE never grants approval: it merely leaves the candidate to
+                # the deterministic generation and publication gates below.
+                break
+            # 참고자료 주제 불일치(SOFT+REFERENCE)는 유료 재작성이 아니라 결정적 제거로 푼다.
+            accepted_reference_findings = apply_reference_review_findings(candidate, last_ai_review)
+            if last_ai_review.status == ContentAiReviewStatus.PASS:
+                # 중복 주제도 문체성 지적과 같은 한 번의 보완 예산을 나눠 쓴다. 새 예산을
+                # 만들지 않으며, 고치지 못해도 글은 통과시키고 기록만 남긴다.
+                duplicate_remediation = (
+                    duplicate_topic_remediation(
+                        duplicate_topic_matches(candidate, existing_titles, approved_brief)
+                    )
+                    if soft_rewrites < limits.soft_rewrites
+                    else []
+                )
+                soft_findings = bounded_soft_findings + duplicate_remediation
+                if soft_findings and soft_rewrites < limits.soft_rewrites and _generation_budget_left():
+                    soft_rewrites += 1
+                    findings = soft_findings
+                    continue
+                break
+            # Only stylistic/soft feedback may spend the shared remediation rewrite.
+            if last_ai_review.rewrite_is_safe:
+                rewrite_messages = non_reference_remediation_messages(last_ai_review)
+                if rewrite_messages and _remediation_budget_left():
+                    remediation_rewrites += 1
+                    reviewer_driven_rewrites += 1
+                    findings = rewrite_messages
+                    continue
+                break
+            # 사실·의료 안전 HARD 지적은 새 근거 없이 "다시 써 봐"로 풀 수 없다. 대신
+            # 지적된 주장을 삭제·hedge하는 재작성을 **정확히 한 번** 허용하고 그 결과는
+            # 반드시 독립 검수를 다시 받는다(루프 다음 회차).
+            removal_findings = hard_removal_findings(last_ai_review)
+            if (
+                removal_findings
+                and removal_rewrites < limits.hard_removals
+                and _generation_budget_left()
+            ):
+                removal_rewrites += 1
+                findings = removal_findings
                 continue
             break
-        # Only stylistic/soft feedback may spend the shared remediation rewrite.
-        if last_ai_review.rewrite_is_safe:
-            rewrite_messages = non_reference_remediation_messages(last_ai_review)
-            if rewrite_messages and _remediation_budget_left():
-                remediation_rewrites += 1
-                reviewer_driven_rewrites += 1
-                findings = rewrite_messages
-                continue
-            break
-        # 사실·의료 안전 HARD 지적은 새 근거 없이 "다시 써 봐"로 풀 수 없다. 대신
-        # 지적된 주장을 삭제·hedge하는 재작성을 **정확히 한 번** 허용하고 그 결과는
-        # 반드시 독립 검수를 다시 받는다(루프 다음 회차).
-        removal_findings = hard_removal_findings(last_ai_review)
-        if (
-            removal_findings
-            and removal_rewrites < limits.hard_removals
-            and _generation_budget_left()
-        ):
-            removal_rewrites += 1
-            findings = removal_findings
-            continue
-        break
+    except Exception as exc:
+        # 루프를 예외로 떠나면(공급자 오류·검수 장애 등) 앞 회차들의 누적 거절 횟수를 예외에 싣는다.
+        # 결정적 거절로 끝난 경로는 이미 같은 누적치를 실었다 — 다시 실어도 값이 같다.
+        _attach_rejection_counts(exc, rejection_counts)
+        raise
 
     last_content = accepted_content
     last_screening = accepted_screening

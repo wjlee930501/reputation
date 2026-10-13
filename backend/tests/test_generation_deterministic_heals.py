@@ -473,3 +473,171 @@ def test_missing_must_use_heal_does_not_append_a_message_already_in_the_body():
         )
         is None
     )
+
+
+# ── 삭제 치유의 경계 — 2회차 교차 검토 재현(2026-10-13) ───────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "block",
+    [
+        pytest.param("````\n```\n최고의 의료진입니다.\n```\n````", id="four-backtick-fence-holds-three"),
+        pytest.param("```\n~~~\n최고의 의료진입니다.\n~~~\n```", id="tilde-inside-backtick-fence"),
+        pytest.param("```\n```python\n최고의 의료진입니다.\n```", id="info-string-is-not-a-closer"),
+        pytest.param("~~~\n```\n최고의 의료진입니다.\n```\n~~~", id="backtick-inside-tilde-fence"),
+        pytest.param("> ```\n> 최고의 의료진입니다.\n> ```", id="fence-in-blockquote"),
+        pytest.param("- ```\n  최고의 의료진입니다.\n  ```", id="fence-in-list-item"),
+        pytest.param("> 최고입니다.\n> ---", id="setext-in-blockquote"),
+        pytest.param("- 최고의 의료진\n  ===", id="setext-in-list-item"),
+        pytest.param("> ## 최고의 의료진", id="atx-in-blockquote"),
+    ],
+)
+def test_deletion_refuses_fences_and_headings_inside_containers(block):
+    assert _heal(_forbidden_error(f"검사 전날 식단을 조절합니다.\n\n{block}\n")) is None
+
+
+def test_deletion_counts_sentences_that_start_with_a_digit():
+    """마침표는 양쪽이 숫자일 때만 소수점이다 — 네 문장은 상한(3)을 넘는다."""
+
+    assert _heal(_forbidden_error("최고입니다.1등입니다.1등입니다.1등입니다.")) is None
+
+
+def test_deletion_keeps_a_sentence_that_starts_with_a_digit():
+    healed = _heal(_forbidden_error("최고입니다.1일 쉬세요. 정상입니다."))
+
+    assert healed is not None
+    assert "\n1일 쉬세요. 정상입니다.\n" in healed["body"]
+    assert "최고" not in healed["body"]
+
+
+def test_deletion_takes_the_closing_quote_with_the_sentence():
+    healed = _heal(_forbidden_error("안내입니다. “최고입니다.” 다음은 정상입니다."))
+
+    assert healed is not None
+    assert "\n안내입니다. 다음은 정상입니다.\n" in healed["body"]
+    assert "”" not in healed["body"]
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "정상입니다. `최고입니다.` 다음입니다.",
+        "`정상. 최고입니다.` 다음입니다.",
+    ],
+)
+def test_deletion_refuses_a_line_with_inline_code(line):
+    assert _heal(_forbidden_error(line)) is None
+
+
+def test_deletion_keeps_the_hard_line_break_of_the_remaining_text():
+    healed = _heal(_forbidden_error("최고입니다. 정상입니다.  \n다음 줄입니다."))
+    assert healed is not None
+    assert "\n정상입니다.  \n다음 줄입니다.\n" in healed["body"]
+
+    last_dropped = _heal(_forbidden_error("정상입니다. 최고입니다.  \n다음 줄입니다."))
+    assert last_dropped is not None
+    assert "\n정상입니다.  \n다음 줄입니다.\n" in last_dropped["body"]
+
+
+def test_heal_protected_lines_tracks_fence_char_length_and_container():
+    lines = ["````", "```", "본문", "```", "````", "다음 문단", "> ~~~", "> 인용 안 코드", "> ~~~", "밖"]
+    assert content_engine._heal_protected_lines(lines) == {0, 1, 2, 3, 4, 6, 7, 8}
+
+
+# ── 치유·예외 계수 — 2회차 교차 검토(2026-10-13) ────────────────────────────────────
+
+
+async def test_a_reference_heal_followed_by_a_must_use_rejection_is_counted_and_healed(monkeypatch):
+    payload = _payload("검사 전날 식단을 조절합니다.")
+
+    async def fake_attempt(*_args, **_kwargs):
+        raise content_engine.MissingCitableReferencesError(
+            "GEO hard-fail: references is empty for FAQ", dict(payload)
+        )
+
+    def fake_reference_heal(error, *_args, **_kwargs):
+        raise content_engine.MissingMustUseMessagesError(
+            "Required must_use messages missing verbatim (1): ...",
+            error.result,
+            (MUST_USE_2CM,),
+        )
+
+    monkeypatch.setattr(content_engine, "_generate_content_attempt", fake_attempt)
+    monkeypatch.setattr(content_engine, "_heal_from_curated_catalog", fake_reference_heal)
+    monkeypatch.setattr(
+        content_engine, "_validate_generated_result", lambda result, *_a, **_k: dict(result)
+    )
+
+    saved = await _generate([MUST_USE_2CM])
+
+    assert saved["body"].rstrip().endswith(MUST_USE_2CM)
+    assert saved[content_engine.GENERATION_REJECTIONS_KEY] == {
+        "rejected": {"references": 1, "must_use": 1},
+        "healed": {"must_use": 1, "references": 1},
+    }
+
+
+async def test_a_provider_error_after_a_rejection_keeps_the_cumulative_counts(monkeypatch):
+    bad_title = _payload("검사 전날 식단을 조절합니다.")
+    bad_title["title"] = "최고의 대장내시경 준비 안내"
+    calls: list[int] = []
+    original_attempt = content_engine._generate_content_attempt
+
+    async def flaky_attempt(*args, **kwargs):
+        calls.append(1)
+        if len(calls) > 1:
+            raise TimeoutError("provider timed out")
+        return await original_attempt(*args, **kwargs)
+
+    writer = _Writer([bad_title])
+    _install_writer(monkeypatch, writer)
+    monkeypatch.setattr(content_engine, "_generate_content_attempt", flaky_attempt)
+
+    with pytest.raises(TimeoutError) as raised:
+        await _generate([])
+
+    assert getattr(raised.value, content_engine.GENERATION_REJECTIONS_KEY) == {
+        "rejected": {"forbidden": 1}
+    }
+
+
+async def test_the_review_session_attaches_counts_when_the_provider_fails_later():
+    from unittest.mock import AsyncMock, Mock
+    from uuid import uuid4
+
+    from app.models.content import ContentItem, ContentType
+    from app.models.essence import HospitalContentPhilosophy
+    from app.models.hospital import Hospital
+    from app.services.content_generation_review import (
+        ContentReviewDependencies,
+        GenerationReviewLimits,
+        generate_reviewed_content,
+    )
+    from app.services.cost_guard import CostGuardDecision
+
+    rejected = ValueError("Forbidden medical expressions require complete regeneration: ['최고']")
+    setattr(rejected, content_engine.GENERATION_REJECTIONS_KEY, {"rejected": {"forbidden": 2}})
+    timeout = TimeoutError("provider timed out")
+    setattr(timeout, content_engine.GENERATION_REJECTIONS_KEY, {"rejected": {"price": 1}})
+    hospital = Hospital(id=uuid4(), name="격리 검증 의원")
+    effects = ContentReviewDependencies(
+        generate=AsyncMock(side_effect=[rejected, timeout]),
+        review=AsyncMock(),
+        screen=Mock(),
+        check_cost=AsyncMock(return_value=CostGuardDecision(True)),
+    )
+
+    with pytest.raises(TimeoutError) as raised:
+        await generate_reviewed_content(
+            hospital=hospital,
+            item=ContentItem(hospital_id=hospital.id, content_type=ContentType.HEALTH),
+            existing_titles=[],
+            philosophy=HospitalContentPhilosophy(hospital_id=hospital.id),
+            approved_brief=None,
+            dependencies=effects,
+            limits=GenerationReviewLimits(3, 2, 1, 1),
+        )
+
+    assert getattr(raised.value, content_engine.GENERATION_REJECTIONS_KEY) == {
+        "rejected": {"forbidden": 2, "price": 1}
+    }
