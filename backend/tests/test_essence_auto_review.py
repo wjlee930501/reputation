@@ -263,6 +263,10 @@ def test_second_ai_adjudicator_can_clear_primary_false_positive(monkeypatch) -> 
     assert len(calls) == 2
     assert calls[0]["attempts"] == 2
     assert calls[1]["output_schema"] == essence_auto_review._ADJUDICATION_OUTPUT_SCHEMA
+    # 1600에서는 검수 모델의 구조화 출력이 length로 잘렸다(2026-10-13). 두 호출 모두 4000.
+    assert essence_auto_review.ESSENCE_REVIEW_MAX_TOKENS == 4000
+    assert calls[0]["max_tokens"] == 4000
+    assert calls[1]["max_tokens"] == 4000
 
 
 def test_second_ai_adjudicator_fails_closed_below_confidence(monkeypatch) -> None:

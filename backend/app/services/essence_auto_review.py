@@ -63,6 +63,9 @@ AUTO_ESSENCE_ACTOR = "SYSTEM_ESSENCE_AI_REVIEW"
 AUTO_ESSENCE_CONFIDENCE = 0.90
 AUTO_ESSENCE_ADJUDICATION_CONFIDENCE = 0.95
 AUTO_ESSENCE_MAX_SYNTHESIS_ATTEMPTS = 2
+# 1차 검수·2차 재정 호출의 출력 상한. 1600에서는 검수 모델(Opus)의 구조화 출력이
+# `length`로 잘려 자동 재검수가 연달아 실패했다(2026-10-13 ESSENCE_AUTO_REVIEW_FAILED).
+ESSENCE_REVIEW_MAX_TOKENS = 4000
 # 자동 재검수 예산. 한 번 보류했다고 영구 정지시키지 않는다 — LLM 출력은 확률적이라
 # 같은 입력에서도 다음 판이 통과할 수 있다. 사이클마다 1h → 4h → 12h로 물러서고
 # 4번째 보류에서 예산을 다 쓰면 그때 사람의 일이 된다(무한 재구매 금지, 합계 약 17시간).
@@ -1079,7 +1082,7 @@ def _review_essence_candidate_shard(
     response = _call_llm_json(
         _REVIEW_SYSTEM_PROMPT,
         data,
-        max_tokens=1600,
+        max_tokens=ESSENCE_REVIEW_MAX_TOKENS,
         output_schema=_REVIEW_OUTPUT_SCHEMA,
         attempts=2,
         model=settings.CLAUDE_MODEL_REVIEW,
@@ -1142,7 +1145,7 @@ def _review_essence_candidate_shard(
     adjudication = _call_llm_json(
         _ADJUDICATION_SYSTEM_PROMPT,
         adjudication_data,
-        max_tokens=1600,
+        max_tokens=ESSENCE_REVIEW_MAX_TOKENS,
         output_schema=_ADJUDICATION_OUTPUT_SCHEMA,
         attempts=2,
         model=settings.CLAUDE_MODEL_REVIEW,

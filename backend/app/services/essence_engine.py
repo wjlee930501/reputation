@@ -493,6 +493,14 @@ def _call_llm_json(
                 counter.record_response(event, response)
             stop_reason = llm_structured_output.incomplete_reason(response)
             if stop_reason is not None:
+                if stop_reason in {"length", "max_tokens"}:
+                    # 잘림의 원인(추론 토큰 포함 여부·상한 대비 실제 출력)을 다음에 진단할 수 있게 남긴다.
+                    logger.warning(
+                        "essence_llm_output_truncated model=%s max_tokens=%s usage=%r",
+                        resolved_model,
+                        max_tokens,
+                        getattr(response, "usage", None),
+                    )
                 raise ValueError(f"essence LLM incomplete structured output: {stop_reason}")
             raw = llm_structured_output.first_text(response)
             if not raw:
