@@ -1692,3 +1692,78 @@ async def test_a_settle_candidate_locked_elsewhere_does_not_stall_the_claim(outb
         row = await verify.get(NotificationOutbox, stale_open.id)
         assert row.state == NotificationOutboxState.FAILED.value
         assert row.safe_error_code == "INCIDENT_RESOLVED_BEFORE_SEND"
+
+
+@pytest.mark.asyncio
+async def test_a_recovery_is_not_claimed_while_its_open_is_locked_elsewhere(outbox_sessions) -> None:
+    """다른 트랜잭션이 잡은(아직 나가지 않은) 열림의 복구 알림은 이번 tick에 집지 않는다(Codex R4-1)."""
+
+    # Given: a recovered incident whose OPEN and RECOVERED notices are both still pending
+    async with outbox_sessions() as db:
+        incident = Incident(
+            dedupe_key="OPS-QA-T10-PAIR-LOCK",
+            incident_type="CONTENT_GENERATION_FAILED",
+            state=IncidentState.RECOVERED.value,
+            severity="HIGH",
+            customer_impact="테스트",
+            source_type="TEST",
+            next_action="테스트",
+            admin_path="/operations",
+            first_seen_at=_NOW - timedelta(hours=1),
+            last_seen_at=_NOW - timedelta(hours=1),
+            recovered_at=_NOW - timedelta(minutes=30),
+        )
+        db.add(incident)
+        await db.flush()
+        pending = {
+            "channel": "SLACK",
+            "state": NotificationOutboxState.PENDING.value,
+            "incident_id": incident.id,
+            "payload": _intent("ignored").message.payload(),
+            "fallback_text": "운영 알림",
+            "next_attempt_at": _NOW - timedelta(minutes=5),
+        }
+        # 에피소드 꼬리(:e1)가 같으므로 같은 에피소드의 짝이다.
+        locked_open = NotificationOutbox(
+            dedupe_key="OPS-QA-T10-PAIR-LOCK-OPEN:e1",
+            notification_type="INCIDENT_OPEN",
+            created_at=_NOW - timedelta(minutes=50),
+            **pending,
+        )
+        recovered = NotificationOutbox(
+            dedupe_key="OPS-QA-T10-PAIR-LOCK-RECOVERED:e1",
+            notification_type="INCIDENT_RECOVERED",
+            created_at=_NOW - timedelta(minutes=20),
+            **pending,
+        )
+        db.add_all([locked_open, recovered])
+        await db.commit()
+
+    # When: another transaction holds the OPEN's row lock while a worker claims
+    async with outbox_sessions() as holder:
+        await holder.execute(
+            select(NotificationOutbox.id)
+            .where(NotificationOutbox.id == locked_open.id)
+            .with_for_update()
+        )
+        async with outbox_sessions() as claimer:
+            await claimer.execute(text("SET lock_timeout = '1s'"))
+            claimed = await claim_notification_batch(claimer, "worker-pair", now=_NOW, limit=50)
+        await holder.rollback()
+
+    # Then: neither the locked OPEN nor its RECOVERED is leased; the RECOVERED is not sent alone
+    claimed_ids = {row.id for row in claimed}
+    assert locked_open.id not in claimed_ids
+    assert recovered.id not in claimed_ids
+    async with outbox_sessions() as verify:
+        row = await verify.get(NotificationOutbox, recovered.id)
+        assert row.state == NotificationOutboxState.PENDING.value
+
+    # And: the next tick settles the unsent pair together once the lock is gone
+    async with outbox_sessions() as db:
+        await claim_notification_batch(db, "worker-pair", now=_NOW, limit=50)
+    async with outbox_sessions() as verify:
+        for notice_id in (locked_open.id, recovered.id):
+            row = await verify.get(NotificationOutbox, notice_id)
+            assert row.state == NotificationOutboxState.FAILED.value
+            assert row.safe_error_code == "INCIDENT_RESOLVED_BEFORE_SEND"

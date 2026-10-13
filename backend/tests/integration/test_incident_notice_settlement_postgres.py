@@ -5,6 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from sqlalchemy import select
 
 from app.models.operations import Incident, NotificationOutbox
@@ -369,3 +370,131 @@ async def test_unsent_opens_of_resolved_incidents_beyond_the_settle_limit_are_ne
 
     assert not claimed & {row.id for row in opens}
     assert bystander.id in claimed
+
+
+async def test_a_recovery_never_leaves_before_its_pending_open_beyond_the_settle_limit(
+    pg_async_session,
+):
+    """열림·복구가 둘 다 대기 중인 짝이 종결 상한보다 많아도 복구만 혼자 나가지 않는다(Codex R4-1).
+
+    종결 배치(200)가 닿지 못한 201번째 열림은 PENDING으로 남는다. 그 복구는 '나갔을 수 있는 열림'이
+    있어 종결되지 않지만, 열림이 아직 나가지 않았으므로 집히지도 않는다 — 다음 tick이 둘을 함께 종결한다.
+    """
+
+    db = pg_async_session
+    incidents = [
+        _incident("CONTENT_GENERATION_FAILED", "RECOVERED") for _ in range(_OVER_SETTLE_LIMIT)
+    ]
+    db.add_all(incidents)
+    await db.flush()
+    pairs = []
+    for incident in incidents:
+        opened = _notice(incident, created_at=NOW - timedelta(minutes=50))
+        recovered = _notice(incident, "INCIDENT_RECOVERED", created_at=NOW - timedelta(minutes=20))
+        pairs.append((opened, recovered))
+        db.add_all([opened, recovered])
+    await db.flush()
+    bystander = await _sendable_bystander(db)
+    every_notice = {row.id for pair in pairs for row in pair}
+
+    first_tick = await _claimed_ids(db)
+
+    assert not first_tick & every_notice
+    assert bystander.id in first_tick
+
+    second_tick = await _claimed_ids(db)
+
+    assert not second_tick & every_notice
+    for pair in pairs:
+        for row in pair:
+            settled = await _row(db, row)
+            assert settled.state == "FAILED"
+            assert settled.safe_error_code == RESOLVED_BEFORE_SEND_CODE
+
+
+async def test_a_recovery_waits_for_its_open_and_follows_it_on_the_next_tick(pg_async_session):
+    """복구 알림은 같은 에피소드의 열림 알림이 실제로 나간 뒤에만 나간다."""
+
+    db = pg_async_session
+    # 열림이 아직 나가지 않았는데 사고가 종결 대상이 아닌 경우(예: 종결 배치가 닿지 않은 상태)를
+    # 사고 상태로 재현한다 — 열림은 보낼 차례이고 복구는 그 뒤를 기다린다.
+    incident = _incident("CONTENT_GENERATION_FAILED", "OPEN")
+    db.add(incident)
+    await db.flush()
+    opened = _notice(incident, created_at=NOW - timedelta(minutes=50))
+    recovered = _notice(incident, "INCIDENT_RECOVERED", created_at=NOW - timedelta(minutes=20))
+    db.add_all([opened, recovered])
+    await db.flush()
+
+    first_tick = await _claimed_ids(db)
+
+    assert opened.id in first_tick
+    assert recovered.id not in first_tick
+    assert (await _row(db, recovered)).state == "PENDING"
+
+    second_tick = await _claimed_ids(db)
+
+    assert recovered.id in second_tick
+
+
+@pytest.mark.parametrize(
+    ("open_state", "open_code", "recovery_claimed", "recovery_state"),
+    [
+        ("SENT", None, True, "SENDING"),
+        ("SENDING", None, True, "SENDING"),
+        # 보낸 뒤 결과를 모르는 열림 — 채널에 닿았을 수 있으므로 복구가 따른다.
+        ("HOLD", "DELIVERY_OUTCOME_UNKNOWN", True, "SENDING"),
+        # 보낼 채널이 없어 보내기 전에 보류한 열림 — 아직 나가지 않았으므로 복구는 기다린다.
+        ("HOLD", "SLACK_CHANNEL_UNAVAILABLE", False, "PENDING"),
+        ("RETRYING", None, False, "PENDING"),
+        ("FAILED", "SLACK_PERMANENT_ERROR", False, "FAILED"),
+    ],
+)
+async def test_a_recovery_is_claimed_only_after_its_open_went_out(
+    pg_async_session, open_state, open_code, recovery_claimed, recovery_state
+):
+    db = pg_async_session
+    incident = _incident("CONTENT_GENERATION_FAILED", "OPEN")
+    db.add(incident)
+    await db.flush()
+    opened = _notice(
+        incident, state=open_state, created_at=NOW - timedelta(minutes=50),
+        safe_error_code=open_code,
+    )
+    if open_state == "RETRYING":
+        # 일시 실패한 열림의 다음 시도는 아직 오지 않았다.
+        opened.next_attempt_at = NOW + timedelta(minutes=5)
+    if open_state == "SENDING":
+        opened.lease_owner = "other-worker"
+        opened.lease_expires_at = NOW + timedelta(minutes=1)
+    recovered = _notice(incident, "INCIDENT_RECOVERED", created_at=NOW - timedelta(minutes=20))
+    db.add_all([opened, recovered])
+    await db.flush()
+
+    claimed = await _claimed_ids(db)
+
+    assert (recovered.id in claimed) is recovery_claimed
+    assert (await _row(db, recovered)).state == recovery_state
+
+
+async def test_an_episode_recovery_without_any_open_of_its_episode_is_settled(pg_async_session):
+    """2회차 열림이 outbox에 없는데(알리지 않고 다시 열림) 2회차 복구만 있다 — 짝 없는 복구는 보내지 않는다."""
+
+    db = pg_async_session
+    incident = _incident("CONTENT_GENERATION_FAILED", "RECOVERED")
+    incident.episode_seq = 2
+    db.add(incident)
+    await db.flush()
+    e1_open = _notice(incident, state="SENT", episode=1, created_at=NOW - timedelta(hours=5))
+    e1_recovered = _notice(
+        incident, "INCIDENT_RECOVERED", state="SENT", episode=1, created_at=NOW - timedelta(hours=4)
+    )
+    e2_recovered = _notice(
+        incident, "INCIDENT_RECOVERED", episode=2, created_at=NOW - timedelta(minutes=20)
+    )
+    db.add_all([e1_open, e1_recovered, e2_recovered])
+    await db.flush()
+
+    assert e2_recovered.id not in await _claimed_ids(db)
+    row = await _row(db, e2_recovered)
+    assert row.state == "FAILED" and row.safe_error_code == RESOLVED_BEFORE_SEND_CODE
