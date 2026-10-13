@@ -88,7 +88,7 @@ D18~D22는 main에 먼저 기록됐다(D18~D21은 Phase 1 문서 커밋, D22는 
 
 **Phase 2** — (a)(b)(d)(e) 동일, (c) PENDING_DOMAIN 병원 목록·`schedule_set=false` ACTIVE 병원 목록 사전 기록, (f) 배포 뒤: Essence 자동 승인 → 일정 자동 생성 감사행 확인(신규 병원 없으면 테스트 병원으로 리허설), Beat `/live` 정상, GCP 경보 정책 2개 ENABLED, `deploy.sh`가 env diff·시간대 잠금·smoke를 실제로 거친 배포 기록.
 
-**Phase 3** (콘텐츠 게이트, 브랜치 `claude/autonomy-p3`, [계획](2026-10-13-p3-content-gates.md)) — (a)(b)(d)(e) 동일, (c) 배포 전: 새 이미지로 `app.utils.forbidden_impact_scan`을 돌려 운영 필터 동결본 대비 **새로 막히는 글과 새로 풀리는 글**을 모두 기록하고, 영향 글 ID와 변경 전 본문(치유 전 후보)을 보관한다, `CONTENT_HARD_FINDING_IDLE_TERMINAL=false` 유지 확인, (f) 배포 뒤: 첫 복구 스윕과 07:45·08:00 발행 뒤 참고자료 0개 진료비·병원 선택 글의 공개 여부·차단 이유·재집기 횟수, `ops_sql_report --only=q8`의 거절 사유·치유 횟수, 롤백 이미지가 게이트 카탈로그 판 `2026-10-13.1`을 유지하는지.
+**Phase 3** (콘텐츠 게이트, 브랜치 `claude/autonomy-p3`, [계획](2026-10-13-p3-content-gates.md)) — (a)(b)(d)(e) 동일, (c) 배포 전: 새 이미지로 `app.utils.forbidden_impact_scan`을 돌려 운영 필터 동결본 대비 **새로 막히는 글과 새로 풀리는 글**을 모두 기록하고, 영향 글 ID와 그 글들의 기존 승인 공개 판(`content_revision`·본문 hash·`essence_check_summary`)을 읽기 전용으로 보관한다(생성 중 결정적 치유 전 후보는 저장되지 않으므로 보관 대상이 아니다 — 치유로 저장된 본문은 롤백으로 돌아오지 않고 사람의 PATCH나 재생성으로 고친다, [런북](../ops/deployment-runbook.md) Phase 3 4번), `CONTENT_HARD_FINDING_IDLE_TERMINAL=false` 유지 확인, (f) 배포 뒤: 첫 복구 스윕과 07:45·08:00 발행 뒤 참고자료 0개 진료비·병원 선택 글의 공개 여부·차단 이유·재집기 횟수, `ops_sql_report --only=q8`의 거절 사유·치유 횟수, 롤백 이미지가 게이트 카탈로그 판 `2026-10-13.1`을 유지하는지.
 
 ## 6. 성공 지표 (감사 §5와 동일, 측정은 `ops_sql_report`)
 
