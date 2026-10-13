@@ -1710,8 +1710,16 @@ capture_smoke_baseline() {
   [[ -n "$domain" ]] \
     || fail "배포 뒤 확인할 공개 도메인을 알 수 없습니다. PUBLIC_DOMAIN이나 SITE_BASE_URL을 설정하세요."
   SMOKE_HOSTS_FILE="$(mktemp)"; TEMP_ENV_FILES+=("$SMOKE_HOSTS_FILE")
-  python3 "${SCRIPT_DIR}/deploy_smoke.py" baseline --public-domain "$domain" --out "$SMOKE_HOSTS_FILE" \
-    || fail "배포 전 공개 표면 기준선을 만들지 못했습니다."
+  # 병원 목록 조회 실패·형식 오류(2)와 정상 병원 0곳(4)은 모두 배포 전에 멈춘다 — 0곳 기준선이면
+  # 배포 뒤 확인이 병원 헬스를 하나도 보지 않고 통과한다. 공개 병원이 정말 없으면
+  # ALLOW_EMPTY_SMOKE_BASELINE=1로 명시한다.
+  local baseline_args=(baseline --public-domain "$domain" --out "$SMOKE_HOSTS_FILE")
+  if [[ "${ALLOW_EMPTY_SMOKE_BASELINE:-0}" == "1" ]]; then
+    warn "ALLOW_EMPTY_SMOKE_BASELINE=1 — 정상 병원 0곳 기준선도 받아들입니다."
+    baseline_args+=(--allow-empty-baseline)
+  fi
+  python3 "${SCRIPT_DIR}/deploy_smoke.py" "${baseline_args[@]}" \
+    || fail "배포 전 공개 표면 기준선을 만들지 못했습니다(병원 목록 조회 실패이거나 정상 병원 0곳 — 위 메시지)."
 }
 
 run_post_deploy_smoke() {

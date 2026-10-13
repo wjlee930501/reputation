@@ -1,6 +1,16 @@
 import json
 
-from scripts.deploy_smoke import SmokeResult, baseline_hosts, exit_code, public_hosts, verify
+import pytest
+
+from scripts import deploy_smoke
+from scripts.deploy_smoke import (
+    BaselineError,
+    SmokeResult,
+    baseline_hosts,
+    exit_code,
+    public_hosts,
+    verify,
+)
 
 
 def _hospitals() -> bytes:
@@ -104,3 +114,56 @@ def test_rollback_only_for_the_api_release_or_at_least_half_of_the_hospitals() -
     assert (half.needs_rollback, exit_code(half)) == (True, 1)
     assert (api.needs_rollback, exit_code(api)) == (True, 1)
     assert (clean.needs_rollback, exit_code(clean)) == (False, 0)
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        (0, b""),  # 연결 실패
+        (503, b"unavailable"),  # LB·API 장애
+        (200, b"<html>maintenance</html>"),  # 목록이 아닌 응답
+        (200, b'{"items": []}'),  # 형식이 바뀐 응답
+    ],
+)
+def test_baseline_refuses_a_failed_or_malformed_hospital_list(response) -> None:
+    fetch = _fetcher({"https://reputation.example.test/api/v1/public/hospitals": response})
+    with pytest.raises(BaselineError):
+        baseline_hosts("reputation.example.test", fetch, attempts=2, delay=0)
+    # 일시 장애일 수 있어 목록 조회는 재시도한다.
+    assert fetch.calls.count("https://reputation.example.test/api/v1/public/hospitals") == 2
+
+
+def test_baseline_accepts_a_genuinely_empty_list() -> None:
+    fetch = _fetcher({"https://reputation.example.test/api/v1/public/hospitals": (200, b"[]")})
+    assert baseline_hosts("reputation.example.test", fetch, attempts=1, delay=0) == []
+
+
+def _run_baseline(monkeypatch, tmp_path, response, *extra: str) -> tuple[int, str]:
+    fetch = _fetcher({"https://reputation.example.test/api/v1/public/hospitals": response})
+    monkeypatch.setattr(deploy_smoke, "http_get", fetch)
+    monkeypatch.setattr(deploy_smoke.time, "sleep", lambda _s: None)
+    out = tmp_path / "hosts.txt"
+    code = deploy_smoke.main(
+        ["baseline", "--public-domain", "reputation.example.test", "--out", str(out), *extra]
+    )
+    return code, out.read_text() if out.exists() else ""
+
+
+def test_baseline_cli_fails_when_the_list_cannot_be_fetched(monkeypatch, tmp_path) -> None:
+    code, written = _run_baseline(monkeypatch, tmp_path, (503, b""))
+    assert code == 2
+    assert written == ""
+
+
+def test_baseline_cli_refuses_an_empty_baseline_without_the_explicit_flag(
+    monkeypatch, tmp_path
+) -> None:
+    code, written = _run_baseline(monkeypatch, tmp_path, (200, b"[]"))
+    assert code == 4
+    assert written == ""
+
+
+def test_baseline_cli_accepts_an_empty_baseline_with_the_explicit_flag(monkeypatch, tmp_path) -> None:
+    code, written = _run_baseline(monkeypatch, tmp_path, (200, b"[]"), "--allow-empty-baseline")
+    assert code == 0
+    assert written == ""

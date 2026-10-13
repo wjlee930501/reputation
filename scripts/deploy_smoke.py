@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """배포 뒤 공개 표면 확인 — API release와 병원 헬스(`/.well-known/reputation-health`).
 
-  baseline --public-domain D --out FILE
+  baseline --public-domain D --out FILE [--allow-empty-baseline]
       배포 전 지금 정상인 병원 공개 호스트를 FILE에 적는다(이미 깨진 병원으로 롤백하지 않기 위해).
+      병원 목록 조회가 실패하거나 응답 형식이 목록이 아니면 2로 끝난다(빈 목록과 다르다).
+      정상인 병원이 한 곳도 없으면 — 병원 0곳 확인으로 배포가 통과하지 않도록 — 4로 끝난다.
+      정말 공개 병원이 없는 환경이면 `--allow-empty-baseline`을 명시한다.
   verify --public-domain D --hosts FILE --api-release SHA [--site-release REV]
       API `/api/v1/health/live`의 release가 SHA인지, FILE의 병원마다 헬스가 200이고 slug·canonical_host가 맞고
       (주어지면) Site 리비전이 REV인지 본다. 문제는 한 줄씩 출력한다. 종료 코드:
@@ -86,12 +89,33 @@ def _with_retries(check: Callable[[], str | None], attempts: int, delay: float) 
     return problem
 
 
+class BaselineError(RuntimeError):
+    """병원 목록을 받지 못했다 — 정상인 빈 목록과 구분한다."""
+
+
+def fetch_hospital_list(public_domain: str, fetch: Fetch, *, attempts: int = 3, delay: float = 5.0) -> list[object]:
+    """공개 병원 목록. 조회 실패·목록이 아닌 응답은 `BaselineError`다(빈 목록으로 바꾸지 않는다)."""
+    url = f"https://{public_domain}/api/v1/public/hospitals"
+    problem = ""
+    for attempt in range(attempts):
+        status, body = fetch(url)
+        payload = _json(body)
+        if status == 200 and isinstance(payload, list):
+            return payload
+        problem = (
+            f"병원 목록 조회가 HTTP {status or '연결 실패'}입니다"
+            if status != 200
+            else "병원 목록 응답이 목록 형식이 아닙니다"
+        )
+        if attempt < attempts - 1:
+            time.sleep(delay)
+    raise BaselineError(f"{url}: {problem}")
+
+
 def baseline_hosts(public_domain: str, fetch: Fetch, *, attempts: int = 3, delay: float = 5.0) -> list[tuple[str, str]]:
-    status, body = fetch(f"https://{public_domain}/api/v1/public/hospitals")
-    if status != 200:
-        return []
+    hospitals = fetch_hospital_list(public_domain, fetch, attempts=attempts, delay=delay)
     healthy: list[tuple[str, str]] = []
-    for host, slug in public_hosts(_json(body), public_domain):
+    for host, slug in public_hosts(hospitals, public_domain):
         problem = _with_retries(
             lambda h=host, s=slug: _health_problem(h, s, *fetch(f"https://{h}/.well-known/reputation-health"), ""),
             attempts,
@@ -166,6 +190,7 @@ def main(argv: list[str] | None = None) -> int:
     base = sub.add_parser("baseline")
     base.add_argument("--public-domain", required=True)
     base.add_argument("--out", required=True)
+    base.add_argument("--allow-empty-baseline", action="store_true")
     check = sub.add_parser("verify")
     check.add_argument("--public-domain", required=True)
     check.add_argument("--hosts", required=True)
@@ -174,7 +199,18 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "baseline":
-        healthy = baseline_hosts(args.public_domain, http_get)
+        try:
+            healthy = baseline_hosts(args.public_domain, http_get)
+        except BaselineError as exc:
+            print(f"배포 전 기준선을 만들지 못했습니다: {exc}", file=sys.stderr)
+            return 2
+        if not healthy and not args.allow_empty_baseline:
+            print(
+                "배포 전 정상 병원이 0곳입니다 — 이대로면 배포 뒤 병원 헬스를 하나도 확인하지 않습니다. "
+                "공개 병원이 정말 없으면 --allow-empty-baseline을 명시하세요.",
+                file=sys.stderr,
+            )
+            return 4
         Path(args.out).write_text("".join(f"{host} {slug}\n" for host, slug in healthy), encoding="utf-8")
         print(f"배포 전 정상 병원 {len(healthy)}곳", file=sys.stderr)
         return 0

@@ -175,6 +175,8 @@ def _make_project(tmp_path: Path) -> tuple[Path, Path, Path]:
             "with open(os.environ['FAKE_COMMAND_LOG'], 'a') as log:",
             "    log.write('SMOKE ' + ' '.join(sys.argv[1:]) + '\\n')",
             "if sys.argv[1] == 'baseline':",
+            "    if os.environ.get('FAKE_SMOKE_BASELINE_EXIT'):",
+            "        raise SystemExit(int(os.environ['FAKE_SMOKE_BASELINE_EXIT']))",
             "    out = sys.argv[sys.argv.index('--out') + 1]",
             "    open(out, 'w').write('jangpyeon.example.test jangpyeon\\n')",
             "    raise SystemExit(0)",
@@ -2256,6 +2258,28 @@ def test_failed_smoke_after_api_deploy_rolls_back(tmp_path: Path) -> None:
     assert "공개 표면 확인" in result.stderr
     assert "자동 롤백" in result.stderr
     assert commands.index("SMOKE verify") < commands.index("gcloud run services update-traffic")
+
+
+@pytest.mark.parametrize("baseline_exit", ["2", "4"])
+def test_a_failed_or_empty_smoke_baseline_stops_before_any_mutation(
+    tmp_path: Path, baseline_exit: str
+) -> None:
+    # 2 = 병원 목록 조회 실패·형식 오류, 4 = 정상 병원 0곳. 둘 다 0곳 확인으로 통과시키지 않는다.
+    result, commands = _run_target(tmp_path, "api", FAKE_SMOKE_BASELINE_EXIT=baseline_exit)
+    assert result.returncode != 0
+    assert "기준선" in result.stderr
+    assert "docker build" not in commands
+    assert "gcloud run deploy" not in commands
+
+
+def test_an_empty_smoke_baseline_is_accepted_only_when_explicitly_allowed(tmp_path: Path) -> None:
+    result, commands = _run_target(tmp_path, "api")
+    assert result.returncode == 0, result.stderr
+    assert "--allow-empty-baseline" not in commands
+    result, commands = _run_target(tmp_path / "allowed", "api", ALLOW_EMPTY_SMOKE_BASELINE="1")
+    assert result.returncode == 0, result.stderr
+    baseline = next(line for line in commands.splitlines() if line.startswith("SMOKE baseline"))
+    assert baseline.endswith("--allow-empty-baseline")
 
 
 def test_smoke_domain_comes_from_site_base_url_without_public_domain(tmp_path: Path) -> None:
