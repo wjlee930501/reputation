@@ -574,10 +574,6 @@ _EXEMPTION_SAMPLES = {
     "촬영·판독 과정의 장비 설명": ("최첨단", "첨단 장비로 정밀하게 촬영합니다."),
     "첨단 기술 주장을 부정": ("최첨단", "첨단 기술이 효과를 기대하기 어렵습니다."),
     "공적 제도의 무료 검진·검사·상담 안내": ("할인·유인", "보건소에서 무료 검사를 받을 수 있습니다."),
-    "공적 제도의 무료 검진·검사·상담 안내(제도가 뒤에 오는 문장)": (
-        "할인·유인",
-        "무료 검사는 보건소에서 받을 수 있습니다.",
-    ),
     "연령·주기로 정한 정기 검진 대상 안내": ("할인·유인", "만 40세 이상은 2년마다 무료 검진 대상입니다."),
     "건강보험 제도의 본인부담 면제·환급 안내": ("할인·유인", "차상위 계층은 본인부담금 면제 대상입니다."),
     "본인부담 면제·환급 자격(대상) 안내": ("할인·유인", "본인부담금 환급 대상입니다."),
@@ -632,6 +628,21 @@ def test_every_exemption_sample_passes_but_its_guarantee_variant_is_blocked(reas
         "완전 회복까지 3개월 " * 1500 + "보장",
         "병원" * 8000,
         "저희" * 8000,
+        # 2회차 교차 검토: 문장 전체를 넘기는 같은 문장 검사의 느린 모양(공적 단어·병원 지칭 반복,
+        # 연령·주기 숫자열)과 마침표 없는 긴 문장의 보장 표지.
+        "국가 " * 4000 + "무료 검사",
+        "보건소" * 5000 + "무료 검사",
+        "저희 " * 5000 + "본인부담금 면제 대상",
+        "본원" * 8000 + "무료 검사",
+        "9" * 16000 + "세 무료 검진 대상",
+        "9" * 16000 + "년마다 무료 검진 대상",
+        "본인부담금 면제 대상 " * 1500,
+        "무료 검진 대상 " * 2000,
+        "반드시 " * 4000 + "상담",
+        "반드시 상담 " * 2500 + "낫습니다",
+        "증상은 통증 없이 " * 1500 + "사라집니다",
+        "완전 회복까지 3주 " * 1500 + "약속",
+        "예약 " * 5000 + "무료 검사",
     ],
 )
 def test_long_adversarial_inputs_finish_quickly(text):
@@ -640,3 +651,144 @@ def test_long_adversarial_inputs_finish_quickly(text):
     started = time.perf_counter()
     check_forbidden(text)
     assert time.perf_counter() - started < 0.1
+
+
+def test_same_sentence_patterns_are_linear_on_long_inputs():
+    """같은 문장 검사는 문장 전체(길이 상한 없음)를 받으므로 정규식 자체가 위치마다 끝까지 훑지 않는다."""
+
+    import time
+
+    from app.utils import medical_filter as mf
+
+    patterns = [
+        mf._HOSPITAL_SELF,
+        mf._PUBLIC_PROGRAM,
+        mf._COPAY_PROGRAM,
+        mf._PROGRAM_DISTANCING,
+        mf._OFFERING,
+        mf._BOOKING,
+        mf._SCREENING_SCHEDULE,
+        mf._OUTCOME_GUARANTEE,
+        mf._OUTCOME_PREDICATE,
+        mf._SENTENCE_BOUNDARY,
+    ]
+    inputs = [
+        "9" * 16000,
+        "국가 " * 4000,
+        "저희" * 8000,
+        "병원" * 8000,
+        "예약 " * 5000,
+        "반드시 " * 4000,
+        "1." * 8000,
+    ]
+    for pattern in patterns:
+        for text in inputs:
+            started = time.perf_counter()
+            list(pattern.finditer(text))
+            assert time.perf_counter() - started < 0.1, (pattern.pattern[:40], text[:10])
+
+
+# ── 2회차 교차 검토(2026-10-13): 같은 문장 전체·방향 무관 판정 ─────────────────────────────
+
+# 결과 보장 동의어와 '반드시 + 결과 술어'. 기준 커밋(7a1e2174)의 동결 필터도 모두 막는다.
+_GUARANTEE_BYPASSES = (
+    ("완전 회복까지 1주면 충분하며 끝까지 책임지고 낫게 합니다", "완치"),
+    ("완전 회복까지 1주면 100프로 낫습니다", "완치"),
+    ("완전 회복까지 1주면 완벽하게 낫습니다", "완치"),
+    ("완전 회복까지 1주면 반드시 낫습니다, 상담하세요", "완치"),
+    ("증상은 통증 없이 사라지도록 책임지고 해결합니다", "통증 없는"),
+    ("증상은 통증 없이 100프로 사라집니다", "통증 없는"),
+    ("증상은 통증 없이 완벽하게 사라집니다", "통증 없는"),
+    ("증상은 통증 없이 반드시 사라지니 상담하세요", "통증 없는"),
+)
+
+
+@pytest.mark.parametrize(("text", "expected"), _GUARANTEE_BYPASSES)
+def test_guarantee_synonyms_and_outcome_bound_bandeusi_are_blocked(text, expected):
+    from app.utils import medical_filter_baseline
+
+    assert expected in check_forbidden(text)
+    assert expected in medical_filter_baseline.check_forbidden(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # 보장 표지는 문장 안 거리와 무관하다(200자 창 밖의 '보장').
+        "완전 회복까지 3주가 걸리며 " + "가" * 400 + " 그 결과를 보장합니다",
+        "보장합니다 " + "가" * 400 + " 완전 회복까지 3주가 걸립니다",
+    ],
+)
+def test_a_guarantee_anywhere_in_the_sentence_revokes_the_exemption(text):
+    assert "완치" in check_forbidden(text)
+    # 문장이 끝나면 다른 문장이다.
+    assert check_forbidden("완전 회복까지 3주가 걸립니다. 결과는 보장할 수 없습니다.") == []
+
+
+_LURES_MISSED_IN_ROUND_2 = (
+    # 병원 지칭이 뒤에 있음
+    "본인부담금 환급 대상은 우리 병원 고객입니다",
+    # 혜택·예약이 앞에 있음
+    "혜택으로 본인부담금 면제 대상입니다",
+    "예약하세요, 본인부담금 면제 대상입니다",
+    "예약하세요, 국가검진 무료 검사",
+    "혜택으로 국가검진 무료 검사",
+    # 예약·권유 활용형
+    "본인부담금 면제 대상이니 예약 바랍니다",
+    "본인부담금 면제 대상이니 예약을 권합니다",
+    "본인부담금 면제 대상이니 예약하시면 됩니다",
+    "본인부담금 환급 대상이면 지금 예약해 보세요",
+    "건강검진 무료 검사 예약 신청",
+    "건강검진 무료 상담을 받으세요",
+    # 공적 단어가 있어도 제도와 거리를 두는 문장
+    "무료 검진은 건강검진 상품입니다",
+    "건강검진 고객에게 무료 검사를 제공합니다",
+    "국가검진과 별도로 신규 고객 무료 검사 진행",
+    "국가검진 대상이 아니어도 무료 검사 가능",
+    "건강보험과 관계없이 무료 상담 가능",
+    "보건소 옆에서 무료 검사 예약 접수 중",
+    "무료 상담은 우리 병원의 건강검진 서비스입니다",
+    # 본인부담금 조사·활용형
+    "우리 의원은 본인부담금을 면제해 드립니다",
+    "본인부담금은 전액 면제해 드립니다",
+    # 병원 지칭이 40자 창 밖에 있음
+    "저희 병원은 " + "상세 안내 " * 20 + "본인부담금 면제 대상입니다",
+)
+
+
+@pytest.mark.parametrize("text", _LURES_MISSED_IN_ROUND_2)
+def test_lure_conditions_apply_to_the_whole_sentence_in_either_direction(text):
+    assert "할인·유인" in check_forbidden(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # 대표 정책: 혜택·예약 문형은 공적 기관 문장이어도 HARD다(계획 Q1에 기록).
+        "보건소에서 무료 검사를 제공해 드립니다",
+        "보건소 무료 검사 대상 여부는 예약하세요가 아니라 공식 공고로 확인합니다",
+        "보건소는 무료 검사 예약을 받습니다",
+    ],
+)
+def test_offer_and_booking_wording_stays_hard_even_for_public_programs(text):
+    assert "할인·유인" in check_forbidden(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # '지정 병원에서'는 병원 자기 지칭이 아니다.
+        "국가 건강검진 대상자는 지정 병원에서 무료 검사를 받을 수 있습니다",
+        # 보험 보장·부담률·일정 약속은 치료 결과 보장이 아니다.
+        "건강보험의 보장은 항목마다 다르며 비급여는 100% 본인부담입니다",
+        "비급여는 100% 본인부담이 확실합니다",
+        "비급여는 100% 본인부담이며 상담 약속을 잡으세요",
+        # 권고형 '반드시'가 결과 술어 앞이 아니라 뒤에 오면 권고다.
+        "완전 회복까지 3개월이 걸리니 반드시 정기 검진을 받으세요",
+        "증상이 사라지지 않으면 반드시 상담하세요",
+        "의료급여 수급자는 본인부담금이 면제되는 경우가 있습니다",
+        "본인부담금은 면제되지 않습니다",
+    ],
+)
+def test_insurance_copay_and_appointment_wording_is_not_an_outcome_guarantee(text):
+    assert check_forbidden(text) == []
