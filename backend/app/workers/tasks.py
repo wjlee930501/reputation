@@ -495,6 +495,8 @@ from app.workers.generation_attempt_state import (
     GenerationBudgetExceeded,
     GenerationBudgetLedger,
     GenerationBudgetUnknown,
+    attempt_spend_stays_unknown,
+    legacy_generation_budget_replaced,
     released_generation_attempt,
     writer_acquisition_prefix,
 )
@@ -1485,6 +1487,11 @@ def _remember_generation_attempt(
         attempt["next_retry_at"] = None
     for key, value in (extra or {}).items():
         attempt[key] = value
+    if GENERATION_BUDGET_KEY not in attempt and attempt_spend_stays_unknown(previous, reason):
+        # 지출을 모르는 레거시 기록 위의 결정은 계수를 쓰지 않는다. 계수 0을 쓰면 다음 읽기가
+        # KNOWN_COUNTERS(0)로 읽어 감사된 교체 없이 새 예산이 생긴다(2026-10-13, 23개 슬롯).
+        attempt.pop("attempt_count", None)
+        attempt.pop("provider_attempt_count", None)
     updated[_GENERATION_ATTEMPT_KEY] = attempt
     item.essence_check_summary = updated
     db.commit()
@@ -6218,6 +6225,12 @@ def regenerate_content_item(self, content_id: str):
                         stored_attempt.get("reason") == "CONTENT_NOT_GENERATED"
                         or stored_attempt.get("retry_class")
                         == GenerationRetryClass.ENVIRONMENT_RECOVERABLE.value
+                        # 감사된 레거시 예산 교체 뒤의 재시도. 교체 함수가 억제를 이미 풀지만,
+                        # 억제를 남기던 이전 판의 교체로 바뀐 행도 여기서 푼다.
+                        or (
+                            stored_attempt.get("reason") == "LEGACY_SPEND_UNKNOWN"
+                            and legacy_generation_budget_replaced(item.essence_check_summary)
+                        )
                     )
                 ):
                     # 운영자가 누른 “작업 다시 시도”가 같은 원인 억제에 걸려 작가 0회로 끝나지

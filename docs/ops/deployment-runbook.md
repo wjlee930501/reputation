@@ -250,6 +250,8 @@ WHERE status NOT IN ('PUBLISHED','CANCELLED','WITHHELD');
 **Phase 0 — 배포 뒤 1회 조치.** 배포만으로는 이미 기한 없이 굳은 슬롯이 풀리지 않는다(게이트가 예전에 `OPERATOR_REQUIRED`로
 남긴 `CONTENT_NOT_GENERATED` 등). `ops_sql_report --only=q4`로 `OPERATOR_REQUIRED`·`INPUT_CHANGE_REQUIRED` 슬롯을 원인별로 뽑고,
 그중 원고 미생성으로 동결된 슬롯은 운영센터 사고 큐(`/operations?queue=incidents`)의 "작업 다시 시도"로 한 번 풀어 준다. `LEGACY_SPEND_UNKNOWN`(2026-10-11 조회 기준 12건)은 이 버튼으로 풀리지 않는다 — 운영센터의 "레거시 예산 교체 후 다시 시도"(`POST /api/admin/hospitals/{h}/content/{c}/regenerate`, 사유 필수·검증된 actor·멱등 키)로 글마다 예산을 교체해야 하며, 사람이 지출 사실을 확인하는 감사 가능한 행위라 일괄 스크립트로 대신하지 않는다.
+**승인된 1회 예외(2026-10-13 대표 결정 D22):** 10/9 이전에 만든 빈 슬롯 23건(10/12~15 예정, `LEGACY_SPEND_UNKNOWN` 11 + 게이트가 `CONTENT_NOT_GENERATED`로 덮은 12)은 버튼과 같은 교체 함수(`generation_attempt_state.replace_legacy_budget_and_release`)를 시스템 actor `system:legacy-budget-reset-20261013`로 부르는 CLI로 한 번에 교체한다. 교체는 행마다 행 잠금·감사 로그(`LEGACY_BUDGET_REPLACED`, 교체 전 시도 기록 전체 포함)·커밋이며, 억제를 풀어 다음 복구 스윕이 다시 쓴다. 대상은 공개 이력·제목·본문이 없고 2026-10-09 16:00 UTC 이전에 생성된 DRAFT/READY 중 저장 원인 또는 열린 사고 코드가 `LEGACY_SPEND_UNKNOWN`이고 교체 함수가 받아들이는 행이며, 두 번째 실행은 0건이다. 이 예외는 이 23건에만 적용하고 이후의 레거시 슬롯은 위 버튼으로 처리한다:
+`gcloud run jobs execute reputation-migrate --project mso-platform-481505 --region asia-northeast3 --wait --args=python,-m,app.utils.legacy_budget_reset` (dry-run, 건수·id 확인) → `--args="^@^python@-m@app.utils.legacy_budget_reset@--apply@--reason=<사유>"` (적용). 이 CLI가 든 이미지가 배포되기 전에는 같은 코드를 base64 `python -c`로 넘긴다.
 다음 날 지표는 MasterPlan §5 Phase 0 (f)를 따른다.
 
 **10/8 배치(PR #226, `0083_add_operation_run_not_before`) — 0083 migrate Job을 먼저 끝내고, 코드는 그 다음 배포한다.**
