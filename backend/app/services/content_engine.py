@@ -33,10 +33,12 @@ from app.services.essence_engine import (
 )
 from app.services.must_use_exclusions import approved_must_use_messages_with_record
 from app.services.must_use_verbatim import (
+    appears_as_standalone_sentence,
     approved_philosophy,
     missing_must_use_messages,
     normalize_verbatim,
     required_must_use_messages,
+    sentence_holds_must_use,
 )
 from app.services.openrouter import NON_RETRYABLE_LLM_ERRORS
 from app.services.question_wellformed import (
@@ -1825,7 +1827,7 @@ def _heal_forbidden_sentences(
     if not error.body_only:
         return None
     result = error.result
-    must_use = [normalize_verbatim(message) for message in must_use_messages or []]
+    must_use = [message for message in must_use_messages or [] if normalize_verbatim(message)]
     kept_lines: list[str] = []
     removed = 0
     for line in str(result.get("body") or "").split("\n"):
@@ -1840,9 +1842,8 @@ def _heal_forbidden_sentences(
         dropped = [sentence for sentence in sentences if check_forbidden_markdown(sentence)]
         if not dropped:
             return None  # 위반이 문장 경계를 넘는다 — 문장 하나로 짚을 수 없다
-        if any(
-            key and key in normalize_verbatim(sentence) for sentence in dropped for key in must_use
-        ):
+        # 여러 문장짜리 필수 문구의 한 문장만 지워도 필수 문구가 깨진다 — 최소 교정과 같은 판정.
+        if any(sentence_holds_must_use(sentence, must_use) for sentence in dropped):
             return None
         removed += len(dropped)
         if kept:
@@ -1870,7 +1871,15 @@ def _heal_missing_must_use(
     if result is None or not error.missing:
         return None
     body = (result.get("body") or "").rstrip()
-    appended = "\n\n".join(message.strip() for message in error.missing)
+    # 이미 독립된 문장으로 들어 있는 문구는 다시 붙이지 않는다(같은 거절이 되풀이돼도 한 번만 붙는다).
+    missing = [
+        message.strip()
+        for message in error.missing
+        if message.strip() and not appears_as_standalone_sentence(body, message)
+    ]
+    if not missing:
+        return None
+    appended = "\n\n".join(missing)
     result["body"] = f"{body}\n\n{appended}"
     return result
 

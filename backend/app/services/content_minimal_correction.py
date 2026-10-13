@@ -43,6 +43,7 @@ from app.services.content_engine import CONTENT_BODY_MIN_CHARS, body_plain_lengt
 from app.services.must_use_verbatim import (
     appears_as_standalone_sentence,
     normalize_verbatim,
+    sentence_holds_must_use,
 )
 from app.utils.medical_filter import check_forbidden, check_forbidden_markdown
 
@@ -362,12 +363,7 @@ def sentence_span(text: str, start: int, end: int) -> tuple[int, int] | None:
 def _contains_must_use(sentence: str, must_use_messages: Iterable[str]) -> bool:
     """문장이 필수 문구를 담거나, 여러 문장짜리 필수 문구의 한 문장인가 — 둘 다 고치지 않는다."""
 
-    normalized = normalize_verbatim(sentence)
-    return any(
-        ((key := normalize_verbatim(message)) and key in normalized)
-        or (normalized and appears_as_standalone_sentence(message, sentence))
-        for message in must_use_messages
-    )
+    return sentence_holds_must_use(sentence, must_use_messages)
 
 
 # 교정 패스가 손댈 수 있는 글의 상태. 발행(공개) 이력이 있거나 사람이 편집한 글, 공개·비공개 보존·

@@ -142,10 +142,33 @@ async def test_an_exam_title_with_a_standalone_treatment_word_is_fixed_before_re
         # 시술은 치료와 자연스럽게 붙는다 — 고칠 것이 없다.
         ("임플란트 치료 비용 안내", None),
         ("허리 디스크 치료 방법", None),
+        # 집속 초음파는 치료 시술이다 — 검사가 아니다.
+        ("고강도 집속 초음파 치료 비용 안내", None),
+        ("자궁근종 집속초음파 치료 안내", None),
+        ("집속 초음파 치료와 갑상선초음파 치료 비용", "집속 초음파 치료와 갑상선초음파 비용"),
     ],
 )
 def test_drop_treatment_after_exam_only_touches_a_standalone_word(title, fixed):
     assert drop_treatment_after_exam(title) == fixed
+
+
+def test_treatment_ultrasound_is_not_an_exam_with_treatment_wording():
+    from app.services.question_wellformed import treatment_applied_to_exam
+
+    assert treatment_applied_to_exam("고강도 집속 초음파 치료 비용") is False
+    assert treatment_applied_to_exam("집속초음파 치료 안내") is False
+    assert treatment_applied_to_exam("갑상선초음파 치료 비용") is True
+
+
+def test_drop_treatment_after_exam_logs_the_rewrite(caplog):
+    import logging
+
+    with caplog.at_level(logging.INFO, logger="app.services.question_wellformed"):
+        assert drop_treatment_after_exam("심장 MRI 치료 안내") == "심장 MRI 안내"
+    assert any(
+        "심장 MRI 치료 안내" in record.getMessage() and "심장 MRI 안내" in record.getMessage()
+        for record in caplog.records
+    )
 
 
 # ── E5(2026-10-13): 결정적 거절의 사유를 센다 ───────────────────────────────────────
@@ -204,3 +227,162 @@ def test_review_session_keeps_the_counts_in_the_saved_summary():
     _merge_rejection_counts(total, None)
     assert total == {"rejected": {"forbidden": 2, "price": 1}, "healed": {"forbidden": 1}}
     assert GENERATION_REJECTIONS_SUMMARY_KEY == "generation_rejections"
+
+
+# ── 삭제 치유의 경계(2026-10-13 검토 반영) ─────────────────────────────────────────
+
+
+def _forbidden_error(body_line: str) -> content_engine.ForbiddenExpressionError:
+    payload = _payload(body_line)
+    return content_engine.ForbiddenExpressionError(
+        "Forbidden medical expressions require complete regeneration: ['최고']",
+        payload,
+        body_only=True,
+    )
+
+
+def _heal(error, must_use: list[str] | None = None):
+    return content_engine._heal_forbidden_sentences(
+        error, SimpleNamespace(name="테스트의원"), must_use_messages=list(must_use or [])
+    )
+
+
+def test_deletion_refuses_one_sentence_of_a_two_sentence_must_use_message():
+    """두 문장짜리 필수 문구의 한 문장만 지워도 필수 문구가 깨진다 — 지우지 않는다."""
+
+    message = f"정기 검진이 중요합니다. {AD_SENTENCE}"
+    assert content_engine._heal_forbidden_sentences is not None
+    assert _heal(_forbidden_error(f"검사 전날 식단을 조절합니다. {message}"), [message]) is None
+
+
+def test_deletion_refuses_a_line_whose_sentence_carries_a_must_use_message():
+    message = "최고의 의료진이 진료합니다"
+    assert _heal(_forbidden_error(f"검사 전날 식단을 조절합니다. {AD_SENTENCE}"), [message]) is None
+
+
+@pytest.mark.parametrize("line", [f"## {AD_SENTENCE}", f"| 항목 | {AD_SENTENCE} |"])
+def test_deletion_refuses_heading_and_table_lines(line):
+    assert _heal(_forbidden_error(f"검사 전날 식단을 조절합니다.\n{line}")) is None
+
+
+def test_deletion_keeps_the_list_marker_of_the_line():
+    healed = _heal(_forbidden_error(f"\n- 검사 전날 식단을 조절합니다. {AD_SENTENCE}"))
+
+    assert healed is not None
+    assert "\n- 검사 전날 식단을 조절합니다.\n" in healed["body"]
+    assert AD_SENTENCE not in healed["body"]
+
+
+def _install_validator(monkeypatch, outcomes: list):
+    """`_validate_generated_result`를 정해진 결과(예외 또는 dict) 순서로 바꾼다."""
+
+    calls: list[dict] = []
+
+    def fake_validate(result, *_args, **_kwargs):
+        calls.append(dict(result))
+        outcome = outcomes[len(calls) - 1]
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(content_engine, "_validate_generated_result", fake_validate)
+    return calls
+
+
+def test_heal_chain_deletion_then_hospital_name_is_validated_again(monkeypatch):
+    original = _forbidden_error(f"검사 전날 식단을 조절합니다. {AD_SENTENCE}")
+    original.result["body"] = original.result["body"].replace("테스트의원 ", "")
+    calls = _install_validator(
+        monkeypatch,
+        [
+            content_engine.HospitalNameMissingError("GEO hard-fail: 병원명 누락", original.result),
+            {"ok": True},
+        ],
+    )
+
+    healed, error = content_engine._apply_deterministic_heals(
+        original,
+        SimpleNamespace(name="테스트의원", director_name="김의사"),
+        content_engine.ContentType.NOTICE,
+        None,
+        must_use_messages=[],
+    )
+
+    assert healed == {"ok": True}
+    assert error is original
+    assert len(calls) == 2
+    assert AD_SENTENCE not in calls[1]["body"]
+    assert calls[1]["body"].rstrip().endswith("이 글은 테스트의원에서 안내합니다.")
+
+
+def test_heal_chain_failure_after_a_deletion_passes_the_original_rejection_on(monkeypatch):
+    """지운 뒤의 거절은 우리가 만든 것이다 — 작가에게는 원래 거절(금지 표현)을 넘긴다."""
+
+    original = _forbidden_error(f"검사 전날 식단을 조절합니다. {AD_SENTENCE}")
+    _install_validator(
+        monkeypatch,
+        [
+            content_engine.HospitalNameMissingError("GEO hard-fail: 병원명 누락", original.result),
+            ValueError("Generated content contains an unverified fixed price or coverage claim"),
+        ],
+    )
+
+    healed, error = content_engine._apply_deterministic_heals(
+        original,
+        SimpleNamespace(name="테스트의원", director_name="김의사"),
+        content_engine.ContentType.NOTICE,
+        None,
+        must_use_messages=[],
+    )
+
+    assert healed is None
+    assert error is original
+
+
+def test_hard_removal_findings_leave_out_uncertain_findings_without_a_quote():
+    from app.services import content_ai_review
+    from app.services.content_review_feedback import hard_removal_findings
+
+    def finding(severity: str, message: str, quote: str = ""):
+        return content_ai_review.ContentAiFinding(
+            severity=content_ai_review.ContentAiFindingSeverity(severity),
+            kind=content_ai_review.ContentAiFindingKind("MEDICAL_SAFETY"),
+            message=message,
+            quote=quote,
+        )
+
+    hard = finding("HARD", "응급 안내 없이 출혈을 다뤘습니다.", "피가 나면 지켜보세요.")
+    unquoted = finding("UNCERTAIN", "확신이 충분하지 않습니다.")
+
+    removal = hard_removal_findings(SimpleNamespace(blocking_findings=(hard, unquoted)))
+
+    assert removal[1:] == [hard.message]
+
+
+def test_missing_must_use_heal_does_not_append_a_message_already_in_the_body():
+    payload = _payload(MUST_USE_SCREENING)
+    error = content_engine.MissingMustUseMessagesError(
+        "Required must_use messages missing verbatim (2): ...",
+        payload,
+        (MUST_USE_2CM, MUST_USE_SCREENING),
+    )
+
+    healed = content_engine._heal_missing_must_use(
+        error, SimpleNamespace(), must_use_messages=[MUST_USE_2CM, MUST_USE_SCREENING]
+    )
+
+    assert healed is not None
+    assert healed["body"].count(MUST_USE_SCREENING) == 1
+    assert healed["body"].rstrip().endswith(MUST_USE_2CM)
+
+    only_present = content_engine.MissingMustUseMessagesError(
+        "Required must_use messages missing verbatim (1): ...",
+        _payload(MUST_USE_SCREENING),
+        (MUST_USE_SCREENING,),
+    )
+    assert (
+        content_engine._heal_missing_must_use(
+            only_present, SimpleNamespace(), must_use_messages=[MUST_USE_SCREENING]
+        )
+        is None
+    )
