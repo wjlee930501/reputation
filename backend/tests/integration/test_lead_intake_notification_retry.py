@@ -383,3 +383,277 @@ async def test_the_intake_response_records_the_sms_incident_in_its_own_commit(pg
     assert await _incidents(pg_async_session, lead.id, "INQUIRY_SMS_FAILED") == 1
     await pg_async_session.refresh(lead)
     assert lead.ack_sms_status == "FAILED"
+
+
+# ── 접수 API의 발송 claim(Codex R2-1): SENDING을 커밋한 뒤에만 보낸다.
+
+
+def _intake_body():
+    from app.api.public import leads as leads_api
+
+    return leads_api.LeadCreate(
+        clinic_name="접수claim의원",
+        clinic_type="도입문의",
+        contact="010-1234-5678",
+        question="문의",
+        privacy=True,
+        source_path="/contact",
+    )
+
+
+async def _call_intake(session, monkeypatch, *, notify):
+    from types import SimpleNamespace
+
+    from fastapi import BackgroundTasks
+
+    from app.api.public import leads as leads_api
+    from app.services import inquiry_sms
+
+    async def skipped_sms(_db, lead):
+        lead.ack_sms_status = "SKIPPED"
+        return inquiry_sms.AckSmsOutcome("SKIPPED", "stub")
+
+    monkeypatch.setattr(inquiry_sms, "acknowledge_inquiry", skipped_sms)
+    monkeypatch.setattr(notifier, "notify_lead_created", notify)
+    request = SimpleNamespace(
+        headers=SimpleNamespace(get=lambda _k, default=None: default),
+        client=SimpleNamespace(host="127.0.0.1"),
+    )
+    return await leads_api.create_lead.__wrapped__(
+        request=request, body=_intake_body(), background_tasks=BackgroundTasks(), db=session
+    )
+
+
+async def _intake_lead(session) -> SalesLead:
+    return (
+        await session.execute(
+            select(SalesLead)
+            .where(SalesLead.clinic_name == "접수claim의원")
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one()
+
+
+async def _age(session, lead, delta):
+    lead.created_at = datetime.now(timezone.utc) - delta
+    await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_a_crash_after_the_sending_claim_is_never_resent_and_expires_to_an_incident(
+    pg_async_session, monkeypatch
+):
+    """보낸 직후(또는 보내는 도중) 접수 API가 죽었다 — 갔는지 모른다. 다시 보내지 않고 사고로 끝낸다."""
+
+    async def died_while_sending(**_payload):
+        raise RuntimeError("process died after the Slack POST")
+
+    with pytest.raises(RuntimeError):
+        await _call_intake(pg_async_session, monkeypatch, notify=died_while_sending)
+
+    lead = await _intake_lead(pg_async_session)
+    assert lead.notification_status == "SENDING"  # 발송 전에 커밋된 claim
+
+    monkeypatch.setattr(notifier, "notify_lead_created", lambda **_k: pytest.fail("must not resend"))
+    await _age(pg_async_session, lead, timedelta(minutes=20))
+    assert str(lead.id) not in await leadgen._lead_notifications_to_dispatch(pg_async_session)
+    assert await leadgen._notify_lead_intake_in(pg_async_session, str(lead.id)) == {
+        "skipped": "already_claimed_or_finished"
+    }
+
+    await _age(pg_async_session, lead, timedelta(hours=2))
+    expired = await leadgen._expire_inquiry_notifications(pg_async_session)
+
+    assert lead.id in expired
+    assert (await _intake_lead(pg_async_session)).notification_status == "FAILED"
+    assert await _incidents(pg_async_session, lead.id) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_crash_before_the_sending_claim_leaves_null_and_is_resent_after_the_grace(
+    pg_async_session, monkeypatch
+):
+    """claim을 커밋하기 전에 죽었다 — 아무도 보내지 않았다. 15분 뒤 drain이 한 번 보낸다."""
+
+    from app.services import inquiry_diagnosis
+
+    async def died_before_claim(*_a, **_k):
+        raise RuntimeError("process died while creating the diagnosis")
+
+    monkeypatch.setattr(inquiry_diagnosis, "create_inquiry_diagnosis", died_before_claim)
+    monkeypatch.setattr(
+        "app.api.public.leads.LeadCreate.diagnosis_input", lambda _self: object()
+    )
+    with pytest.raises(RuntimeError):
+        await _call_intake(
+            pg_async_session, monkeypatch, notify=lambda **_k: pytest.fail("not reached")
+        )
+
+    lead = await _intake_lead(pg_async_session)
+    assert lead.notification_status is None
+    assert str(lead.id) not in await leadgen._lead_notifications_to_dispatch(pg_async_session)
+
+    sent = []
+
+    async def resend(**payload):
+        sent.append(payload)
+        return True
+
+    monkeypatch.setattr(notifier, "notify_lead_created", resend)
+    await _age(pg_async_session, lead, timedelta(minutes=20))
+    assert str(lead.id) in await leadgen._lead_notifications_to_dispatch(pg_async_session)
+    await leadgen._notify_lead_intake_in(pg_async_session, str(lead.id))
+    await leadgen._notify_lead_intake_in(pg_async_session, str(lead.id))
+
+    assert len(sent) == 1
+    assert (await _intake_lead(pg_async_session)).notification_status == "SENT"
+
+
+@pytest.mark.asyncio
+async def test_the_normal_intake_marks_sent_and_the_drain_leaves_it_alone(
+    pg_async_session, monkeypatch
+):
+    calls = []
+
+    async def ok(**payload):
+        calls.append(payload)
+        return True
+
+    response = await _call_intake(pg_async_session, monkeypatch, notify=ok)
+
+    lead = await _intake_lead(pg_async_session)
+    assert response["ok"] is True and len(calls) == 1
+    assert lead.notification_status == "SENT" and lead.notification_error is None
+    await _age(pg_async_session, lead, timedelta(minutes=20))
+    assert str(lead.id) not in await leadgen._lead_notifications_to_dispatch(pg_async_session)
+
+
+@pytest.mark.asyncio
+async def test_a_failed_intake_send_is_left_pending_for_the_drain(pg_async_session, monkeypatch):
+    async def down(**_payload):
+        return False
+
+    await _call_intake(pg_async_session, monkeypatch, notify=down)
+
+    lead = await _intake_lead(pg_async_session)
+    assert lead.notification_status == "PENDING"
+    assert str(lead.id) in await leadgen._lead_notifications_to_dispatch(pg_async_session)
+
+
+# ── 만료·메움 스윕은 다른 트랜잭션이 잡은 행을 기다리지 않는다(Codex R2-4, lead 쪽).
+#    잠금 경합은 커밋된 행에서만 보이므로 이 둘은 실제 커밋과 두 번째 연결을 쓰고 스스로 지운다.
+
+_LOCK_CLINIC = "잠금만료가상의원"
+
+
+@pytest.fixture
+async def committed_sessions():
+    from sqlalchemy import delete, text
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from tests.db_env import require_db_url
+
+    url = require_db_url("INTEGRATION_DATABASE_URL")
+    for prefix in ("postgresql+psycopg2://", "postgresql://"):
+        if url.startswith(prefix):
+            url = "postgresql+asyncpg://" + url[len(prefix):]
+    engine = create_async_engine(url)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+
+    async def cleanup():
+        async with sessions() as db:
+            await db.execute(text("SET lock_timeout = '5s'"))
+            await db.execute(delete(SalesLead).where(SalesLead.clinic_name == _LOCK_CLINIC))
+            await db.commit()
+
+    await cleanup()
+    try:
+        yield sessions
+    finally:
+        await cleanup()
+        await engine.dispose()
+
+
+async def _committed_leads(sessions, *statuses, age=timedelta(hours=2)):
+    now = datetime.now(timezone.utc)
+    async with sessions() as db:
+        leads = [
+            SalesLead(
+                clinic_name=_LOCK_CLINIC, clinic_type="도입문의", contact="010-0000-0000",
+                privacy=True, source="INQUIRY", notification_status=status,
+            )
+            for status in statuses
+        ]
+        db.add_all(leads)
+        await db.flush()
+        for lead in leads:
+            lead.created_at = now - age
+        await db.commit()
+        return [lead.id for lead in leads]
+
+
+async def _status(sessions, lead_id):
+    async with sessions() as db:
+        return await db.scalar(select(SalesLead.notification_status).where(SalesLead.id == lead_id))
+
+
+@pytest.mark.asyncio
+async def test_expiry_skips_a_row_locked_elsewhere_and_finishes_the_others(
+    committed_sessions, monkeypatch
+):
+    import time
+
+    from sqlalchemy import text
+
+    opened = []
+
+    async def record_incident(_db, lead_id):
+        opened.append(lead_id)
+
+    monkeypatch.setattr(leadgen, "_open_intake_notice_incident", record_incident)
+    first, locked, last = await _committed_leads(committed_sessions, "PENDING", "PENDING", "PENDING")
+
+    async with committed_sessions() as holder:
+        await holder.execute(
+            select(SalesLead.id).where(SalesLead.id == locked).with_for_update()
+        )
+        async with committed_sessions() as sweep:
+            # 예전처럼 잠긴 행을 기다리면 이 제한에 걸려 tick이 3초를 쓴다.
+            await sweep.execute(text("SET lock_timeout = '3s'"))
+            started = time.monotonic()
+            expired = await leadgen._expire_inquiry_notifications(sweep)
+            elapsed = time.monotonic() - started
+        await holder.rollback()
+
+    assert elapsed < 2
+    assert set(expired) == {first, last}
+    assert sorted(opened) == sorted([first, last])
+    assert await _status(committed_sessions, locked) == "PENDING"  # 다음 tick이 끝낸다
+    assert await _status(committed_sessions, first) == "FAILED"
+
+
+@pytest.mark.asyncio
+async def test_incident_repair_skips_a_row_locked_elsewhere(committed_sessions, monkeypatch):
+    from sqlalchemy import text
+
+    opened = []
+
+    async def record_incident(_db, lead_id):
+        opened.append(lead_id)
+
+    monkeypatch.setattr(leadgen, "_open_intake_notice_incident", record_incident)
+    free, locked = await _committed_leads(
+        committed_sessions, "FAILED", "FAILED", age=timedelta(hours=3)
+    )
+
+    async with committed_sessions() as holder:
+        await holder.execute(
+            select(SalesLead.id).where(SalesLead.id == locked).with_for_update()
+        )
+        async with committed_sessions() as sweep:
+            await sweep.execute(text("SET lock_timeout = '3s'"))
+            await leadgen._repair_missing_lead_incidents(sweep)
+        await holder.rollback()
+
+    assert free in opened
+    assert locked not in opened

@@ -30,10 +30,25 @@ class FakeRequest:
         self.client = SimpleNamespace(host=ip)
 
 
+class _Result:
+    def __init__(self, value):
+        self._value = value
+
+    def scalar_one_or_none(self):
+        return self._value
+
+
 class FakeDB:
+    """접수 알림의 SENDING claim·결과 CAS(`UPDATE … RETURNING`)는 항상 한 행을 잡는다."""
+
     def __init__(self):
         self.added = []
         self.committed = False
+        self.statements = []
+
+    async def execute(self, statement):
+        self.statements.append(statement)
+        return _Result("lead-id")
 
     async def commit(self):
         self.committed = True
@@ -555,8 +570,9 @@ async def test_a_failed_sms_records_its_incident_in_the_status_commit(monkeypatc
         db=db,
     )
 
-    # 리드 커밋이 먼저, 그다음 실패 상태와 사고가 한 커밋. 응답 뒤 작업으로 미루지 않는다.
-    assert db.events == ["commit", ("incident", "lead-id"), "commit"]
+    # 리드 커밋 → SENDING claim 커밋 → 발송 결과 커밋, 그다음 실패 상태와 사고가 한 커밋.
+    # 응답 뒤 작업으로 미루지 않는다.
+    assert db.events == ["commit", "commit", "commit", ("incident", "lead-id"), "commit"]
     assert tasks.tasks == []
 
 
@@ -610,3 +626,64 @@ async def test_the_sms_incident_keeps_the_privacy_scope(monkeypatch):
     assert [item["incident_type"] for item in opened] == ["INQUIRY_SMS_FAILED"]
     assert opened[0]["object_id"] == "lead-id"
     assert opened[0]["hospital_name"] == "도입문의"  # 병원명·연락처를 사고 제목에 싣지 않는다
+
+
+async def test_the_intake_notice_is_claimed_as_sending_and_committed_before_slack(monkeypatch):
+    """SENDING을 커밋한 뒤에만 보낸다 — 보낸 직후 죽어도 drain이 NULL로 보고 다시 보내지 않는다(R2-1)."""
+
+    db = _OrderedDB()
+
+    async def fake_execute(statement):
+        compiled = statement.compile()
+        db.events.append(("execute", compiled.params.get("notification_status")))
+        return _Result("lead-id")
+
+    db.execute = fake_execute
+
+    async def fake_notify(**_payload):
+        db.events.append("slack")
+        return True
+
+    monkeypatch.setattr(notifier, "notify_lead_created", fake_notify)
+    _sms_result(monkeypatch, "SKIPPED")
+
+    await _create_lead(
+        request=FakeRequest(),
+        body=_inquiry_body(specialty=None, region_keyword=None, core_keywords=None),
+        background_tasks=BackgroundTasks(),
+        db=db,
+    )
+
+    assert db.events[:6] == [
+        "commit",  # 리드
+        ("execute", "SENDING"),
+        "commit",  # claim — 발송 전에 영속한다
+        "slack",
+        ("execute", "SENT"),
+        "commit",  # 결과 CAS — 문자를 보내기 전에 남긴다
+    ]
+    assert db.added[0].notification_status == "SENT"
+
+
+async def test_the_intake_skips_slack_when_its_claim_was_already_taken(monkeypatch):
+    """접수가 15분 넘게 멈춘 사이 drain이 NULL을 집어 보냈다면 접수 API는 다시 보내지 않는다."""
+
+    class _TakenDB(FakeDB):
+        async def execute(self, statement):
+            self.statements.append(statement)
+            return _Result(None)
+
+    async def forbidden(**_payload):
+        pytest.fail("the worker already owns this notice")
+
+    monkeypatch.setattr(notifier, "notify_lead_created", forbidden)
+    _sms_result(monkeypatch, "SKIPPED")
+
+    response = await _create_lead(
+        request=FakeRequest(),
+        body=_inquiry_body(specialty=None, region_keyword=None, core_keywords=None),
+        background_tasks=BackgroundTasks(),
+        db=_TakenDB(),
+    )
+
+    assert response["ok"] is True
