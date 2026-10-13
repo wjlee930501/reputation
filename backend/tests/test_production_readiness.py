@@ -244,6 +244,9 @@ def test_build_report_requires_schema_owner_and_runtime_dependencies(monkeypatch
     sms = report["facts"]["inquiry_sms"]
     assert set(sms) == {"provider", "configured", "skip_reason"}
     assert sms["configured"] is (sms["skip_reason"] is None)
+    # 예약 자동 발행 보류도 참고 사실이다(꺼져 있으면 active False).
+    assert "auto_publish_hold" not in report["checks"]
+    assert report["facts"]["auto_publish_hold"]["active"] is False
 
 
 def test_slack_webhook_facts_classify_each_configured_webhook(monkeypatch) -> None:

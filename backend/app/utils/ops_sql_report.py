@@ -1,4 +1,4 @@
-"""읽기 전용 운영 조회: 자율 운영 지표(Q1~Q6)를 JSON 한 줄씩 출력한다.
+"""읽기 전용 운영 조회: 자율 운영 지표(Q1~Q6)와 배포 전 확인(Q7)을 JSON 한 줄씩 출력한다.
 
 새 세션의 트랜잭션에서 첫 문장으로 `SET TRANSACTION READ ONLY`를 실행해 DB 수준에서 쓰기를 막고,
 끝나면 롤백한다. 받은 세션에 이미 열린 트랜잭션이 있으면 먼저 롤백해 새로 시작한다::
@@ -136,6 +136,15 @@ QUERIES: dict[str, tuple[str, ...]] = {
         WHERE jsonb_typeof(c.topic_swap_history)='array'
           AND jsonb_array_length(c.topic_swap_history) > 0
         ORDER BY (e.entry->>'swapped_at') DESC
+        """,
+    ),
+    # 배포 전 확인(Phase 1, 0088): notification_outbox 행 수. 0088은 부분 인덱스를 CONCURRENTLY 없이
+    # 만든다 — 약 100만 행을 넘으면 Alembic 밖에서 CONCURRENTLY로 먼저 만든다(0088 docstring).
+    "q7": (
+        """
+        SELECT count(*) AS outbox_rows,
+               count(*) FILTER (WHERE notification_type = 'INCIDENT_OPEN') AS open_notice_rows
+        FROM notification_outbox
         """,
     ),
 }

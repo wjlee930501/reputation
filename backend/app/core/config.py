@@ -407,7 +407,9 @@ class Settings(BaseSettings):
         return value
 
     @field_validator(
-        "POST_PUBLISH_AUTO_CORRECTION_DAILY_CAP", "POST_PUBLISH_AUTO_CORRECTION_MAX_PASSES"
+        "POST_PUBLISH_AUTO_CORRECTION_DAILY_CAP",
+        "POST_PUBLISH_AUTO_CORRECTION_MAX_PASSES",
+        "POST_PUBLISH_UNCERTAIN_REREVIEW_DAYS",
     )
     @classmethod
     def _validate_post_publish_correction_budget(cls, value: int) -> int:
@@ -572,6 +574,9 @@ class Settings(BaseSettings):
     # 행에 쓰이므로 비용은 글당 교정 호출 + 재검수 호출이다. 0이면 자동 교정을 끈다(FLAGGED 표시만 남는다).
     POST_PUBLISH_AUTO_CORRECTION_DAILY_CAP: int = 20
     POST_PUBLISH_AUTO_CORRECTION_MAX_PASSES: int = 2
+    # 자동 교정이 끝나고도 UNCERTAIN(확신 부족)만 남은 공개 글을 검수 모델로 한 번 더 보는 대기 일수.
+    # PASS면 확인 완료로 닫는다. 0이면 끈다. 비용은 교정 하루 상한(POST_PUBLISH_AUTO_CORRECTION_DAILY_CAP)에 함께 센다.
+    POST_PUBLISH_UNCERTAIN_REREVIEW_DAYS: int = 7
     # docker-entrypoint.sh의 `celery worker -c`와 같은 환경변수를 읽는다. 운영자의
     # 처리량 손잡이이며 여기서는 용량 경고 계산에만 쓴다(워커 기동값은 entrypoint가 정한다).
     CELERY_CONCURRENCY: int = 2
@@ -636,8 +641,8 @@ class Settings(BaseSettings):
     # SoV
     SOV_TRACKING_SET_N_DEFAULT: int = 15
     # 월간 코호트(Hospital.monthly_sov_cohort)는 계약된 ACTIVE 병원이 자동 편입되며 전원 측정한다.
-    # 이 값은 자르는 상한이 아니라 비용 경고 기준이다 — 넘으면 경고 로그와 월 1건의 사고만 남긴다.
-    SOV_MONTHLY_COHORT_LIMIT: int = 7
+    # 비용 경고선은 `sov_tracking_set.monthly_sov_cohort_cost_threshold`가
+    # COST_GUARD_MONTHLY_SOV_QUERIES에서 계산한다(손으로 맞추는 병원 수 설정은 없앴다).
     SOV_MONTHLY_WINDOW_START_DAY: int = 24
     # 아직 전환되지 않은 병원의 주간 측정 반복 횟수.
     SOV_REPEAT_COUNT_WEEKLY: int = 5

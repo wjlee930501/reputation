@@ -340,6 +340,7 @@ def build_report() -> dict[str, Any]:
             **database,
             "worker_canaries": canaries,
             "inquiry_sms": _inquiry_sms_facts(),
+            "auto_publish_hold": _auto_publish_hold_facts(),
             "slack_webhook_valid": slack_webhooks,
         },
     }
@@ -359,6 +360,22 @@ def _inquiry_sms_facts() -> dict[str, Any]:
         "provider": settings.INQUIRY_SMS_PROVIDER.strip().lower() or None,
         "configured": problem is None,
         "skip_reason": problem,
+    }
+
+
+def _auto_publish_hold_facts() -> dict[str, Any]:
+    """예약 자동 발행 보류 설정 — 참고 사실이며 준비 판정을 막지 않는다.
+
+    보류는 발행 due 조건에서 걸러져 감시·운영센터 어디에도 '보류 중'으로 보이지 않는다. 켜 두고
+    잊으면 그 병원은 발행 0건이 된다. 배포 확인에서 한 번에 읽히게 둔다(병원 id는 싣지 않는다).
+    """
+    from app.services.post_publish_review_policy import auto_publish_hold  # noqa: PLC0415
+
+    hold = auto_publish_hold()
+    return {
+        "active": hold.active,
+        "all_hospitals": hold.all_hospitals,
+        "hospital_count": len(hold.hospital_ids),
     }
 
 

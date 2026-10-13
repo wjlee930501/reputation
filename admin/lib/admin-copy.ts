@@ -29,6 +29,8 @@ export const ADMIN_COPY = {
   aeOwner: '담당 AE',
   postPublishReview: '공개 후 확인',
   postPublishReviewed: '확인 완료',
+  ackSmsFailed: '원장 안내 문자 미발송 — 직접 연락이 필요합니다.',
+  ackSmsUnconfirmed: '원장 안내 문자 수신 불명(재발송 안 함) — 원장에게 직접 확인하세요.',
 } as const
 
 export function describeMentionRate(value: number | null): string {

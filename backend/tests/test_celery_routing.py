@@ -234,3 +234,10 @@ def test_redbeat_refreshes_lock_well_before_ttl_expires():
     assert max_interval == 30
     assert lock_timeout >= max_interval * 3
     assert REDBEAT_SCHEDULE_VERSION
+
+
+def test_gap_summary_runs_after_the_day_eight_finalize():
+    schedule = celery_app.conf.beat_schedule["monthly-report-gap-summary"]["schedule"]
+    assert schedule.day_of_month == set(range(1, 9))
+    assert schedule.hour == {9}
+    assert REDBEAT_SCHEDULE_VERSION >= "2026-10-12.1"

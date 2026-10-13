@@ -5,26 +5,33 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import set_committed_value
 
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.rate_limit import get_request_ip, limiter
 from app.models.lead import SalesLead
 from app.services import inquiry_diagnosis, inquiry_sms, notifier
+from app.services.inquiry_diagnosis import (
+    DIAGNOSIS_NOTE_NO_INPUT,
+    DIAGNOSIS_NOTE_QUEUED,
+    DIAGNOSIS_NOTE_REFUSED,
+)
 
 logger = logging.getLogger(__name__)
-
-# Slack 한 줄로 나가는 자동 처리 결과. 고정 문구만 쓴다 — 사용자 입력이 섞이면 안 된다.
-DIAGNOSIS_NOTE_QUEUED = "초도 노출 진단 자동 시작"
-DIAGNOSIS_NOTE_NO_INPUT = "진료과·지역·키워드 미입력 — Admin에서 초도 진단 생성"
-DIAGNOSIS_NOTE_REFUSED = "초도 노출 진단 자동 생성 거절 — Admin에서 입력값 확인 후 생성"
 
 router = APIRouter(prefix="/public/leads", tags=["Public — Leads"])
 
 _PHONE_PATTERN = re.compile(r"\d[\d\-\s]{6,}")
 _EMAIL_PATTERN = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
 _HONEYPOT_FIELDS = {"website", "url"}
+
+# 접수 알림 상태(`lead_diagnosis_tasks.LEAD_NOTIFICATION_*`와 같은 값). 워커 모듈을 API가 import하지 않는다.
+_NOTICE_SENDING = "SENDING"
+_NOTICE_SENT = "SENT"
+_NOTICE_PENDING = "PENDING"
 _RESIDENT_REGISTRATION_NUMBER = re.compile(r"\b\d{6}[-\s]?[1-4]\d{6}\b")
 _PATIENT_RECORD_CONTEXT = re.compile(
     r"(수술\s*기록|진료\s*기록|진료\s*내역|의무\s*기록|검사\s*결과|처방\s*내역|처방전|차트)"
@@ -209,22 +216,33 @@ async def create_lead(
             )
             diagnosis_note = DIAGNOSIS_NOTE_REFUSED
 
-    admin_url = f"{settings.ADMIN_BASE_URL.rstrip('/')}/leads"
-    notified = await notifier.notify_lead_created(
-        clinic_name=body.clinic_name,
-        contact=body.contact,
-        admin_url=admin_url,
-        diagnosis_note=diagnosis_note,
-        specialty=body.specialty,
-        region_keyword=body.region_keyword,
-        source_path=body.source_path,
-        created_at=lead.created_at,
-    )
-    lead.notification_status = "SENT" if notified else "FAILED"
-    lead.notification_error = None if notified else "Slack/webhook delivery failed or is not configured."
+    # ── 접수 알림. 보내기 전에 SENDING을 커밋한다 — 보낸 직후 프로세스가 죽어도 drain이 이 행을
+    #    '아무도 안 보냄'(NULL)으로 읽고 15분 뒤 다시 보내지 않는다. 남은 SENDING은 '갔는지 모름'이라
+    #    다시 보내지 않고 창(1시간)+여유 뒤 FAILED와 사고로 끝난다. claim이 실패했다면(접수가 15분
+    #    넘게 멈춘 사이 drain이 NULL을 집었다) 그쪽이 보낸다.
+    if await _claim_intake_notice(db, lead):
+        admin_url = f"{settings.ADMIN_BASE_URL.rstrip('/')}/leads"
+        outcome = await notifier.notify_lead_created(
+            clinic_name=body.clinic_name,
+            contact=body.contact,
+            admin_url=admin_url,
+            diagnosis_note=diagnosis_note,
+            specialty=body.specialty,
+            region_keyword=body.region_keyword,
+            source_path=body.source_path,
+            created_at=lead.created_at,
+        )
+        # 못 보낸 것이 확실하면 매분 drain이 1시간 동안 다시 보내고, 그래도 못 보내면 사고로 올린다.
+        # 갔는지 모르면(응답 유실·5xx) SENDING으로 두어 다시 보내지 않는다 — 만료가 사고로 끝낸다.
+        await _record_intake_notice(db, lead, outcome)
 
     # ── 접수 안내 문자. Slack 뒤에 보낸다 — AE 알림이 문자 사업자 장애에 묶이면 안 된다.
     sms = await inquiry_sms.acknowledge_inquiry(db, lead)
+    # 미설정·휴대전화 아님·중복 억제(SKIPPED)는 사고가 아니다(readiness `facts.inquiry_sms`가 보인다).
+    # 리드는 위에서 이미 커밋됐다. 실패 상태와 그 사고는 이 한 커밋에 묶는다 — 응답 뒤 작업으로
+    # 미루면 프로세스가 그 사이에 죽을 때 사고가 사라진다(남으면 drain이 메운다).
+    if sms.status == inquiry_sms.SMS_FAILED:
+        await inquiry_sms.record_failure_incident(db, lead.id, unconfirmed=sms.unconfirmed)
     await db.commit()
 
     return {
@@ -234,3 +252,51 @@ async def create_lead(
         "diagnosis_id": diagnosis_id,
         "ack_sms": sms.status.lower(),
     }
+
+
+async def _claim_intake_notice(db: AsyncSession, lead: SalesLead) -> bool:
+    """NULL→SENDING CAS를 커밋한다. 이미 다른 쪽(drain)이 잡았으면 False."""
+    claimed = (
+        await db.execute(
+            update(SalesLead)
+            .where(SalesLead.id == lead.id, SalesLead.notification_status.is_(None))
+            .values(notification_status=_NOTICE_SENDING, notification_error=None)
+            .returning(SalesLead.id)
+            .execution_options(synchronize_session=False)
+        )
+    ).scalar_one_or_none()
+    await db.commit()
+    if claimed is None:
+        return False
+    set_committed_value(lead, "notification_status", _NOTICE_SENDING)
+    return True
+
+
+async def _record_intake_notice(db: AsyncSession, lead: SalesLead, outcome) -> None:
+    """SENDING→SENT/PENDING CAS를 곧바로 커밋한다(문자 발송이 멈춰도 결과는 남는다).
+
+    수신 불명(`SendOutcome.UNKNOWN`)은 SENDING 그대로 두고 사유만 남긴다 — drain은 SENDING을
+    집지 않으므로 다시 보내지 않고, 창+여유 뒤 만료가 '확인하지 못함' 사고로 끝낸다.
+    보내는 사이 만료 스윕이 FAILED와 사고로 끝냈다면 그 결정을 덮지 않는다.
+    """
+    if outcome is notifier.SendOutcome.UNKNOWN:
+        status, error = _NOTICE_SENDING, notifier.DELIVERY_UNKNOWN_ERROR
+    elif outcome:
+        status, error = _NOTICE_SENT, None
+    else:
+        status, error = _NOTICE_PENDING, "Slack/webhook delivery failed or is not configured."
+    recorded = (
+        await db.execute(
+            update(SalesLead)
+            .where(SalesLead.id == lead.id, SalesLead.notification_status == _NOTICE_SENDING)
+            .values(notification_status=status, notification_error=error)
+            .returning(SalesLead.id)
+            .execution_options(synchronize_session=False)
+        )
+    ).scalar_one_or_none()
+    await db.commit()
+    if recorded is None:
+        logger.warning("lead intake notice %s finished after its row was settled", lead.id)
+        return
+    set_committed_value(lead, "notification_status", status)
+    set_committed_value(lead, "notification_error", error)

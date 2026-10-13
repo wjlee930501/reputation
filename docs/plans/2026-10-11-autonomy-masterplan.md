@@ -17,8 +17,8 @@
 | P0-A | [Phase 0 생성 예산](2026-10-11-p0-generation-budget.md) | 0-1, 0-2 (+결정 D1 반영 태스크 0-1b) — **완료**: 0-1 `791263b0`, 0-1b `c43f4486`, 0-2 `9ef74442`, 후속 `fd547c2a` | F1, F2 | `generation_attempt_state.py`, `tasks.py` |
 | P0-B | [Phase 0 재시도 정책](2026-10-11-p0-retry-policy.md) | 0-3, 0-4, 0-5, 0-6 — **완료**: 0-3a `b14b5da4`, 0-3b `1cf59df7`, 0-4 `162c1659`, 0-5 `6c659ac5`·`ed84c14a`, 0-6a `ba358a13`, 0-6b `779d6beb`, 후속 `557694f5` | F9, 교체 실패, INPUT_CHANGE 동결 | `generation_retry_policy.py`, `generation_run_control.py`, `topic_swap_fallback.py`, `tasks.py` |
 | P0-C | [Phase 0 디스패치·복구](2026-10-11-p0-dispatch-recovery.md) | 0-7, 0-8a/b/c, 0-9a/b, 0-D(문서) — **완료**: 0-7 `a0096698`, 0-8a `7ec21e0f`, 0-8b `48e2a4c5`, 0-8c `a9d7f9a3`, 0-9a `e8cad029`, 0-9b `07063d86`, 후속 `c991efc4`, 운영 조회 CLI `16b9e30c`·`81d6b0c2`, 병합 `ab35c1f9`, 0-D는 Phase 0 문서 커밋 | F8 | `dispatch_envelope.py`, `autonomous_recovery.py`, 마이그레이션 **0087** |
-| P1-A | [Phase 1 사고 레지스트리](2026-10-11-p1-incident-registry.md) | 1-1a/b/c, 1-2, 1-3, 1-4, 1-5, 1-8, 1-10b/c | F3, F4, F10(일부) | `incident_types.py`, `incidents.py`, `incident_backlog.py`, `notification_store.py`, `autonomous_recovery.py` |
-| P1-B | [Phase 1 월간·리드](2026-10-11-p1-monthly-leads.md) | 1-6a/b/c, 1-7a/b, 1-9a/b/c-1/c-2 | F5, F6, F12 | `tasks.py`, `weekly_sov_incident_control.py`, `monthly_report_gap_notifications.py`, `lead_diagnosis_tasks.py`, RedBeat 버전 |
+| P1-A | [Phase 1 사고 레지스트리](2026-10-11-p1-incident-registry.md) | 1-1a/b/c, 1-2, 1-3, 1-4, 1-5, 1-8, 1-10b/c — **완료**: 1-1a `70ee8878`, 1-4 `70c9211d`, 1-1b `eb94530e`, 1-1c `fe6015bb`, 1-3 `fa543945`·`723c3d2e`, 1-2 `d4473266`, 1-5 `18940b2d`, 1-8 `34e87398`, 1-10b `a68e00c7`·`694badb1`, 1-10c `baabc94f`, 품질 검토 후속 `81e6a68f`·`4ecf8e71` | F3, F4, F10(일부) | `incident_types.py`, `incidents.py`, `incident_backlog.py`, `notification_store.py`, `autonomous_recovery.py` |
+| P1-B | [Phase 1 월간·리드](2026-10-11-p1-monthly-leads.md) | 1-6a/b/c, 1-7a/b, 1-9a/b/c-1/c-2 — **완료**: 1-6a `24825750`, 1-6b `fd5ec07b`, 1-7a `f2c035a9`, 1-6c `b5784dd9`, 1-7b `f44cd4b1`, 1-9a `32df68af`, 1-9b `7669a954`, 1-9c-1 `fd52e84e`, 1-9c-2 `ba9ca7ec`, 품질 검토 후속 `5a1ccdde`, main 병합 `3d624ae5`, 계약 문서는 Phase 1 문서 커밋 | F5, F6, F12 | `tasks.py`, `weekly_sov_incident_control.py`, `monthly_report_gap_notifications.py`, `lead_diagnosis_tasks.py`, RedBeat 버전 |
 | P2-A | [Phase 2 온보딩](2026-10-11-p2-onboarding.md) | 2-3a~d, 2-1a~c(+D3 안분 태스크 2-1d), 2-2a~c, 2-4a/b/(c 플래그), 2-5a/b | F7 | `essence_auto_review.py`, `content.py`, 새 모듈 2개, `tasks.py` |
 | P2-B | [Phase 2 인프라·배포](2026-10-11-p2-infra-deploy.md) | 2-6a~d, 2-7, 2-8a/b, 2-9-0~e, 2-10(개요) | F8, F11 | `scripts/deploy.sh`, `terraform/*.tf`, `health_server.py`, `cost_guard.py` |
 
@@ -51,6 +51,10 @@
 | D15 (구현 중 확정) | 움직임 없는 RUNNING 잔재 판정은 **10일**(`updated_at` 무변화 + lease 없음/만료), 월간 측정 구간 실행 `MONTHLY_SOV_PERIOD`만 **20일**(말일 마지막 창 뒤 다음 달 8일 최종화까지 약 7일 6시간 무갱신이 정상). §3 0-9의 '7일'을 대체한다 | P0-C 0-9b (`autonomous_recovery._ABANDONED_RUNNING_AFTER(_BY_TYPE)`) |
 | D16 (구현 중 확정) | `environment_since`가 없는 레거시 환경 장애 기록은 3일 창의 시작을 마지막 관측일(`observed_at`)로 본다(`first_observed_at`은 옛 표본 실패 시각을 물려받아 이미 닫힌 창으로 읽힌다) | P0-B 0-3a 후속 `557694f5` |
 | D17 (수용) | 3일짜리 공급자 장애가 주제당 본문 전송 상한(36)을 다 써 생성 예산 소진이 되면 한 번뿐인 주제 교체를 쓸 수 있다 — 전송 예산이 없는 주제는 교체로만 이어갈 수 있으므로 받아들인다 | P0-A 0-1b, `topic_swap_fallback.exhausted_body_sample_reason` |
+| D18 (구현 중 확정) | `MONTHLY_SOV_MEASUREMENT_FAILED`의 RETRYING 창은 복구 마감(다음 달 7일 23:59:59)이 아니라 **다음 달 8일 09:00 KST**(`monthly_period.monthly_final_judgment_at`)에서 끝난다 — 00:00~00:15 사이에 보류된 '조치 필요'가 나가고 곧 8일 00:15 최종화가 닫는 오탐을 막는다. 공백 요약의 '자동 복구 종료' 판정과 같은 시각 | P1-B 1-6a `24825750`, 1-6b `fd5ec07b` |
+| D19 (구현 중 확정) | V0 자동 재실행의 사고 기한 유예(`V0_AUTO_RERUN_GRACE`)는 **6시간**(초안 2시간). 재실행이 비용 창 때문에 다시 미뤄지면 RETRYING 사고 기한을 미룸 시각 + 6시간으로 민다(`ops_incident_alerts.extend_retrying_deadline`, 사고가 없으면 만들지 않음). 재실행 1회 = 시도 1회(저장된 실패 횟수가 이미 상한이라 첫 예외에 최종 실패 경로로 간다) | P1-B 1-9a `32df68af`, 후속 `5a1ccdde` |
+| D20 (구현 중 확정) | `SITE_BUILD_RETRIES_EXHAUSTED`(하루 자동 재실행 예산 소진)는 **개발 대상**이며 알림 문구가 운영센터의 연결 작업 '작업 다시 시도' 버튼 경로를 말한다. 사람이 누른 재시도의 실패(`SITE_BUILD_FAILED`)는 운영 대상 그대로 | P1-A 1-8 `34e87398`, 후속 `4ecf8e71` |
+| D21 (수용) | 주간 측정 실패(`WEEKLY_SOV_MEASUREMENT_FAILED`)를 조용한 상태로 바꾸면서, 같은 사고에 묶인 2026-09 주간 측정 기준표 정책 전환 안내(Report)도 Slack에 가지 않는다 — 사고 행 문구는 남고 사람의 일은 월간 측정 실패·코호트 공백이 따로 연다 | P1-A 1-8 `34e87398` |
 
 ## 3. 감사 가정을 조사가 바로잡은 것 (서브 계획이 따르는 사실)
 
@@ -84,7 +88,7 @@
 |---|---|---|---|
 | 일일 요약 "사람의 일" 건수 | 항상 >0 | 평상시 0~2 | Q1 + fleet heartbeat |
 | 조치 필요 알림 비율 | 25~35% | ≥70% | Q2 |
-| 7일 넘게 OPEN | 9종 영구 | 0 | Q1 |
+| 7일 넘게 OPEN인 사고 중 resolver가 있는 유형 | 9종 영구 | 0 (예외: `BACKGROUND_TASK_FAILED` 등 resolver 없는 레거시 유형과 조용한 HARD 사고 — 따로 표기) | Q1 |
 | 교체 뒤 첫 시도 | `WRITER_RESULTS_EXHAUSTED` | 실제 작가 호출 | Q6(한계: 최신 시도만 읽어 '교체 직후 첫 시도'는 근사. `topic_swap_history` 항목에 첫 시도 결과를 남기는 이벤트는 Phase 1 후속) |
 | OPERATOR_REQUIRED 글/월 | — | −70% | Q4 |
 | 월초 오탐 사고 | 3종/월 | 0 | Q1 (11월 1~8일) |

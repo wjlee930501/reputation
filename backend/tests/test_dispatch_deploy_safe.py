@@ -620,7 +620,7 @@ def test_a_failed_deferral_write_retries_within_the_bound(monkeypatch) -> None:
     monkeypatch.setattr(tasks, "defer_operation_run", _broken)
 
     with pytest.raises(_Retry) as raised:
-        tasks._defer_v0_until_cost_window(_v0_task(claimed=True), RuntimeError("cost"), 0)
+        tasks._defer_v0_until_cost_window(_v0_task(claimed=True), RuntimeError("cost"), 0, hospital_id=str(uuid.uuid4()))
 
     assert raised.value.kwargs["countdown"] == dispatch_envelope.MAX_DISPATCH_COUNTDOWN_SECONDS
 
@@ -630,13 +630,18 @@ def test_a_recorded_deferral_returns_without_a_long_countdown(monkeypatch) -> No
 
     deferred: list[datetime] = []
     monkeypatch.setattr(tasks, "SyncSessionLocal", _NoSession)
+
+    async def _no_incident(**_kwargs):
+        return False
+
+    monkeypatch.setattr(tasks, "extend_retrying_deadline", _no_incident)
     monkeypatch.setattr(
         tasks,
         "defer_operation_run",
         lambda _db, _task, not_before: deferred.append(not_before) or True,
     )
 
-    result = tasks._defer_v0_until_cost_window(_v0_task(claimed=True), RuntimeError("cost"), 0)
+    result = tasks._defer_v0_until_cost_window(_v0_task(claimed=True), RuntimeError("cost"), 0, hospital_id=str(uuid.uuid4()))
 
     assert result["status"] == "cost_deferred"
     assert len(deferred) == 1 and deferred[0] > datetime.now(UTC)
@@ -648,7 +653,7 @@ def test_a_run_less_v0_delivery_retries_within_the_bound(monkeypatch) -> None:
     task = _v0_task(claimed=False)
 
     with pytest.raises(_Retry) as raised:
-        tasks._defer_v0_until_cost_window(task, RuntimeError("cost"), 0)
+        tasks._defer_v0_until_cost_window(task, RuntimeError("cost"), 0, hospital_id=str(uuid.uuid4()))
 
     assert raised.value.kwargs["countdown"] == dispatch_envelope.MAX_DISPATCH_COUNTDOWN_SECONDS
 

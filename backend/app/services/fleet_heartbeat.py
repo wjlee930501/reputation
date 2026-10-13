@@ -25,7 +25,10 @@ from app.services.notification_labels import prefixed_for_event
 from app.services.notification_milestone_rendering import safe_text
 from app.services.operator_action import is_operator_todo, requires_operator_action
 from app.services.pipeline_watchdog import KST, WatchdogReport
-from app.services.post_publish_review_policy import publicly_operational_hospital_predicate
+from app.services.post_publish_review_policy import (
+    auto_publish_hold,
+    publicly_operational_hospital_predicate,
+)
 from app.utils.db_locks import _is_postgres_bind
 
 
@@ -492,6 +495,14 @@ def build_fleet_heartbeat(report: WatchdogReport, facts: FleetFacts, *, now, adm
         actions.append(f"미배정 {coverage.missing_allocations}편은 일정 복구 대상입니다. 복구 실패가 확정되면 별도 조치 알림을 보냅니다.")
     if coverage and coverage.unknown_schedule_hospitals:
         actions.append(f"계약 일정이 없는 {coverage.unknown_schedule_hospitals}곳은 병원 콘텐츠에서 일정 등록 여부를 확인해 주세요.")
+    # 보류는 발행 due 조건에서 걸러져 감시·운영센터에 '보류 중'으로 보이지 않는다 — 켜 두고 잊지 않게 매일 말한다.
+    hold = auto_publish_hold()
+    if hold.active:
+        scope = "전체 병원" if hold.all_hospitals else f"{len(hold.hospital_ids)}곳"
+        actions.append(
+            f"예약 자동 발행 보류가 켜져 있습니다({scope}). 보류 중인 병원의 글은 생성만 되고 "
+            "발행되지 않습니다. 의도한 보류가 아니면 개발 담당에게 보류 설정 해제를 요청해 주세요."
+        )
     actions.append(f"자동 복구 중 {facts.recovering}건은 시스템이 처리합니다. 수동으로 반복 실행하지 마세요.")
     state_lines = [f"공개 운영 {facts.hospitals}곳 · 확인 필요 이슈 {facts.operator_work}건",
         f"오늘 08시 이후 발행 기록 {number(report.publish_published_today)}편 · 예정일이 지난 미발행 {number(report.publish_due_remaining)}편"]
