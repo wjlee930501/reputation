@@ -101,6 +101,27 @@ def test_budget_probe_applies_the_override_and_reaches_the_receipt_write(
         client.close()
 
 
+def test_budget_probe_fails_without_a_leftover_receipt_when_expire_is_denied() -> None:
+    """영수증의 EXPIRE가 막히면 탐침은 실패하고, 기한 없는 탐침 영수증을 남기지 않는다."""
+    url = require_redis_url("COST_GUARD_REDIS_URL")
+    client = redis.Redis.from_url(url)
+    at = datetime(2026, 1, 17, 12, tzinfo=cost_guard._KST)
+    daily, monthly, override = _probe_keys(at)
+    user = "cost_guard_probe_no_expire"
+    try:
+        client.delete(daily, monthly, override)
+        client.execute_command("ACL", "SETUSER", user, "reset", "on", ">probe-pw", "~*", "+@all", "-expire")
+        host = url.split("://", 1)[1]
+        denied = f"redis://{user}:probe-pw@{host}"
+        assert cost_guard.probe_budget_operation("content", redis_url=denied, now=at) is False
+        assert list(client.scan_iter("cost_guard:reservation:probe:*")) == []
+        assert client.exists(daily, monthly) == 0
+    finally:
+        client.execute_command("ACL", "DELUSER", user)
+        client.delete(daily, monthly, override)
+        client.close()
+
+
 @pytest.mark.asyncio
 async def test_fail_open_incident_lifecycle_against_the_real_database(
     monkeypatch: pytest.MonkeyPatch,

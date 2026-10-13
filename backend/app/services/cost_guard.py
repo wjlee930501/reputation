@@ -185,7 +185,7 @@ return {1, 'settled', consumed, released}
 # 명령(GET·INCRBY·HSET·EXPIRE)을 같은 순서로 거치되 지출은 바꾸지 않는다 — 한도 판정 결과와 무관하게
 # 쓰기 경로까지 간다(한도에 걸려 쓰기 전에 돌아오면 쓰기 장애를 증명하지 못한다). INCRBY 0은 이미 있는
 # 카운터에만 한다(없는 키를 만들거나 값이 0인 키의 TTL을 다시 걸지 않는다). 영수증은 탐침 전용 키에
-# 짧은 TTL로 쓰고 곧바로 지운다.
+# 짧은 TTL로 쓰고 곧바로 지운다. EXPIRE가 실패해도 영수증을 지운 뒤 그 오류를 돌려준다(탐침 실패, 잔재 없음).
 _PROBE_BUDGET_SCRIPT = """
 local daily = tonumber(redis.call('GET', KEYS[1]) or '0')
 local monthly = tonumber(redis.call('GET', KEYS[2]) or '0')
@@ -205,8 +205,9 @@ redis.call('HSET', KEYS[3],
   'reserved_units', 0,
   'consumed_units', '',
   'released_units', '')
-redis.call('EXPIRE', KEYS[3], ARGV[6])
+local expired = redis.pcall('EXPIRE', KEYS[3], ARGV[6])
 redis.call('DEL', KEYS[3])
+if type(expired) == 'table' and expired.err then return redis.error_reply(expired.err) end
 return {1, blocked, daily, monthly}
 """
 _PROBE_RECEIPT_TTL_SECONDS = 60
