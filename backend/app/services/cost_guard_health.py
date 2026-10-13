@@ -8,6 +8,10 @@ Redis 장애 때 비용 가드는 가용성을 위해 호출을 허용한다(fai
 - 같은 프로세스에서 그 카테고리의 가드가 다시 Redis로 판정하면 사고를 복구한다. 복구 뒤 10분 안의
   fail-open은 사고를 다시 열지 않는다(깜빡임마다 열림·복구 알림이 짝지어 나가지 않게).
 - 사고 기록에 성공해야 '알렸음'으로 본다. 실패하면 1분 뒤 다음 fail-open이 다시 기록한다.
+- 복구도 커밋에 성공해야 '닫았음'으로 본다. DB 오류·낙관적 잠금 충돌이면 메모리 상태를 그대로 두고
+  1분 뒤 다음 정상 판정이 다시 닫는다.
+- 알린 프로세스가 복구 전에 교체되면(메모리 상태 유실) 15분 자율 복구의 근거 정리
+  (`incident_backlog`의 `COST_GUARD_FAIL_OPEN` resolver)가 Redis가 다시 응답하는 것을 근거로 닫는다.
 - 사고 기록 실패는 가드 결정에 영향을 주지 않는다(`cost_guard._enqueue_durable_cost_alert`와 같은 원칙).
 """
 
@@ -52,6 +56,8 @@ _REPORTED: set[str] = set()
 # 마지막 사고 기록 시도·복구 시각(프로세스 시계). 실패한 기록의 재시도 간격과 복구 직후 재열림 억제에 쓴다.
 _ATTEMPTED_AT: dict[str, float] = {}
 _RECOVERED_AT: dict[str, float] = {}
+# 마지막 복구 시도 시각. 실패한 복구를 정상 판정마다 다시 시도하지 않고 1분 간격으로 다시 한다.
+_RECOVERY_ATTEMPTED_AT: dict[str, float] = {}
 _RETRY_SECONDS = 60.0
 _REOPEN_COOLDOWN_SECONDS = 600.0
 _monotonic = time.monotonic
@@ -61,6 +67,7 @@ def reset_for_tests() -> None:
     _REPORTED.clear()
     _ATTEMPTED_AT.clear()
     _RECOVERED_AT.clear()
+    _RECOVERY_ATTEMPTED_AT.clear()
 
 
 def _within(stamps: dict[str, float], category: str, seconds: float, now: float) -> bool:
@@ -116,7 +123,8 @@ async def _open_fail_open_incident(category: str, error_name: str, *, now: datet
         await db.commit()
 
 
-async def _recover_fail_open_incident(category: str, *, now: datetime) -> None:
+async def _recover_fail_open_incident(category: str, *, now: datetime) -> bool:
+    """사고를 복구·확인으로 닫는다. 닫혔으면(또는 닫을 사고가 없으면) True, 충돌로 못 닫았으면 False."""
     key = build_incident_key("cost_guard", "fail_open", category, IncidentFingerprint.BROKER_UNAVAILABLE)
     sessions = get_async_sessionmaker()
     async with sessions() as db:
@@ -127,14 +135,14 @@ async def _recover_fail_open_incident(category: str, *, now: datetime) -> None:
             )
         )
         if incident is None:
-            return
+            return True
         current: object = incident
         if incident.state == IncidentState.OPEN.value:
             current = await mark_retrying(
                 db, incident.id, expected_version=incident.version, actor=_ACTOR, reason=_RECOVERY_REASON
             )
         if not isinstance(current, Incident) or current.state != IncidentState.RETRYING.value:
-            return
+            return False
         recovered = await mark_recovered(
             db,
             current.id,
@@ -145,7 +153,7 @@ async def _recover_fail_open_incident(category: str, *, now: datetime) -> None:
             now=now,
         )
         if not isinstance(recovered, Incident):
-            return
+            return False
         # 열림 알림을 보낸 episode에만 복구 알림을 짝짓는다.
         if await open_notice_exists(db, recovered.id):
             await enqueue_notification(
@@ -157,6 +165,7 @@ async def _recover_fail_open_incident(category: str, *, now: datetime) -> None:
             db, recovered.id, expected_version=recovered.version, actor=_ACTOR, reason=_RECOVERY_REASON, now=now
         )
         await db.commit()
+        return True
 
 
 async def report_fail_open(category: str, error_name: str) -> None:
@@ -182,12 +191,23 @@ async def report_fail_open(category: str, error_name: str) -> None:
 
 
 async def report_guard_healthy(category: str) -> None:
-    """가드가 Redis로 판정했다. 이 프로세스가 fail-open을 알린 카테고리면 사고를 닫는다."""
+    """가드가 Redis로 판정했다. 이 프로세스가 fail-open을 알린 카테고리면 사고를 닫는다.
+
+    메모리 상태는 복구가 커밋된 뒤에만 지운다. 실패하면 알린 상태를 유지해 1분 뒤 다시 닫는다.
+    """
     if category not in _REPORTED:
         return
-    _REPORTED.discard(category)
-    _RECOVERED_AT[category] = _monotonic()
+    now = _monotonic()
+    if _within(_RECOVERY_ATTEMPTED_AT, category, _RETRY_SECONDS, now):
+        return
+    _RECOVERY_ATTEMPTED_AT[category] = now
     try:
-        await _recover_fail_open_incident(category, now=datetime.now(UTC))
+        completed = await _recover_fail_open_incident(category, now=datetime.now(UTC))
     except Exception:  # noqa: BLE001 — 복구 기록 실패가 가드 결정을 바꾸지 않는다.
+        completed = False
+    if not completed:
         logger.warning("cost_guard fail-open recovery not recorded: category=%s", category)
+        return
+    _REPORTED.discard(category)
+    _RECOVERY_ATTEMPTED_AT.pop(category, None)
+    _RECOVERED_AT[category] = now

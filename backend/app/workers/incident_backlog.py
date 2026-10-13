@@ -511,6 +511,33 @@ def _unverified_actor_quiet(_db: Session, incident: Incident, now: datetime) -> 
     return None
 
 
+# 비용 가드 fail-open 사고는 알린 프로세스가 Redis로 다시 판정할 때 닫는다(`cost_guard_health`).
+# 그 프로세스가 복구 전에 교체되면 메모리 상태가 사라져 아무도 닫지 않는다 — 여기서 같은 Redis가
+# 다시 응답하는 것을 근거로 닫는다. 마지막 관측 뒤 10분은 기다린다(`cost_guard_health`의 재열림
+# 억제와 같은 길이 — 깜빡임마다 열림·복구가 짝지어 나가지 않게).
+_COST_GUARD_FAIL_OPEN_QUIET = timedelta(minutes=10)
+
+
+def _cost_guard_redis_reachable() -> bool:
+    """비용 가드가 쓰는 Redis(`cost_guard._client`와 같은 URL·시간 제한)가 지금 응답하는가."""
+
+    import redis
+
+    client = redis.Redis.from_url(settings.REDIS_URL, socket_connect_timeout=2, socket_timeout=2)
+    try:
+        return bool(client.ping())
+    except Exception:  # noqa: BLE001 — 응답하지 않으면 근거가 없을 뿐이다.
+        return False
+    finally:
+        client.close()
+
+
+def _cost_guard_judging_again(_db: Session, incident: Incident, now: datetime) -> str | None:
+    if incident.last_seen_at is not None and now - incident.last_seen_at < _COST_GUARD_FAIL_OPEN_QUIET:
+        return None
+    return "cost_guard_redis_reachable" if _cost_guard_redis_reachable() else None
+
+
 # 자율 복구(`autonomous_recovery._stop_operation_run`)가 실행을 멈추며 남기는 원인 코드.
 # autonomous_recovery가 이 모듈을 불러 쓰므로 여기에 문자열로 두고, 테스트가 두 목록을 맞춘다.
 RECOVERY_STOP_CODES = frozenset(
@@ -603,6 +630,7 @@ RESOLVERS: dict[str, Resolver] = {
     "MONTHLY_SOV_MEASUREMENT_FAILED": _same_period_measurement,
     "SOV_HIGH_PRIORITY_CAP_EXCEEDED": _weekly_capacity,
     "COST_GUARD_LIMIT_REACHED": _budget_period,
+    "COST_GUARD_FAIL_OPEN": _cost_guard_judging_again,
     "V0_REPORT_FAILED": _v0_report_created,
     "CONTENT_GENERATION_FAILED": _content_published,
     "NOTIFICATION_DELIVERY_UNKNOWN": _redirected_delivery,
