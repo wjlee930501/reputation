@@ -56,9 +56,10 @@ ACKNOWLEDGED_SUPERSESSION = "0085_allow_acknowledged_incident_supersession"
 HISTORICAL_PUBLICATIONS = "0086_preserve_historical_publications"
 OPERATION_RUN_REDISPATCH_COUNT = "0087_add_operation_run_redispatch_count"
 OUTBOX_OPEN_PAIRING_INDEX = "0088_add_outbox_open_pairing_index"
+OPTIONAL_REFERENCE_REVISIONS = "0089_allow_optional_reference_revisions"
 
 PRODUCTION_STAMP = CONTENT_CUSTOMIZATION
-HEAD = OUTBOX_OPEN_PAIRING_INDEX
+HEAD = OPTIONAL_REFERENCE_REVISIONS
 
 
 def _script_directory() -> ScriptDirectory:
@@ -137,6 +138,7 @@ def test_hardening_revisions_keep_their_recovered_parents() -> None:
         HISTORICAL_PUBLICATIONS,
         OPERATION_RUN_REDISPATCH_COUNT,
         OUTBOX_OPEN_PAIRING_INDEX,
+        OPTIONAL_REFERENCE_REVISIONS,
     )
     parents = {
         revision: script.get_revision(revision).down_revision for revision in recovered
@@ -179,6 +181,7 @@ def test_hardening_revisions_keep_their_recovered_parents() -> None:
         HISTORICAL_PUBLICATIONS: ACKNOWLEDGED_SUPERSESSION,
         OPERATION_RUN_REDISPATCH_COUNT: HISTORICAL_PUBLICATIONS,
         OUTBOX_OPEN_PAIRING_INDEX: OPERATION_RUN_REDISPATCH_COUNT,
+        OPTIONAL_REFERENCE_REVISIONS: OUTBOX_OPEN_PAIRING_INDEX,
     }
 
 
@@ -190,6 +193,7 @@ def test_upgrade_from_the_production_stamp_runs_the_linear_tail() -> None:
     ]
 
     assert pending == [
+        OPTIONAL_REFERENCE_REVISIONS,
         OUTBOX_OPEN_PAIRING_INDEX,
         OPERATION_RUN_REDISPATCH_COUNT,
         HISTORICAL_PUBLICATIONS,
@@ -235,7 +239,7 @@ def test_fresh_database_applies_the_whole_chain_in_order() -> None:
     ]
 
     assert len(applied) == len(set(applied))
-    assert applied[-37:] == [
+    assert applied[-38:] == [
         PHOTO_PROVENANCE,
         IMAGE_POLICY,
         CONTENT_CUSTOMIZATION,
@@ -273,4 +277,5 @@ def test_fresh_database_applies_the_whole_chain_in_order() -> None:
         HISTORICAL_PUBLICATIONS,
         OPERATION_RUN_REDISPATCH_COUNT,
         OUTBOX_OPEN_PAIRING_INDEX,
+        OPTIONAL_REFERENCE_REVISIONS,
     ]

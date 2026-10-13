@@ -42,6 +42,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Mapping
 
 from app.models.content import ContentType
@@ -266,3 +267,32 @@ def references_block_when_empty(item: object, *, title: object = None) -> bool:
         query_target_id=getattr(item, "query_target_id", None),
         title=title if title is not None else getattr(item, "title", None),
     )
+
+
+# ── 승인 판 SQL(`reconcile_content_revisions`)에 넘기는 판정 표지 ────────────────────────────
+# DB 함수는 제목 규칙을 다시 구현하지 않는다(0089). 발행 경로가 판을 만들기 직전에 이 판정을
+# `essence_check_summary`에 적고, 함수는 표지의 제목 hash·유형이 행과 같을 때만 "참고자료가
+# 비어도 된다"로 읽는다 — 제목이 바뀐 뒤의 옛 표지는 무효다.
+REFERENCE_REQUIREMENT_SUMMARY_KEY = "reference_requirement"
+
+
+def reference_requirement_marker(item: object) -> dict[str, object]:
+    """이 글의 참고자료 판정을 감사 가능한 표지로 만든다(`references_block_when_empty`와 같은 판정)."""
+
+    title = str(getattr(item, "title", None) or "")
+    return {
+        "block_when_empty": references_block_when_empty(item),
+        "no_source_topic": topic_without_authoritative_source(title),
+        "content_type": _type_value(getattr(item, "content_type", None)),
+        "title_sha256": hashlib.sha256(title.encode("utf-8")).hexdigest(),
+    }
+
+
+def stamp_reference_requirement(item: object) -> None:
+    """판을 만들기 직전(flush 전)에 표지를 `essence_check_summary`에 적는다."""
+
+    summary = getattr(item, "essence_check_summary", None)
+    item.essence_check_summary = {  # type: ignore[attr-defined]
+        **(dict(summary) if isinstance(summary, Mapping) else {}),
+        REFERENCE_REQUIREMENT_SUMMARY_KEY: reference_requirement_marker(item),
+    }

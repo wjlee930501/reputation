@@ -66,6 +66,22 @@ api `reputation-api-00243-mx4` · worker `reputation-worker-00233-9k7` · beat `
 - 대표 결정 D29: 경보는 Slack 하나로 받는다 — `OPS_ALERT_EMAIL`은 의도적으로 비우고 Terraform 경보 2종은 적용하지 않는다(2026-10-13 ~18:00). Phase 2의 '보류' 두 항목은 후속이 아니다.
 
 - `4a3c2b13…` 문장 정정(사람 PATCH) 또는 숨김 수용 — 대표 확인.
-- **18:00 스윕의 `LEGACY_SPEND_UNKNOWN`/`OPERATOR_REQUIRED` 6슬롯 원인 확인(개발)** — 카탈로그 판 재평가·생성 거절 기록(E5)·D22 레거시 예산 교체 중 무엇이 `budget`을 잃게 했는지. 23:00 야간 생성 전에 보는 것이 좋다.
+- ~~18:00 스윕의 `LEGACY_SPEND_UNKNOWN`/`OPERATOR_REQUIRED` 6슬롯 원인 확인(개발)~~ — 아래 '긴급 수정' (1)로 해결.
 - 23:00 야간 생성(배치 시간대, 이번 관찰 범위 밖): q4 4슬롯 중 18:00에 다시 쓰이지 않은 것과 새 거절 라벨(q10) 첫 기록은 10/14 확인.
 - 1주 뒤 `seo_geo_findings` 분량 권고 비율 비교(계획 Task 3-11 위험 항목).
+
+## 긴급 수정 (2026-10-13 저녁)
+
+1. **슬롯 예산 유실** — main `1090df18`(PR #249). 원인: `tasks._auto_correct_blocked_body`가 최소 교정 PASS 때 시도 기록
+   (`generation_attempt`)을 통째로 지워 슬롯 예산(`budget`)도 함께 사라졌고, 다음 스윕이 예산 없는 옛 기록으로 읽어
+   `LEGACY_SPEND_UNKNOWN`/`OPERATOR_REQUIRED`로 보냈다. 고친 코드는 시도 기록만 지우고 예산을 남긴다. API·Worker·Beat 배포
+   19:36~19:45 KST(api `00246-bv7`, worker `00236-b6t`, beat `00231-fw6`). 잘못 종착된 5슬롯은 `legacy_budget_reset --ids`로
+   되살렸다(`16ada8fa`는 이미 발행돼 제외). q4는 2건.
+2. **D23 글이 발행되지 않음** — 생성은 진료비·병원 선택 글을 참고자료 0개로 쓰는데(운영 COLUMN 초안 `d05a2b7d…`·`f717bcb8…`),
+   DB 함수 `reconcile_content_revisions`(0086)가 `NOTICE 또는 참고자료 1개 이상`을 요구해 승인 판이 생기지 않았고, 자동 발행
+   틱이 매번 `approved_revision_not_created`로 롤백했다. 수정: 발행 경로(자동 발행·관리자 발행·후보 판 교체)가 판을 만들기
+   직전에 `references_block_when_empty` 판정을 `essence_check_summary.reference_requirement`(판정·주제·유형·제목 sha256)로 적고,
+   마이그레이션 `0089_allow_optional_reference_revisions`의 함수는 `NOTICE 또는 참고자료 1개 이상 또는 (표지가 '비어도 됨'이고
+   유형·제목 hash가 행과 같음)`으로 읽는다. 제목 규칙을 SQL에 다시 쓰지 않고, 제목이 바뀐 뒤의 옛 표지는 무효다. 나머지 검사는
+   그대로다. 의료 글은 표지가 '막음'이라 종전처럼 판이 없다(발행 게이트·공개 가시성과 같은 판정). **롤백**: `alembic downgrade`
+   (0089→0088)는 0086 함수를 다시 설치해 엄격한 조건으로 돌아간다 — D23 글은 다시 발행되지 않는다. 이미 만들어진 판은 남는다.

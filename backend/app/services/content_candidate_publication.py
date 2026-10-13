@@ -23,6 +23,7 @@ from app.services.content_publication import (
     assess_content_publication,
 )
 from app.services.reference_publication import bind_reference_checks_to_revision
+from app.services.reference_requirement import stamp_reference_requirement
 
 
 @dataclass(frozen=True, slots=True)
@@ -349,6 +350,7 @@ def publish_pending_candidate_sync(
     if not isinstance(outcome, CandidateApprovalApplied):
         return outcome
     item.active_revision_id = None
+    stamp_reference_requirement(item)
     db.flush()
     reconciled = db.execute(
         text("SELECT * FROM reconcile_content_revisions(:content_item_id)"),
@@ -386,6 +388,7 @@ async def publish_pending_candidate(
     if not isinstance(outcome, CandidateApprovalApplied):
         return outcome
     item.active_revision_id = None
+    stamp_reference_requirement(item)
     await db.flush()
     reconciled = (
         await db.execute(
