@@ -6,7 +6,7 @@ SOURCE="$ROOT/scripts/integrity_rehearsal"
 OLD_SHA=41f61d6f2f47459e3135dac66e430e454a1f1735
 OLD_REGISTRY="$ROOT/.omo/evidence/rehearsal-prep/baseline-resource-registry.json"
 COMPATIBLE_MANIFEST="${COMPATIBLE_READER_MANIFEST:-$SOURCE/fixtures/compatible-reader.json}"
-REQUIRED=(runtime.env compose.yaml fixture.py check.py browser.mjs browser_error_classifier.mjs test_browser_error_classifier.mjs test_capture_selectors.mjs admin_availability.mjs test_admin_availability.mjs rollback_site_smoke.mjs browser.Dockerfile browser-package.json package-lock.json harnesslib.py scenarios.py sitecustomize.py)
+REQUIRED=(runtime.env compose.yaml fixture.py check.py browser.mjs browser_error_classifier.mjs test_browser_error_classifier.mjs test_capture_selectors.mjs admin_availability.mjs test_admin_availability.mjs poll_until.mjs test_poll_until.mjs rollback_site_smoke.mjs browser.Dockerfile browser-package.json package-lock.json harnesslib.py scenarios.py sitecustomize.py)
 
 fail() {
   printf 'integrity rehearsal preflight failed: %s\n' "$*" >&2
@@ -23,6 +23,7 @@ require_scaffold() {
   python3 "$SOURCE/test_scaffold.py" "$SOURCE"
   node "$SOURCE/test_browser_error_classifier.mjs"
   node "$SOURCE/test_admin_availability.mjs"
+  node "$SOURCE/test_poll_until.mjs"
   local scaffold_artifacts="$ROOT/.omo/evidence/task-16/compose-artifacts"
   mkdir -p "$scaffold_artifacts"
   local services

@@ -115,6 +115,9 @@ class _RecoverySession:
                 return _ScalarResult(self.visible_block_keys)
             return _ScalarResult(self.rebuild_site_incidents)
         if entity is OperationRun:
+            if "operation_runs.safe_error_code IN" in str(statement):
+                # 사고 없이 FAILED만 남은 멈춘 실행 복구 조회 — 이 가짜 DB에는 없다.
+                return _ScalarResult(())
             self._operation_run_reads += 1
             # 1: SITE_REVALIDATION, 2: 재배달 후보, 그다음 병원별 사이트 준비 이력,
             # 마지막이 재인증 실행 이력.
@@ -620,6 +623,8 @@ def test_site_build_budget_only_counts_the_last_day_of_runs(monkeypatch) -> None
         for statement in session.statements
         if statement.column_descriptions[0].get("entity") is OperationRun
         and "REBUILD_SITE" in statement.compile().params.values()
+        # 멈춘 실행 복구 조회도 REBUILD_SITE를 (제외 조건으로) 싣는다.
+        and "OPERATION_RECOVERY_EXHAUSTED" not in statement.compile().params.values()
     )
     assert now - timedelta(hours=24) in budget_query.compile().params.values()
 

@@ -7376,23 +7376,82 @@ async def _session(item) -> None:
         )
 
 
+_WORKER = "generation-worker-1"
+
+
+class _ExecutionDB:
+    """`begin_generation_execution`이 잠그고 읽는 실행 기록·행을 차례로 돌려준다."""
+
+    def __init__(self, run, item):
+        self.run, self.item, self._reads = run, item, 0
+
+    def execute(self, _stmt):
+        value = self.run if self._reads % 2 == 0 else self.item
+        self._reads += 1
+        return SimpleNamespace(scalar_one_or_none=lambda: value)
+
+    def commit(self):
+        pass
+
+    def rollback(self):
+        pass
+
+
+def _reserved_slot(reservation):
+    item = _claimed_item(reservation)
+    item.id = uuid.uuid4()
+    item.hospital_id = uuid.UUID(int=7)
+    item.status = ContentStatus.DRAFT
+    item.hospital = SimpleNamespace(status=HospitalStatus.ACTIVE, site_live=True)
+    item.human_edited_at = None
+    item.generation_claimed_at = None
+    run = SimpleNamespace(
+        id=uuid.uuid4(),
+        operation_type="GENERATE_CONTENT_ITEM",
+        state=OperationRunState.RUNNING,
+        task_id=_WORKER,
+        lease_owner=_WORKER,
+        version=1,
+        lease_expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        request_payload={"source_type": "content_item", "source_id": str(item.id)},
+        hospital_id=item.hospital_id,
+    )
+    return _ExecutionDB(run, item)
+
+
+async def _delivery(db, reservation):
+    """(재)배달 한 번 — 실행 진입(`begin_generation_execution`)을 거쳐 작가 세션을 돈다."""
+
+    context = SimpleNamespace(run_id=db.run.id, worker_id=_WORKER, version=db.run.version)
+    entered = tasks._enter_claimed_execution(db, db.item.id, reservation, context)
+    assert entered is not None
+    item, execution_token = entered
+    assert item.generation_claim_token == execution_token != reservation
+    await _session(item)
+    return execution_token
+
+
 @pytest.mark.asyncio
 async def test_a_new_claim_resamples_the_writer_after_an_unsaved_rejection(monkeypatch):
     # Given: 한 세션이 작가 2회(초안 + 보완)를 사고 제목 거절로 끝났다. 본문은 저장되지 않는다.
     calls = _patch_exam_title_rejection(monkeypatch)
-    item = _claimed_item(uuid.uuid4())
-    await _session(item)
+    first = uuid.uuid4()
+    db = _reserved_slot(first)
+    await _delivery(db, first)
     assert len(calls) == 2
 
-    # When: 다음 스윕이 새 claim으로 같은 슬롯을 다시 집는다.
-    item.generation_claim_token = uuid.uuid4()
-    await _session(item)
+    # When: 다음 스윕이 새 예약으로 같은 슬롯을 다시 집는다.
+    second = uuid.uuid4()
+    db.item.generation_claim_token = second
+    db.run.version += 1
+    db.run.request_payload = {"source_type": "content_item", "source_id": str(db.item.id)}
+    await _delivery(db, second)
 
     # Then: 저장된 후보를 0원에 재생하지 않고 작가를 실제로 다시 산다.
     assert len(calls) == 4
     writer_ids = [
         entry["id"]
-        for entry in item.essence_check_summary["generation_attempt"]["budget"]["acquisitions"]
+        for entry in db.item.essence_check_summary["generation_attempt"]["budget"]["acquisitions"]
         if entry["kind"] == "WRITER"
     ]
     assert len(writer_ids) == len(set(writer_ids)) == 4
@@ -7401,10 +7460,14 @@ async def test_a_new_claim_resamples_the_writer_after_an_unsaved_rejection(monke
 @pytest.mark.asyncio
 async def test_same_claim_redelivery_replays_without_buying_again(monkeypatch):
     calls = _patch_exam_title_rejection(monkeypatch)
-    item = _claimed_item(uuid.uuid4())
-    await _session(item)
+    reservation = uuid.uuid4()
+    db = _reserved_slot(reservation)
+    first_execution = await _delivery(db, reservation)
 
-    # 같은 claim의 재배달(서명 봉투 재배달·자율 복구)은 저장된 결과를 다시 쓴다.
-    await _session(item)
+    # 같은 예약의 재배달(서명 봉투 재배달·자율 복구)은 더 높은 run version으로 실행에 다시
+    # 진입한다. 실행 토큰은 바뀌지만 저장된 작가 결과를 다시 쓰고 공급자를 다시 부르지 않는다.
+    db.run.version += 1
+    second_execution = await _delivery(db, reservation)
 
+    assert second_execution != first_execution
     assert len(calls) == 2
