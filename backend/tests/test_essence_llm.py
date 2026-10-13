@@ -219,6 +219,52 @@ def test_json_provider_call_honors_single_attempt_budget(monkeypatch, llm_key):
     assert messages.calls == 1
 
 
+def test_json_provider_call_logs_usage_when_output_is_truncated(
+    monkeypatch, llm_key, caplog
+):
+    class TruncatedMessages:
+        def __init__(self):
+            self.calls = 0
+
+        def create(self, **_kwargs):
+            self.calls += 1
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        finish_reason="length",
+                        message=SimpleNamespace(content='{"decision": "APP'),
+                    )
+                ],
+                usage=SimpleNamespace(prompt_tokens=9000, completion_tokens=4000),
+            )
+
+    messages = TruncatedMessages()
+    monkeypatch.setattr(
+        essence_engine,
+        "_llm_client",
+        lambda: SimpleNamespace(chat=SimpleNamespace(completions=messages)),
+    )
+
+    with caplog.at_level("WARNING", logger=essence_engine.logger.name):
+        with pytest.raises(
+            ValueError, match="essence LLM incomplete structured output: length"
+        ):
+            essence_engine._call_llm_json(
+                "system", "data", max_tokens=4000, attempts=1, model="vendor/model"
+            )
+
+    assert messages.calls == 1
+    truncated = [
+        r for r in caplog.records if "essence_llm_output_truncated" in r.getMessage()
+    ]
+    assert len(truncated) == 1
+    message = truncated[0].getMessage()
+    assert truncated[0].levelname == "WARNING"
+    assert "max_tokens=4000" in message
+    assert "completion_tokens=4000" in message
+    assert "model=vendor/model" in message
+
+
 def test_synthesis_path_falls_back_after_one_provider_attempt(monkeypatch, llm_key):
     class EmptyMessages:
         def __init__(self):
