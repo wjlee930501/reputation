@@ -78,8 +78,43 @@ def test_scan_reports_only_flagged_public_text_and_never_writes():
     assert [line.get("field") for line in lines[1:4]] == [
         "hero_description", "treatments[1]", "must_use_messages[1]"
     ]
-    assert lines[-1] == {"summary": {"할인·유인": 4}}
+    assert {line["change"] for line in lines[:-1]} == {"newly_blocked"}
+    assert all(line["baseline_labels"] == [] for line in lines[:-1])
+    assert lines[-1] == {
+        "summary": {"할인·유인": 4},
+        "changes": {"newly_blocked": 4},
+        "baseline": "7a1e2174",
+    }
     assert labels["할인·유인"] == 4
     assert db.events[:2] == ["ROLLBACK", "SET"]
     assert db.events[-1] == "ROLLBACK"
     assert db.commits == 0
+
+
+def test_scan_also_reports_posts_the_production_filter_hid_that_now_reappear():
+    """문맥 예외가 넓어져 다시 보이게 되는 글도 배포 전에 보인다(교차 검토 2026-10-13)."""
+
+    reappears = _published("## 안내\n수술 후 완전 회복까지 3개월이 걸립니다.")
+    still = _published("## 안내\n최고의 의료진이 진료합니다.")
+    db = _FakeSession([reappears, still], [], [])
+    out = io.StringIO()
+
+    forbidden_impact_scan.scan(db, out=out)
+
+    lines = [json.loads(line) for line in out.getvalue().splitlines()]
+    assert lines[0] == {
+        "kind": "content", "id": str(reappears.id), "hospital_id": str(reappears.hospital_id),
+        "labels": [], "baseline_labels": ["완치"], "change": "newly_unblocked",
+    }
+    assert lines[1]["change"] == "still_blocked"
+    assert lines[-1]["changes"] == {"newly_unblocked": 1, "still_blocked": 1}
+    assert lines[-1]["summary"] == {"최고": 1}
+
+
+def test_the_baseline_filter_is_the_frozen_production_copy():
+    from app.utils import medical_filter_baseline
+
+    assert medical_filter_baseline.BASELINE_COMMIT == "7a1e2174"
+    # 동결본은 Phase 3 이전 판정 그대로다 — 새 예외·새 라벨이 없다.
+    assert "할인·유인" not in medical_filter_baseline.FORBIDDEN_PATTERNS
+    assert medical_filter_baseline.check_forbidden("수술 후 완전 회복까지 3개월이 걸립니다.") == ["완치"]
