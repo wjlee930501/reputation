@@ -201,7 +201,8 @@ def test_prorated_first_contract_month_uses_the_prorated_denominator(db):
     db.add(
         AdminAuditLog(
             hospital_id=hospital.id, actor=INITIAL_SCHEDULE_ACTOR, action="set_schedule",
-            target_type="content_schedule", target_id=str(schedule.id), detail={},
+            target_type="content_schedule", target_id=str(schedule.id),
+            detail={"active_from": "2026-09-14", "first_month_target": 5},
         )
     )
     db.flush()

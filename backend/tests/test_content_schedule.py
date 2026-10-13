@@ -57,7 +57,10 @@ class _FakeDB:
         return self.hospital if object_id == self.hospital.id else None
 
     async def execute(self, statement):
-        if str(statement).startswith("SELECT content_schedules.plan"):
+        if str(statement).startswith(
+            ("SELECT content_schedules.plan", "SELECT admin_audit_logs.detail")
+        ):
+            # 요금제 조회·첫 일정 감사행(안분 근거) — 이 더블에는 없다(요금제 편수 그대로).
             return _ExecuteResult(hospital=None)
         return _ExecuteResult(self.schedules, self.hospital)
 

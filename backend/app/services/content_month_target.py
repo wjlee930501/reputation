@@ -1,14 +1,18 @@
 """병원·월의 약속 편수(월 목표) — 첫 계약 월 안분을 한 곳에서 정한다.
 
-요금제 편수(12/16/20)가 기본 약속이다. 다만 첫 일정이 월 중간에 시작하면 시스템은 그 달
-남은 게시 요일 비율로 편수를 줄여 슬롯을 만들고, 그 편수를 슬롯의 `total_count`에 기록한다
-(마이그레이션 없는 지속 표식). 병원의 가장 이른 일정이 시작한 달이고 그 달 슬롯이 요금제보다
-작은 `total_count`를 기록하고 있을 때만 그 값을 약속 편수로 본다. 사람이 만든 첫 달은 슬롯이
-요금제 편수를 그대로 기록하므로 소급해 바뀌지 않는다. 시스템이 만든 첫 일정이 시작일 뒤로
-게시 요일이 하나도 남지 않은 달에 시작하면 슬롯이 없으므로, 그 달은 일정 자체로 0편을 판정한다
-(`no_publish_day_left_in_first_month`).
+요금제 편수(12/16/20)가 기본 약속이다. 다만 시스템이 첫 일정을 월 중간에 만들면 그 달 남은
+게시 요일 비율로 편수를 줄이고(`prorated_first_month_quota`), 그 편수를 첫 일정 감사행
+(`set_schedule`, 행위자 `system:essence-auto-approval`, `target_id` = 만든 일정)의 detail에
+`first_month_target`·`active_from`으로 기록한다(마이그레이션 없는 지속 표식). 그 감사행이
+기록한 시작일의 달이 첫 계약 월이고, 그 달 약속은 기록한 편수다(시작일 뒤로 게시 요일이 없으면 0편).
 
-슬롯 생성(당월 조정 포함)·운영 계약 이행 집계·월간 보고서·현황 카드가 모두 이 판정을 쓴다.
+근거는 그 일정을 만든 감사행 하나다 — 슬롯의 `total_count`나 병원의 가장 이른 일정을 읽지
+않는다. 그래서 사람이 같은 달에 요일·시작일을 바꿔 일정을 교체해도(`POST .../schedule`)
+안분 편수는 그대로 남고, 교체 경로도 같은 판정으로 슬롯을 그 편수까지만 만든다. 사람이 만든
+첫 일정은 이 감사행이 없으므로 요금제 편수 그대로다(소급하지 않는다).
+
+슬롯 생성(당월 조정 포함)·일정 교체·운영 계약 이행 집계·월간 보고서·현황 카드가 모두 이
+판정을 쓴다.
 """
 
 from __future__ import annotations
@@ -18,11 +22,12 @@ import uuid
 from datetime import date
 
 import arrow
-from sqlalchemy import exists, func, select
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 from app.models.audit import AdminAuditLog
-from app.models.content import ContentItem, ContentSchedule, monthly_quota_for_plan
+from app.models.content import monthly_quota_for_plan
 
 #: 첫 일정을 자동으로 만든 행위자. 안분은 이 경로만 하므로 그 감사행이 안분의 증거다.
 INITIAL_SCHEDULE_ACTOR = "system:essence-auto-approval"
@@ -52,86 +57,55 @@ def prorated_first_month_quota(plan: object, publish_days: list[int], start: dat
     return min(quota, max(1, math.ceil(remaining * quota / len(days))))
 
 
-def no_publish_day_left_in_first_month(
-    plan: object, publish_days: list[int] | None, start: date | None, month: arrow.Arrow
-) -> bool:
-    """`month`가 `start`로 시작하는 첫 일정의 달이고 시작일 뒤로 게시 요일이 하나도 없는가."""
+def initial_schedule_record_stmt(hospital_id: uuid.UUID):
+    """시스템이 만든 첫 일정의 감사행 detail(시작일·첫 달 약속 편수). 사람이 만든 첫 일정이면 행 없음.
 
-    if start is None or not (month.floor("month").date() <= start <= month.ceil("month").date()):
-        return False
-    return prorated_first_month_quota(plan, list(publish_days or []), start) == 0
-
-
-def resolve_month_target(
-    quota: int | None,
-    first_month_recorded_total: int | None,
-    *,
-    no_publish_day_left: bool = False,
-) -> int | None:
-    """요금제 편수와 첫 계약 월 슬롯이 기록한 편수로 그 달 약속 편수를 정한다.
-
-    `no_publish_day_left`는 시스템이 만든 첫 일정의 첫 달에 게시 요일이 남지 않았다는 판정이다
-    (`initial_schedule_terms_stmt` + `no_publish_day_left_in_first_month`). 그 달 약속은 0편이다.
-    """
-
-    if quota is None:
-        return None
-    if no_publish_day_left:
-        return 0
-    if first_month_recorded_total is not None and 0 < first_month_recorded_total < quota:
-        return first_month_recorded_total
-    return quota
-
-
-def first_month_recorded_total_stmt(hospital_id: uuid.UUID, month: arrow.Arrow):
-    """이 달이 병원의 첫 일정 시작 달이면 그 달 슬롯이 기록한 최대 `total_count`, 아니면 NULL.
-
+    첫 일정 서비스는 일정이 하나도 없는 병원에만 일정을 만들므로 이 행은 병원당 하나다.
     한 번의 왕복만 허용하는 화면(현황)은 이 문장을 `scalar_subquery()`로 기존 조회에 묶는다.
     """
 
-    start, end = month.floor("month").date(), month.ceil("month").date()
-    first_start = (
-        select(func.min(ContentSchedule.active_from))
-        .where(ContentSchedule.hospital_id == hospital_id)
-        .scalar_subquery()
-    )
-    contract_date = func.coalesce(ContentItem.carried_over_from, ContentItem.scheduled_date)
-    return select(func.max(ContentItem.total_count)).where(
-        ContentItem.hospital_id == hospital_id,
-        contract_date >= start,
-        contract_date <= end,
-        first_start >= start,
-        first_start <= end,
-        _created_by_initial_schedule_service(hospital_id),
-    )
-
-
-def initial_schedule_terms_stmt(hospital_id: uuid.UUID):
-    """시스템이 만든 첫 일정(가장 이른 시작). 사람이 만든 첫 일정이면 행 없음.
-
-    현황 카드는 시작일·요금제·게시 요일을 열마다 `with_only_columns(...).scalar_subquery()`로
-    기존 조회에 묶는다.
-    """
-
     return (
-        select(ContentSchedule)
+        select(AdminAuditLog.detail)
         .where(
-            ContentSchedule.hospital_id == hospital_id,
-            _created_by_initial_schedule_service(hospital_id),
+            AdminAuditLog.hospital_id == hospital_id,
+            AdminAuditLog.action == "set_schedule",
+            AdminAuditLog.actor == INITIAL_SCHEDULE_ACTOR,
+            AdminAuditLog.target_type == "content_schedule",
+            AdminAuditLog.target_id.is_not(None),
         )
-        .order_by(ContentSchedule.active_from, ContentSchedule.created_at)
+        .order_by(AdminAuditLog.created_at)
         .limit(1)
     )
 
 
-def _created_by_initial_schedule_service(hospital_id: uuid.UUID):
-    """첫 일정을 시스템이 만들었다는 감사행. 사람이 만든 첫 달(요금제 변경 포함)은 안분이 아니다."""
+def recorded_first_month_target(detail: object, month: arrow.Arrow) -> int | None:
+    """첫 일정 감사행이 기록한 첫 달이 `month`이면 그 달 약속 편수, 아니면 None."""
 
-    return exists().where(
-        AdminAuditLog.hospital_id == hospital_id,
-        AdminAuditLog.action == "set_schedule",
-        AdminAuditLog.actor == INITIAL_SCHEDULE_ACTOR,
-    )
+    if not isinstance(detail, dict):
+        return None
+    target = detail.get("first_month_target")
+    if not isinstance(target, int) or isinstance(target, bool) or target < 0:
+        return None
+    try:
+        start = date.fromisoformat(str(detail.get("active_from")))
+    except ValueError:
+        return None
+    if not (month.floor("month").date() <= start <= month.ceil("month").date()):
+        return None
+    return target
+
+
+def resolve_month_target(quota: int | None, first_month_target: int | None) -> int | None:
+    """요금제 편수와 첫 일정이 기록한 첫 달 약속 편수로 그 달 약속 편수를 정한다.
+
+    기록한 편수가 요금제 편수보다 작을 때만 그 값이다(0 포함 — 게시 요일이 남지 않은 첫 달).
+    """
+
+    if quota is None:
+        return None
+    if first_month_target is not None and first_month_target < quota:
+        return first_month_target
+    return quota
 
 
 def month_content_target_sync(
@@ -140,31 +114,17 @@ def month_content_target_sync(
     quota = monthly_quota_for_plan(plan)
     if quota is None:
         return None
-    initial = db.scalar(initial_schedule_terms_stmt(hospital_id))
-    return resolve_month_target(
-        quota,
-        db.scalar(first_month_recorded_total_stmt(hospital_id, month)),
-        no_publish_day_left=initial is not None
-        and no_publish_day_left_in_first_month(
-            initial.plan, initial.publish_days, initial.active_from, month
-        ),
-    )
+    detail = db.scalar(initial_schedule_record_stmt(hospital_id))
+    return resolve_month_target(quota, recorded_first_month_target(detail, month))
 
 
-def first_month_without_publish_days(db: Session, schedule: ContentSchedule, month: arrow.Arrow) -> bool:
-    """시스템이 만든 첫 일정의 첫 달이고 시작일 뒤로 게시 요일이 하나도 남지 않았는가.
+async def month_content_target(
+    db: AsyncSession, hospital_id: uuid.UUID, month: arrow.Arrow, plan: object
+) -> int | None:
+    """`month_content_target_sync`의 async 판. 사람의 일정 교체 경로가 쓴다."""
 
-    그 달은 약속 편수가 0이다 — 매일 당월 조정이 남은 하루에 한 달 편수를 몰아 넣지 않게 한다.
-    사람이 만든 일정은 종전대로 남은 날에 계약 편수를 채운다(계약 복구).
-    """
-
-    start = schedule.active_from
-    if not no_publish_day_left_in_first_month(schedule.plan, schedule.publish_days, start, month):
-        return False
-    first_start = db.scalar(
-        select(func.min(ContentSchedule.active_from)).where(
-            ContentSchedule.hospital_id == schedule.hospital_id,
-            _created_by_initial_schedule_service(schedule.hospital_id),
-        )
-    )
-    return first_start == start
+    quota = monthly_quota_for_plan(plan)
+    if quota is None:
+        return None
+    detail = (await db.execute(initial_schedule_record_stmt(hospital_id))).scalar_one_or_none()
+    return resolve_month_target(quota, recorded_first_month_target(detail, month))

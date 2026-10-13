@@ -83,7 +83,8 @@ async def test_overview_shows_the_prorated_first_contract_month(db, monkeypatch)
     db.add(
         AdminAuditLog(
             hospital_id=hospital.id, actor=INITIAL_SCHEDULE_ACTOR, action="set_schedule",
-            target_type="content_schedule", target_id=str(schedule.id), detail={},
+            target_type="content_schedule", target_id=str(schedule.id),
+            detail={"active_from": "2026-09-14", "first_month_target": 5},
         )
     )
     db.flush()
@@ -106,7 +107,8 @@ async def test_overview_promises_zero_for_a_first_month_without_publish_days(db,
     db.add(
         AdminAuditLog(
             hospital_id=hospital.id, actor=INITIAL_SCHEDULE_ACTOR, action="set_schedule",
-            target_type="content_schedule", target_id=str(schedule.id), detail={},
+            target_type="content_schedule", target_id=str(schedule.id),
+            detail={"active_from": "2026-10-31", "first_month_target": 0},
         )
     )
     db.flush()

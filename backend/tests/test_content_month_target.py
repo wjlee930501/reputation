@@ -6,8 +6,8 @@ import arrow
 import pytest
 
 from app.services.content_month_target import (
-    no_publish_day_left_in_first_month,
     prorated_first_month_quota,
+    recorded_first_month_target,
     resolve_month_target,
 )
 
@@ -39,33 +39,37 @@ def test_unknown_plan_has_no_quota() -> None:
 
 
 @pytest.mark.parametrize(
-    ("quota", "first_month_recorded_total", "expected"),
+    ("quota", "first_month_target", "expected"),
     [
-        (12, None, 12),  # 첫 달이 아니거나 아직 슬롯이 없다 → 요금제 편수
-        (12, 9, 9),  # 첫 달 슬롯이 안분 편수를 기록했다 → 그 편수
-        (12, 12, 12),  # 사람이 만든 첫 달(요금제 편수 그대로) → 소급하지 않는다
+        (12, None, 12),  # 첫 달이 아니거나 사람이 만든 첫 일정 → 요금제 편수
+        (12, 9, 9),  # 시스템이 안분한 첫 달 → 그 편수
+        (12, 0, 0),  # 시작일 뒤로 게시 요일이 남지 않은 첫 달 → 0편
+        (12, 12, 12),  # 1일 시작(안분 없음)
         (12, 20, 12),  # 다른 요금제의 큰 값은 계약을 늘리지 않는다
         (None, 9, None),  # 요금제를 모르면 목표도 모른다
     ],
 )
-def test_month_target_uses_a_smaller_recorded_first_month_total(
-    quota, first_month_recorded_total, expected
+def test_month_target_uses_a_smaller_recorded_first_month_target(
+    quota, first_month_target, expected
 ) -> None:
-    assert resolve_month_target(quota, first_month_recorded_total) == expected
+    assert resolve_month_target(quota, first_month_target) == expected
 
 
-def test_first_month_without_a_publish_weekday_promises_zero() -> None:
-    # PLAN_20을 10/30에 승인해 10/31(토)부터 시작하면 10월에 남은 게시 요일이 없다.
+def test_recorded_first_month_target_applies_only_to_the_recorded_start_month() -> None:
     october, november = arrow.get(date(2026, 10, 1)), arrow.get(date(2026, 11, 1))
-    start = date(2026, 10, 31)
-    assert no_publish_day_left_in_first_month("PLAN_20", [0, 2, 4], start, october) is True
-    # 다음 달이나 게시 요일이 남은 시작일은 해당하지 않는다.
-    assert no_publish_day_left_in_first_month("PLAN_20", [0, 2, 4], start, november) is False
-    assert (
-        no_publish_day_left_in_first_month("PLAN_20", [0, 2, 4], date(2026, 10, 30), october)
-        is False
-    )
-    assert no_publish_day_left_in_first_month("PLAN_20", [0, 2, 4], None, october) is False
-    # 그 달 약속은 슬롯이 하나도 없어도 요금제 편수가 아니라 0편이다.
-    assert resolve_month_target(20, None, no_publish_day_left=True) == 0
-    assert resolve_month_target(None, None, no_publish_day_left=True) is None
+    detail = {"active_from": "2026-10-12", "first_month_target": 9}
+    assert recorded_first_month_target(detail, october) == 9
+    assert recorded_first_month_target(detail, november) is None
+    zero = {"active_from": "2026-10-31", "first_month_target": 0}
+    assert recorded_first_month_target(zero, october) == 0
+    # 근거가 없거나 깨진 기록은 안분으로 읽지 않는다(요금제 편수 그대로).
+    for broken in (
+        None,
+        {},
+        {"active_from": "2026-10-12"},
+        {"first_month_target": 9},
+        {"active_from": "not-a-date", "first_month_target": 9},
+        {"active_from": "2026-10-12", "first_month_target": True},
+        {"active_from": "2026-10-12", "first_month_target": -1},
+    ):
+        assert recorded_first_month_target(broken, october) is None

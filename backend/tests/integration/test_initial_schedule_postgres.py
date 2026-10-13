@@ -365,3 +365,128 @@ async def test_a_first_month_without_publish_days_promises_zero_everywhere(
         _AsyncSessionShim(pg_session), pg_session.get(Hospital, hospital.id)
     )
     assert summary.planned_total == 0
+
+
+class _AsyncWriteShim(_AsyncSessionShim):
+    """사람의 일정 교체(async 경로)를 같은 롤백 트랜잭션의 동기 세션으로 돌린다."""
+
+    def add(self, row):
+        self._session.add(row)
+
+    async def get(self, model, key):
+        return self._session.get(model, key)
+
+    async def flush(self):
+        self._session.flush()
+
+    async def commit(self):
+        self._session.flush()
+
+    async def refresh(self, row):
+        self._session.refresh(row)
+
+
+async def _human_replaces_schedule(pg_session, monkeypatch, hospital, *, today, body):
+    from unittest.mock import AsyncMock
+
+    import arrow
+
+    from app.api.admin import content as content_api
+
+    monkeypatch.setattr(content_api, "_schedule_readiness_blockers", AsyncMock(return_value=[]))
+    monkeypatch.setattr(
+        content_api.arrow, "now", lambda *args: arrow.get(today).replace(tzinfo="Asia/Seoul")
+    )
+    monkeypatch.setattr(content_api.regenerate_content_item, "apply_async", lambda **_kw: None)
+    return await content_api.set_schedule(hospital.id, body, _AsyncWriteShim(pg_session))
+
+
+async def test_a_human_weekday_change_keeps_the_prorated_first_month(
+    pg_session, monkeypatch
+) -> None:
+    """자동 일정(PLAN_12, 첫 달 9편) 뒤 사람이 같은 달 요일을 바꿔도 약속은 9편 그대로다."""
+    from unittest.mock import AsyncMock
+
+    import arrow
+
+    from app.api.admin import hospital_overview as overview
+    from app.api.admin.content import ScheduleCreate
+    from app.services.content_month_target import month_content_target_sync
+    from app.workers.monthly_slots import create_next_month_slots_for_schedule
+
+    hospital = _seed(pg_session)
+    outcome = ensure_initial_content_schedule(
+        pg_session, hospital.id, today=MID_MONTH, trigger="essence_auto_approval"
+    )
+    assert outcome.slots_created == 9
+
+    response = await _human_replaces_schedule(
+        pg_session,
+        monkeypatch,
+        hospital,
+        today=MID_MONTH,
+        body=ScheduleCreate(plan="PLAN_12", publish_days=[1, 3], active_from=date(2026, 10, 13)),
+    )
+
+    assert response["slots_created"] == 0
+    october = arrow.get(date(2026, 10, 1))
+    rows = _month_rows(pg_session, hospital.id, date(2026, 10, 1), date(2026, 10, 31))
+    assert len(rows) == 9 and {row.total_count for row in rows} == {9}
+    assert month_content_target_sync(pg_session, hospital.id, october, "PLAN_12") == 9
+
+    # 매일 당월 조정도 새 일정으로 요금제 편수까지 채우지 않는다.
+    latest = pg_session.execute(
+        select(ContentSchedule).where(
+            ContentSchedule.hospital_id == hospital.id, ContentSchedule.is_active
+        )
+    ).scalar_one()
+    assert latest.id != outcome.schedule_id
+    assert (
+        create_next_month_slots_for_schedule(
+            pg_session, latest, october, october.date(), october.ceil("month").date(),
+            not_before=date(2026, 10, 13),
+        )
+        is False
+    )
+    assert len(_month_rows(pg_session, hospital.id, date(2026, 10, 1), date(2026, 10, 31))) == 9
+
+    monkeypatch.setattr(
+        overview.arrow, "now", lambda *args: arrow.get(datetime(2026, 10, 13, 3, tzinfo=timezone.utc))
+    )
+    monkeypatch.setattr(overview, "weekly_mention_trend", AsyncMock(return_value=[]))
+    summary = await overview._month_summary(
+        _AsyncSessionShim(pg_session), pg_session.get(Hospital, hospital.id)
+    )
+    assert summary.planned_total == 9
+
+
+async def test_a_human_edit_of_a_zero_slot_first_month_stays_zero(
+    pg_session, monkeypatch
+) -> None:
+    """첫 달 0편(게시 요일이 남지 않은 달)을 사람이 다른 요일로 바꿔도 그 달 슬롯은 0편이다."""
+    import arrow
+
+    from app.api.admin.content import ScheduleCreate
+    from app.services.content_month_target import month_content_target_sync
+
+    hospital = _seed(pg_session, plan=Plan.PLAN_20)
+    outcome = ensure_initial_content_schedule(
+        pg_session, hospital.id, today=date(2026, 10, 30), trigger="essence_auto_approval"
+    )
+    assert outcome.active_from == date(2026, 10, 31) and outcome.slots_created == 0
+
+    # 10/31(토)이 게시 요일이 되도록 바꿔도 10월 약속은 늘지 않는다.
+    response = await _human_replaces_schedule(
+        pg_session,
+        monkeypatch,
+        hospital,
+        today=date(2026, 10, 30),
+        body=ScheduleCreate(
+            plan="PLAN_20", publish_days=[0, 1, 2, 3, 5], active_from=date(2026, 10, 31)
+        ),
+    )
+
+    assert response["slots_created"] == 0
+    assert _month_rows(pg_session, hospital.id, date(2026, 10, 1), date(2026, 10, 31)) == []
+    october = arrow.get(date(2026, 10, 1))
+    assert month_content_target_sync(pg_session, hospital.id, october, "PLAN_20") == 0

@@ -28,11 +28,12 @@ def _prorated_first_month(db):
     schedule.active_from = date(2026, 9, 14)
     for row in db.scalars(select(ContentItem)):
         row.total_count = 5
-    # 안분은 첫 일정 자동 생성 경로만 한다 — 그 감사행이 안분의 증거다.
+    # 안분은 첫 일정 자동 생성 경로만 한다 — 그 감사행이 기록한 편수가 안분의 증거다.
     db.add(
         AdminAuditLog(
             hospital_id=hospital.id, actor=INITIAL_SCHEDULE_ACTOR, action="set_schedule",
-            target_type="content_schedule", target_id=str(schedule.id), detail={},
+            target_type="content_schedule", target_id=str(schedule.id),
+            detail={"active_from": "2026-09-14", "first_month_target": 5},
         )
     )
     db.flush()
@@ -114,7 +115,7 @@ def _first_month_without_publish_days(db):
         AdminAuditLog(
             hospital_id=hospital.id, actor=INITIAL_SCHEDULE_ACTOR, action="set_schedule",
             target_type="content_schedule", target_id=str(schedule.id),
-            detail={"first_month_target": 0},
+            detail={"active_from": "2026-10-31", "first_month_target": 0},
         )
     )
     db.flush()
