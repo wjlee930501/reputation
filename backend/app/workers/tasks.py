@@ -1134,7 +1134,9 @@ def _auto_correct_blocked_body(
         summary["ai_review"] = outcome.review.payload()
         summary[AUTO_CORRECTION_KEY] = new_state
         if outcome.status == "PASS":
-            summary.pop(_GENERATION_ATTEMPT_KEY, None)
+            # 억제만 지우고 예산은 남긴다 — 통째로 지우면 이어지는 이미지 단계가 예산 없는 기록을
+            # LEGACY_SPEND_UNKNOWN으로 읽어 슬롯이 사람의 일로 굳는다(2026-10-13, 6건).
+            summary = _summary_without_attempt_suppression(summary)
         written = write_back_generated_content(
             db,
             item_id=item.id,
@@ -1621,10 +1623,13 @@ def _record_gate_blocker_decision(db, item: ContentItem, philosophy, code: str) 
     _remember_generation_attempt(db, item, philosophy, code, count_attempt=False)
 
 
-def _clear_generation_attempt(db, item: ContentItem) -> None:
-    summary = getattr(item, "essence_check_summary", None)
-    if not isinstance(summary, dict) or _GENERATION_ATTEMPT_KEY not in summary:
-        return
+def _summary_without_attempt_suppression(summary: Mapping[str, Any]) -> dict[str, Any]:
+    """성공으로 시도 기록을 지울 때도 예산(`budget`)만은 남긴 summary 사본.
+
+    예산은 슬롯의 평생 지출 원장이다. 시도 기록을 통째로 지우면 다음 읽기가 예산 없는 기록을
+    레거시 지출 불명(`LEGACY_SPEND_UNKNOWN`)으로 읽는다.
+    """
+
     updated = dict(summary)
     previous = updated.get(_GENERATION_ATTEMPT_KEY)
     budget = previous.get(GENERATION_BUDGET_KEY) if isinstance(previous, dict) else None
@@ -1632,7 +1637,14 @@ def _clear_generation_attempt(db, item: ContentItem) -> None:
         updated[_GENERATION_ATTEMPT_KEY] = {GENERATION_BUDGET_KEY: budget}
     else:
         updated.pop(_GENERATION_ATTEMPT_KEY, None)
-    item.essence_check_summary = updated
+    return updated
+
+
+def _clear_generation_attempt(db, item: ContentItem) -> None:
+    summary = getattr(item, "essence_check_summary", None)
+    if not isinstance(summary, dict) or _GENERATION_ATTEMPT_KEY not in summary:
+        return
+    item.essence_check_summary = _summary_without_attempt_suppression(summary)
     db.commit()
 
 
@@ -5967,12 +5979,15 @@ def _run_generation_item(
         if not philosophy:
             item.content_philosophy_id = None
             item.essence_status = ESSENCE_STATUS_MISSING_APPROVED
+            stored_attempt = _stored_generation_attempt(item)
             item.essence_check_summary = {
                 "blocking": True,
                 "findings": [
                     "승인된 콘텐츠 운영 기준이 없어 자동 생성/발행 품질을 통과할 수 없습니다."
                 ],
                 "checked_at": datetime.now(timezone.utc).isoformat(),
+                # 시도 기록(예산 포함)은 summary를 새로 써도 잇는다 — 지우면 예산이 사라진다.
+                **({_GENERATION_ATTEMPT_KEY: stored_attempt} if stored_attempt else {}),
             }
             _remember_generation_attempt(db, item, philosophy, "MISSING_APPROVED_ESSENCE")
             logger.warning(
