@@ -840,7 +840,7 @@ def test_advice_bandeusi_without_an_outcome_predicate_still_passes():
         "국가검진 무료 검사를 예약하시면 됩니다.",
         "국가검진 무료 검사 예약 가능합니다.",
         "국가검진 대상이 아니라도 무료 검사 가능합니다.",
-        "건강보험이 없어도 무료 검사 가능합니다.",
+        "건강보험이 없어도 무료 검사 예약 가능합니다.",
         # 앞쪽·장거리 변형
         "예약해 주십시오, 국가검진 무료 검사입니다.",
         "예약하면 됩니다, 국가검진 무료 검사입니다.",
@@ -852,3 +852,9 @@ def test_advice_bandeusi_without_an_outcome_predicate_still_passes():
 )
 def test_polite_and_conditional_booking_and_ara_do_distancing_are_blocked(text):
     assert "할인·유인" in check_forbidden(text)
+
+
+def test_eopseodo_alone_does_not_distance_a_public_program():
+    """'없어도'는 거리 두기 말이 아니다 — 증상·조건이 없어도 받을 수 있는 공적 검진 안내다."""
+
+    assert check_forbidden("증상이 없어도 국가 무료 검진을 받을 수 있습니다") == []
