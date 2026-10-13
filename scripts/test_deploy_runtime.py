@@ -2249,6 +2249,33 @@ def test_rechecks_outside_batch_windows_change_nothing(tmp_path: Path) -> None:
     )
 
 
+def test_a_beat_only_deploy_rechecks_after_the_redbeat_reconcile(tmp_path: Path) -> None:
+    # 시작 11:00 → 빌드 뒤 11:05 → Beat 교체 직전 11:10(통과) → reconcile(--wait)이 끝난 11:19는
+    # 12시 배치 앞 45분 안이다. reconcile 뒤 Beat를 바꾸지 않고 멈춘다.
+    result, commands = _run_with_advancing_clock(
+        tmp_path,
+        "beat",
+        ["2026-10-11T11:00", "2026-10-11T11:05", "2026-10-11T11:10", "2026-10-11T11:19"],
+    )
+    assert result.returncode != 0
+    assert "Beat 교체(RedBeat 정합성 복구 뒤) 직전 다시 확인" in result.stderr
+    assert "gcloud run jobs execute reputation-redbeat-reconcile" in commands
+    assert "gcloud run deploy reputation-beat" not in commands
+
+
+def test_backend_targets_finish_the_beat_after_the_worker_switch(tmp_path: Path) -> None:
+    # 같은 시각 흐름이어도 Worker를 바꾼 뒤(api)는 reconcile 뒤 다시 보지 않고 Beat까지 마저 바꾼다.
+    result, commands = _run_with_advancing_clock(
+        tmp_path,
+        "api",
+        ["2026-10-11T11:00", "2026-10-11T11:05", "2026-10-11T11:10", "2026-10-11T11:19"],
+    )
+    assert result.returncode == 0, result.stderr
+    assert commands.index("gcloud run deploy reputation-worker") < commands.index(
+        "gcloud run deploy reputation-beat"
+    )
+
+
 def test_second_release_on_the_same_day_warns_and_asks_for_a_reason(tmp_path: Path) -> None:
     # 배치 시간대 밖이면 하루 여러 번 배포할 수 있다(2026-10-13) — 잠금은 경고하고 사유를 요구할 뿐이다.
     result, commands = _run_target(

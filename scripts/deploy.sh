@@ -1910,6 +1910,9 @@ case "$TARGET" in
     fi
     if [[ "$TARGET" == "beat" ]]; then
       run_redbeat_reconcile "$IMAGE_URL"
+      # reconcile Job(--wait)은 몇 분 걸릴 수 있다 — 그 사이 배치 시간대에 들어갔으면 Beat를 바꾸지 않는다.
+      # (backend·api·all은 Worker를 이미 바꿨으므로 Beat까지 마저 바꾼다 — 여기는 beat 단독뿐이다.)
+      recheck_batch_window "Beat 교체(RedBeat 정합성 복구 뒤)"
     fi
     if [[ "$TARGET" == "api" ]]; then
       deploy_worker "$IMAGE_URL"
