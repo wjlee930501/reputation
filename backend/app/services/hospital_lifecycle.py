@@ -11,7 +11,6 @@ from sqlalchemy.dialects.postgresql import JSONB, JSONPATH
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 
-from app.core.config import settings
 from app.models.hospital import Hospital, HospitalStatus
 
 
@@ -136,7 +135,6 @@ def profile_requirements(hospital: Hospital) -> list[ProfileRequirement]:
     decision so a handcrafted request cannot mark a partial profile complete.
     """
 
-    has_google = _text(hospital.google_maps_url) or _text(hospital.google_business_profile_url)
     latitude = hospital.latitude
     longitude = hospital.longitude
     has_coordinates = (
@@ -149,20 +147,15 @@ def profile_requirements(hospital: Hospital) -> list[ProfileRequirement]:
         and math.isfinite(longitude)
         and -180 <= longitude <= 180
     )
-    # 보강 항목 플래그(기본 꺼짐, 대표 결정 전): 원장 약력·진료 철학·Google 병원 정보를
-    # 완료 판정에서 뺀다. 원장명·네이버 플레이스는 계속 필수다. 키는 그대로 둔다(Admin이 그린다).
-    optional = bool(settings.PROFILE_GATE_OPTIONAL_ENRICHMENT)
+    # D31(2026-10-14 대표 결정): 진료 철학과 Google 병원 정보만 선택이다. 원장 약력을 포함한
+    # 나머지는 필수다. 선택 항목의 키는 남긴다 — Admin 앵커와 옛 응답이 같은 키 집합을 쓴다.
     return [
         ProfileRequirement(
             "director_basic",
-            "원장명" if optional else "원장명·약력",
-            _text(hospital.director_name) and (optional or _text(hospital.director_career)),
+            "원장명·약력",
+            _text(hospital.director_name) and _text(hospital.director_career),
         ),
-        ProfileRequirement(
-            "director_philosophy",
-            "진료 철학",
-            optional or _text(hospital.director_philosophy),
-        ),
+        ProfileRequirement("director_philosophy", "진료 철학 (선택)", True),
         ProfileRequirement(
             "contact",
             "주소·전화번호·진료시간",
@@ -177,8 +170,8 @@ def profile_requirements(hospital: Hospital) -> list[ProfileRequirement]:
         ),
         ProfileRequirement(
             "ai_channels",
-            "네이버 플레이스" if optional else "네이버 플레이스·Google 병원 정보",
-            _text(hospital.naver_place_url) and (optional or has_google),
+            "네이버 플레이스",
+            _text(hospital.naver_place_url),
         ),
         ProfileRequirement(
             "geo",

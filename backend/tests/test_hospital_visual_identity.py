@@ -323,7 +323,6 @@ async def test_null_logo_noop_is_not_a_changed_field_or_revalidation_trigger(mon
             "profile_complete_applied": False,
             "missing_requirements": [
                 "director_basic",
-                "director_philosophy",
                 "contact",
                 "web_channels",
                 "ai_channels",

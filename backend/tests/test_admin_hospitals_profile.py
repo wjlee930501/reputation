@@ -499,7 +499,7 @@ async def test_a_legacy_gap_this_patch_did_not_create_keeps_the_live_hospital_sa
         status=HospitalStatus.ACTIVE,
         site_live=True,
         profile_complete=True,
-        director_philosophy=None,
+        director_career=None,
     )
     db = FakeDB(hospital)
 
@@ -514,13 +514,13 @@ async def test_a_legacy_gap_this_patch_did_not_create_keeps_the_live_hospital_sa
     assert hospital.profile_complete is True
     assert result["profile_complete"] is True
     assert [item["key"] for item in result["missing_profile_requirements"]] == [
-        "director_philosophy"
+        "director_basic"
     ]
     assert db.committed is True
 
 
 async def test_a_legacy_gap_does_not_flip_completion_off_for_a_non_live_hospital():
-    hospital = _hospital(profile_complete=True, director_philosophy=None)
+    hospital = _hospital(profile_complete=True, director_career=None)
     db = FakeDB(hospital)
 
     result = await hospitals_api.update_profile(
@@ -532,7 +532,7 @@ async def test_a_legacy_gap_does_not_flip_completion_off_for_a_non_live_hospital
 
     assert hospital.profile_complete is True
     assert result["missing_profile_requirements"] == [
-        {"key": "director_philosophy", "label": "진료 철학"}
+        {"key": "director_basic", "label": "원장명·약력"}
     ]
 
 
