@@ -272,14 +272,13 @@ def review_unavailable_not_before(attempt: Mapping) -> datetime | None:
     return observed + review_unavailable_backoff(failures)
 
 
-def has_model_declared_hard_finding(review: object) -> bool:
+def has_model_declared_hard_finding(review: object, content: object = None) -> bool:
     """Return whether the stored review itself declared a **Critical** HARD finding.
 
     확신도 부족으로 붙는 합성 finding은 UNCERTAIN이다. 모델이 HARD로 단정한 지적 가운데
-    Critical(`finding_criticality` — 의료 안전 HARD·응급 안내 누락)만 교정·주제 교체 계단의
-    종착으로 취급한다. 병원 사실(HOSPITAL_FACT) HARD는 Critical이 아니다(W4) — 결정적
-    삭제·승인 수치 치환으로 먼저 풀고, 남으면 표본 실패처럼 재작성 계단을 탄다. 교정 상한과
-    주제 교체 예산을 쓰지 않는다.
+    Critical(`finding_criticality` 허용 목록 — `content`로 인용 문장을 확인한 의료 내용 없는
+    병원 사실·문체·참고자료만 비-Critical, 나머지는 fail closed)만 교정·주제 교체 계단의 종착으로
+    취급한다. 비-Critical HARD는 결정적 삭제로 먼저 풀고, 남으면 표본 실패처럼 재작성 계단을 탄다.
     """
 
     if not isinstance(review, Mapping):
@@ -290,7 +289,7 @@ def has_model_declared_hard_finding(review: object) -> bool:
     return any(
         isinstance(finding, Mapping)
         and str(finding.get("severity") or "").upper() == "HARD"
-        and classify_finding(finding) is Criticality.CRITICAL
+        and classify_finding(finding, content) is Criticality.CRITICAL
         for finding in findings
     )
 

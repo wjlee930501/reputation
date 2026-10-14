@@ -40,7 +40,10 @@ from app.services.content_ai_review import (
     hospital_review_profile,
 )
 from app.services.content_engine import CONTENT_BODY_MIN_CHARS, body_plain_length
-from app.services.finding_criticality import review_blocks_only_noncritically
+from app.services.finding_criticality import (
+    mentions_medical_safety,
+    review_blocks_only_noncritically,
+)
 from app.services.must_use_verbatim import (
     appears_as_standalone_sentence,
     normalize_verbatim,
@@ -1206,17 +1209,36 @@ def plan_noncritical_fixes(
     그 글은 기존 경로(재검수·재작성 계단)가 맡는다. 짚힌 문장은 모두 지운다(숫자 치환 없음).
     """
 
-    if not review_blocks_only_noncritically(review):
+    if not review_blocks_only_noncritically(review, content):
         return None
     must_use = [str(message) for message in must_use_messages if str(message).strip()]
     plan = plan_corrections(content, review, must_use_messages=must_use, include_uncertain=True)
     if not plan.targets or plan.insertions or plan.uncorrectable:
         return None
+    # 실제로 지울 문장 전체가 의료·안전 어휘 검사를 통과해야 한다 — 부분 인용으로 같은 문장의 응급 안내
+    # ("흉통에는 즉시 119")까지 지우지 않는다(Codex 2차 P1-2).
+    if any(mentions_medical_safety(target.sentence) for target in plan.targets):
+        return None
     decisions = {
         target.key: SentenceDecision(target.key, None, "noncritical_delete")
         for target in plan.targets
     }
+    # 지우기 전 본문에 응급 안내(119·응급실·즉시 내원)가 있었으면 지운 뒤에도 남아 있어야 한다.
+    corrected = apply_corrections(content, plan, decisions)
+    if emergency_guidance_lost(content, corrected):
+        return None
     return NoncriticalFixPlan(plan=plan, decisions=decisions)
+
+
+EMERGENCY_GUIDANCE_TERMS = ("119", "응급실", "즉시 내원")
+
+
+def emergency_guidance_lost(before: Mapping[str, Any], after: Mapping[str, Any]) -> bool:
+    """지우기 전 본문의 응급 안내 표현 가운데 지운 뒤에 사라진 것이 있는가."""
+
+    old = str(before.get("body") or "")
+    new = str(after.get("body") or "")
+    return any(term in old and term not in new for term in EMERGENCY_GUIDANCE_TERMS)
 
 
 async def run_noncritical_resolution(

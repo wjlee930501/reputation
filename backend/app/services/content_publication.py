@@ -549,6 +549,9 @@ def apply_publication_assessment(item: ContentItem, assessment: PublicationAsses
             POST_PUBLISH_CRITICAL_ALERT_KEY,
         ):
             value = previous_summary.get(key)
+            if key == AI_REVIEW_DEFERRED_KEY and key in summary:
+                # 이번 판정의 선발행 표지가 옛 표지보다 우선한다(참고자료 재표시 뒤의 hash 불일치 방지).
+                continue
             if value is not None:
                 summary[key] = value
     if isinstance(previous_summary, dict) and previous_summary.get("authority_change"):

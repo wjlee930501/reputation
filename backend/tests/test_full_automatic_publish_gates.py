@@ -322,3 +322,17 @@ def test_deferral_marker_binds_the_current_public_text() -> None:
     assert marker["text_sha256"] == publication_text_sha256(item)
     item.body = item.body + " 수정"
     assert publication_text_sha256(item) != marker["text_sha256"]
+
+
+def test_the_new_deferral_marker_wins_over_an_older_one(aligned) -> None:
+    """Codex 2차 비차단: 참고자료 재표시 뒤 새 판정의 선발행 표지가 옛 표지에 덮이지 않는다."""
+
+    item = _item()
+    _with_review(item, _unavailable(item), **{AI_REVIEW_DEFERRED_KEY: {"candidate_sha256": "older"}})
+
+    assessment = assess_content_publication(item, SimpleNamespace(id=uuid.uuid4()))
+    apply_publication_assessment(item, assessment)
+
+    assert item.essence_check_summary[AI_REVIEW_DEFERRED_KEY]["candidate_sha256"] == (
+        candidate_sha256(item)
+    )

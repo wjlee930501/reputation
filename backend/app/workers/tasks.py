@@ -768,7 +768,7 @@ def _stored_review_has_uncertain_finding(item: ContentItem) -> bool:
 def _stored_model_declared_hard(item: ContentItem) -> bool:
     """Whether the stored independent review itself declared a HARD finding."""
 
-    return has_model_declared_hard_finding(_stored_ai_review(item))
+    return has_model_declared_hard_finding(_stored_ai_review(item), _stored_candidate(item))
 
 
 def _stored_block_is_sample_remediable(item: ContentItem, code: str | None) -> bool:
@@ -1076,7 +1076,7 @@ def _auto_correct_blocked_body(
     if waiting is not None:
         return waiting
     review = _stored_ai_review(item)
-    if not review_has_critical_finding(review):
+    if not review_has_critical_finding(review, _stored_candidate(item)):
         # Critical이 아닌 지적(병원 사실·수치 불일치·확신 부족)은 교정 제안을 사지 않고 결정적으로
         # 지운다. 교정 상한·주제 교체 예산을 쓰지 않는다(W4). 맡지 못하면 기존 재검수·재작성 계단이다.
         return _resolve_noncritical_block(db, item, hospital, philosophy)
@@ -1233,7 +1233,7 @@ def _resolve_noncritical_block(
     if not correction_allowed_for(item):
         return None
     review = _stored_ai_review(item)
-    if review_has_critical_finding(review):
+    if review_has_critical_finding(review, _stored_candidate(item)):
         return None
     waiting = _review_wait_blocks_correction(item, philosophy)
     if waiting is not None:

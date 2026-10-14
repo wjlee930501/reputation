@@ -20,6 +20,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Mapping
 from enum import StrEnum
 from typing import Any
@@ -36,54 +37,87 @@ class Criticality(StrEnum):
 EMERGENCY_GUIDANCE_MARKERS = ("응급", "119", "구급", "즉시 내원", "즉시 병원")
 _BLOCKING_SEVERITIES = frozenset({"HARD", "UNCERTAIN"})
 
-# ── 내용으로 정하는 등급(2026-10-14 Codex P1-2) ───────────────────────────────────────
-# 등급은 지적의 종류 라벨이 아니라 **내용**(지적 문구 + 인용 문장)이 정한다. 아래 의료 위험 표지가
-# 하나라도 있으면 종류와 무관하게 Critical이다 — 응급 안내·119, 약의 용량·횟수·복용, 금기·위험군,
-# 시술 위험·합병증, 바로 진료가 필요한 증상, 의학적 오정보. 모르면 Critical이다(fail closed).
-_MEDICAL_RISK_MARKERS = (
-    *EMERGENCY_GUIDANCE_MARKERS,
-    "응급실", "구급차",
-    # 약의 용량·횟수·복용
-    "용량", "용법", "복용", "복약", "투약", "투여", "처방", "약물", "약을", "약은", "약이", "주사",
-    "mg", "ml", "mcg", "㎎", "㎖", "밀리그램", "밀리리터", "하루 ", "1일 ", "회분",
+# ── 허용 목록 판정(2026-10-14 Codex 2차, 오케스트레이터 결정 A) ──────────────────────────
+# Critical이 **아님**을 적극적으로 보일 때만 비-Critical이다. 나머지는 모두 Critical이다(fail closed).
+# 의료·안전 어휘 — 한국어·영어. 지적 문구, 인용, 인용이 가리키는 본문 문장 전체 중 어디에든 있으면
+# Critical이다. 부분 문자열로(대소문자 무시) 본다 — 넓게 걸리는 것이 의도다('약'은 '예약'에도 걸린다).
+MEDICAL_SAFETY_LEXICON: tuple[str, ...] = (
+    # 응급·긴급 증상
+    "응급", "119", "구급", "즉시", "바로 병원", "흉통", "가슴 통증", "호흡", "숨", "의식", "마비",
+    "경련", "실신", "출혈", "토혈", "혈변", "흑색변", "검은 변", "고열",
+    # 약·용량
+    "용량", "용법", "mg", "ml", "mcg", "㎎", "㎖", "복용", "복약", "투여", "투약", "처방", "약", "주사",
     # 금기·위험군
-    "금기", "임산부", "임신", "수유", "영유아", "소아", "어린이", "고령", "노인", "기저질환",
-    "당뇨 환자", "고혈압 환자", "신장 질환", "간 질환", "알레르기", "과민",
+    "금기", "임신", "임산부", "수유", "영유아", "소아", "고령", "기저질환", "알레르기",
     # 시술 위험·합병증
-    "부작용", "합병증", "위험", "출혈", "감염", "마취", "쇼크", "아나필락시스", "사망", "후유증",
-    # 바로 진료가 필요한 증상
-    "흉통", "가슴 통증", "호흡곤란", "숨이 차", "의식", "마비", "경련", "실신", "토혈", "혈변",
-    "흑색변", "검은 변", "고열",
-    # 의학적 오정보·효과 단정
-    "오정보", "잘못된 의학", "의학적 근거", "의학적으로", "효과", "완치", "부정확한 의학",
-    "진단 기준", "오진", "질환의 원인", "치료법",
+    "부작용", "합병증", "후유증", "위험", "감염", "마취", "쇼크", "사망", "수술", "시술",
+    # 진단·효과·질환
+    "진단", "치료 효과", "효과", "완치", "재발", "증상", "질환", "통증", "안전",
+    # English
+    "emergency", "911", "urgent", "chest pain", "breath", "unconscious", "seizure", "bleed",
+    "dose", "dosage", "tablet", "pill", "medication", "medicine", "drug", "prescri",
+    "contraindicat", "pregnan", "breastfeed", "lactat", "allerg", "side effect", "adverse",
+    "complication", "risk", "surgery", "surgical", "procedure", "injection", "inject", "anesthe",
+    "infection", "diagnos", "cure", "overdose", "symptom", "safety", "harm", "danger", "fatal",
+    "death",
 )
-# 의료 내용이 없는 병원 사실임을 **적극적으로** 말하는 표지. 병원 사실(HOSPITAL_FACT) 지적은 이 표지가
-# 있고 의료 위험 표지가 없을 때만 Critical이 아니다 — 진료 철학 문장·경력·수련·개원 연도·시설 설명·
-# 예약·기간 같은 운영 정보·의료 내용 없는 홍보 문구.
-_NONMEDICAL_FACT_MARKERS = (
-    "철학", "원칙", "가치", "비전", "슬로건", "약속", "신념", "진료 방침",
-    "경력", "수련", "학력", "졸업", "전공의", "전문의 자격", "약력", "이력", "출신",
-    "개원", "설립", "연혁", "년째", "주년",
-    "시설", "장비", "병상", "규모", "주차", "위치", "층", "인테리어", "공간",
-    "예약", "진료 시간", "진료시간", "운영 시간", "휴진", "대기", "기간",
-    "홍보", "마케팅", "수상", "인증", "언론", "소개",
-)
-# 의료 내용이 없을 때 Critical이 아닌 종류(문체·참고자료). 병원 사실은 위 표지로 따로 본다.
-_NONMEDICAL_KINDS = frozenset({"STYLE", "REFERENCE"})
+# 비-Critical이 될 수 있는 종류 — 의료 내용이 없는 병원 사실·문체·참고자료뿐이다.
+NONCRITICAL_KINDS = frozenset({"HOSPITAL_FACT", "STYLE", "REFERENCE"})
+# 인용이 있으면 안 되는 필드 — 제목·메타·FAQ(문장 삭제 대상이 아니다).
+_NON_BODY_FIELDS = ("title", "meta_description", "faq_question", "faq_answer_summary")
+_SENTENCE_END = re.compile(r"[.?!。][)\]\"'”’」』*_~`]*(?=\s|$)")
 
 
 def _label(value: object) -> str:
     return str(getattr(value, "value", value) or "").strip().upper()
 
 
-def _finding_text(finding: Mapping[str, Any]) -> str:
-    return f"{finding.get('message') or ''} {finding.get('quote') or ''}"
+def _field(content: object, name: str) -> str:
+    if isinstance(content, Mapping):
+        return str(content.get(name) or "")
+    return str(getattr(content, name, None) or "")
 
 
-def _mentions(text: str, markers: Iterable[str]) -> bool:
-    lowered = text.lower()
-    return any(marker.lower() in lowered for marker in markers)
+def mentions_medical_safety(text: object) -> bool:
+    """의료·안전 어휘(`MEDICAL_SAFETY_LEXICON`)가 하나라도 있는가."""
+
+    lowered = str(text or "").lower()
+    return any(term.lower() in lowered for term in MEDICAL_SAFETY_LEXICON)
+
+
+def _quote_spans(text: str, quote: str) -> list[tuple[int, int]]:
+    parts = [re.escape(part) for part in quote.split()]
+    if not parts:
+        return []
+    return [(m.start(), m.end()) for m in re.finditer(r"\s+".join(parts), text)]
+
+
+def locate_body_sentence(content: object, quote: object) -> str | None:
+    """인용이 본문의 **정확히 한 곳**을 가리키면 그 문장 전체. 아니면 None.
+
+    인용이 제목·메타·FAQ에도 있거나, 본문에 없거나 두 곳 이상이면 None이다. 문장은 앞뒤의 종결 부호·
+    줄바꿈까지로 넓게 잡는다(넓을수록 어휘 검사가 더 많이 본다).
+    """
+
+    quote = str(quote or "").strip()
+    if len(quote) < 4 or content is None:
+        return None
+    if any(_quote_spans(_field(content, name), quote) for name in _NON_BODY_FIELDS):
+        return None
+    body = _field(content, "body")
+    spans = _quote_spans(body, quote)
+    if len(spans) != 1:
+        return None
+    start, end = spans[0]
+    line_start = body.rfind("\n", 0, start) + 1
+    sentence_start = line_start
+    for match in _SENTENCE_END.finditer(body, line_start, start):
+        sentence_start = match.end()
+    line_end = body.find("\n", end)
+    line_end = len(body) if line_end < 0 else line_end
+    match = _SENTENCE_END.search(body, max(end - 1, line_start), line_end)
+    sentence_end = match.end() if match else line_end
+    return body[sentence_start:sentence_end].strip()
 
 
 def finding_blocks(finding: Mapping[str, Any]) -> bool:
@@ -97,34 +131,35 @@ def finding_blocks(finding: Mapping[str, Any]) -> bool:
 def is_emergency_guidance_finding(finding: Mapping[str, Any]) -> bool:
     """응급 안내(119·응급실)를 말하는 차단 지적인가 — 종류 라벨과 무관하다."""
 
-    if not finding_blocks(finding):
-        return False
-    return _mentions(str(finding.get("message") or ""), EMERGENCY_GUIDANCE_MARKERS)
+    return finding_blocks(finding) and any(
+        marker in str(finding.get("message") or "") for marker in EMERGENCY_GUIDANCE_MARKERS
+    )
 
 
-def classify_finding(finding: Mapping[str, Any]) -> Criticality:
-    """독립 검수 지적 하나의 등급 — 내용이 정하고, 모르면 Critical이다(fail closed).
+def classify_finding(finding: Mapping[str, Any], content: object = None) -> Criticality:
+    """독립 검수 지적 하나의 등급 — 허용 목록이다. 아래를 **모두** 만족할 때만 비-Critical이다.
 
-    1. 발행을 막지 않는 지적(SOFT·필수 문구를 짚은 지적)은 Critical이 아니다.
-    2. 지적 문구나 인용 문장에 의료 위험 표지(응급·용량·금기·위험·긴급 증상·의학적 오정보)가 있으면
-       종류와 무관하게 Critical이다.
-    3. 의료 안전(MEDICAL_SAFETY)·종류를 읽을 수 없는 지적은 Critical이다.
-    4. 병원 사실(HOSPITAL_FACT)은 의료 내용이 없는 병원 사실(철학·경력·개원·시설·예약·홍보)임을
-       말하는 표지가 있을 때만 Critical이 아니다. 아니면 Critical이다.
-    5. 의료 내용이 없는 문체·참고자료 지적은 Critical이 아니다.
+    1. 종류가 `NONCRITICAL_KINDS`(병원 사실·문체·참고자료)다.
+    2. 인용(`quote`)이 있고, 그 인용이 본문의 정확히 한 문장을 가리킨다(제목·메타·FAQ가 아니다).
+       `content`(후보 본문)가 없으면 확인할 수 없으므로 Critical이다.
+    3. 지적 문구·인용·그 문장 전체 어디에도 의료·안전 어휘(`MEDICAL_SAFETY_LEXICON`)가 없다.
+
+    그 밖은 모두 Critical이다(fail closed) — 의료 안전(확신 부족 포함)·종류 불명·제목 지적·인용 없는
+    지적·혼합 언어. 발행을 막지 않는 지적(SOFT·필수 문구를 짚은 지적)은 등급을 매기지 않는다(비-Critical).
     """
 
     if not finding_blocks(finding):
         return Criticality.NONCRITICAL
-    text = _finding_text(finding)
-    if _mentions(text, _MEDICAL_RISK_MARKERS):
+    if _label(finding.get("kind")) not in NONCRITICAL_KINDS:
         return Criticality.CRITICAL
-    kind = _label(finding.get("kind"))
-    if kind in _NONMEDICAL_KINDS:
-        return Criticality.NONCRITICAL
-    if kind == "HOSPITAL_FACT" and _mentions(text, _NONMEDICAL_FACT_MARKERS):
-        return Criticality.NONCRITICAL
-    return Criticality.CRITICAL
+    sentence = locate_body_sentence(content, finding.get("quote"))
+    if sentence is None:
+        return Criticality.CRITICAL
+    if mentions_medical_safety(
+        f"{finding.get('message') or ''} {finding.get('quote') or ''} {sentence}"
+    ):
+        return Criticality.CRITICAL
+    return Criticality.NONCRITICAL
 
 
 def blocking_findings(review: object) -> list[Mapping[str, Any]]:
@@ -136,36 +171,34 @@ def blocking_findings(review: object) -> list[Mapping[str, Any]]:
     return [f for f in findings if isinstance(f, Mapping) and finding_blocks(f)]
 
 
-def critical_findings(findings: Iterable[object]) -> list[Mapping[str, Any]]:
+def critical_findings(findings: Iterable[object], content: object = None) -> list[Mapping[str, Any]]:
     return [
         finding
         for finding in findings
-        if isinstance(finding, Mapping) and classify_finding(finding) is Criticality.CRITICAL
+        if isinstance(finding, Mapping)
+        and classify_finding(finding, content) is Criticality.CRITICAL
     ]
 
 
-def review_has_critical_finding(review: object) -> bool:
-    """검수 기록에 Critical 차단 지적이 하나라도 있는가."""
+def review_has_critical_finding(review: object, content: object = None) -> bool:
+    """검수 기록에 Critical 차단 지적이 하나라도 있는가(본문을 모르면 차단 지적은 모두 Critical)."""
 
-    return bool(critical_findings(blocking_findings(review)))
+    return bool(critical_findings(blocking_findings(review), content))
 
 
-def review_blocks_only_noncritically(review: object) -> bool:
-    """차단 지적이 있고 그 전부가 Critical이 아닌가 — 결정적 해소의 대상이다."""
+def review_blocks_only_noncritically(review: object, content: object = None) -> bool:
+    """차단 지적이 있고 그 전부가 Critical이 아닌가 — 결정적 삭제의 대상이다."""
 
     blocking = blocking_findings(review)
-    return bool(blocking) and not critical_findings(blocking)
+    return bool(blocking) and not critical_findings(blocking, content)
 
 
-def flag_findings_are_critical(structured_findings: object) -> bool:
-    """사후 검수 표시의 구조화 지적에 Critical이 있는가.
-
-    구조를 모르면(옛 표시·빈 목록) Critical로 본다 — 의료 안전을 모르는 채로 조용히 닫지 않는다.
-    """
+def flag_findings_are_critical(structured_findings: object, content: object = None) -> bool:
+    """사후 검수 표시의 구조화 지적에 Critical이 있는가. 구조를 모르면 Critical이다."""
 
     if not isinstance(structured_findings, list) or not structured_findings:
         return True
-    return bool(critical_findings(structured_findings))
+    return bool(critical_findings(structured_findings, content))
 
 
 # ── 게이트 차단 코드·생성 거절 라벨 ─────────────────────────────────────────────────
@@ -213,7 +246,7 @@ _REJECTION_CRITICALITY: Mapping[str, Criticality] = {
 }
 
 
-def classify_block(code: object, *, review: object = None) -> Criticality:
+def classify_block(code: object, *, review: object = None, content: object = None) -> Criticality:
     """발행 게이트·생성 시도 기록의 차단 코드 하나의 등급.
 
     `CONTENT_AI_HARD_FINDING`은 저장된 검수(`review`)의 지적이 정한다. 모르는 코드는 Critical이
@@ -223,7 +256,9 @@ def classify_block(code: object, *, review: object = None) -> Criticality:
     label = _label(code)
     if label == "CONTENT_AI_HARD_FINDING":
         return (
-            Criticality.CRITICAL if review_has_critical_finding(review) else Criticality.NONCRITICAL
+            Criticality.CRITICAL
+            if review_has_critical_finding(review, content)
+            else Criticality.NONCRITICAL
         )
     return _CODE_CRITICALITY.get(label, Criticality.NONCRITICAL)
 

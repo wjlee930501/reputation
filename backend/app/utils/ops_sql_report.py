@@ -298,7 +298,8 @@ QUERIES: dict[str, tuple[str, ...]] = {
     # (0091, 2026-10-14 D36·D37) 배포 전 영향 — 이 배포로 새로 발행·공개될 수 있는 글. 판정의 정본은 파이썬
     # 게이트라 근사다(제목 규칙·후보 hash는 SQL로 다시 계산하지 않는다). q16: 참고자료 0개로 보류된 발행 전
     # 글(D36). q16b: 검수 장애(UNAVAILABLE)로 보류된 발행 전 글(D37, 비용 보류·설정 오류 제외). q16c: 이미
-    # 공개됐지만 참고자료 0개·검수 장애로 공개 표면에서 숨은 글(배포 즉시 다시 보일 수 있다).
+    # 공개됐지만 참고자료 0개·검수 장애로 공개 표면에서 숨은 글(배포 즉시 다시 보일 수 있다). q16d: D35
+    # 백로그(아래).
     "q16": (
         """
         SELECT left(c.id::text, 8) AS content_id8, h.name AS hospital, c.content_type,
@@ -349,6 +350,28 @@ QUERIES: dict[str, tuple[str, ...]] = {
                      OR jsonb_array_length(c.references_list) = 0))
                OR c.essence_check_summary->'ai_review'->>'status' = 'UNAVAILABLE')
         ORDER BY c.published_at, h.name, c.id
+        """,
+        # q16d (D35): 알림 의도 없이 남은 FLAGGED 공개 글 — 첫 03:10 실행이 "마케터 검토 필요 N건" 요약
+        # 한 통으로 알릴 백로그의 상한(Critical 판정은 본문 대조가 필요해 파이썬이 마지막에 거른다).
+        """
+        SELECT count(*) AS flagged_without_alert,
+               count(*) FILTER (WHERE EXISTS (
+                   SELECT 1 FROM jsonb_array_elements(
+                       CASE WHEN jsonb_typeof(c.essence_check_summary->'post_publish_ai_review'
+                                               ->'structured_findings') = 'array'
+                            THEN c.essence_check_summary->'post_publish_ai_review'->'structured_findings'
+                            ELSE '[]'::jsonb END) f
+                   WHERE f->>'kind' = 'MEDICAL_SAFETY' OR f->>'severity' = 'HARD'))
+                 AS with_medical_or_hard,
+               count(*) FILTER (WHERE jsonb_typeof(c.essence_check_summary->'post_publish_ai_review'
+                                                   ->'structured_findings') IS DISTINCT FROM 'array')
+                 AS without_structure,
+               count(*) FILTER (WHERE c.essence_check_summary->'post_publish_ai_review'
+                                      ->'correction'->>'finished' = 'true') AS correction_finished
+        FROM content_items c
+        WHERE c.status = 'PUBLISHED'
+          AND c.essence_check_summary->'post_publish_ai_review'->>'status' = 'FLAGGED'
+          AND NOT (c.essence_check_summary ? 'post_publish_critical_alert')
         """,
     ),
 }

@@ -444,12 +444,13 @@ def test_hard_finding_class_depends_on_who_declared_it() -> None:
     assert has_model_declared_hard_finding(
         {"findings": [{"severity": "SOFT"}, {"severity": "HARD", "kind": "MEDICAL_SAFETY"}]}
     ) is True
-    # W4: 병원 사실 HARD는 Critical이 아니라 교정·교체 계단의 종착이 아니다.
-    assert has_model_declared_hard_finding(
-        {"findings": [{"severity": "SOFT"}, {"severity": "HARD", "kind": "HOSPITAL_FACT",
-                       "message": "진료 철학 문장이 승인 자료에 없습니다."}]}
-    ) is False
-    # 내용을 모르는 병원 사실 HARD는 Critical이다(fail closed).
+    # W4: 본문 한 문장을 짚은 의료 내용 없는 병원 사실 HARD는 Critical이 아니다 — 종착이 아니다.
+    sentence = "본원은 환자 이야기를 끝까지 듣는 것을 진료 원칙으로 삼습니다."
+    fact = {"findings": [{"severity": "SOFT"}, {"severity": "HARD", "kind": "HOSPITAL_FACT",
+                          "message": "승인 자료에 없는 진료 원칙", "quote": sentence}]}
+    assert has_model_declared_hard_finding(fact, {"body": f"## 안내\n{sentence}"}) is False
+    # 본문을 모르거나 인용이 없는 병원 사실 HARD는 Critical이다(fail closed).
+    assert has_model_declared_hard_finding(fact) is True
     assert has_model_declared_hard_finding(
         {"findings": [{"severity": "HARD", "kind": "HOSPITAL_FACT"}]}
     ) is True

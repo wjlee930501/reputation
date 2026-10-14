@@ -2084,10 +2084,14 @@ def test_only_a_sample_block_is_forced_into_a_body_repair():
     ) is False
 
     # W4(2026-10-14): 의료 내용 없는 병원 사실 HARD는 Critical이 아니다 — 못 풀면 표본처럼 다시 쓴다.
-    fact_hard = SimpleNamespace(essence_check_summary={"ai_review": {"findings": [{
-        "severity": "HARD", "kind": "HOSPITAL_FACT",
-        "message": "진료 철학 문장이 승인 자료에 없습니다.",
-    }]}})
+    sentence = "본원은 환자 이야기를 끝까지 듣는 것을 진료 원칙으로 삼습니다."
+    fact_hard = SimpleNamespace(
+        body=f"## 안내\n{sentence}",
+        essence_check_summary={"ai_review": {"findings": [{
+            "severity": "HARD", "kind": "HOSPITAL_FACT",
+            "message": "진료 철학 문장이 승인 자료에 없습니다.", "quote": sentence,
+        }]}},
+    )
     assert tasks._stored_block_is_sample_remediable(
         fact_hard, "CONTENT_AI_HARD_FINDING"
     ) is True

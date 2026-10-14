@@ -127,8 +127,9 @@ def test_full_automatic_impact_query_lists_newly_publishable_and_visible_posts()
     """0091(2026-10-14 D36·D37): 배포 전 영향 — 참고자료 0개·검수 장애로 보류된 발행 전 글과
     공개 표면에서 숨은 공개 글."""
 
-    drafts, deferred, published = ops_sql_report.QUERIES["q16"]
-    for sql in (drafts, deferred, published):
+    drafts, deferred, published, backlog = ops_sql_report.QUERIES["q16"]
+    assert "post_publish_critical_alert" in backlog and "FLAGGED" in backlog
+    for sql in (drafts, deferred, published, backlog):
         assert sql.strip().upper().startswith("SELECT")
     assert "jsonb_array_length(c.references_list) = 0" in drafts
     assert "c.status IN ('DRAFT', 'READY')" in drafts

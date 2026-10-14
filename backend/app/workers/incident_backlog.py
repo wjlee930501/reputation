@@ -647,7 +647,7 @@ def _post_publish_flag_settled(db: Session, incident: Incident, _now: datetime) 
     marker = summary.get(POST_PUBLISH_FLAG_KEY)
     if not isinstance(marker, dict) or marker.get("status") != "FLAGGED":
         return "flag_cleared"
-    if not flag_findings_are_critical(marker.get("structured_findings")):
+    if not flag_findings_are_critical(marker.get("structured_findings"), item):
         return "flag_not_critical"
     return None
 

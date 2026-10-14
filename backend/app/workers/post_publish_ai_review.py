@@ -34,6 +34,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import time
 import uuid
@@ -471,7 +472,7 @@ def apply_review_outcome(item: ContentItem, review: ContentAiReview, *, now: dat
         summary[POST_PUBLISH_FLAG_KEY] = _flag_payload(
             review, review.candidate_sha256, now, summary.get(POST_PUBLISH_FLAG_KEY)
         )
-        _request_critical_alert(summary, now)
+        _request_critical_alert(summary, item, now)
         item.essence_check_summary = summary
         return "FLAGGED"
     # 차단 지적이 없는 PASS(비차단 SOFT 포함). 현재 본문에 묶인 검수라 `ai_review`도 갱신해
@@ -485,34 +486,164 @@ def apply_review_outcome(item: ContentItem, review: ContentAiReview, *, now: dat
     return "REVIEWED"
 
 
-def _request_critical_alert(summary: dict[str, Any], now: datetime) -> bool:
-    """표시가 Critical이고 이 본문에 대한 알림 의도가 아직 없으면 요청을 적는다(같은 커밋)."""
+# ── D35 Critical 알림 — 글당 평생 한 번의 알림 의도(2026-10-14 Codex 2차 C·D·E) ─────────────────
+# 알림 의도는 Critical 판정을 저장하는 같은 커밋에 글 행(`POST_PUBLISH_CRITICAL_ALERT_KEY`)에 남고, 판정
+# 스냅샷(제목·지적·본문 hash)을 싣는다. 전달은 이후의 FLAG·PASS·교정 상태와 무관하다. 한 번 요청된 글은
+# 본문이 바뀌어도 다시 요청하지 않는다(대표 결정 "글당 한 번"). 전달할 수 없는 의도(공개 중이 아님·
+# 병원 없음·반복 실패)는 닫아 큐를 막지 않는다 — 대기 조회는 미전달·미종결 의도만, 가장 오래된 것부터 본다.
+_ALERT_BATCH = 50
+_ALERT_MAX_ATTEMPTS = 5
+# 배포 전부터 남은 Critical 공개 글(알림 의도가 없는 FLAGGED)을 한 통의 요약으로 알릴 때의 상한.
+_BACKLOG_SCAN_LIMIT = 500
+_BACKLOG_DIGEST_LINES = 30
+POST_PUBLISH_CRITICAL_DIGEST_NOTIFICATION_TYPE = "POST_PUBLISH_CRITICAL_DIGEST"
 
-    marker = summary.get(POST_PUBLISH_FLAG_KEY)
-    if not isinstance(marker, dict) or not flag_is_critical(marker):
+
+def _alert_snapshot(item: ContentItem, marker: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "title": str(getattr(item, "title", None) or "")[:200],
+        "findings": [str(message)[:240] for message in (marker.get("findings") or [])][:3],
+        "candidate_sha256": marker.get("candidate_sha256"),
+        "checked_at": marker.get("checked_at"),
+    }
+
+
+def _request_critical_alert(summary: dict[str, Any], item: ContentItem, now: datetime) -> bool:
+    """표시가 Critical이고 이 글에 알림 의도가 한 번도 없었으면 의도를 적는다(호출부의 커밋)."""
+
+    if POST_PUBLISH_CRITICAL_ALERT_KEY in summary:
         return False
-    alert = summary.get(POST_PUBLISH_CRITICAL_ALERT_KEY)
-    if isinstance(alert, dict) and alert.get("candidate_sha256") == marker.get("candidate_sha256"):
+    marker = summary.get(POST_PUBLISH_FLAG_KEY)
+    if not isinstance(marker, dict) or not flag_is_critical(marker, item):
         return False
     summary[POST_PUBLISH_CRITICAL_ALERT_KEY] = {
-        "candidate_sha256": marker.get("candidate_sha256"),
         "requested_at": now.isoformat(),
-        "sent_at": None,
+        "snapshot": _alert_snapshot(item, marker),
+        "attempts": 0,
+        "critical_alert_sent_at": None,
+        "closed_at": None,
     }
     return True
 
 
 def _pending_critical_alert_stmt(limit: int):
-    """요청됐지만 아직 전달하지 못한 Critical 알림(사고 기록 실패 등) — 다음 실행 첫머리에 다시 보낸다."""
+    """미전달·미종결 알림 의도 — 가장 오래된 요청부터. 종결·전달된 의도는 자리를 차지하지 않는다."""
 
     alert = ContentItem.essence_check_summary[POST_PUBLISH_CRITICAL_ALERT_KEY]
     return (
         select(ContentItem)
-        .join(Hospital, ContentItem.hospital_id == Hospital.id)
+        .where(
+            alert["requested_at"].as_string().is_not(None),
+            alert["critical_alert_sent_at"].as_string().is_(None),
+            alert["closed_at"].as_string().is_(None),
+        )
+        .order_by(alert["requested_at"].as_string(), ContentItem.id)
+        .options(joinedload(ContentItem.hospital))
+        .limit(limit)
+    )
+
+
+def _deliver_critical_alert(db, item_id, run_async, *, now: datetime | None = None) -> str:
+    """알림 의도 하나를 전달하거나 닫는다. ``SENT``·``CLOSED``·``RETRY``·``SKIPPED``를 돌려준다."""
+
+    observed = now or datetime.now(UTC)
+    locked = _lock_item(db, item_id)
+    summary = dict(locked.essence_check_summary or {}) if locked is not None else {}
+    alert = summary.get(POST_PUBLISH_CRITICAL_ALERT_KEY)
+    if (
+        locked is None
+        or not isinstance(alert, dict)
+        or alert.get("critical_alert_sent_at")
+        or alert.get("closed_at")
+    ):
+        db.rollback()
+        return "SKIPPED"
+    hospital = getattr(locked, "hospital", None)
+    if locked.status != ContentStatus.PUBLISHED or hospital is None:
+        summary[POST_PUBLISH_CRITICAL_ALERT_KEY] = {
+            **alert,
+            "closed_at": observed.isoformat(),
+            "closed_reason": "not_public",
+        }
+        locked.essence_check_summary = summary
+        db.commit()
+        return "CLOSED"
+    try:
+        _open_critical_incident(locked, hospital, run_async, snapshot=alert.get("snapshot") or {})
+    except Exception:  # noqa: BLE001 - 한 글의 실패가 큐를 멈추지 않는다(시도를 세고 상한에서 닫는다).
+        logger.exception("post-publish critical alert failed for %s", item_id)
+        db.rollback()
+        relocked = _lock_item(db, item_id)
+        current = dict(relocked.essence_check_summary or {}) if relocked is not None else {}
+        pending = current.get(POST_PUBLISH_CRITICAL_ALERT_KEY)
+        if relocked is None or not isinstance(pending, dict):
+            db.rollback()
+            return "RETRY"
+        attempts = int(pending.get("attempts") or 0) + 1
+        updated = {**pending, "attempts": attempts}
+        if attempts >= _ALERT_MAX_ATTEMPTS:
+            updated.update(closed_at=observed.isoformat(), closed_reason="delivery_failed")
+        current[POST_PUBLISH_CRITICAL_ALERT_KEY] = updated
+        relocked.essence_check_summary = current
+        db.commit()
+        return "CLOSED" if attempts >= _ALERT_MAX_ATTEMPTS else "RETRY"
+    summary[POST_PUBLISH_CRITICAL_ALERT_KEY] = {
+        **alert,
+        "critical_alert_sent_at": observed.isoformat(),
+    }
+    locked.essence_check_summary = summary
+    db.commit()
+    return "SENT"
+
+
+def deliver_pending_critical_alerts(db, run_async, *, now: datetime | None = None) -> int:
+    """미전달 알림 의도를 가장 오래된 것부터 보낸다. 보낸 수."""
+
+    sent = 0
+    for item_id in [
+        row.id
+        for row in db.execute(_pending_critical_alert_stmt(_ALERT_BATCH)).unique().scalars().all()
+    ]:
+        if _deliver_critical_alert(db, item_id, run_async, now=now) == "SENT":
+            sent += 1
+    return sent
+
+
+def ensure_critical_alert(db, item_id, run_async, *, now: datetime | None = None) -> str:
+    """이 글에 알림 의도가 없고 지금 표시가 Critical이면 의도를 남기고, 미전달 의도를 보낸다."""
+
+    observed = now or datetime.now(UTC)
+    locked = _lock_item(db, item_id)
+    if locked is not None and locked.status == ContentStatus.PUBLISHED:
+        summary = dict(locked.essence_check_summary or {})
+        if _request_critical_alert(summary, locked, observed):
+            locked.essence_check_summary = summary
+            db.commit()
+        else:
+            db.rollback()
+    else:
+        db.rollback()
+    return _deliver_critical_alert(db, item_id, run_async, now=observed)
+
+
+def _alert_safely(db, item_id, run_async) -> None:
+    try:
+        ensure_critical_alert(db, item_id, run_async)
+    except Exception:  # noqa: BLE001 - 알림 실패가 저장된 판정을 되돌리지 않는다(의도는 남아 다시 보낸다).
+        db.rollback()
+        logger.exception("post-publish critical alert failed for %s", item_id)
+
+
+def _backlog_stmt(limit: int):
+    """알림 의도가 없는 FLAGGED 공개 글 — 배포 전부터 남은 판정(교정 상태와 무관)."""
+
+    summary = ContentItem.essence_check_summary
+    return (
+        select(ContentItem)
         .where(
             ContentItem.status == ContentStatus.PUBLISHED,
-            alert["requested_at"].as_string().is_not(None),
-            alert["sent_at"].as_string().is_(None),
+            summary[POST_PUBLISH_FLAG_KEY]["status"].as_string() == POST_PUBLISH_FLAGGED,
+            summary[POST_PUBLISH_CRITICAL_ALERT_KEY].as_string().is_(None),
         )
         .order_by(ContentItem.published_at, ContentItem.id)
         .options(joinedload(ContentItem.hospital))
@@ -520,59 +651,93 @@ def _pending_critical_alert_stmt(limit: int):
     )
 
 
-def ensure_critical_alert(db, item_id, hospital: Hospital, run_async, *, now: datetime | None = None) -> bool:
-    """이 글의 지금 Critical 판정에 대해 "마케터 검토 필요"를 정확히 한 번 보낸다(D35).
+def build_critical_backlog_digest(items: list[ContentItem], now: datetime):
+    """"마케터 검토 필요 N건" 요약 한 통(최대 30줄, 그다음 "외 N건")."""
 
-    1. 잠근 행의 표시가 Critical이 아니면 아무것도 하지 않는다.
-    2. 이 본문(표시의 후보 hash)에 대한 알림을 이미 보냈으면 아무것도 하지 않는다 — 사고가 그 사이 복구·
-       확인됐어도 다시 열지 않는다(글 평생 한 번, 본문이 바뀐 새 Critical만 다시 알린다).
-    3. 요청이 없으면 요청을 먼저 커밋하고, 사고를 연 뒤 전달 시각을 같은 hash일 때만 적는다. 사고 기록이
-       실패하면 요청이 남아 다음 실행 첫머리(`_pending_critical_alert_stmt`)가 다시 보낸다.
-    보냈으면 True.
+    from app.services.notification_contracts import NotificationIntent
+    from app.services.notification_labels import prefixed_for_event
+    from app.services.notification_milestone_rendering import (
+        RenderedSlackMessage,
+        action_block,
+        admin_url,
+        chunk_lines,
+        header_block,
+        safe_text,
+        section_block,
+        validated_message,
+    )
+
+    kind = POST_PUBLISH_CRITICAL_DIGEST_NOTIFICATION_TYPE
+    total = len(items)
+    lines = [
+        f"• *{safe_text(str(getattr(item.hospital, 'name', '') or '병원'), 60)}* · "
+        f"「{safe_text(str(item.title or ''), 80)}」"
+        for item in items[:_BACKLOG_DIGEST_LINES]
+    ]
+    if total > _BACKLOG_DIGEST_LINES:
+        lines.append(f"외 {total - _BACKLOG_DIGEST_LINES}건")
+    action_url = admin_url(settings.ADMIN_BASE_URL, "/operations")
+    title = f"마케터 검토 필요 {total}건"
+    blocks = [
+        header_block("post_publish_critical_digest_header", prefixed_for_event(kind, title)),
+        section_block(
+            "post_publish_critical_digest_summary",
+            "공개된 글의 사후 검수에서 의료 안전 지적이 남은 글입니다. 글은 그대로 공개되어 있습니다 — "
+            "각 병원의 콘텐츠 탭에서 지적 문장을 확인해 주세요.",
+        ),
+        *(
+            section_block(f"post_publish_critical_digest_{index}", chunk)
+            for index, chunk in enumerate(chunk_lines(lines))
+        ),
+        action_block("post_publish_critical_digest_action", action_url, "운영 센터 열기"),
+    ]
+    message = validated_message(
+        RenderedSlackMessage(prefixed_for_event(kind, title), tuple(blocks), action_url),
+        settings.ADMIN_BASE_URL,
+    )
+    identity = hashlib.sha256(
+        ",".join(sorted(str(item.id) for item in items)).encode("utf-8")
+    ).hexdigest()[:16]
+    return NotificationIntent(
+        dedupe_key=f"post-publish-critical-digest:{now.date().isoformat()}:{identity}",
+        notification_type=kind,
+        message=message,
+    )
+
+
+def send_critical_backlog_digest(db, *, now: datetime | None = None) -> int:
+    """알림 의도가 없는 Critical FLAGGED 공개 글을 요약 한 통으로 알리고 의도를 '보냄'으로 적는다.
+
+    배포 첫 실행에서 기존 백로그를 조용히 빼지도, 글마다 쏟아내지도 않는다. 그 뒤로 새 Critical은 판정
+    저장 때 의도가 생기므로 글마다 알린다. 의료 내용이 없는 FLAGGED는 대상이 아니다. 알린 글 수.
     """
 
+    from app.services.notification_store import enqueue_notification_sync
+
     observed = now or datetime.now(UTC)
-    locked = _lock_item(db, item_id)
-    summary = dict(locked.essence_check_summary or {}) if locked is not None else {}
-    marker = summary.get(POST_PUBLISH_FLAG_KEY)
-    if (
-        locked is None
-        or locked.status != ContentStatus.PUBLISHED
-        or not isinstance(marker, dict)
-        or marker.get("status") != POST_PUBLISH_FLAGGED
-        or not flag_is_critical(marker)
-    ):
-        db.rollback()
-        return False
-    alert = summary.get(POST_PUBLISH_CRITICAL_ALERT_KEY)
-    target_sha = marker.get("candidate_sha256")
-    if isinstance(alert, dict) and alert.get("candidate_sha256") == target_sha and alert.get("sent_at"):
-        db.rollback()
-        return False
-    if _request_critical_alert(summary, observed):
-        locked.essence_check_summary = summary
-        db.commit()
-    else:
-        db.rollback()
-    _open_critical_incident(locked, hospital, run_async)
-    relocked = _lock_item(db, item_id)
-    current = dict(relocked.essence_check_summary or {}) if relocked is not None else {}
-    pending = current.get(POST_PUBLISH_CRITICAL_ALERT_KEY)
-    if not isinstance(pending, dict) or pending.get("candidate_sha256") != target_sha:
-        db.rollback()
-        return True
-    current[POST_PUBLISH_CRITICAL_ALERT_KEY] = {**pending, "sent_at": observed.isoformat()}
-    relocked.essence_check_summary = current
+    rows = list(db.execute(_backlog_stmt(_BACKLOG_SCAN_LIMIT)).unique().scalars().all())
+    critical = [
+        item
+        for item in rows
+        if flag_is_critical((item.essence_check_summary or {}).get(POST_PUBLISH_FLAG_KEY), item)
+    ]
+    if not critical:
+        return 0
+    enqueue_notification_sync(db, build_critical_backlog_digest(critical, observed))
+    for item in critical:
+        summary = dict(item.essence_check_summary or {})
+        marker = summary.get(POST_PUBLISH_FLAG_KEY) or {}
+        summary[POST_PUBLISH_CRITICAL_ALERT_KEY] = {
+            "requested_at": observed.isoformat(),
+            "snapshot": _alert_snapshot(item, marker),
+            "attempts": 0,
+            "critical_alert_sent_at": observed.isoformat(),
+            "closed_at": None,
+            "via": "BACKLOG_DIGEST",
+        }
+        item.essence_check_summary = summary
     db.commit()
-    return True
-
-
-def _alert_safely(db, item_id, hospital, run_async) -> None:
-    try:
-        ensure_critical_alert(db, item_id, hospital, run_async)
-    except Exception:  # noqa: BLE001 - 알림 실패가 저장된 판정을 되돌리지 않는다(요청은 남아 다시 보낸다).
-        db.rollback()
-        logger.exception("post-publish critical alert failed for %s", item_id)
+    return len(critical)
 
 
 _NEEDS_HUMAN_COPY = {
@@ -585,11 +750,12 @@ _NEEDS_HUMAN_COPY = {
 _NEEDS_HUMAN_DEFAULT_COPY = "자동 교정이 안전 검사를 통과하지 못했습니다."
 
 
-def flag_is_critical(marker: object) -> bool:
-    """사후 검수 표시에 Critical 지적이 남았는가(`finding_criticality`). 구조를 모르면 Critical이다."""
+def flag_is_critical(marker: object, content: object = None) -> bool:
+    """사후 검수 표시에 Critical 지적이 남았는가(`finding_criticality` 허용 목록 — 본문으로 인용 문장을
+    확인한다). 구조를 모르거나 본문이 없으면 Critical이다."""
 
     findings = marker.get("structured_findings") if isinstance(marker, dict) else None
-    return flag_findings_are_critical(findings)
+    return flag_findings_are_critical(findings, content)
 
 
 def _open_critical_incident(
@@ -597,23 +763,16 @@ def _open_critical_incident(
     hospital: Hospital,
     run_async,
     *,
-    needs_human_reason: str | None = None,
+    snapshot: dict[str, Any] | None = None,
 ) -> None:
-    """D35: 공개 글의 Critical 지적 — 글은 그대로 두고 "마케터 검토 필요" 사고 하나(글당)를 연다.
-
-    같은 글의 사고가 이미 열려 있으면 문구만 새로 쓴다(`open_or_touch_incident`) — 두 번째 Slack이 없다.
-    """
+    """D35: 공개 글의 Critical 판정 — 글은 그대로 두고 "마케터 검토 필요" 사고를 연다(판정 스냅샷 문구)."""
 
     from app.services.ops_incident_alerts import open_ops_incident
 
-    marker = (item.essence_check_summary or {}).get(POST_PUBLISH_FLAG_KEY) or {}
-    findings = marker.get("findings") or []
+    snapshot = snapshot or {}
+    title = snapshot.get("title") or item.title
+    findings = snapshot.get("findings") or []
     detail = f" 지적: {findings[0]}" if findings else ""
-    tried = (
-        f" 자동 교정으로 풀지 못했습니다({_NEEDS_HUMAN_COPY.get(needs_human_reason, _NEEDS_HUMAN_DEFAULT_COPY)})"
-        if needs_human_reason
-        else ""
-    )
     run_async(
         open_ops_incident(
             pipeline=POST_PUBLISH_CRITICAL_INCIDENT_PIPELINE,
@@ -622,8 +781,8 @@ def _open_critical_incident(
             incident_type=POST_PUBLISH_CRITICAL_INCIDENT_TYPE,
             safe_error_code=POST_PUBLISH_CRITICAL_INCIDENT_TYPE,
             problem=(
-                f"마케터 검토 필요: 공개된 글 「{item.title}」의 사후 검수에서 의료 안전 지적이 "
-                f"나왔습니다.{tried}{detail}"
+                f"마케터 검토 필요: 공개된 글 「{title}」의 사후 검수에서 의료 안전 지적이 "
+                f"나왔습니다.{detail}"
             ),
             customer_impact="글은 그대로 공개되어 있습니다. 자동으로 내리지 않았습니다.",
             next_action=(
@@ -653,7 +812,7 @@ def _close_noncritical_flag(db, item_id, reviewed_hash: object, now: datetime) -
         or not isinstance(marker, dict)
         or marker.get("status") != POST_PUBLISH_FLAGGED
         or marker.get("candidate_sha256") != reviewed_hash
-        or flag_is_critical(marker)
+        or flag_is_critical(marker, locked)
     ):
         db.rollback()
         return False
@@ -691,9 +850,9 @@ def _settle_flag(
     if not isinstance(marker, dict) or marker.get("status") != POST_PUBLISH_FLAGGED:
         return
     _recover_flag_incident(item, hospital, run_async)
-    if flag_is_critical(marker):
-        # 판정을 저장할 때 이미 알렸다면 아무것도 하지 않는다 — 글당 한 번(`ensure_critical_alert`).
-        ensure_critical_alert(db, item.id, hospital, run_async, now=now)
+    if flag_is_critical(marker, item):
+        # 글당 평생 한 번 — 의도가 이미 있으면(보냈든 닫혔든) 다시 만들지 않는다(`ensure_critical_alert`).
+        ensure_critical_alert(db, item.id, run_async, now=now)
         return
     awaiting_senior = uncertain_only(marker) and not marker.get(POST_PUBLISH_SENIOR_REREVIEW_KEY)
     if needs_human_reason and not awaiting_senior:
@@ -799,7 +958,7 @@ def _review_and_apply(db, item, hospital, philosophy, run_async, now: datetime) 
     db.commit()
     if outcome == "FLAGGED":
         # Critical 판정은 교정 결과·장애·하루 상한과 무관하게 지금 알린다(글당 한 번).
-        _alert_safely(db, item_id, hospital, run_async)
+        _alert_safely(db, item_id, run_async)
     return outcome
 
 
@@ -1140,9 +1299,18 @@ def review_post_publish_samples() -> dict[str, int]:
             _bump(counts, key)
 
     with SyncSessionLocal() as db:
-        # 0) 요청됐지만 전달하지 못한 Critical 알림을 먼저 보낸다(사고 기록 실패 뒤 재시도).
-        for item in db.execute(_pending_critical_alert_stmt(50)).unique().scalars().all():
-            _alert_safely(db, item.id, item.hospital, _run_async)
+        # 0) 배포 전부터 남은 Critical 공개 글을 요약 한 통으로 알리고(글마다 쏟아내지 않는다), 미전달
+        # 알림 의도를 가장 오래된 것부터 보낸다(사고 기록 실패 뒤 재시도·종결).
+        try:
+            send_critical_backlog_digest(db)
+        except Exception:  # noqa: BLE001 - 요약 실패가 하루 검수를 멈추지 않는다(다음 실행이 다시 본다).
+            db.rollback()
+            logger.exception("post-publish critical backlog digest failed")
+        try:
+            deliver_pending_critical_alerts(db, _run_async)
+        except Exception:  # noqa: BLE001
+            db.rollback()
+            logger.exception("post-publish critical alert delivery failed")
         # 0b) 검수 장애로 판정 없이 먼저 발행된 글(D37) — 실제 첫 단계다. 자기 시간·연속 장애·상한을 쓰고
         # 뒤 단계(교정·상위 재검수·표본)와 나누지 않는다. 공개 중인데 아무 검수도 받지 않은 글이다.
         seen: set[uuid.UUID] = set()

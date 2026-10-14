@@ -23,12 +23,13 @@ class _Rows:
 
 
 class _SweepDb:
-    """호출 순서: 미전달 Critical 알림 조회 → 선발행 글(D37) 조회(실제 첫 단계) → FLAGGED 조회 →
+    """호출 순서: Critical 백로그 조회 → 미전달 Critical 알림 조회 → 선발행 글(D37) 조회(실제 첫 단계)
+    → FLAGGED 조회 →
     (교정이 켜져 있으면) UNCERTAIN 상위 재검수 조회 두 번(숫자 시각 표시, 옛 표시 키셋 한 쪽) → 비공개
     조회 → 표본 조회."""
 
     def __init__(self, flagged, deferred=()):
-        self._batches = [[], list(deferred), flagged, [], [], [], []]
+        self._batches = [[], [], list(deferred), flagged, [], [], [], []]
         self.order: list[str] = []
 
     def __enter__(self):

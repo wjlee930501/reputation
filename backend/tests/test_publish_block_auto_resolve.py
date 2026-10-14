@@ -2090,26 +2090,21 @@ def test_noncritical_number_mismatch_deletes_the_sentence_never_substitutes(work
     assert wrong not in item.body and "3주" not in item.body and NEUTRAL_A in item.body
 
 
-def test_unquoted_noncritical_fact_is_rewritten_not_swapped(worker, monkeypatch):
-    """인용 없는 병원 사실 지적은 문장으로 짚을 수 없다 — 주제 교체 계단이 아니라 지적을 실은
-    재작성(표본 실패 사다리)으로 간다."""
+def test_unquoted_fact_is_critical_and_takes_the_existing_ladder(worker, monkeypatch):
+    """인용 없는 지적은 문장으로 확인할 수 없다 — Critical(fail closed)이라 결정적 삭제가 아니라 기존
+    계단(교정 불가 → 주제 교체 → 사람)으로 간다(Codex 2차 결정 A)."""
 
     philosophy, calls = worker
     finding = _finding("HARD", "HOSPITAL_FACT", "승인 자료에서 개원 연도를 확인할 수 없습니다.")
     item = _blocked_item(philosophy, _body(NEUTRAL_A), finding)
     calls["item"] = item
+    escalated = []
 
-    class _Rewrite(Exception):
-        pass
+    def escalate(_db, _item, _philosophy, _state):
+        escalated.append(_item.id)
+        return tasks.GenerationItemState.FAILED, "CONTENT_AI_HARD_FINDING", "교체 대기"
 
-    def body_repair_session(*_args, **_kwargs):
-        raise _Rewrite
-
-    def no_escalation(*_args, **_kwargs):
-        raise AssertionError("비-Critical 지적은 교정 상한·주제 교체로 넘기지 않는다")
-
-    monkeypatch.setattr(tasks, "_spend_body_repair_session", body_repair_session)
-    monkeypatch.setattr(tasks, "_escalate_exhausted_correction", no_escalation)
+    monkeypatch.setattr(tasks, "_escalate_exhausted_correction", escalate)
     _install(
         monkeypatch,
         calls,
@@ -2117,9 +2112,12 @@ def test_unquoted_noncritical_fact_is_rewritten_not_swapped(worker, monkeypatch)
         review=lambda **_k: (_ for _ in ()).throw(AssertionError("재검수 없음")),
     )
 
-    with pytest.raises(_Rewrite):
-        tasks._generate_single_content_item(_DB(), item, _hospital(id=item.hospital_id))
+    state, code, _message = tasks._generate_single_content_item(
+        _DB(), item, _hospital(id=item.hospital_id)
+    )
 
+    assert escalated == [item.id]
+    assert (state, code) == (tasks.GenerationItemState.FAILED, "CONTENT_AI_HARD_FINDING")
     assert calls["llm"] == 0 and calls["reviews"] == []
 
 

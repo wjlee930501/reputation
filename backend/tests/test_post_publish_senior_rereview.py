@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 from app.core.config import settings
 from app.services.content_ai_review import (
@@ -20,9 +21,14 @@ from tests.test_post_publish_ai_review import _published, _review
 NOW = datetime(2026, 10, 20, 3, 10, tzinfo=timezone.utc)
 
 
+PHILOSOPHY = "본원은 환자 한 분 한 분의 이야기를 끝까지 듣는 것을 진료 원칙으로 삼습니다."
+
+
 def _flagged(severity="UNCERTAIN", days_ago=8):
     item = _published()
     item.id = uuid.uuid4()
+    item.body = f"## 안내\n{PHILOSOPHY}"
+    item.hospital = SimpleNamespace(id=uuid.uuid4(), name="강남병원")
     item.essence_check_summary = {
         "post_publish_ai_review": {
             "status": "FLAGGED",
@@ -94,7 +100,10 @@ def test_senior_still_uncertain_is_recorded_once_and_closes_quietly(monkeypatch)
 
     item = _flagged()
     uncertain = ContentAiFinding(
-        ContentAiFindingSeverity.UNCERTAIN, ContentAiFindingKind.HOSPITAL_FACT, "확인할 수 없는 장비 보유"
+        ContentAiFindingSeverity.UNCERTAIN,
+        ContentAiFindingKind.HOSPITAL_FACT,
+        "확인할 수 없는 진료 원칙",
+        quote=PHILOSOPHY,
     )
     calls = _wire(monkeypatch, item, _review(item, status=ContentAiReviewStatus.REVISE, findings=[uncertain]))
 
@@ -119,7 +128,7 @@ def test_senior_critical_finding_asks_the_marketer_once(monkeypatch):
     sweep.senior_rereview_flagged(_DB(), item, object(), object(), asyncio.run, NOW)
 
     assert len(calls["needs_human"]) == 1
-    assert item.essence_check_summary[sweep.POST_PUBLISH_CRITICAL_ALERT_KEY]["sent_at"]
+    assert item.essence_check_summary[sweep.POST_PUBLISH_CRITICAL_ALERT_KEY]["critical_alert_sent_at"]
 
 
 def test_senior_uncertain_medical_finding_is_critical_and_alerts(monkeypatch):
@@ -182,8 +191,9 @@ def test_unavailable_rereview_does_not_spend_the_daily_cap(monkeypatch):
 
     class _Db(_SweepDb):
         def __init__(self):
-            # FLAGGED 조회(없음) → 숫자 시각 표시(없음) → 옛 표시 한 쪽 → 비공개 → 표본
-            self._batches = [[], [], [first, second], [], []]
+            # Critical 백로그(없음) → 미전달 알림(없음) → FLAGGED 조회(없음) → 숫자 시각 표시(없음)
+            # → 옛 표시 한 쪽 → 비공개 → 표본(선발행 단계는 표본 상한 0이라 돌지 않는다)
+            self._batches = [[], [], [], [], [first, second], [], []]
 
     seen: list = []
 
