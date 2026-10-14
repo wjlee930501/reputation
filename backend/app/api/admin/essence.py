@@ -1648,7 +1648,11 @@ async def _get_mutable_source_or_404(
 ) -> HospitalSourceAsset:
     """사람이 바꿀 수 있는 자료만 돌려준다. 병원 정보(자동) 자료는 읽기 전용이다(409)."""
 
-    source = await _get_source_or_404(db, hospital_id, source_id, for_update=for_update)
+    source = (
+        await _get_source_or_404(db, hospital_id, source_id, for_update=True)
+        if for_update
+        else await _get_source_or_404(db, hospital_id, source_id)
+    )
     if is_profile_facts_source(source):
         raise HTTPException(
             status_code=409,
