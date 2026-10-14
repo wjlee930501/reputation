@@ -35,7 +35,7 @@ def test_only_empty_fields_are_filled_and_differences_become_conflicts() -> None
     )
     assert plan.updates == {"address": "서울 성동구 왕십리로 1"}
     assert plan.skipped_filled_fields == ["phone"]
-    assert plan.conflicts == [{"field": "phone", "source": "naver", "value": "02-999-9999"}]
+    assert plan.profile_conflicts == [{"field": "phone", "source": "naver", "value": "02-999-9999"}]
 
 
 def test_operator_fields_are_never_filled_even_when_empty() -> None:
@@ -48,7 +48,7 @@ def test_operator_fields_are_never_filled_even_when_empty() -> None:
     assert plan.updates == {}
     assert plan.skipped_operator_fields == ["business_hours"]
     # 마케터가 비운 칸이라도 네이버 값과의 차이는 충돌로만 남는다.
-    assert plan.conflicts[0]["field"] == "business_hours"
+    assert plan.profile_conflicts[0]["field"] == "business_hours"
 
 
 def test_medical_ad_filter_drops_fields_items_and_descriptions() -> None:

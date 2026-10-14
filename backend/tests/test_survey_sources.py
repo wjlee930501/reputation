@@ -104,6 +104,19 @@ def _patch_fetch(monkeypatch, responses):
         def raise_for_status(self):
             return None
 
+        async def aiter_bytes(self):
+            yield self.content
+
+    class _Stream:
+        def __init__(self, response):
+            self.response = response
+
+        async def __aenter__(self):
+            return self.response
+
+        async def __aexit__(self, *args):
+            return False
+
     class _Client:
         def __init__(self, *args, **kwargs):
             pass
@@ -114,8 +127,8 @@ def _patch_fetch(monkeypatch, responses):
         async def __aexit__(self, *args):
             return False
 
-        async def get(self, *args, **kwargs):
-            return _Resp(*queue.pop(0))
+        def stream(self, *args, **kwargs):
+            return _Stream(_Resp(*queue.pop(0)))
 
     monkeypatch.setattr(ax.httpx, "AsyncClient", _Client)
     return ax

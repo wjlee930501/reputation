@@ -7,7 +7,8 @@
 흐름:
   1. 병원 행에 저장된 place id가 있으면 그대로 쓴다(신원 STORED_ID).
   2. 없으면 search_place_id(name): m.place 검색 결과 마크다운에서 첫 place_id 추출 —
-     상세 본문의 상호·지역이 병원과 맞을 때만 VERIFIED_SEARCH, 아니면 UNVERIFIED(E4).
+     상세 페이지에서 따로 읽은 상호가 병원명과 같고 주소가 병원 지역과 맞을 때만 VERIFIED_SEARCH,
+     아니면(지역·주소를 확인할 수 없을 때 포함) UNVERIFIED(E4).
   3. fetch_place_markdown(place_id): 상세(home + information) 마크다운 수집
 
 실패는 예외 대신 빈 결과 + 사유로 우아하게 처리한다(best-effort). 네이버가 막아도
@@ -137,26 +138,127 @@ def _compact(value: str) -> str:
     return re.sub(r"[\s()（）·.,\-]+", "", value or "").lower()
 
 
-def place_matches_hospital(markdown: str, name: str, regions: Sequence[str] = ()) -> bool:
-    """검색으로 찾은 플레이스가 이 병원인지 — 상호가 정규화 일치하고 지역이 주소에 있는가.
+# Jina Reader가 앞에 붙이는 머리 줄과 fetch_place_markdown의 구획 표시 — 상호·주소 후보가 아니다.
+_JINA_META_RE = re.compile(
+    r"^(?:URL Source|Markdown Content|Published Time|Warning)\s*:", re.IGNORECASE
+)
+_SECTION_RE = re.compile(r"^=+.*=+$")
+_SETEXT_RE = re.compile(r"^[=\-]{3,}$")
+_TITLE_RE = re.compile(r"^Title\s*:\s*(.+)$", re.IGNORECASE)
+# 페이지 제목 끝의 서비스 표기("장편한외과의원 : 네이버", "… - 네이버 지도", "… | 네이버 플레이스").
+_TITLE_SUFFIX_RE = re.compile(r"\s*[:|\-–]\s*네이버(?:\s*(?:지도|플레이스|스마트플레이스))?\s*$")
+_MD_LINK_RE = re.compile(r"!?\[([^\]]*)\]\([^)]*\)")
+_ADDRESS_LABEL_RE = re.compile(r"^(?:도로명\s*)?주소\s*[:：]?\s*(.*)$")
+_PROVINCES = frozenset(
+    {
+        "서울", "부산", "대구", "인천", "광주", "대전", "울산", "세종", "경기", "강원",
+        "충북", "충남", "전북", "전남", "경북", "경남", "제주",
+    }
+)
+_ADMIN_SUFFIX_RE = re.compile(r"(?:특별자치시|특별자치도|특별시|광역시|도|시|군|구)$")
+_ADDRESS_PART_RE = re.compile(r"^\S+(?:시|군|구|동|읍|면|로|길|리)$|^\d")
+# 지역 낱말 끝의 행정 단위 — "세종시"가 "세종특별자치시" 주소와, "경기도"가 "경기" 주소와 맞게 한다.
+_REGION_UNIT_RE = re.compile(r"(?:특별자치시|특별자치도|특별시|광역시|시|도|군|구)$")
 
-    상호는 플레이스 본문에 병원명이 (공백·기호를 무시하고) 그대로 들어 있어야 한다. 지역 태그가
-    있으면 그중 하나가 본문(주소)에 들어 있어야 한다. 지점명이 붙은 다른 병원("다온의원 세종점")이나
-    동명 병원의 다른 지역 지점은 확인되지 않은 것으로 남긴다.
+
+def _plain_line(line: str) -> str:
+    text = _MD_LINK_RE.sub(r"\1", line)
+    text = re.sub(r"^\s*(?:#{1,6}\s+|[-*+>]\s+)", "", text)
+    return text.replace("**", "").replace("__", "").strip()
+
+
+def _content_lines(markdown: str) -> list[str]:
+    lines: list[str] = []
+    for raw in (markdown or "").splitlines():
+        line = raw.strip()
+        if not line or _SECTION_RE.match(line) or _SETEXT_RE.match(line):
+            continue
+        if _JINA_META_RE.match(line) or _TITLE_RE.match(line):
+            continue
+        plain = _plain_line(line)
+        if plain:
+            lines.append(plain)
+    return lines
+
+
+def _looks_like_address(line: str) -> bool:
+    tokens = line.split()
+    if len(tokens) < 2:
+        return False
+    first = tokens[0]
+    if not (first in _PROVINCES or (len(first) >= 2 and _ADMIN_SUFFIX_RE.search(first))):
+        return False
+    return bool(_ADDRESS_PART_RE.match(tokens[1]))
+
+
+def parse_place_identity(markdown: str) -> tuple[str | None, str | None]:
+    """상세 페이지 마크다운에서 (상호, 주소)를 따로 읽는다. 못 읽은 쪽은 None.
+
+    상호는 페이지 제목(Jina ``Title:``)이 우선이고, 없으면 본문 첫 줄이다. 주소는 '주소' 라벨 줄(또는
+    그 다음 줄)이 우선이고, 없으면 시·도로 시작해 시군구·도로명이 이어지는 첫 줄이다. 본문 전체를
+    한 덩어리로 보지 않는다 — 다른 줄에 우연히 든 병원명·지역명으로 신원을 확인하지 않는다.
     """
 
-    compact_markdown = _compact(markdown)
+    name: str | None = None
+    for raw in (markdown or "").splitlines():
+        match = _TITLE_RE.match(raw.strip())
+        if match:
+            candidate = _TITLE_SUFFIX_RE.sub("", _plain_line(match.group(1))).strip()
+            if candidate:
+                name = candidate
+                break
+    lines = _content_lines(markdown)
+    if name is None and lines:
+        name = lines[0]
+
+    address: str | None = None
+    for index, line in enumerate(lines):
+        label = _ADDRESS_LABEL_RE.match(line)
+        if not label:
+            continue
+        value = label.group(1).strip() or (lines[index + 1] if index + 1 < len(lines) else "")
+        if value and _looks_like_address(value):
+            address = value
+            break
+    if address is None:
+        address = next((line for line in lines if _looks_like_address(line)), None)
+    return name, address
+
+
+def _region_word_in(word: str, compact_address: str) -> bool:
+    compact = _compact(word)
+    if compact in compact_address:
+        return True
+    stem = _REGION_UNIT_RE.sub("", compact)
+    return len(stem) >= 2 and stem in compact_address
+
+
+def place_matches_hospital(markdown: str, name: str, regions: Sequence[str] = ()) -> bool:
+    """검색으로 찾은 플레이스가 이 병원인지 — 상호가 정규화 동등이고 지역이 **주소**와 맞는가.
+
+    상세 페이지에서 따로 읽은 상호가 병원명과 (공백·기호를 무시하고) 같아야 한다. 지점명은 병원 행의
+    이름에 있을 때만 맞는다("다온의원 세종점" ≠ "다온의원"). 지역은 따로 읽은 주소와 대조한다. 병원
+    행에 지역이 없거나 주소를 읽지 못하면 확인할 수 없으므로 거짓이다 — 저장된 place id가 없는 검색
+    결과는 그때 UNVERIFIED로 남아 자동 적용되지 않는다.
+    """
+
+    place_name, address = parse_place_identity(markdown)
     compact_name = _compact(name)
-    if not compact_name or compact_name not in compact_markdown:
+    if not compact_name or not place_name or _compact(place_name) != compact_name:
         return False
+    if not address:
+        return False
+    compact_address = _compact(address)
     # 지역 태그는 낱말마다 본다 — "서울 성동구"는 "서울특별시 성동구" 주소와 맞아야 한다.
     region_words = [
-        [_compact(word) for word in str(region).split() if _compact(word)] for region in regions
+        [word for word in str(region).split() if _compact(word)] for region in regions
     ]
     region_words = [words for words in region_words if words]
     if not region_words:
-        return True
-    return any(all(word in compact_markdown for word in words) for words in region_words)
+        return False
+    return any(
+        all(_region_word_in(word, compact_address) for word in words) for words in region_words
+    )
 
 
 async def scrape_naver_place(

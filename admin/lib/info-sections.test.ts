@@ -276,8 +276,13 @@ test('끝났거나 없는 처리는 알릴 것이 없다', () => {
 
 test('설문 라벨과 업로드 형식, 빈 PDF 판정', () => {
   assert.equal(TEXT_SOURCE_TYPE_OPTIONS.find((o) => o.value === 'INTERVIEW')?.label, '원장 인터뷰 설문')
-  assert.match(DOCUMENT_UPLOAD_ACCEPT, /\.hwpx/)
-  assert.match(DOCUMENT_UPLOAD_ACCEPT, /text\/plain/)
+  // 서버가 받는 형식은 PDF·DOCX뿐이다 — 고를 수 있는 파일이 거절되면 안 된다.
+  assert.deepEqual(DOCUMENT_UPLOAD_ACCEPT.split(',').sort(), [
+    '.docx',
+    '.pdf',
+    'application/pdf',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  ])
   assert.equal(sourceTextUnreadable({ source_metadata: { text_extraction: 'EMPTY' } }), true)
   assert.equal(sourceTextUnreadable({ source_metadata: null }), false)
 })

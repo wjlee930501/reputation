@@ -384,7 +384,7 @@ function surveyFailureText(e: unknown, fallback: string): string {
 }
 
 /**
- * 원장 인터뷰 설문. 파일(PDF·DOCX·TXT·HWPX)과 공유 링크 두 길이 있고, 둘 다 같은 자료 유형
+ * 원장 인터뷰 설문. 파일(PDF·DOCX)과 공유 링크 두 길이 있고, 둘 다 같은 자료 유형
  * (INTERVIEW)으로 저장된다. 처리는 저장 뒤 서버가 이어서 한다.
  */
 function SurveyCard({
@@ -415,10 +415,10 @@ function SurveyCard({
       setFile(null)
       const input = document.getElementById('info-survey-file') as HTMLInputElement | null
       if (input) input.value = ''
-      setFeedback('저장 완료. 처리는 자동으로 이어집니다.')
+      setFeedback(ADMIN_COPY.surveyFileSaved)
       onChanged()
     } catch (err) {
-      setFeedback(surveyFailureText(err, '파일 형식(PDF·DOCX·TXT·HWPX)을 확인한 뒤 다시 저장하세요.'))
+      setFeedback(surveyFailureText(err, ADMIN_COPY.surveyFileFailed))
     } finally {
       setBusy(false)
     }
@@ -436,10 +436,10 @@ function SurveyCard({
         body: JSON.stringify({ source_type: 'INTERVIEW', url: trimmed }),
       })
       setUrl('')
-      setFeedback('링크를 추가했습니다. 처리는 자동으로 이어집니다.')
+      setFeedback(ADMIN_COPY.surveyLinkSaved)
       onChanged()
     } catch (err) {
-      setFeedback(surveyFailureText(err, '링크 공유 설정을 확인한 뒤 다시 추가하세요.'))
+      setFeedback(surveyFailureText(err, ADMIN_COPY.surveyLinkFailed))
     } finally {
       setBusy(false)
     }
@@ -565,7 +565,7 @@ function SourceUploadForm({
       failed === 0
         ? `${succeeded}개 저장 완료. 처리는 자동으로 이어집니다.`
         : succeeded === 0
-          ? safeOperatorError('onboarding', `${failed}개 저장 실패. 파일 형식(PDF·DOCX·TXT·HWPX)을 확인한 뒤 다시 저장하세요.`)
+          ? safeOperatorError('onboarding', `${failed}개 저장 실패. ${ADMIN_COPY.documentUploadFormatFailed}`)
           : `${succeeded}개 저장, ${failed}개 실패. 실패한 파일만 다시 선택해 저장하세요.`,
     )
     if (succeeded > 0) {
@@ -591,14 +591,14 @@ function SourceUploadForm({
           ))}
         </select>
         <p className="self-center text-xs leading-5 text-slate-600">
-          PDF·DOCX·TXT·HWPX 문서를 올릴 수 있습니다. 여러 개를 한 번에 고를 수 있습니다.
+          {ADMIN_COPY.documentUploadHint}
         </p>
       </div>
 
       <input
         id="info-source-file"
         required
-        aria-label="올릴 문서 파일 (PDF·DOCX·TXT·HWPX)"
+        aria-label={ADMIN_COPY.documentUploadLabel}
         type="file"
         multiple
         accept={DOCUMENT_UPLOAD_ACCEPT}

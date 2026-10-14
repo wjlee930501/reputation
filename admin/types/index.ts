@@ -53,6 +53,9 @@ export type HospitalStatusValue =
   | 'PAUSED'
 
 /** 서버가 판정해 내려주는 남은 필수 항목 한 건(키 + 화면 라벨). */
+/** 서버가 JSON 열에 저장한 값 그대로의 모양. */
+export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue }
+
 /** 서버가 칸마다 기록한 입력 출처. OPERATOR는 마케터가 직접 입력·수정한 값이다. */
 export interface FieldProvenance {
   origin: 'OPERATOR' | 'AUTOFILL' | 'LEGACY'
@@ -60,7 +63,8 @@ export interface FieldProvenance {
   source?: 'naver' | 'homepage' | 'blog' | 'survey'
   run_id?: string
   at?: string
-  conflict?: { source: string; value: string; observed_at?: string }
+  // 자동 수집 값은 칸의 모양 그대로다 — 진료시간은 요일 객체, 지역·키워드는 목록, 나머지는 문자열.
+  conflict?: { source: string; value: JsonValue; observed_at?: string }
 }
 
 export interface MissingProfileRequirement {

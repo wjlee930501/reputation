@@ -8,6 +8,7 @@ import {
 } from '@/lib/external-channel-urls'
 import { INFO_SECTION_TITLES } from '@/lib/info-sections'
 import { emptyPhysician } from '@/lib/physicians'
+import { PROVENANCE_SOURCE_LABEL, ProvenanceConflict } from '@/lib/provenance-conflict'
 import type { AutofillFieldMeta } from '@/lib/api'
 import type { DoctorPhotoOption } from '@/lib/physicians'
 import type { FieldProvenance, Physician, ProfileSourceRegistration } from '@/types'
@@ -79,13 +80,6 @@ export function AiBadge({ meta }: { meta: AutofillFieldMeta }) {
   )
 }
 
-const PROVENANCE_SOURCE_LABEL: Record<string, string> = {
-  naver: '네이버',
-  homepage: '홈페이지',
-  blog: '블로그',
-  survey: '설문',
-}
-
 /** 자동 입력으로 채워진 칸의 출처 배지. 마케터가 고친 칸은 OPERATOR라 보이지 않는다. */
 export function ProvenanceBadge({ info }: { info: FieldProvenance | undefined }) {
   if (!info || info.origin !== 'AUTOFILL') return null
@@ -97,18 +91,6 @@ export function ProvenanceBadge({ info }: { info: FieldProvenance | undefined })
     >
       {source ? `${ADMIN_COPY.autofillBadge} · ${source}` : ADMIN_COPY.autofillBadge}
     </span>
-  )
-}
-
-/** 자동 입력이 본 다른 출처의 값이 지금 값과 다를 때 회색 한 줄로만 알린다. 확인 절차는 없다. */
-export function ProvenanceConflict({ info }: { info: FieldProvenance | undefined }) {
-  const conflict = info?.conflict
-  if (!conflict) return null
-  const source = PROVENANCE_SOURCE_LABEL[conflict.source] ?? conflict.source
-  return (
-    <p data-testid="provenance-conflict" className="mt-1 text-xs text-slate-500">
-      {source}에는 {conflict.value}(으)로 되어 있습니다.
-    </p>
   )
 }
 

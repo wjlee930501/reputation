@@ -407,25 +407,32 @@ def _source_rank(field_name: str, source: str, *, naver_verified: bool) -> int:
     return order.index(source) if source in order else len(order) + 2
 
 
-def _merge_treatment_descriptions(chosen: list, grounded: list[dict], *, naver_verified: bool) -> list:
-    """진료 항목은 이름(사실)으로 고른 목록에, 설명(서술)만 서술 우선순위 후보에서 채운다."""
+def _merge_treatment_descriptions(
+    chosen: list, grounded: list[dict], *, naver_verified: bool, chosen_source: str
+) -> tuple[list, list[dict]]:
+    """진료 항목은 이름(사실)으로 고른 목록에, 설명(서술)만 서술 우선순위 후보에서 채운다.
 
-    by_rank = sorted(
-        grounded,
-        key=lambda item: (
-            NARRATIVE_SOURCE_ORDER.index(item["source"])
-            if item["source"] in NARRATIVE_SOURCE_ORDER
-            and (item["source"] != SOURCE_NAVER or naver_verified)
-            else len(NARRATIVE_SOURCE_ORDER)
-        ),
-    )
+    확인되지 않은 네이버 후보(E4)는 설명 병합에서 아예 뺀다 — 홈페이지에 진료명만 있을 때 미확인
+    네이버 설명이 홈페이지의 확인된 출처로 위장되어 적용되지 않게 한다. 돌려주는 두 번째 값은 설명마다
+    실제 출처·확인 여부다(``field_meta.treatments.descriptions``).
+    """
+
+    eligible = [
+        item
+        for item in grounded
+        if item["source"] in NARRATIVE_SOURCE_ORDER
+        and (item["source"] != SOURCE_NAVER or naver_verified)
+    ]
+    by_rank = sorted(eligible, key=lambda item: NARRATIVE_SOURCE_ORDER.index(item["source"]))
     merged: list = []
+    provenance: list[dict] = []
     for treatment in chosen:
         if not isinstance(treatment, dict) or not treatment.get("name"):
             merged.append(treatment)
             continue
         key = _compact_text(treatment.get("name"))
         description = None
+        description_source = None
         for candidate in by_rank:
             for other in candidate["value"] if isinstance(candidate["value"], list) else []:
                 if (
@@ -434,11 +441,23 @@ def _merge_treatment_descriptions(chosen: list, grounded: list[dict], *, naver_v
                     and str(other.get("description") or "").strip()
                 ):
                     description = other["description"]
+                    description_source = candidate["source"]
                     break
             if description:
                 break
-        merged.append({**treatment, "description": description or treatment.get("description")})
-    return merged
+        own = str(treatment.get("description") or "").strip()
+        if description is None and own and (chosen_source != SOURCE_NAVER or naver_verified):
+            description, description_source = treatment.get("description"), chosen_source
+        merged.append({**treatment, "description": description})
+        if description_source is not None:
+            provenance.append(
+                {
+                    "name": treatment.get("name"),
+                    "source": description_source,
+                    "verified": description_source != SOURCE_NAVER or naver_verified,
+                }
+            )
+    return merged, provenance
 
 
 def _resolve_fields(
@@ -504,8 +523,11 @@ def _resolve_fields(
         )
         chosen = ranked[0]
         value = chosen["value"]
+        descriptions: list[dict] | None = None
         if key == "treatments" and isinstance(value, list):
-            value = _merge_treatment_descriptions(value, grounded, naver_verified=naver_verified)
+            value, descriptions = _merge_treatment_descriptions(
+                value, grounded, naver_verified=naver_verified, chosen_source=chosen["source"]
+            )
         result.draft[key] = value
         result.meta[key] = {
             "source": chosen["source"],
@@ -513,6 +535,8 @@ def _resolve_fields(
             "evidence_excerpt": chosen["evidence"],
             "verified": chosen["source"] != SOURCE_NAVER or naver_verified,
         }
+        if descriptions:
+            result.meta[key]["descriptions"] = descriptions
         chosen_key = _comparable(chosen["value"])
         others = [
             {"source": item["source"], "value": item["value"]}

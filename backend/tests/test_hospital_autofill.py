@@ -80,6 +80,51 @@ async def test_search_hit_that_is_not_this_hospital_stays_unverified(monkeypatch
     assert res.markdown  # 초안에는 남는다
 
 
+@pytest.mark.parametrize(
+    ("detail", "name", "regions"),
+    [
+        # 리뷰 재현: 지점명 붙은 다른 상호 + 다른 줄의 '서울' — 본문 부분 문자열로는 맞아 보였다.
+        ("다온의원 세종점 서울에서 오시는 길", "다온의원", ["서울"]),
+        # 상호는 같지만 지역이 주소가 아니라 안내 문장에만 있다.
+        ("Title: 다온의원 : 네이버\n주소 대전 서구 둔산로 1\n서울에서 오시는 길", "다온의원", ["서울"]),
+        # 병원 행에 지역이 없다 — 저장 id도 없으니 확인할 수 없다.
+        ("Title: 다온의원 : 네이버\n주소 서울 성동구 왕십리로 1", "다온의원", []),
+        # 주소를 읽지 못했다.
+        ("Title: 다온의원 : 네이버\n진료과목 내과", "다온의원", ["서울"]),
+    ],
+)
+async def test_search_identity_needs_exact_name_and_region_in_the_address(
+    monkeypatch, detail, name, regions
+):
+    async def fake_jina(url: str):
+        if "list?query" in url:
+            return ("[a](https://m.place.naver.com/hospital/1234567)", None)
+        return (detail, None)
+
+    monkeypatch.setattr(naver_place, "fetch_via_jina", fake_jina)
+    res = await naver_place.scrape_naver_place(name, regions=regions)
+    assert res.identity == naver_place.IDENTITY_UNVERIFIED and not res.verified
+
+
+def test_place_identity_reads_title_and_address_separately():
+    markdown = (
+        "=== 네이버 플레이스 (홈) ===\nTitle: 세종다온신경과의원 : 네이버\n\n"
+        "URL Source: https://m.place.naver.com/hospital/1/home\n\nMarkdown Content:\n"
+        "세종다온신경과의원\n==========\n신경과\n주소\n세종 보람동 호려울로 1 2층\n"
+    )
+    assert naver_place.parse_place_identity(markdown) == (
+        "세종다온신경과의원",
+        "세종 보람동 호려울로 1 2층",
+    )
+    # 지역 태그의 행정 단위 표기 차이("세종시" ↔ "세종")는 같은 지역이다.
+    assert naver_place.place_matches_hospital(markdown, "세종다온 신경과의원", ["세종시"])
+    assert not naver_place.place_matches_hospital(markdown, "세종다온신경과의원", ["대전"])
+    # 지점명은 병원 행의 이름에 있을 때만 맞는다.
+    branch = "Title: 다온의원 세종점 : 네이버\n주소 세종특별자치시 보람동 1"
+    assert naver_place.place_matches_hospital(branch, "다온의원 세종점", ["세종시"])
+    assert not naver_place.place_matches_hospital(branch, "다온의원", ["세종시"])
+
+
 def test_stored_place_id_reads_the_url_when_the_id_column_is_empty():
     assert naver_place.stored_place_id(None, "https://m.place.naver.com/hospital/1595672233/home") == "1595672233"
     assert naver_place.stored_place_id("98765", None) == "98765"
@@ -680,3 +725,31 @@ async def test_autofill_passes_the_stored_place_and_survey_and_reports_identity(
     assert result.naver_identity == naver_place.IDENTITY_STORED_ID
     assert result.draft["business_hours"] == {"mon": "10:00-19:00"}
     assert result.field_meta["naver_place_id"]["verified"] is True
+
+
+def test_unverified_naver_descriptions_never_ride_on_a_verified_homepage_list():
+    # 리뷰 재현: 홈페이지에는 진료명만 있고 미확인 네이버에만 설명이 있다. 고른 목록은 홈페이지(확인됨)라
+    # 필드 전체가 verified=True를 받는데, 설명이 네이버에서 오면 미확인 값이 자동 적용된다.
+    sources = {
+        "naver": "=== 네이버 ===\n치질 수술 당일 퇴원",
+        "homepage": "=== 홈페이지 ===\n진료 항목: 치질",
+    }
+    fields = {
+        "treatments": {
+            "candidates": [
+                _cand([{"name": "치질", "description": "수술 당일 퇴원"}], "naver", "치질 수술 당일 퇴원"),
+                _cand([{"name": "치질"}], "homepage", "진료 항목: 치질"),
+            ]
+        }
+    }
+    resolution = af._resolve_fields(fields, sources, naver_verified=False)
+    assert resolution.meta["treatments"]["source"] == "homepage"
+    assert resolution.meta["treatments"]["verified"] is True
+    assert resolution.draft["treatments"] == [{"name": "치질", "description": None}]
+    assert "descriptions" not in resolution.meta["treatments"]
+
+    verified = af._resolve_fields(fields, sources, naver_verified=True)
+    assert verified.draft["treatments"] == [{"name": "치질", "description": "수술 당일 퇴원"}]
+    assert verified.meta["treatments"]["descriptions"] == [
+        {"name": "치질", "source": "naver", "verified": True}
+    ]

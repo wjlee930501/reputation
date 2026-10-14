@@ -361,7 +361,10 @@ test('자동 입력 창은 대화상자로 열리고 키보드로 빠져나올 �
 
 test('파일 고르는 칸은 이름이 있다', () => {
   assert.match(photosSection, /id="info-photo-file"[\s\S]{0,80}aria-label="올릴 사진 파일"/)
-  assert.match(sourcesSection, /id="info-source-file"[\s\S]{0,80}aria-label="올릴 문서 파일/)
+  assert.match(
+    sourcesSection,
+    /id="info-source-file"[\s\S]{0,80}aria-label=\{ADMIN_COPY\.documentUploadLabel\}/,
+  )
 })
 
 test('근거 자료는 사람이 입력하는 섹션 뒤 마지막에 붙는다', () => {
@@ -380,7 +383,7 @@ test('자동 입력 출처 배지와 충돌 안내가 서버 출처 기록에서
   assert.match(infoPage, /provenance=\{hospital\?\.profile_field_provenance\}/)
   assert.match(factsSection, /origin !== 'AUTOFILL'/)
   assert.match(factsSection, /ProvenanceConflict info=\{provenance\?\.phone\}/)
-  assert.match(factsSection, /naver: '네이버'/)
+  assert.match(factsSection, /PROVENANCE_SOURCE_LABEL\[info\.source\]/)
 })
 
 test('진료 철학과 구글 칸은 선택 표시를 단다', () => {

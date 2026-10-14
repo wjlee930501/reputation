@@ -214,3 +214,36 @@ def test_cli_args_accept_ids_and_repeated_hospitals():
     assert cli.parse_args([]).ids is None
     with pytest.raises(SystemExit):
         cli.parse_args(["--ids=not-a-uuid"])
+
+
+@pytest.mark.asyncio
+async def test_dry_run_plans_with_the_restored_ledger_like_the_real_apply(
+    pg_async_session, quiet_effects
+):
+    """리뷰 재현: dry-run이 복원한 원장을 되돌린 뒤 빈 원장으로 계획해 마케터가 비운 칸을 적용 예정으로 보였다."""
+
+    db = pg_async_session
+    cleared = _hospital()
+    db.add(cleared)
+    await db.flush()
+    db.add(_legacy_run(cleared.id, {"website_url": "https://cleared.example.com"}))
+    db.add(
+        AdminAuditLog(
+            hospital_id=cleared.id,
+            actor="ae@example.com",
+            action="update_profile",
+            detail={"changed_fields": ["website_url"]},  # 마케터가 홈페이지를 지웠다
+        )
+    )
+    await db.commit()
+    ids = {"cleared": cleared.id}
+
+    rows, _summary, _dispatched = await _run(db, ids, apply=False, include_live=False)
+
+    row = rows[str(ids["cleared"])]
+    assert row["action"] == "WOULD_APPLY_STORED_DRAFT"
+    assert row["would_apply_fields"] == []
+    assert row["skipped_operator_fields"] == ["website_url"]
+    db.expire_all()
+    stored = await db.get(Hospital, ids["cleared"], populate_existing=True)
+    assert stored.profile_field_provenance == {}  # dry-run은 아무것도 남기지 않는다

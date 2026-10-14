@@ -115,6 +115,48 @@ def test_q12_matches_the_python_predicates(session) -> None:
     assert rows[cases["ready"].id]["missing_old"] == ["director_philosophy", "ai_channels"]
 
 
+def test_q12_predicts_actual_public_activation_not_just_completion(session) -> None:
+    cases = {
+        "ready": _hospital(),
+        "custom_domain": _hospital(aeo_domain="clinic.example.com"),
+        "pending_domain": _hospital(status=HospitalStatus.PENDING_DOMAIN, aeo_domain="c.example"),
+        "already_live": _hospital(
+            status=HospitalStatus.ACTIVE, site_live=True, site_built=True, profile_complete=True
+        ),
+        "active_not_live": _hospital(status=HospitalStatus.ACTIVE, site_live=False),
+        "paused": _hospital(status=HospitalStatus.PAUSED),
+        "not_accepted": _hospital(),
+        "incomplete": _hospital(director_career=None),
+        "complete_not_built": _hospital(profile_complete=True, site_built=False),
+    }
+    for key, hospital in cases.items():
+        session.add(hospital)
+        session.flush()
+        if key != "not_accepted":
+            _accept(session, hospital)
+    session.flush()
+
+    [sql] = ops_sql_report.QUERIES["q12"]
+    rows = {row["id"]: row for row in session.execute(text(sql)).mappings().all()}
+    publish = {key for key, hospital in cases.items() if rows[hospital.id]["would_publish_now"]}
+    blockers = {key: set(rows[hospital.id]["activation_blockers"]) for key, hospital in cases.items()}
+
+    # 승격 후보(active_not_live 포함)와 실제 새 공개는 다르다.
+    assert rows[cases["active_not_live"].id]["would_promote"] is True
+    assert rows[cases["custom_domain"].id]["would_promote"] is True
+    assert publish == {"ready"}
+    assert rows[cases["custom_domain"].id]["aeo_domain"] == "clinic.example.com"
+    assert blockers["ready"] == set()
+    assert blockers["custom_domain"] == {"CUSTOM_DOMAIN_PENDING"}
+    assert "CUSTOM_DOMAIN_PENDING" in blockers["pending_domain"]
+    assert blockers["already_live"] == {"ALREADY_LIVE"}
+    assert blockers["active_not_live"] == {"ACTIVE_NOT_LIVE"}
+    assert blockers["paused"] == {"PAUSED"}
+    assert blockers["not_accepted"] == {"HANDOFF_NOT_ACCEPTED"}
+    assert blockers["incomplete"] == {"PROFILE_INCOMPLETE"}
+    assert blockers["complete_not_built"] == {"SITE_NOT_BUILT"}
+
+
 def test_q13_and_q14_run_on_the_migrated_schema(session) -> None:
     hospital = _hospital()
     session.add(hospital)

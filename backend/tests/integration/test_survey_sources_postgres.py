@@ -161,3 +161,48 @@ async def test_google_forms_link_is_refused_before_any_fetch(
             db=pg_async_session,
         )
     assert exc.value.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_retyping_to_survey_masks_the_body_a_fetch_just_stored(
+    pg_async_session, hospital, started, monkeypatch
+):
+    """리뷰 재현의 반대 순서: 이 세션이 본문 없는 행을 읽어 둔 뒤 fetch 워커가 본문을 저장했다. 수정은
+    잠근 행을 다시 읽어야 방금 저장된 본문까지 가린다(낡은 읽기로는 가릴 본문이 없다)."""
+
+    from sqlalchemy import update
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from app.models.essence import HospitalSourceAsset, SourceStatus
+    from app.schemas.essence import SourceAssetPatch
+
+    db = pg_async_session
+    source = HospitalSourceAsset(
+        hospital_id=hospital.id,
+        source_type=SourceType.HOMEPAGE,
+        title="홈페이지",
+        url="https://clinic.example.com",
+        status=SourceStatus.PENDING,
+        source_metadata={"fetch_state": "QUEUED"},
+    )
+    db.add(source)
+    await db.commit()
+    await db.refresh(source)  # 이 세션은 raw_text=None을 들고 있다
+    assert source.raw_text is None
+
+    async with AsyncSession(bind=db.bind, join_transaction_mode="create_savepoint") as worker:
+        await worker.execute(
+            update(HospitalSourceAsset)
+            .where(HospitalSourceAsset.id == source.id)
+            .values(raw_text="원장 휴대전화 010-1234-5678")
+        )
+        await worker.commit()
+
+    response = await essence_api.patch_source(
+        hospital.id,
+        source.id,
+        SourceAssetPatch(source_type=SourceType.INTERVIEW),
+        db=db,
+    )
+
+    assert response["raw_text"] == "원장 휴대전화 [가림]"

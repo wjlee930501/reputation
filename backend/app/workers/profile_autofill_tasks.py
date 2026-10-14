@@ -8,7 +8,11 @@
 - ``followup`` — 등록 때 홈페이지·블로그 없이 네이버만 읽었고, 적용으로 주소가 새로 생겼을 때 1회.
 - ``apply:{run_id}`` — 수집 없이 저장된 초안을 다시 적용(적용 실패 회수·백필 CLI, 비용 0).
 
-비용 가드 보류는 실행을 남기지 않으므로 다음 틱이 다시 집는다. 자동 입력 실패·충돌은 사고·Slack을
+수집 실행은 **유료 호출 전에** 실행 키를 RUNNING 행으로 선점한다(lease 15분, 소유자 토큰). 같은 키의 다른
+작업은 그 행을 보고 물러나며, lease가 지난 행(죽은 작업)만 인수한다. 수집 결과는 lease 소유자일 때만
+저장한다. 비용 가드 보류·수집 예외는 선점을 지워(실행을 남기지 않으므로) 다음 틱이 다시 집는다.
+초안은 ``apply_status=PENDING``으로 저장되고, 적용 결과(성공·실패)는 같은 요약에 남는다 — 적용 전에
+멈춘 초안과 실패한 적용은 스윕이 수집 없이 다시 적용한다(시도 상한 3회). 자동 입력 실패·충돌은 사고·Slack을
 만들지 않는다 — 남은 필수 칸은 ``PROFILE_INCOMPLETE`` 정체가 마케터에게 알린다.
 """
 
@@ -22,7 +26,7 @@ from typing import Any
 
 import anyio
 from celery.app.task import Task
-from sqlalchemy import select
+from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
 
 from app.core.celery_app import celery_app
@@ -56,6 +60,12 @@ COMPLETION_SWEEP_ACTOR = "system:profile-completion"
 RETRY_DELAYS = (timedelta(days=1), timedelta(days=3), timedelta(days=7))
 #: 적용 실패를 수집 없이 다시 적용하는 상한.
 MAX_APPLY_ATTEMPTS = 3
+#: 수집 선점의 lease — 작업 hard limit(300초)보다 길다. 지난 RUNNING 행은 죽은 작업이라 인수한다.
+COLLECTION_LEASE = timedelta(minutes=15)
+#: 저장 직후 같은 작업이 적용 중일 수 있다 — 적용 결과 없이 이만큼 지난 초안만 스윕이 다시 적용한다.
+APPLY_PENDING_GRACE = timedelta(minutes=15)
+APPLY_PENDING = "PENDING"
+APPLY_FAILED = "FAILED"
 #: 막 등록된 병원은 등록 디스패치가 처리 중일 수 있다 — 스윕이 같은 수집을 겹쳐 사지 않게 기다린다.
 REGISTRATION_GRACE = timedelta(minutes=30)
 SWEEP_DISPATCH_LIMIT = 5
@@ -86,18 +96,24 @@ async def _apply_stored_run(
     hospital_id: uuid.UUID, run_id: uuid.UUID, *, allow_live: bool
 ) -> dict[str, Any]:
     sessions = get_async_sessionmaker()
-    async with sessions() as db:
-        run = await db.get(OperationRun, run_id)
-        if (
-            run is None
-            or run.hospital_id != hospital_id
-            or run.operation_type != PROFILE_AUTOFILL_OPERATION
-        ):
-            return {"status": "NOT_FOUND"}
-        summary = dict(run.result_summary or {})
-        outcome = await apply_autofill_draft(
-            db, hospital_id, summary, run_id=run.id, allow_live=allow_live
-        )
+    try:
+        async with sessions() as db:
+            run = await db.get(OperationRun, run_id)
+            if (
+                run is None
+                or run.hospital_id != hospital_id
+                or run.operation_type != PROFILE_AUTOFILL_OPERATION
+                or run.state != OperationRunState.SUCCEEDED
+            ):
+                return {"status": "NOT_FOUND"}
+            summary = dict(run.result_summary or {})
+            outcome = await apply_autofill_draft(
+                db, hospital_id, summary, run_id=run.id, allow_live=allow_live
+            )
+    except Exception as exc:  # noqa: BLE001 — 실패도 시도로 센다(상한이 반복을 끝낸다).
+        logger.warning("profile autofill re-apply failed for %s", hospital_id, exc_info=True)
+        await _mark_apply_failed(run_id, type(exc).__name__)
+        return {"status": "REAPPLIED", "apply_status": APPLY_FAILED}
     return {"status": "REAPPLIED", "apply_status": outcome.status}
 
 
@@ -108,7 +124,7 @@ async def _mark_apply_failed(run_id: uuid.UUID, error: str) -> None:
         if run is None:
             return
         summary = dict(run.result_summary or {})
-        summary["apply_status"] = "FAILED"
+        summary["apply_status"] = APPLY_FAILED
         summary["apply_error"] = error[:200]
         summary["apply_attempts"] = int(summary.get("apply_attempts") or 0) + 1
         run.result_summary = summary
@@ -129,33 +145,49 @@ async def _autofill_once(
         return {"status": "UNKNOWN_KEY"}
 
     sessions = get_async_sessionmaker()
+    owner = f"profile-autofill:{uuid.uuid4()}"
     async with sessions() as db:
         hospital = await db.get(Hospital, hospital_id)
         if hospital is None:
             return {"status": "NOT_FOUND"}
         if getattr(hospital, "status", None) == HospitalStatus.PAUSED:
             return {"status": "SKIPPED_PAUSED"}
-        if await db.scalar(_existing_run_stmt(hospital_id, key)) is not None:
-            return {"status": "ALREADY_DONE"}
+        claim = await _claim_collection(db, hospital_id, key, owner)
+        if isinstance(claim, str):
+            await db.rollback()
+            return {"status": claim}
+        run_id = claim
         name, website_url, blog_url = hospital.name, hospital.website_url, hospital.blog_url
         naver_place_id = getattr(hospital, "naver_place_id", None)
         naver_place_url = getattr(hospital, "naver_place_url", None)
         regions = list(getattr(hospital, "region", None) or [])
         survey_text = await load_survey_text(db, hospital_id)
+        try:
+            await db.commit()
+        except IntegrityError:
+            # 같은 키를 다른 작업이 먼저 선점했다 — 유료 호출 전에 물러난다.
+            await db.rollback()
+            return {"status": "ALREADY_RUNNING"}
 
-    decision = await cost_guard.check_and_increment("content")
-    if not decision.allowed:
-        return {"status": "COST_BLOCKED"}
-    result = await autofill_profile(
-        name,
-        website_url=website_url,
-        blog_url=blog_url,
-        hospital_id=hospital_id,
-        naver_place_id=naver_place_id,
-        naver_place_url=naver_place_url,
-        regions=regions,
-        survey_text=survey_text,
-    )
+    try:
+        decision = await cost_guard.check_and_increment("content")
+        if not decision.allowed:
+            await _release_claim(run_id, owner)
+            return {"status": "COST_BLOCKED"}
+        result = await autofill_profile(
+            name,
+            website_url=website_url,
+            blog_url=blog_url,
+            hospital_id=hospital_id,
+            naver_place_id=naver_place_id,
+            naver_place_url=naver_place_url,
+            regions=regions,
+            survey_text=survey_text,
+        )
+    except Exception:
+        # 수집이 끝나지 않았다 — 선점을 지워 다음 틱이 다시 집게 한다(실행 키를 태우지 않는다).
+        await _release_claim(run_id, owner)
+        raise
     sources = [{"name": s.name, "ok": s.ok, "reason": s.reason} for s in result.sources]
     now = datetime.now(UTC)
     collected_without_channels = not ((website_url or "").strip() or (blog_url or "").strip())
@@ -169,27 +201,33 @@ async def _autofill_once(
         "naver_identity": result.naver_identity,
         "sources": sources,
         "collected_without_channels": collected_without_channels,
+        # 적용 전에 멈춰도 스윕이 알아보게 — 적용 결과가 이 값을 덮는다.
+        "apply_status": APPLY_PENDING,
+        "apply_attempts": 0,
     }
     async with sessions() as db:
-        run = OperationRun(
-            hospital_id=hospital_id,
-            operation_type=PROFILE_AUTOFILL_OPERATION,
-            idempotency_key=key,
-            state=OperationRunState.SUCCEEDED,
-            total_count=1,
-            success_count=1,
-            attempt_count=1,
-            request_payload={
-                "trigger": "contract_registration"
-                if key == PROFILE_AUTOFILL_REGISTRATION_KEY
-                else key
-            },
-            result_summary=summary,
-            requested_at=now,
-            started_at=now,
-            completed_at=now,
+        stored = await db.execute(
+            update(OperationRun)
+            .where(
+                OperationRun.id == run_id,
+                OperationRun.state == OperationRunState.RUNNING,
+                OperationRun.lease_owner == owner,
+            )
+            .values(
+                state=OperationRunState.SUCCEEDED,
+                success_count=1,
+                result_summary=summary,
+                completed_at=now,
+                heartbeat_at=now,
+                lease_owner=None,
+                lease_expires_at=None,
+            )
+            .execution_options(synchronize_session=False)
         )
-        db.add(run)
+        if stored.rowcount != 1:
+            # lease가 지나 다른 작업이 인수했다 — 그 작업이 저장·적용한다.
+            await db.rollback()
+            return {"status": "LEASE_LOST"}
         await write_audit_log(
             db,
             action="autofill_profile",
@@ -207,12 +245,7 @@ async def _autofill_once(
                 "sources": sources,
             },
         )
-        try:
-            await db.commit()
-        except IntegrityError:
-            await db.rollback()
-            return {"status": "ALREADY_DONE"}
-        run_id = run.id
+        await db.commit()
 
     try:
         async with sessions() as db:
@@ -227,8 +260,71 @@ async def _autofill_once(
     except Exception as exc:  # noqa: BLE001 — 초안은 저장됐다. 스윕이 수집 없이 다시 적용한다.
         logger.warning("profile autofill apply failed for %s", hospital_id, exc_info=True)
         await _mark_apply_failed(run_id, type(exc).__name__)
-        return {"status": "DRAFT_STORED", "apply_status": "FAILED"}
+        return {"status": "DRAFT_STORED", "apply_status": APPLY_FAILED}
     return {"status": "DRAFT_STORED", "apply_status": outcome.status}
+
+
+async def _claim_collection(
+    db: Any, hospital_id: uuid.UUID, key: str, owner: str
+) -> uuid.UUID | str:
+    """실행 키를 유료 호출 전에 선점한다. 선점한 실행 id, 아니면 물러날 사유를 돌려준다.
+
+    - 행이 없으면 RUNNING 행을 만든다(유일 색인이 동시 INSERT 하나만 남긴다 — 커밋에서 갈린다).
+    - lease가 지난 RUNNING 행은 죽은 작업이다 — 소유자를 바꿔 인수한다(시도 수 +1).
+    - 끝난 행은 ``ALREADY_DONE``, lease가 살아 있는 RUNNING 행은 ``ALREADY_RUNNING``.
+    """
+
+    now = datetime.now(UTC)
+    existing = await db.scalar(_existing_run_stmt(hospital_id, key).with_for_update())
+    if existing is None:
+        run = OperationRun(
+            id=uuid.uuid4(),
+            hospital_id=hospital_id,
+            operation_type=PROFILE_AUTOFILL_OPERATION,
+            idempotency_key=key,
+            state=OperationRunState.RUNNING,
+            total_count=1,
+            attempt_count=1,
+            lease_owner=owner,
+            lease_expires_at=now + COLLECTION_LEASE,
+            heartbeat_at=now,
+            request_payload={
+                "trigger": "contract_registration"
+                if key == PROFILE_AUTOFILL_REGISTRATION_KEY
+                else key
+            },
+            requested_at=now,
+            started_at=now,
+        )
+        db.add(run)
+        return run.id
+    if existing.state != OperationRunState.RUNNING:
+        return "ALREADY_DONE"
+    lease = getattr(existing, "lease_expires_at", None)
+    if lease is not None and _aware(lease) > now:
+        return "ALREADY_RUNNING"
+    existing.lease_owner = owner
+    existing.lease_expires_at = now + COLLECTION_LEASE
+    existing.heartbeat_at = now
+    existing.attempt_count = int(existing.attempt_count or 0) + 1
+    return existing.id
+
+
+async def _release_claim(run_id: uuid.UUID, owner: str) -> None:
+    """끝나지 않은 수집의 선점을 지운다(소유자일 때만). 실패하면 lease 만료가 같은 일을 한다."""
+
+    try:
+        async with get_async_sessionmaker()() as db:
+            await db.execute(
+                delete(OperationRun).where(
+                    OperationRun.id == run_id,
+                    OperationRun.state == OperationRunState.RUNNING,
+                    OperationRun.lease_owner == owner,
+                )
+            )
+            await db.commit()
+    except Exception:  # noqa: BLE001
+        logger.warning("profile autofill claim release failed for run %s", run_id, exc_info=True)
 
 
 @celery_app.task(
@@ -301,17 +397,32 @@ def next_autofill_key(runs: Sequence[Any], *, now: datetime) -> str | None:
     ordered = sorted(runs, key=lambda run: _run_time(run) or epoch)
     keys = {str(run.idempotency_key) for run in ordered}
     latest = ordered[-1]
+    if str(getattr(latest, "state", OperationRunState.SUCCEEDED)) == OperationRunState.RUNNING:
+        # 수집 중이다. lease가 지났으면 죽은 작업이라 같은 키로 인수한다.
+        lease = getattr(latest, "lease_expires_at", None)
+        if lease is None or _aware(lease) <= now:
+            return str(latest.idempotency_key)
+        return None
     summary = dict(latest.result_summary or {})
+    attempts = int(summary.get("apply_attempts") or 0)
+    if summary.get("apply_status") == APPLY_FAILED and attempts < MAX_APPLY_ATTEMPTS:
+        return f"{APPLY_KEY_PREFIX}{latest.id}"
+    latest_at = _run_time(latest)
+    # 적용 결과 키가 아예 없는 초안은 이 기능 이전의 '저장만' 초안이다 — 대표가 dry-run을 본 뒤 백필 CLI가
+    # 적용한다. 스윕은 이 기능이 PENDING으로 저장한 초안만 회수한다.
     if (
-        summary.get("apply_status") == "FAILED"
-        and int(summary.get("apply_attempts") or 0) < MAX_APPLY_ATTEMPTS
+        summary.get("apply_status") == APPLY_PENDING
+        and not _draft_is_empty(summary)
+        and attempts < MAX_APPLY_ATTEMPTS
+        and latest_at is not None
+        and now >= latest_at + APPLY_PENDING_GRACE
     ):
+        # 초안은 커밋됐는데 적용 결과가 없다(저장 직후 작업이 죽었다) — 수집 없이 적용한다.
         return f"{APPLY_KEY_PREFIX}{latest.id}"
     if summary.get("followup_needed") and PROFILE_AUTOFILL_FOLLOWUP_KEY not in keys:
         return PROFILE_AUTOFILL_FOLLOWUP_KEY
     if _draft_is_empty(summary):
         retries = sum(1 for key in keys if key.startswith(RETRY_KEY_PREFIX))
-        latest_at = _run_time(latest)
         if (
             retries < len(RETRY_DELAYS)
             and latest_at is not None
