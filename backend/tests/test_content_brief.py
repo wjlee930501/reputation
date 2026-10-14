@@ -288,7 +288,9 @@ def test_serialize_item_exposes_forbidden_expression_compliance_blocker():
     assert "의료광고 금지 표현이 포함되어 있습니다." in serialized["compliance"]["blockers"]
 
 
-def test_serialize_item_blocks_publish_without_references():
+def test_serialize_item_does_not_block_publish_without_references():
+    """D36(2026-10-14): 검증된 참고 자료가 없으면 참고 자료 없이 발행한다."""
+
     item = _content_item(
         title="치질 수술 전 확인할 점",
         body="환자 상태에 따라 진료 방향을 설명합니다.",
@@ -305,9 +307,8 @@ def test_serialize_item_blocks_publish_without_references():
         item, full=True, public_philosophy_id=None, hospital_serving=True
     )
 
-    assert serialized["compliance"]["status"] == "BLOCKED"
     assert serialized["compliance"]["references_count"] == 0
-    assert "권위 있는 참고 자료가 1개 이상 필요합니다." in serialized["compliance"]["blockers"]
+    assert "권위 있는 참고 자료가 1개 이상 필요합니다." not in serialized["compliance"]["blockers"]
 
 
 def test_serialize_item_blocks_publish_with_only_non_whitelisted_references():
@@ -332,7 +333,9 @@ def test_serialize_item_blocks_publish_with_only_non_whitelisted_references():
     assert "권위 있는 참고 자료가 1개 이상 필요합니다." in serialized["compliance"]["blockers"]
 
 
-async def test_publish_content_rejects_generated_content_without_references(monkeypatch, verified_actor):
+async def test_publish_content_does_not_reject_content_without_references(monkeypatch, verified_actor):
+    """D36: 참고 자료 0개는 수동 발행도 막지 않는다 — 다음 게이트(여기서는 승인 기준 없음)까지 간다."""
+
     hospital_id = uuid.uuid4()
     item_id = uuid.uuid4()
     hospital = _hospital(hospital_id)
@@ -383,10 +386,16 @@ async def test_publish_content_rejects_generated_content_without_references(monk
         )
 
     assert exc_info.value.status_code == 400
-    assert exc_info.value.detail["missing"] == "references"
+    assert exc_info.value.detail.get("missing") != "references"
+    assert exc_info.value.detail["essence_check_summary"]
 
 
-async def test_publish_content_rejects_non_whitelisted_references(monkeypatch, verified_actor):
+async def test_publish_content_drops_non_whitelisted_references_before_the_gate(
+    monkeypatch, verified_actor
+):
+    """D36: 있는 참고 자료는 종전대로 검증한다 — 인용할 수 없는 주소는 발행 직전에 빠지고,
+    다 빠지면 참고 자료 없이 다음 게이트로 간다(참고 자료 때문에 막지 않는다)."""
+
     hospital_id = uuid.uuid4()
     item_id = uuid.uuid4()
     hospital = _hospital(hospital_id)
@@ -418,16 +427,26 @@ async def test_publish_content_rejects_non_whitelisted_references(monkeypatch, v
     monkeypatch.setattr(content_api, "_get_content", fake_get_content)
     monkeypatch.setattr(content_api, "_get_hospital", fake_get_hospital)
 
+    async def no_philosophy(db, requested_hospital_id):
+        return None
+
+    monkeypatch.setattr(content_api, "_get_approved_philosophy", no_philosophy)
+
+    class FakeDB:
+        async def commit(self):
+            return None
+
     with pytest.raises(HTTPException) as exc_info:
         await content_api.publish_content(
             hospital_id,
             item_id,
             content_api.PublishBody(),
-            db=SimpleNamespace(),
+            db=FakeDB(),
         )
 
+    assert item.references_list == []
     assert exc_info.value.status_code == 400
-    assert exc_info.value.detail["missing"] == "references"
+    assert exc_info.value.detail.get("missing") != "references"
 
 
 async def test_publish_content_blocks_concurrent_publish_under_lock(monkeypatch, verified_actor):

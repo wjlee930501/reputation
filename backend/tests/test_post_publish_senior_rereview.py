@@ -61,7 +61,7 @@ def _wire(monkeypatch, item, review):
         lambda *_a, **_k: calls.__setitem__("recovered", calls["recovered"] + 1),
     )
     monkeypatch.setattr(
-        sweep, "_open_flag_incident",
+        sweep, "_open_critical_incident",
         lambda _item, _h, _r, **k: calls["needs_human"].append(k.get("needs_human_reason")),
     )
     return calls
@@ -89,7 +89,9 @@ def test_senior_pass_closes_the_flag_with_the_review_model(monkeypatch):
     assert "post_publish_ai_review" not in item.essence_check_summary
 
 
-def test_senior_still_uncertain_is_recorded_once_and_stays_quiet(monkeypatch):
+def test_senior_still_uncertain_is_recorded_once_and_closes_quietly(monkeypatch):
+    """상위 재검수 뒤에도 Critical이 아닌 확신 부족만 남았다 — 사고 없이 조용히 닫는다(D35)."""
+
     item = _flagged()
     uncertain = ContentAiFinding(
         ContentAiFindingSeverity.UNCERTAIN, ContentAiFindingKind.MEDICAL_SAFETY, "확신 부족"
@@ -103,13 +105,12 @@ def test_senior_still_uncertain_is_recorded_once_and_stays_quiet(monkeypatch):
     assert marker["senior_rereview"]["model"] == settings.CLAUDE_MODEL_REVIEW
     assert marker["correction"]["finished"] is True
     assert calls["needs_human"] == []
+    assert marker["closed"]["reason"] == "NONCRITICAL"
+    assert item.post_publish_reviewed_by == sweep.POST_PUBLISH_NONCRITICAL_CLOSER
 
 
-def test_senior_hard_finding_refreshes_the_quiet_flag_incident(monkeypatch):
-    """상위 검수의 HARD도 사람의 Slack·할 일로 올리지 않는다(D2, 10/8 지시 유지).
-
-    조용한 FLAGGED 사고의 문구만 '사람이 직접 고쳐야 한다'로 갱신하고 콘텐츠 탭에 남긴다.
-    """
+def test_senior_critical_finding_asks_the_marketer_once(monkeypatch):
+    """상위 검수가 의료 안전 HARD(Critical)를 냈다 — 글은 내리지 않고 "마케터 검토 필요"(D35)."""
 
     item = _flagged()
     hard = ContentAiFinding(ContentAiFindingSeverity.HARD, ContentAiFindingKind.MEDICAL_SAFETY, "근거 없는 단정")

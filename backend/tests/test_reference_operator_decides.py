@@ -916,16 +916,16 @@ def test_the_generation_hold_is_an_open_incident_without_a_deadline(monkeypatch,
 
 
 @pytest.mark.parametrize("title", [COST_TITLE, CHOICE_TITLE], ids=["cost", "provider_choice"])
-def test_generation_heal_never_fills_a_cost_or_choice_slot(monkeypatch, title):
-    # 채웠다면 검증기를 거쳐 결과를 돌려줬을 것이다 — 채움 여부만 보려고 검증기를 통과시킨다.
-    monkeypatch.setattr(content_engine, "_validate_generated_result", lambda result, *_a: result)
-    error = content_engine.MissingCitableReferencesError(
-        "GEO hard-fail: references is empty for FAQ",
-        {"title": title, "body": "## 안내\n본문", "faq_question": None, "references": []},
-    )
+async def test_generation_heal_never_fills_a_cost_or_choice_slot(title):
+    """생성의 수기 목록 치유(`_verify_generated_references`)는 진료비·병원 선택 글을 채우지 않는다.
+    D36 뒤로는 빈 참고자료가 거절이 아니라 기록이다 — 채우지 않고 그대로 저장한다."""
 
-    assert content_engine._heal_from_curated_catalog(error, None, None, None) is None
-    assert error.result["references"] == []
+    result = {"title": title, "body": "## 안내\n본문", "faq_question": None, "references": []}
+
+    with override_reference_fetcher(PageFetcher()):
+        await content_engine._verify_generated_references(result, None, required=True)
+
+    assert result["references"] == []
 
 
 def test_an_ordinary_unwritten_slot_keeps_the_sample_ladder_and_its_topic_swap(monkeypatch):

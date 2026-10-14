@@ -9,10 +9,9 @@
 - 생성 경로와 **같은** 독립 검수(`review_generated_content`, 비용 카테고리 `content`)를 쓴다.
   PASS(차단 지적 없음)가 지금 본문 해시에 묶여 나오면 `post_publish_reviewed_by='system:ai-review'`로
   확인 완료로 기록한다.
-- 차단 지적(HARD/UNCERTAIN)이 나와도 **자동으로 내리지 않는다**. 공개 글을 숨기는 것은 사람이
+- 차단 지적(HARD/UNCERTAIN)이 나와도 **자동으로 내리지 않는다**(D35). 공개 글을 숨기는 것은 사람이
   정한다. 이 글의 `ai_review`는 건드리지 않고(저장하면 공개 가시성이 그 글을 숨긴다) 별도 키
-  `post_publish_ai_review`에 `FLAGGED`와 지적 문구를 남기고, 글 하나당 운영자 인시던트 하나를
-  연다. 같은 본문을 매일 다시 사지 않도록 FLAGGED 글은 스윕이 고르지 않는다 — 사람이 본문을
+  `post_publish_ai_review`에 `FLAGGED`와 지적 문구를 남긴다. 사고는 Critical일 때만 연다(아래). 같은 본문을 매일 다시 사지 않도록 FLAGGED 글은 스윕이 고르지 않는다 — 사람이 본문을
   고치면(PATCH가 이 키를 지운다) 새 본문으로 다시 검수한다.
 - 검수 불가(공급자 장애·비용 가드)는 아무것도 바꾸지 않는다. 다음 실행이 다시 집는다.
 - 하루 상한(`POST_PUBLISH_AI_REVIEW_DAILY_CAP`)이 곧 실행당 상한이다(하루 한 번 실행). 편집된 글을
@@ -23,8 +22,14 @@
   (`POST_PUBLISH_AUTO_CORRECTION_MAX_PASSES`)을 넘기면 사람이 직접 고친다고 인시던트가 말한다.
   표시에 구조화 지적(인용)이 없는 옛 FLAGGED 글은 문구에서 인용을 짐작하지 않고 재검수로 구조를 얻는다.
 - 자동 교정이 끝나고도 UNCERTAIN(확신 부족)만 남은 글은 `POST_PUBLISH_UNCERTAIN_REREVIEW_DAYS` 뒤 검수
-  모델로 한 번만 더 본다(표시의 `senior_rereview`가 재구매를 막는다). PASS면 확인 완료로 닫는다. HARD가
-  나와도 조용한 FLAGGED 사고의 문구만 갱신한다 — 사후검수 지적은 Slack·할 일로 올리지 않는다(10/8 지시).
+  모델로 한 번만 더 본다(표시의 `senior_rereview`가 재구매를 막는다). PASS면 확인 완료로 닫는다.
+- 지적의 등급(`finding_criticality`, 2026-10-14 D35): **Critical**(의료 안전 HARD·응급 안내 누락)이 남은
+  공개 글은 내리지 않고 글당 한 번 "마케터 검토 필요" 사고(`POST_PUBLISH_CRITICAL_FINDING`, 운영 담당·
+  Slack)를 연다. Critical이 아닌 지적만 남으면 사고를 열지 않고, 교정이 끝나면(UNCERTAIN만이면 상위 재검수
+  뒤) `system:ai-review-noncritical` 확인으로 조용히 닫는다. 옛 조용한 `POST_PUBLISH_REVIEW_FLAGGED` 사고는
+  더 열지 않고 건드릴 때 닫는다.
+- 검수 장애로 판정 없이 먼저 발행된 글(D37 — 저장된 `ai_review`가 UNAVAILABLE)은 하루 상한 안에서
+  표본보다 먼저 검수한다(`_deferred_review_stmt`).
 """
 
 from __future__ import annotations
@@ -72,6 +77,8 @@ from app.services.content_minimal_correction import (
     published_correction_allowed_for,
     run_published_correction,
 )
+from app.services.content_publication import AI_REVIEW_DEFERRED_KEY
+from app.services.finding_criticality import flag_findings_are_critical
 from app.services.incident_types import IncidentFingerprint
 from app.services.must_use_verbatim import required_must_use_messages
 from app.services.post_publish_review_policy import (
@@ -94,6 +101,11 @@ POST_PUBLISH_SENIOR_REREVIEW_KEY = "senior_rereview"
 POST_PUBLISH_INCIDENT_PIPELINE = "post_publish_ai_review"
 POST_PUBLISH_INCIDENT_OBJECT = "content_item"
 POST_PUBLISH_INCIDENT_TYPE = "POST_PUBLISH_REVIEW_FLAGGED"
+# D35(2026-10-14): 공개 글의 Critical 지적 — 글은 내리지 않고 "마케터 검토 필요" 알림 하나(글당).
+POST_PUBLISH_CRITICAL_INCIDENT_PIPELINE = "post_publish_critical_review"
+POST_PUBLISH_CRITICAL_INCIDENT_TYPE = "POST_PUBLISH_CRITICAL_FINDING"
+# Critical이 아닌 지적만 남은 공개 글을 조용히 닫을 때의 확인 기록(사람 확인·검수 PASS와 구분한다).
+POST_PUBLISH_NONCRITICAL_CLOSER = "system:ai-review-noncritical"
 
 # 공급자가 연달아 이만큼 못 보면 오늘은 접는다 — 장애 중에 상한만큼 두드리지 않는다.
 _CONSECUTIVE_UNAVAILABLE_LIMIT = 3
@@ -132,6 +144,29 @@ def _review_stmt(limit: int):
             flag_status.is_distinct_from(POST_PUBLISH_FLAGGED),
         )
         .order_by(edited_first, ContentItem.published_at, ContentItem.id)
+        .options(joinedload(ContentItem.hospital))
+        .limit(limit)
+    )
+
+
+def _deferred_review_stmt(limit: int):
+    """검수 장애로 판정 없이 먼저 발행된 공개 글(D37) — 사후 검수 맨 앞. 오래 공개된 글부터."""
+
+    flag_status = ContentItem.essence_check_summary[POST_PUBLISH_FLAG_KEY]["status"].as_string()
+    review_status = ContentItem.essence_check_summary["ai_review"]["status"].as_string()
+    return (
+        select(ContentItem)
+        .join(Hospital, ContentItem.hospital_id == Hospital.id)
+        .where(
+            ContentItem.status == ContentStatus.PUBLISHED,
+            ContentItem.post_publish_reviewed_at.is_(None),
+            ContentItem.published_at.is_not(None),
+            ContentItem.body.is_not(None),
+            publicly_operational_hospital_predicate(),
+            review_status == "UNAVAILABLE",
+            flag_status.is_distinct_from(POST_PUBLISH_FLAGGED),
+        )
+        .order_by(ContentItem.published_at, ContentItem.id)
         .options(joinedload(ContentItem.hospital))
         .limit(limit)
     )
@@ -434,6 +469,7 @@ def apply_review_outcome(item: ContentItem, review: ContentAiReview, *, now: dat
     # 편집으로 낡은 PASS를 현재 해시로 되돌린다 — 이후 되돌림·재발행 게이트가 같은 기록을 본다.
     summary["ai_review"] = review.payload()
     summary.pop(POST_PUBLISH_FLAG_KEY, None)
+    summary.pop(AI_REVIEW_DEFERRED_KEY, None)
     item.essence_check_summary = summary
     item.post_publish_reviewed_at = now
     item.post_publish_reviewed_by = POST_PUBLISH_AI_REVIEWER
@@ -450,56 +486,120 @@ _NEEDS_HUMAN_COPY = {
 _NEEDS_HUMAN_DEFAULT_COPY = "자동 교정이 안전 검사를 통과하지 못했습니다."
 
 
-def _open_flag_incident(
+def flag_is_critical(marker: object) -> bool:
+    """사후 검수 표시에 Critical 지적이 남았는가(`finding_criticality`). 구조를 모르면 Critical이다."""
+
+    findings = marker.get("structured_findings") if isinstance(marker, dict) else None
+    return flag_findings_are_critical(findings)
+
+
+def _open_critical_incident(
     item: ContentItem,
     hospital: Hospital,
     run_async,
     *,
     needs_human_reason: str | None = None,
 ) -> None:
+    """D35: 공개 글의 Critical 지적 — 글은 그대로 두고 "마케터 검토 필요" 사고 하나(글당)를 연다.
+
+    같은 글의 사고가 이미 열려 있으면 문구만 새로 쓴다(`open_or_touch_incident`) — 두 번째 Slack이 없다.
+    """
+
     from app.services.ops_incident_alerts import open_ops_incident
 
-    findings = (item.essence_check_summary or {}).get(POST_PUBLISH_FLAG_KEY, {}).get(
-        "findings"
-    ) or []
+    marker = (item.essence_check_summary or {}).get(POST_PUBLISH_FLAG_KEY) or {}
+    findings = marker.get("findings") or []
     detail = f" 지적: {findings[0]}" if findings else ""
-    if needs_human_reason:
-        # 자동 교정을 이미 시도했거나 시도할 수 없는 글 — 사람이 직접 고쳐야 한다고 분명히 말한다.
-        copy = _NEEDS_HUMAN_COPY.get(needs_human_reason, _NEEDS_HUMAN_DEFAULT_COPY)
-        problem = (
-            f"공개된 글 「{item.title}」의 사후 검수 지적을 자동 교정으로 풀지 못했습니다. "
-            f"{copy}{detail}"
-        )
-        next_action = (
-            "콘텐츠 탭에서 해당 글을 직접 고치거나 비공개로 돌려 주세요. "
-            "문제가 없다고 판단하면 공개 내용 확인을 기록해 주세요."
-        )
-    else:
-        problem = f"공개된 글 「{item.title}」의 자동 사후 검수에서 확인이 필요한 지적이 나왔습니다.{detail}"
-        next_action = (
-            "콘텐츠 탭에서 해당 글을 확인하고, 문제가 있으면 고치거나 비공개로 돌려 주세요. "
-            "문제가 없으면 공개 내용 확인을 기록해 주세요."
-        )
+    tried = (
+        f" 자동 교정으로 풀지 못했습니다({_NEEDS_HUMAN_COPY.get(needs_human_reason, _NEEDS_HUMAN_DEFAULT_COPY)})"
+        if needs_human_reason
+        else ""
+    )
     run_async(
         open_ops_incident(
-            pipeline=POST_PUBLISH_INCIDENT_PIPELINE,
+            pipeline=POST_PUBLISH_CRITICAL_INCIDENT_PIPELINE,
             object_type=POST_PUBLISH_INCIDENT_OBJECT,
             object_id=str(item.id),
-            incident_type=POST_PUBLISH_INCIDENT_TYPE,
-            safe_error_code=POST_PUBLISH_INCIDENT_TYPE,
-            problem=problem,
+            incident_type=POST_PUBLISH_CRITICAL_INCIDENT_TYPE,
+            safe_error_code=POST_PUBLISH_CRITICAL_INCIDENT_TYPE,
+            problem=(
+                f"마케터 검토 필요: 공개된 글 「{item.title}」의 사후 검수에서 의료 안전 지적이 "
+                f"나왔습니다.{tried}{detail}"
+            ),
             customer_impact="글은 그대로 공개되어 있습니다. 자동으로 내리지 않았습니다.",
-            next_action=next_action,
+            next_action=(
+                "콘텐츠 탭에서 지적 문장을 확인해 주세요. 고쳐야 하면 직접 고치거나 비공개로 돌리고, "
+                "문제가 없으면 공개 내용 확인을 기록해 주세요."
+            ),
             source_type="POST_PUBLISH_AI_REVIEW",
             hospital_name=hospital.name,
             hospital_id=hospital.id,
             admin_path=f"/hospitals/{hospital.id}/content",
             fingerprint=IncidentFingerprint.SAFETY_BLOCKED,
             actor=POST_PUBLISH_AI_REVIEWER,
-            # 이미 열린 인시던트의 문구만 새로 쓴다 — 같은 글의 두 번째 Slack 알림을 만들지 않는다.
-            notify=needs_human_reason is None,
         )
     )
+
+
+def _close_noncritical_flag(db, item_id, reviewed_hash: object, now: datetime) -> bool:
+    """Critical이 아닌 지적만 남은 공개 글을 조용히 닫는다. 그 사이 표시·본문이 바뀌었으면 쓰지 않는다."""
+
+    locked = _lock_item(db, item_id)
+    summary = locked.essence_check_summary if locked is not None else None
+    marker = summary.get(POST_PUBLISH_FLAG_KEY) if isinstance(summary, dict) else None
+    if (
+        locked is None
+        or locked.status != ContentStatus.PUBLISHED
+        or locked.post_publish_reviewed_at is not None
+        or not isinstance(marker, dict)
+        or marker.get("status") != POST_PUBLISH_FLAGGED
+        or marker.get("candidate_sha256") != reviewed_hash
+        or flag_is_critical(marker)
+    ):
+        db.rollback()
+        return False
+    locked.essence_check_summary = {
+        **summary,
+        POST_PUBLISH_FLAG_KEY: {
+            **marker,
+            "closed": {"reason": "NONCRITICAL", "at": now.isoformat()},
+        },
+    }
+    locked.post_publish_reviewed_at = now
+    locked.post_publish_reviewed_by = POST_PUBLISH_NONCRITICAL_CLOSER
+    db.commit()
+    return True
+
+
+def _settle_flag(
+    db,
+    item: ContentItem,
+    hospital: Hospital,
+    run_async,
+    *,
+    needs_human_reason: str | None = None,
+    now: datetime | None = None,
+) -> None:
+    """FLAGGED로 남은 공개 글의 끝 처리(D35). 글은 어느 경우에도 내리지 않는다.
+
+    - Critical: "마케터 검토 필요" 사고(글당 하나, Slack).
+    - Critical 아님: 사고 없음. 자동 교정이 끝났으면(`needs_human_reason`) 조용히 닫는다 — 단 UNCERTAIN만
+      남았고 상위 재검수를 아직 받지 않았으면 그 재검수(며칠 뒤)를 기다린다.
+    옛 조용한 사고(`POST_PUBLISH_REVIEW_FLAGGED`)는 더 열지 않고 닫는다.
+    """
+
+    marker = (item.essence_check_summary or {}).get(POST_PUBLISH_FLAG_KEY)
+    if not isinstance(marker, dict) or marker.get("status") != POST_PUBLISH_FLAGGED:
+        return
+    _recover_flag_incident(item, hospital, run_async)
+    if flag_is_critical(marker):
+        _open_critical_incident(item, hospital, run_async, needs_human_reason=needs_human_reason)
+        return
+    awaiting_senior = uncertain_only(marker) and not marker.get(POST_PUBLISH_SENIOR_REREVIEW_KEY)
+    if needs_human_reason and not awaiting_senior:
+        _close_noncritical_flag(
+            db, item.id, marker.get("candidate_sha256"), now or datetime.now(UTC)
+        )
 
 
 def _lock_item(db, item_id) -> ContentItem | None:
@@ -644,12 +744,16 @@ def senior_rereview_flagged(db, item, hospital, philosophy, run_async, now: date
     db.commit()
     if outcome == "REVIEWED":
         _recover_flag_incident(locked, hospital, run_async)
-    elif outcome == "FLAGGED" and not uncertain_only(
-        locked.essence_check_summary[POST_PUBLISH_FLAG_KEY]
-    ):
+    elif outcome == "FLAGGED":
+        # 상위 재검수까지 받았다 — Critical이면 마케터 검토 사고, 아니면 조용히 닫는다(D35).
         try:
-            _open_flag_incident(
-                locked, hospital, run_async, needs_human_reason="SENIOR_REREVIEW_HARD"
+            _settle_flag(
+                db,
+                locked,
+                hospital,
+                run_async,
+                needs_human_reason="SENIOR_REREVIEW_HARD",
+                now=now,
             )
         except Exception:  # noqa: BLE001 - 인시던트 기록 실패가 저장된 표시를 되돌리지 않는다.
             logger.exception("post-publish flag incident failed for %s", item_id)
@@ -837,7 +941,7 @@ def _correct_flagged(db, item, hospital, philosophy, run_async, now: datetime) -
     if recorded is None:
         return "CONFLICT"
     try:
-        _open_flag_incident(recorded, hospital, run_async, needs_human_reason=reason)
+        _settle_flag(db, recorded, hospital, run_async, needs_human_reason=reason, now=now)
     except Exception:  # noqa: BLE001 - 인시던트 기록 실패가 저장된 표시를 되돌리지 않는다.
         logger.exception("post-publish flag incident failed for %s", item_id)
     return result
@@ -874,10 +978,6 @@ def process_flagged_post(
         if outcome != "FLAGGED":
             return "UNAVAILABLE" if outcome == "UNAVAILABLE" else "SKIPPED"
     return _correct_flagged(db, item, hospital, philosophy, run_async, now)
-
-
-# 이 결과들은 인시던트를 이미 처리했다(교정으로 닫았거나 사람의 일 문구로 갱신했다).
-_INCIDENT_HANDLED = frozenset({"CORRECTED", "REVIEWED", "NEEDS_HUMAN", "BLOCKED", "REJECTED"})
 
 
 def _bump(counts: dict[str, int], key: str) -> None:
@@ -994,11 +1094,15 @@ def review_post_publish_samples() -> dict[str, int]:
         if cap <= 0:
             logger.info("post-publish AI review sweep finished: %s", counts)
             return counts
-        # 비공개 글(드물다)을 먼저 — restore가 막혀 있는 글이라 표본보다 급하다.
-        candidates = list(db.execute(_withheld_stmt(cap)).unique().scalars().all())
+        # 검수 장애로 판정 없이 먼저 발행된 글(D37)이 맨 앞이다 — 공개 중인데 아무 검수도 받지 않았다.
+        # 그다음 비공개 글(드물다) — restore가 막혀 있는 글이라 표본보다 급하다.
+        candidates = list(db.execute(_deferred_review_stmt(cap)).unique().scalars().all())
+        candidates += list(db.execute(_withheld_stmt(cap)).unique().scalars().all())
         candidates += list(
             db.execute(_review_stmt(cap * _SCAN_MULTIPLIER)).unique().scalars().all()
         )
+        seen: set[uuid.UUID] = set()
+        candidates = [item for item in candidates if not (item.id in seen or seen.add(item.id))]
         for item in candidates:
             if attempted >= cap or out_of_budget():
                 break
@@ -1026,9 +1130,11 @@ def review_post_publish_samples() -> dict[str, int]:
                     if result != "SKIPPED":
                         corrections += 1
                     tally(result)
-                if result not in _INCIDENT_HANDLED:
+                # 교정이 아직 이 글을 맡을 수 있으면(오늘 상한·장애·경합) 다음 실행의 교정을 기다린다 —
+                # Critical 알림은 자동 교정 계단을 거친 뒤에도 남을 때만 나간다(D35).
+                if result == "SKIPPED" or correction_cap <= 0:
                     try:
-                        _open_flag_incident(locked, hospital, _run_async)
+                        _settle_flag(db, locked, hospital, _run_async)
                     except Exception:  # noqa: BLE001 - 인시던트 기록 실패가 저장된 표시를 되돌리지 않는다.
                         logger.exception("post-publish flag incident failed for %s", item_id)
             elif outcome == "REVIEWED":

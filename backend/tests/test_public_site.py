@@ -1082,11 +1082,18 @@ def test_clean_published_content_stays_public_safe():
         {"title": "  "},
         {"body": ""},
         {"published_at": None},
-        {"references_list": []},
+        # 참고 자료가 있으면 인용 가능해야 한다(D36: 비어 있는 것은 숨기지 않는다).
+        {"references_list": [{"title": "블로그", "url": "https://example.com/post"}]},
     ],
 )
 def test_incomplete_medical_content_is_not_public_safe(overrides):
     assert _is_public_safe_content(_published_item(**overrides)) is False
+
+
+def test_medical_content_without_references_stays_public_safe():
+    """D36(2026-10-14): 검증된 참고 자료가 없으면 참고 자료 없이 발행·공개한다."""
+
+    assert _is_public_safe_content(_published_item(references_list=[]))
 
 
 def test_notice_can_be_public_without_external_references():

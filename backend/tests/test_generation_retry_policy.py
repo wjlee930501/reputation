@@ -437,8 +437,12 @@ def test_hard_finding_class_depends_on_who_declared_it() -> None:
         {"findings": [{"severity": "UNCERTAIN", "kind": "MEDICAL_SAFETY"}]}
     ) is False
     assert has_model_declared_hard_finding(
-        {"findings": [{"severity": "SOFT"}, {"severity": "HARD", "kind": "HOSPITAL_FACT"}]}
+        {"findings": [{"severity": "SOFT"}, {"severity": "HARD", "kind": "MEDICAL_SAFETY"}]}
     ) is True
+    # W4: 병원 사실 HARD는 Critical이 아니라 교정·교체 계단의 종착이 아니다.
+    assert has_model_declared_hard_finding(
+        {"findings": [{"severity": "SOFT"}, {"severity": "HARD", "kind": "HOSPITAL_FACT"}]}
+    ) is False
     assert has_model_declared_hard_finding(None) is False
 
 

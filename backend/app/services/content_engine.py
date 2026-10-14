@@ -10,6 +10,7 @@ import json
 import logging
 import re
 import uuid
+from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlparse
 
@@ -48,8 +49,9 @@ from app.services.question_wellformed import (
     treatment_applied_to_exam,
 )
 from app.services.reference_requirement import (
+    REFERENCES_OMITTED_KEY,
     REFERENCES_REQUIRED_TYPES,
-    references_block_when_empty_for,
+    references_omitted_reason,
     references_required_for,
     topic_without_authoritative_source,
 )
@@ -186,7 +188,8 @@ SEASON_MISMATCH_FINDING_PREFIX = "제목 계절-발행월 불일치"
 
 
 class MissingCitableReferencesError(ValueError):
-    """Keep the last safe provider result available after reference retries exhaust."""
+    """옛 참고자료 거절. D36(2026-10-14) 뒤로 생성은 이 예외를 내지 않는다 — 빈 참고자료는
+    `REFERENCES_OMITTED_KEY` 기록으로 저장된다. 이 예외로 남은 옛 시도 기록을 읽는 경로가 쓴다."""
 
     def __init__(self, message: str, result: dict):
         super().__init__(message)
@@ -445,7 +448,7 @@ def _with_verified_reference_guidance(schema: dict) -> dict:
 
     예전에는 `minItems: 1`로 빈 배열을 공급자 쪽에서 막았다. 확신 있는 문서가 없는 작가에게
     그 제약은 URL을 지어내라는 압력이었다(2026-09-29 점검: 문서 번호·메뉴 코드 추측).
-    비어 있으면 시스템이 검증된 목록에서 채우거나 발행을 보류한다.
+    비어 있으면 시스템이 검증된 목록에서 채우고, 그래도 없으면 참고자료 없이 저장한다(D36).
     """
 
     references = schema["properties"]["references"]
@@ -535,7 +538,8 @@ TYPE_PROMPT_BODY_LENGTH_RULE = (
 # 같은 이유로 참고자료도 유형 템플릿이 검증기와 같은 말을 해야 한다. 2026-09-29 점검 뒤로
 # 그 말은 "검증된 문서를 그대로 쓰고, 추측한 URL은 넣지 말라"다 — "최소 1개·비면 저장되지
 # 않는다·다른 문서로 바꿔 넣으라"는 압력이 문서 번호·메뉴 코드를 추측한 URL을 낳았다.
-# 비면 시스템이 검증된 목록으로 채우거나 발행을 보류한다(`_verify_generated_references`).
+# 비면 시스템이 검증된 목록으로 채우고, 그래도 없으면 참고자료 없이 저장한다(D36,
+# `_verify_generated_references`·`_validate_geo`).
 TYPE_PROMPT_REFERENCE_RULE = (
     "references에는 이 글의 주제를 다루는 공신력 문서(질병관리청 국가건강정보포털·학회 "
     "진료지침·국가암정보센터 등)의 **실제 문서 URL**을 답니다. 아래 [현재 주제와 일치하는 "
@@ -1466,11 +1470,9 @@ def _validate_generated_result(
         hospital,
         content_type,
         reference_drop_notes=reference_drop_notes,
-        # 진료비·병원 선택 글(작가의 제목으로 판정)은 참고자료가 선택이다(D23). 검증·수기 목록
-        # 문서 제외는 위 `_verify_generated_references`가 유형 기준으로 그대로 한다.
-        references_required=references_block_when_empty_for(
-            content_type, content_brief=content_brief, title=result.get("title")
-        ),
+        # 참고자료는 비어도 생성을 막지 않는다(D36) — 필수 글이 비면 기록만 남긴다. 검증·수기 목록
+        # 치유·진료비 글의 수기 목록 문서 제외는 위 `_verify_generated_references`가 그대로 한다.
+        references_required=references_required_for(content_type, content_brief=content_brief),
     )
     # 측정 질의 대응 검사. 워커가 이 목록을 보고 한 번만 보완 재작성을 돌린다.
     target_findings = _validate_target_alignment(result, content_brief, content_type)
@@ -1670,38 +1672,6 @@ async def generate_content(
                     attempt_context,
                 )
                 return _finish(generated)
-            except MissingCitableReferencesError as exc:
-                last_error = exc
-                _count("rejected", exc)
-                try:
-                    healed = _heal_from_curated_catalog(
-                        exc,
-                        hospital,
-                        content_type,
-                        content_brief,
-                        must_use_messages=must_use_messages,
-                    )
-                except ValueError as heal_error:
-                    # 큐레이션 근거를 붙였더니 다른 게이트가 걸렸다(필수 문구 누락 등). 그 거절도 세고,
-                    # 결정적으로 고칠 수 있으면 같은 치유 사슬로 고친다 — 이미 결제한 응답을 버리지 않는다.
-                    # 고치지 못하면 그 사유를 다음 회차에 넘긴다.
-                    _count("rejected", heal_error)
-                    healed, last_error, heal_events = _apply_deterministic_heals(
-                        heal_error,
-                        hospital,
-                        content_type,
-                        content_brief,
-                        must_use_messages=must_use_messages,
-                    )
-                    for bucket, event in heal_events:
-                        _count(bucket, event)
-                    if healed is not None:
-                        _count("healed", exc)
-                        return _finish(healed)
-                else:
-                    if healed is not None:
-                        _count("healed", exc)
-                        return _finish(healed)
             except (
                 DirectorNameMissingError,
                 HospitalNameMissingError,
@@ -1775,31 +1745,6 @@ def _validator_remediation_findings(
         if previous not in accumulated:
             accumulated.append(previous)
     return accumulated[:GENERATION_REMEDIATION_FINDING_LIMIT]
-
-
-def _heal_from_curated_catalog(
-    error: MissingCitableReferencesError,
-    hospital: Hospital,
-    content_type: ContentType,
-    content_brief: dict | None,
-    *,
-    must_use_messages: list[str] | None = None,
-) -> dict | None:
-    """Recover an empty reference list from the human-verified catalog, or give up.
-
-    Preserve any citable provider reference; only an actually empty list may be
-    healed from the topic-specific curated documents.
-    """
-    result = error.result
-    if result.get("references"):
-        return None
-    curated_references = _topic_aligned_curated_sources(content_brief, result)
-    if not curated_references:
-        return None
-    result["references"] = curated_references
-    return _validate_generated_result(
-        result, hospital, content_type, content_brief, must_use_messages=must_use_messages
-    )
 
 
 def _heal_missing_director_name(
@@ -2461,10 +2406,13 @@ def _validate_geo(
     """GEO 엔티티 공출현 + 증거 신호 검증.
 
     HARD (ValueError → tenacity 재시도):
-      • 참고자료 필수 글(`references_required_for` — 의료 안내 유형과 의료 주제를 실은
-        NOTICE)인데 references가 빈 리스트일 때. 호출부가 브리프로 판정해 넘기며, 넘기지
-        않으면 유형만으로 판정한다
       • 병원명·원장명·지역명 중 프로파일에 있는 값이 본문에서 누락됐을 때
+
+    기록(막지 않는다, D36):
+      • 참고자료 필수 글(`references_required_for` — 의료 안내 유형과 의료 주제를 실은
+        NOTICE)인데 검증된 참고자료가 하나도 남지 않았을 때 — 수기 목록 치유는 이미 끝났다
+        (`_verify_generated_references`). 거절하지 않고 `REFERENCES_OMITTED_KEY`를 남긴다.
+        호출부가 브리프로 판정해 넘기며, 넘기지 않으면 유형만으로 판정한다
 
     SOFT (반환 리스트에 추가):
       • 숫자/통계 패턴(SEO_STAT_PATTERN)이 body에 없을 때
@@ -2473,18 +2421,22 @@ def _validate_geo(
     refs: list = result.get("references") or []
     findings: list[str] = []
 
-    # ── HARD: 필수 references 빈 리스트 ─────────────────────────────
+    # ── 기록: 필수 references 빈 리스트(D36 — 참고자료 없이 저장한다) ─────────
     if references_required is None:
         references_required = references_required_for(content_type)
     if references_required and not refs:
-        raise MissingCitableReferencesError(
-            (
-                f"GEO hard-fail: references is empty for {content_type.value} "
-                f"— 검증을 통과한 학회/KDCA 출처 없음. "
-                f"{_empty_reference_cause(reference_drop_notes)}"
-            ),
-            result,
+        # 결정적 치유가 같은 결과를 다시 검증할 때는 제거 사유가 넘어오지 않는다 — 앞의 기록을 잇는다.
+        previous = result.get(REFERENCES_OMITTED_KEY)
+        notes = [note for note in (reference_drop_notes or []) if note] or (
+            list(previous.get("drop_notes") or []) if isinstance(previous, dict) else []
         )
+        result[REFERENCES_OMITTED_KEY] = {
+            "reason": references_omitted_reason(result.get("title")),
+            "drop_notes": notes[:_REFERENCE_DROP_NOTE_LIMIT],
+            "at": datetime.now(timezone.utc).isoformat(),
+        }
+    else:
+        result.pop(REFERENCES_OMITTED_KEY, None)
 
     # ── HARD: 승인된 엔티티 정확 표기 ────────────────────────────────
     hospital_name = (hospital.name or "").strip()
@@ -2562,23 +2514,6 @@ def _reference_drop_notes(before: object, after: list[dict], reason: str) -> lis
     return notes
 
 
-def _empty_reference_cause(notes: list[str] | None) -> str:
-    """빈 references의 원인을 작가가 다음 회차에 고칠 수 있는 문장으로 바꾼다.
-
-    다른 URL을 "바꿔 넣으라"고 말하지 않는다 — 그 지시가 문서 번호·메뉴 코드를 추측한
-    URL을 낳았다. 제외 사유를 알리고, 검증 문서가 없으면 추측하지 말라고 말한다.
-    """
-    dropped = [note for note in (notes or []) if note][:_REFERENCE_DROP_NOTE_LIMIT]
-    guidance = "검증 문서가 없으면 추측한 URL 대신 비워 두세요."
-    if not dropped:
-        return f"주어진 검증 문서 URL을 쓰고, {guidance}"
-    return (
-        "직전 출처는 모두 제외됐습니다("
-        + ", ".join(dropped)
-        + f"). 같은 주소·번호를 다시 쓰지 말고, {guidance}"
-    )
-
-
 def _normalize_references(raw: object) -> list[dict]:
     if not isinstance(raw, list):
         return []
@@ -2627,7 +2562,7 @@ async def _verify_generated_references(
     수기 목록 URL은 카탈로그 주제 대조로, 목록 밖 URL은 실제 GET(제목·본문)로만 남는다.
     모델이 붙인 제목(라벨)은 판정에 쓰지 않는다. 전부 빠지고 참고자료가 필수인 유형이면
     이 글의 주제로 채점한 수기 목록에서 채우고, 그 후보도 같은 검증을 거친다. 그래도 없으면
-    GEO 게이트가 MissingCitableReferencesError로 거절한다(지어내지 않는다).
+    참고자료 없이 저장하고 기록만 남긴다(D36 — 지어내지 않는다, `_validate_geo`).
     진료비·병원 선택 글(필수 + `topic_without_authoritative_source`)은 작가가 인용한 수기 목록
     문서도 받지 않는다 — 그 통과는 치유와 같은 카탈로그 키워드 대조다(2026-09-29 실장 결정).
     같은 문서의 별칭(`is_curated_source_url`)과 GET에서 목록 문서로 리다이렉트된 주소도 같다.

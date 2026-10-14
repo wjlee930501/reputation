@@ -8,6 +8,7 @@ from enum import StrEnum
 from zoneinfo import ZoneInfo
 
 from app.core.config import settings
+from app.services.finding_criticality import Criticality, classify_finding
 
 KST = ZoneInfo("Asia/Seoul")
 OVERNIGHT_RECOVERY_HOURS = (1, 4, 7)
@@ -267,10 +268,13 @@ def review_unavailable_not_before(attempt: Mapping) -> datetime | None:
 
 
 def has_model_declared_hard_finding(review: object) -> bool:
-    """Return whether the stored review itself declared a HARD finding.
+    """Return whether the stored review itself declared a **Critical** HARD finding.
 
-    확신도 부족으로 붙는 합성 finding은 UNCERTAIN이다. 모델이 HARD로 단정한 사실·
-    의료 안전 지적만 입력(승인 자료) 변경을 요구하는 종착으로 취급한다.
+    확신도 부족으로 붙는 합성 finding은 UNCERTAIN이다. 모델이 HARD로 단정한 지적 가운데
+    Critical(`finding_criticality` — 의료 안전 HARD·응급 안내 누락)만 교정·주제 교체 계단의
+    종착으로 취급한다. 병원 사실(HOSPITAL_FACT) HARD는 Critical이 아니다(W4) — 결정적
+    삭제·승인 수치 치환으로 먼저 풀고, 남으면 표본 실패처럼 재작성 계단을 탄다. 교정 상한과
+    주제 교체 예산을 쓰지 않는다.
     """
 
     if not isinstance(review, Mapping):
@@ -281,6 +285,7 @@ def has_model_declared_hard_finding(review: object) -> bool:
     return any(
         isinstance(finding, Mapping)
         and str(finding.get("severity") or "").upper() == "HARD"
+        and classify_finding(finding) is Criticality.CRITICAL
         for finding in findings
     )
 

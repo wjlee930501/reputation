@@ -23,9 +23,10 @@ from app.services.image_engine import (
     image_subject_hash,
 )
 from app.services.reference_requirement import (
+    REFERENCES_OMITTED_KEY,
     REFERENCES_REQUIRED_TYPES,
     references_block_when_empty,
-    topic_without_authoritative_source,
+    references_required,
 )
 from app.utils.authority_sources import is_citable_reference_url
 from app.utils.medical_filter import check_forbidden_content_fields
@@ -75,39 +76,41 @@ _REFERENCES_REQUIRED_VALUES = frozenset(_type_value(t) for t in REFERENCES_REQUI
 
 
 def has_required_references(item: ContentItem) -> bool:
-    """발행 게이트 — 참고 자료가 필수인 글이면 인용 가능한 참고 자료가 1개 이상 있는가.
+    """발행 게이트 — 참고 자료의 모양이 발행해도 되는가.
 
-    생성 검증(content_engine)과 **같은 판정**(`reference_requirement.references_required`)을
-    쓴다: 의료 안내 유형은 항상, NOTICE는 의료 주제(측정 질문 연결)를 실었을 때만 필수다.
-    순수 운영 공지는 생성 단계에서 참고 자료를 요구하지 않는데, 발행 게이트만 요구하면
-    생성은 되고 발행은 매일 MISSING_REFERENCES로 막히다가 영구 DRAFT로 사망한다(5821409e).
-    반대로 질문이 연결된 NOTICE를 유형만 보고 면제하면 참고 자료 0개로 공개된다(2af00d02).
-    유형을 못 읽으면 요구하는 쪽(fail-safe)으로 둔다.
+    2026-10-14 대표 결정(D36): 참고 자료가 **비어 있으면** 유형과 무관하게 막지 않는다
+    (`reference_requirement.references_block_when_empty`) — 검증된 참고 자료가 없으면 참고 자료
+    없이 발행한다. 참고 자료가 **있으면** 필수 유형(`references_required` — 의료 안내 유형과 질문이
+    연결된 NOTICE)은 인용 가능한 참고 자료가 1개 이상이어야 한다(화이트리스트 밖 주소만 남은 글을
+    그대로 내보내지 않는다). 순수 운영 공지는 종전처럼 보지 않는다(5821409e).
 
     참고 자료의 실제 문서 확인(`reference_checks`)은 발행 경로가 이 판정 전에 따로 요구한다
-    (`reference_publication.publication_references_current`) — 둘을 합치면 "확인된 참고
-    자료 1개 이상"이다.
+    (`reference_publication.publication_references_current`) — 발행 직전 재검증이 확인되지 않는
+    출처를 빼고, 모두 빠지면 참고 자료 없이 발행한다.
     """
-    if not references_block_when_empty(item):
-        # 참고자료가 선택인 글 — 순수 운영 공지와 진료비·병원 선택 글(D23).
+    if not (getattr(item, "references_list", None) or []):
+        return not references_block_when_empty(item)
+    if not references_required(item):
         return True
     return count_citable_references(item) > 0
 
 
 def public_surface_has_required_references(item: ContentItem) -> bool:
-    """공개 가시성(`content_visibility`) 전용 — 유형만 보는 종전 판정.
+    """공개 가시성(`content_visibility`) 전용 — 공개 표면의 참고자료가 공개해도 되는 모양인가.
 
-    이미 공개된 글의 공개 표면을 코드 배포만으로 바꾸지 않기 위해서다: 의료 주제 NOTICE
-    규칙을 여기에도 쓰면 참고 자료 없이 공개된 공지(2af00d02)가 배포 즉시 사이트에서
-    사라진다. 공개 글 교정은 사람이 따로 하며, 새 발행·restore는 `has_required_references`와
-    restore 전용 검사가 막는다. 교정이 끝나면 이 함수를 `has_required_references`로 합친다.
+    2026-10-14 대표 결정(D36): 참고자료가 **비어 있는** 글은 유형과 무관하게 숨기지 않는다 —
+    검증된 참고자료가 없으면 참고자료 없이 발행한다(`reference_requirement.references_block_when_empty`).
+    참고자료가 **있으면** 종전대로 인용 가능한 주소이고 실제 문서 확인이 현재여야 한다 — 확인되지 않은
+    출처를 공개 페이지·JSON-LD에 내보내지 않는다. 유형 판정은 종전 그대로다(의료 주제 NOTICE 규칙을
+    여기 쓰면 2af00d02 공지가 배포만으로 숨는다).
     """
     content_type = getattr(item, "content_type", None)
     if content_type is not None and _type_value(content_type) not in _REFERENCES_REQUIRED_VALUES:
         return True
+    if not (getattr(item, "references_list", None) or []):
+        return True
     if count_citable_references(item) <= 0:
-        # 진료비·병원 선택 글은 참고자료 0개로 발행될 수 있다(D23) — 그 글을 숨기지 않는다.
-        return topic_without_authoritative_source(getattr(item, "title", None)) is not None
+        return False
     if not hasattr(item, "approval_status"):
         return True
     from app.services.reference_publication import publication_references_current
@@ -180,6 +183,51 @@ def fallback_narrative_requires_bound_review(item: ContentItem) -> bool:
     )
 
 
+# ── D37: 검수 장애면 먼저 발행하고 사후 검수한다 ─────────────────────────────────────
+# 2026-10-14 대표 결정. 독립 AI 검수가 장애(공급자 오류·시간 초과·응답 형식 오류)로 판정을 내지 못한
+# 글은 예정대로 발행한다. 결정적 검사(금지 표현·FAQ·참고자료 모양·근거 철회·병원 공개 권한)는 그대로
+# 막고, 검수가 **판정한** HARD·UNCERTAIN은 종전대로 막는다. 비용 가드 보류(`COST_BLOCKED`)와 검수 설정
+# 오류는 장애가 아니라 예산·설정 상태라 미루지 않는다. 자동 교정본은 "교정본은 반드시 재검수"
+# 계약대로 그 hash에 묶인 PASS가 있어야 한다. 선발행된 글은 03:10 사후 검수가 맨 앞에서 본다
+# (`post_publish_ai_review._deferred_review_stmt`).
+AI_REVIEW_DEFERRED_KEY = "ai_review_deferred"
+_DEFERRABLE_UNAVAILABLE_REASONS = frozenset({"", "PROVIDER_ERROR", "INVALID_RESPONSE"})
+
+
+def ai_review_deferred(item: ContentItem) -> bool:
+    """저장된 독립 검수가 장애(UNAVAILABLE)라 판정 없이 발행해도 되는 글인가(D37).
+
+    - 공개 중인 글: 검수 장애로 숨기지 않는다(D35와 같은 원칙) — 사후 검수가 맡는다.
+    - 공개 전 글: 장애 사유가 공급자 오류·형식 오류(옛 기록의 빈 사유 포함)이고, 그 기록이 지금
+      본문 hash에 묶여 있고, 지금 본문이 자동 교정본이 아니어야 한다.
+    """
+
+    summary = getattr(item, "essence_check_summary", None)
+    review = summary.get("ai_review") if isinstance(summary, dict) else None
+    if not isinstance(review, dict) or review.get("status") != "UNAVAILABLE":
+        return False
+    if getattr(item, "status", None) == ContentStatus.PUBLISHED:
+        return True
+    if str(review.get("unavailable_reason") or "") not in _DEFERRABLE_UNAVAILABLE_REASONS:
+        return False
+    current_sha = candidate_sha256(item)
+    if not review.get("candidate_sha256") or review.get("candidate_sha256") != current_sha:
+        return False
+    correction = summary.get(AUTO_CORRECTION_KEY)
+    return not (isinstance(correction, dict) and correction.get("corrected_sha256") == current_sha)
+
+
+def ai_review_deferral_marker(item: ContentItem) -> dict[str, Any]:
+    """발행 판정에 남기는 선발행 표지. 승인 판 SQL(0091)이 검수 기록의 hash와 같을 때만 읽는다."""
+
+    review = (getattr(item, "essence_check_summary", None) or {}).get("ai_review") or {}
+    return {
+        "candidate_sha256": review.get("candidate_sha256"),
+        "unavailable_reason": review.get("unavailable_reason"),
+        "deferred_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 def _blocking_ai_review_state(item: ContentItem) -> tuple[str, dict[str, Any]] | None:
     """Return CURRENT/STALE for an unresolved review that cannot be discarded."""
 
@@ -201,6 +249,9 @@ def _blocking_ai_review_state(item: ContentItem) -> tuple[str, dict[str, Any]] |
         return ("STALE", {}) if requires_bound_review else None
     review_status = review.get("status")
     if review_status == "UNAVAILABLE":
+        if ai_review_deferred(item):
+            # D37: 검수 장애로 판정이 없다 — 먼저 발행하고 사후 검수가 맨 앞에서 본다.
+            return None
         return "UNAVAILABLE", review
     if review_status not in ("PASS", "REVISE"):
         return ("STALE", review) if requires_bound_review else None
@@ -416,6 +467,8 @@ def assess_content_publication(
         )
 
     summary = dict(screening.summary or {})
+    if getattr(item, "status", None) != ContentStatus.PUBLISHED and ai_review_deferred(item):
+        summary[AI_REVIEW_DEFERRED_KEY] = ai_review_deferral_marker(item)
     if image_certification_current(item) and (
         image_is_reused(item) or image_is_hospital_fallback(item)
     ):
@@ -468,6 +521,9 @@ def apply_publication_assessment(item: ContentItem, assessment: PublicationAsses
             # 사후 검수 스윕이 남긴 FLAGGED 표시. 지우면 같은 본문을 매일 다시 사고 인시던트를
             # 다시 건드린다. 본문을 고치는 PATCH가 명시적으로 지운다.
             "post_publish_ai_review",
+            # D36 참고자료 없이 저장·발행한 사실의 기록과 D37 선발행 표지 — 감사·운영 조회용이다.
+            REFERENCES_OMITTED_KEY,
+            AI_REVIEW_DEFERRED_KEY,
         ):
             value = previous_summary.get(key)
             if value is not None:

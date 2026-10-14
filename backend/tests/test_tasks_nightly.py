@@ -2077,11 +2077,19 @@ def test_only_a_sample_block_is_forced_into_a_body_repair():
     """모델이 HARD로 단정한 차단은 표본 실패가 아니다 — 본문 재작성이 그것을 대신하지 못한다."""
 
     model_hard = SimpleNamespace(essence_check_summary={"ai_review": {"findings": [{
-        "severity": "HARD", "kind": "HOSPITAL_FACT", "message": "승인 자료가 없습니다.",
+        "severity": "HARD", "kind": "MEDICAL_SAFETY", "message": "승인 자료가 없습니다.",
     }]}})
     assert tasks._stored_block_is_sample_remediable(
         model_hard, "CONTENT_AI_HARD_FINDING"
     ) is False
+
+    # W4(2026-10-14): 병원 사실 HARD는 Critical이 아니다 — 결정적으로 못 풀면 표본처럼 다시 쓴다.
+    fact_hard = SimpleNamespace(essence_check_summary={"ai_review": {"findings": [{
+        "severity": "HARD", "kind": "HOSPITAL_FACT", "message": "승인 자료가 없습니다.",
+    }]}})
+    assert tasks._stored_block_is_sample_remediable(
+        fact_hard, "CONTENT_AI_HARD_FINDING"
+    ) is True
 
     synthetic = SimpleNamespace(essence_check_summary={"ai_review": {"findings": [{
         "severity": "UNCERTAIN", "kind": "MEDICAL_SAFETY", "message": "확신이 부족합니다.",
@@ -2130,7 +2138,7 @@ def test_hard_fact_finding_sweep_skips_writer_and_image(monkeypatch):
         image_url=None, content_philosophy_id=philosophy.id,
         content_type=SimpleNamespace(value="FAQ"), query_target_id=None,
         essence_check_summary={"ai_review": {"status": "REVISE", "blocking": True,
-            "findings": [{"severity": "HARD", "kind": "HOSPITAL_FACT",
+            "findings": [{"severity": "HARD", "kind": "MEDICAL_SAFETY",
                 "message": "승인 자료에서 장비 보유 사실을 확인할 수 없습니다."}]}},
     )
     hospital = SimpleNamespace(id=item.hospital_id, name="사실차단의원")
@@ -2222,7 +2230,7 @@ def test_style_rewrite_to_fact_hard_skips_image_spend(monkeypatch):
                         "blocking": True,
                         "findings": [{
                             "severity": "HARD",
-                            "kind": "HOSPITAL_FACT",
+                            "kind": "MEDICAL_SAFETY",
                             "message": "승인 자료에서 장비 보유 사실을 확인할 수 없습니다.",
                         }],
                     },
@@ -2237,7 +2245,7 @@ def test_style_rewrite_to_fact_hard_skips_image_spend(monkeypatch):
 
     def assess(_item, _philosophy):
         findings = _item.essence_check_summary["ai_review"]["findings"]
-        fact_hard = findings[0]["kind"] == "HOSPITAL_FACT"
+        fact_hard = findings[0]["kind"] == "MEDICAL_SAFETY"
         return SimpleNamespace(
             publishable=False,
             code="CONTENT_AI_HARD_FINDING",
@@ -6424,7 +6432,7 @@ def test_model_hard_block_waits_for_an_approved_fact_change_then_regenerates(mon
         scheduled_date=date(2026, 9, 15), published_at=None, generation_claim_token=None,
         essence_check_summary={"findings": ["승인 자료에서 심장 초음파를 확인할 수 없습니다."],
             "ai_review": {"status": "REVISE", "blocking": True, "findings": [{
-                "severity": "HARD", "kind": "HOSPITAL_FACT",
+                "severity": "HARD", "kind": "MEDICAL_SAFETY",
                 "message": "승인 자료에서 심장 초음파를 확인할 수 없습니다.",
             }]}},
     )
@@ -6955,12 +6963,6 @@ def test_seven_forty_five_names_a_same_day_unwritten_slot_left_to_the_operator(m
             notification_copy.REFERENCES_OPERATOR_DECIDES_UNWRITTEN_COPY_CODE,
             id="unwritten_slot",
         ),
-        pytest.param(
-            lambda hospital: _od_written(hospital, title=_OD_MEDICAL_TITLE),
-            False,
-            None,
-            id="ordinary_reference_hold",
-        ),
     ],
 )
 def test_eight_oclock_payload_keeps_operator_line_a_bool_and_carries_the_copy_key(
@@ -7001,19 +7003,20 @@ def test_eight_oclock_names_a_same_day_unwritten_slot_with_the_new_draft_copy(mo
     assert _od_action(written=True) not in text
 
 
-def test_seven_forty_five_keeps_an_ordinary_missing_reference_hold_out_of_the_digest(
+def test_seven_forty_five_does_not_hold_an_ordinary_medical_post_without_references(
     monkeypatch,
 ):
+    """D36(2026-10-14): 의료 글도 참고자료가 비어 있다는 이유로 보류·알림하지 않는다."""
+
     hospital = _publication_hospital()
     item = _od_written(hospital, title=_OD_MEDICAL_TITLE)
     incidents = _od_gate(monkeypatch)
     db = _DigestGateDB(item)
 
-    assert _od_run(db) == 1
+    assert _od_run(db) == 0
 
-    assert [call["code"] for call in incidents] == ["MISSING_REFERENCES"]
-    assert not generation_incident_control.operator_decides_references("MISSING_REFERENCES", item)
-    assert db.outbox() == []  # 수리 예산이 소유한다 — 주간 요약만 싣는다
+    assert incidents == []
+    assert db.outbox() == []
 
 
 def test_seven_forty_five_does_not_repeat_a_past_day_operator_hold(monkeypatch):
@@ -7213,11 +7216,13 @@ def test_eight_oclock_leaves_out_past_day_and_ordinary_reference_holds(monkeypat
 
     _od_run_eight(monkeypatch, db)
 
-    assert [call["code"] for call in incidents] == ["MISSING_REFERENCES"] * 3
+    # D36: 평범한 의료 글은 참고자료 없이 발행된다 — 옛 사람의 결정 보류 기록만 남는다.
+    assert [call["code"] for call in incidents] == ["MISSING_REFERENCES"] * 2
     assert all(
         generation_incident_control.operator_decides_references("MISSING_REFERENCES", item)
         for item in (past, past_slot)
     )
+    assert ordinary.status is tasks.ContentStatus.PUBLISHED
     assert db.outbox() == []
 
 
@@ -7284,10 +7289,10 @@ def test_eight_oclock_judges_every_post_with_the_date_the_run_started(monkeypatc
     with override_reference_fetcher(PageFetcher()):
         tasks.morning_content_auto_publish.run()
 
-    # (b) D-7 글도 창 안으로 판정돼 보류됐다(D+1이면 창 밖이라 건너뛴다).
-    assert sorted(str(call["item_id"]) for call in incidents) == sorted(
-        str(item.id) for item in (held, catchup)
-    )
+    # (b) D-7 글도 창 안으로 판정돼 발행됐다(D+1이면 창 밖이라 건너뛴다). 참고자료 0개는 D36 뒤로
+    # 보류가 아니다.
+    assert catchup.status is tasks.ContentStatus.PUBLISHED
+    assert [str(call["item_id"]) for call in incidents] == [str(held.id)]
     assert {call["code"] for call in incidents} == {"MISSING_REFERENCES"}
     # (a) D 예정 보류가 운영자 줄을 받았다(D+1이면 예정일이 오늘이 아니라 빠진다).
     [row] = db.outbox()

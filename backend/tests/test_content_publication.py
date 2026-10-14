@@ -57,13 +57,20 @@ def test_publication_policy_accepts_machine_safe_source_backed_content(monkeypat
     assert assessment.code is None
 
 
-def test_publication_policy_blocks_missing_reference(monkeypatch):
+def test_publication_policy_publishes_without_references_but_blocks_uncitable_ones(monkeypatch):
+    """D36(2026-10-14): 참고 자료가 비면 참고 자료 없이 발행한다. 있으면 인용 가능해야 한다."""
+
     _aligned(monkeypatch)
 
-    assessment = content_publication.assess_content_publication(
+    empty = content_publication.assess_content_publication(
         _item(references_list=[]), _philosophy()
     )
+    assessment = content_publication.assess_content_publication(
+        _item(references_list=[{"title": "블로그", "url": "https://example.com/post"}]),
+        _philosophy(),
+    )
 
+    assert empty.publishable is True
     assert assessment.publishable is False
     assert assessment.code == "MISSING_REFERENCES"
     assert assessment.essence_summary["blocking"] is True
@@ -455,16 +462,23 @@ def test_notice_does_not_require_references_but_other_types_do(monkeypatch):
         f"NOTICE가 참고 자료 없이 차단됐다: {notice_assessment.code}"
     )
 
-    # 의료 안내 유형은 여전히 근거를 요구한다.
+    # 의료 안내 유형은 참고 자료가 있으면 인용 가능해야 한다(비어 있으면 D36으로 발행한다).
     faq = _item(
         content_type=ContentType.FAQ,
-        references_list=[],
+        references_list=[{"title": "블로그", "url": "https://example.com/post"}],
         faq_question="복통은 언제 진료받아야 하나요?",
         faq_answer_summary="증상이 이어지면 진료로 원인을 확인합니다.",
     )
     faq_assessment = content_publication.assess_content_publication(faq, _philosophy())
     assert faq_assessment.publishable is False
     assert faq_assessment.code == "MISSING_REFERENCES"
+    notice_uncitable = _item(
+        content_type=ContentType.NOTICE,
+        references_list=[{"title": "블로그", "url": "https://example.com/post"}],
+    )
+    assert content_publication.assess_content_publication(
+        notice_uncitable, _philosophy()
+    ).publishable
 
 
 def _reviewed_item(review: dict):

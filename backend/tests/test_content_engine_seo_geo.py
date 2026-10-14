@@ -27,6 +27,7 @@ from app.services.content_engine import (
     _validate_geo,
     _validate_seo,
 )
+from app.services.reference_requirement import REFERENCES_OMITTED_KEY
 
 # ── 헬퍼 ──────────────────────────────────────────────────────────────────────
 
@@ -268,15 +269,15 @@ class TestValidateGeo:
         assert isinstance(findings, list)
         assert not findings
 
-    def test_empty_references_disease_raises_value_error(self):
-        """DISEASE 유형에서 references가 비어있으면 ValueError (hard-fail)"""
+    def test_empty_references_disease_is_saved_with_a_record(self):
+        """D36(2026-10-14): 참고자료가 비어도 거절하지 않고 기록만 남긴다."""
         h = _hospital()
         result = _good_result(h)
         result["references"] = []
-        with pytest.raises(ValueError, match="GEO hard-fail.*references"):
-            _validate_geo(result, h, ContentType.DISEASE)
+        _validate_geo(result, h, ContentType.DISEASE)
+        assert result[REFERENCES_OMITTED_KEY]["reason"] == "NO_VERIFIED_REFERENCE"
 
-    def test_non_whitelisted_reference_does_not_satisfy_required_authority_reference(self):
+    def test_non_whitelisted_reference_is_dropped_and_the_post_saved_without_references(self):
         h = _hospital()
         result = _good_result(h)
         result["references"] = _normalize_references(
@@ -284,40 +285,40 @@ class TestValidateGeo:
         )
 
         assert result["references"] == []
-        with pytest.raises(ValueError, match="GEO hard-fail.*references"):
-            _validate_geo(result, h, ContentType.DISEASE)
+        _validate_geo(result, h, ContentType.DISEASE)
+        assert result[REFERENCES_OMITTED_KEY]["reason"] == "NO_VERIFIED_REFERENCE"
 
-    def test_empty_references_treatment_raises_value_error(self):
-        """TREATMENT 유형에서 references가 비어있으면 ValueError (hard-fail)"""
+    def test_empty_references_treatment_is_saved_with_a_record(self):
+        """D36(2026-10-14): 참고자료가 비어도 거절하지 않고 기록만 남긴다."""
         h = _hospital()
         result = _good_result(h)
         result["references"] = []
-        with pytest.raises(ValueError, match="GEO hard-fail.*references"):
-            _validate_geo(result, h, ContentType.TREATMENT)
+        _validate_geo(result, h, ContentType.TREATMENT)
+        assert REFERENCES_OMITTED_KEY in result
 
-    def test_empty_references_local_raises_value_error(self):
-        """LOCAL 유형에서 references가 비어있으면 ValueError (hard-fail)"""
+    def test_empty_references_local_is_saved_with_a_record(self):
+        """D36(2026-10-14): 참고자료가 비어도 거절하지 않고 기록만 남긴다."""
         h = _hospital()
         result = _good_result(h)
         result["references"] = []
-        with pytest.raises(ValueError, match="GEO hard-fail.*references"):
-            _validate_geo(result, h, ContentType.LOCAL)
+        _validate_geo(result, h, ContentType.LOCAL)
+        assert REFERENCES_OMITTED_KEY in result
 
-    def test_empty_references_column_raises_value_error(self):
-        """의학 주장을 담는 COLUMN도 특정 근거 문서가 필요하다."""
+    def test_empty_references_column_is_saved_with_a_record(self):
+        """D36(2026-10-14): 참고자료가 비어도 거절하지 않고 기록만 남긴다."""
         h = _hospital()
         result = _good_result(h)
         result["references"] = []
-        with pytest.raises(ValueError, match="GEO hard-fail.*references"):
-            _validate_geo(result, h, ContentType.COLUMN)
+        _validate_geo(result, h, ContentType.COLUMN)
+        assert REFERENCES_OMITTED_KEY in result
 
-    def test_empty_references_faq_raises_value_error(self):
-        """FAQ도 자동 발행 전에 특정 근거 문서가 필요하다."""
+    def test_empty_references_faq_is_saved_with_a_record(self):
+        """D36(2026-10-14): 참고자료가 비어도 거절하지 않고 기록만 남긴다."""
         h = _hospital()
         result = _good_result(h)
         result["references"] = []
-        with pytest.raises(ValueError, match="GEO hard-fail.*references"):
-            _validate_geo(result, h, ContentType.FAQ)
+        _validate_geo(result, h, ContentType.FAQ)
+        assert REFERENCES_OMITTED_KEY in result
 
     def test_missing_hospital_name_hard_fails(self):
         """병원명이 body에 없으면 생성 결과를 저장하지 않는다."""
@@ -407,26 +408,19 @@ class TestValidateGeo:
 # ── 빈 references 거절이 재작성 회차에 넘기는 사유 ─────────────────────────────
 
 
-class TestEmptyReferenceCause:
-    """참고자료가 왜 하나도 남지 않았는지 작가가 알 수 있어야 회차가 달라진다."""
+class TestEmptyReferenceRecord:
+    """D36: 참고자료가 하나도 남지 않으면 거절·재작성 지적 대신 기록을 남긴다 — 작가를 압박하지 않는다."""
 
-    def test_writer_that_sent_nothing_is_not_pushed_to_invent_a_url(self):
-        """빈 참고자료를 "다른 문서로 채우라"고 압박하면 문서 번호를 추측한 URL이 나온다."""
+    def test_writer_that_sent_nothing_is_not_rejected(self):
         h = _hospital()
         result = _good_result(h)
         result["references"] = []
 
-        with pytest.raises(ValueError) as raised:
-            _validate_geo(result, h, ContentType.FAQ)
+        _validate_geo(result, h, ContentType.FAQ)
 
-        message = str(raised.value)
-        assert "검증 문서" in message
-        assert "추측한 URL 대신 비워 두세요" in message
-        assert "비우는 선택지는 없으니" not in message
-        assert "다른 문서를 쓰세요" not in message
+        assert result[REFERENCES_OMITTED_KEY]["drop_notes"] == []
 
-    def test_dropped_urls_are_named_with_the_reason_they_were_dropped(self):
-        """종전에는 URL을 냈는데도 "references is empty"만 돌아가 같은 URL을 다시 냈다."""
+    def test_dropped_urls_are_recorded_with_the_reason_they_were_dropped(self):
         h = _hospital()
         result = _good_result(h)
         result["references"] = []
@@ -439,37 +433,20 @@ class TestEmptyReferenceCause:
             _REFERENCE_DROP_NOT_CITABLE,
         )
 
-        with pytest.raises(ValueError) as raised:
-            _validate_geo(result, h, ContentType.FAQ, reference_drop_notes=notes)
+        _validate_geo(result, h, ContentType.FAQ, reference_drop_notes=notes)
 
-        message = str(raised.value)
-        assert "모두 제외됐습니다" in message
-        assert "ad-blog.example.com" in message
-        assert _REFERENCE_DROP_NOT_CITABLE in message
-        assert "같은 주소·번호를 다시 쓰지 말고" in message
-        assert "다른 문서를 쓰세요" not in message
+        recorded = " ".join(result[REFERENCES_OMITTED_KEY]["drop_notes"])
+        assert "ad-blog.example.com" in recorded
+        assert _REFERENCE_DROP_NOT_CITABLE in recorded
 
-    def test_the_cause_survives_the_rewrite_finding_truncation(self):
-        """지적 한 줄은 240자에서 잘린다 — 사유가 그 안에 들어와야 작가에게 닿는다."""
+    def test_non_required_type_leaves_no_record(self):
         h = _hospital()
         result = _good_result(h)
         result["references"] = []
-        notes = _reference_drop_notes(
-            [
-                {"title": "a", "url": "https://very-long-subdomain.ad-blog.example.com/p"},
-                {"title": "b", "url": "https://another-long-host.example.org/doc"},
-                {"title": "c", "url": "https://third-host.example.net/doc"},
-            ],
-            [],
-            "이 글의 주제와 다른 문서",
-        )
 
-        with pytest.raises(ValueError) as raised:
-            _validate_geo(result, h, ContentType.FAQ, reference_drop_notes=notes)
+        _validate_geo(result, h, ContentType.NOTICE)
 
-        message = " ".join(str(raised.value).split())
-        assert len(message) <= 240
-        assert "추측한 URL 대신 비워 두세요" in message
+        assert REFERENCES_OMITTED_KEY not in result
 
 
 class TestReferenceDropNotes:

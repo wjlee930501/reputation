@@ -99,7 +99,6 @@ def test_missing_image_alone_is_claimed():
 @pytest.mark.parametrize(
     "overrides",
     [
-        {"title": MEDICAL_TITLE},  # 의료 글은 참고자료가 비면 막힌다 — 수리 대상
         {"references_list": [{"url": "https://www.kdca.go.kr/x", "title": "질병관리청"}]},
         {"body": None},  # 쓰이지 않은 슬롯은 종전 경로
         {"content_type": ContentType.NOTICE},  # 질문 연결 없는 공지는 참고자료 때문에 고른 행이 아니다
@@ -107,6 +106,12 @@ def test_missing_image_alone_is_claimed():
 )
 def test_rows_not_selected_for_optional_references_are_untouched(overrides):
     assert stored_body_awaits_only_optional_references(_item(**overrides), _philosophy()) is False
+
+
+def test_medical_post_with_only_empty_references_is_not_reclaimed_either():
+    """D36(2026-10-14): 의료 글도 참고자료가 비어 있는 것만으로는 고칠 것이 없다 — 다시 사지 않는다."""
+
+    assert stored_body_awaits_only_optional_references(_item(title=MEDICAL_TITLE), _philosophy())
 
 
 def test_python_mirror_names_every_non_reference_condition_of_the_sql_predicate():

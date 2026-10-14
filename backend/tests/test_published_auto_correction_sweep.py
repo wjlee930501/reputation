@@ -24,10 +24,10 @@ class _Rows:
 
 class _SweepDb:
     """호출 순서: FLAGGED 조회 → (교정이 켜져 있으면) UNCERTAIN 상위 재검수 조회 두 번(숫자 시각 표시,
-    옛 표시 키셋 한 쪽) → 비공개 조회 → 표본 조회."""
+    옛 표시 키셋 한 쪽) → 선발행 글(D37) 조회 → 비공개 조회 → 표본 조회."""
 
     def __init__(self, flagged):
-        self._batches = [flagged, [], [], [], []]
+        self._batches = [flagged, [], [], [], [], []]
 
     def __enter__(self):
         return self

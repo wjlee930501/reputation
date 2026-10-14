@@ -49,10 +49,12 @@ from app.models.operations import (
 )
 from app.models.report import MonthlyReport
 from app.services.dependency_incident_helpers import open_notice_exists_sync
+from app.services.finding_criticality import flag_findings_are_critical
 from app.services.incident_types import DEFAULT_RETRYING_DEADLINE, SWEEP_OWNED_INCIDENT_TYPES
 from app.services.notification_messages import build_recovered_incident_notification
 from app.services.notification_store import enqueue_notification_sync
 from app.services.notification_transport import CHANNEL_UNAVAILABLE_CODE, safe_error_message
+from app.services.published_correction import POST_PUBLISH_FLAG_KEY
 from app.workers.task_incident_control import _audit, _projection, _transition_incident
 
 BACKLOG_INCIDENT_BATCH = 50
@@ -629,6 +631,27 @@ def _stopped_runs_recovered(db: Session, incident: Incident, _now: datetime) -> 
     return None
 
 
+def _post_publish_flag_settled(db: Session, incident: Incident, _now: datetime) -> str | None:
+    """공개 글 사후 검수 사고의 근거(D35): 글이 내려갔거나, 확인됐거나, 표시가 풀렸거나, Critical이 아니다.
+
+    Critical 지적이 그대로인 공개 글의 사고는 사람이 확인할 때까지 남는다. 옛 조용한 사고
+    (`POST_PUBLISH_REVIEW_FLAGGED`)도 같은 근거로 닫힌다 — Critical이 아닌 지적은 사고가 아니다.
+    """
+
+    item = db.get(ContentItem, incident.source_id) if incident.source_id else None
+    if item is None or item.status != ContentStatus.PUBLISHED:
+        return "content_not_public"
+    if item.post_publish_reviewed_at is not None:
+        return "post_publish_reviewed"
+    summary = item.essence_check_summary if isinstance(item.essence_check_summary, dict) else {}
+    marker = summary.get(POST_PUBLISH_FLAG_KEY)
+    if not isinstance(marker, dict) or marker.get("status") != "FLAGGED":
+        return "flag_cleared"
+    if not flag_findings_are_critical(marker.get("structured_findings")):
+        return "flag_not_critical"
+    return None
+
+
 RESOLVERS: dict[str, Resolver] = {
     "OPERATION_RECOVERY_EXHAUSTED": _stopped_runs_recovered,
     "MONTHLY_SOV_COHORT_GAP": _monthly_cohort_enrolled,
@@ -657,6 +680,9 @@ RESOLVERS: dict[str, Resolver] = {
     # Phase 1-9c: 도입문의 부수효과 실패 — 리드를 맡으면 닫힌다.
     "LEAD_INTAKE_NOTIFICATION_FAILED": _lead_followed_up,
     "INQUIRY_SMS_FAILED": _lead_followed_up,
+    # D35: 공개 글 사후 검수 — Critical 사고와 옛 조용한 지적 사고.
+    "POST_PUBLISH_CRITICAL_FINDING": _post_publish_flag_settled,
+    "POST_PUBLISH_REVIEW_FLAGGED": _post_publish_flag_settled,
 }
 # 스윕 소유 종류는 RETRYING으로 열리므로 그 상태에서도 근거로 닫는다. 나머지 RETRYING은 자동화의 것이다.
 _RETRYING_RESOLVABLE = tuple(sorted(SWEEP_OWNED_INCIDENT_TYPES & set(RESOLVERS)))

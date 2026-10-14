@@ -295,17 +295,19 @@ def test_dry_run_counts_are_mutually_exclusive_and_never_touch_cost_or_reviewer(
         reviewer=reviewer,
     )
 
+    # D37(2026-10-14): 공개 글의 검수 장애 기록은 공개를 막지 않는다 — 백필 대상이 아니라 03:10 사후
+    # 검수가 맨 앞에서 본다(`post_publish_ai_review._deferred_review_stmt`). 그래서 현재로 센다.
     assert result.to_dict() == {
         "allowlisted": 5,
         "missing": 1,
         "inactive": 1,
-        "current": 1,
+        "current": 2,
         "cleared": 0,
         "blocked": 0,
         "unavailable": 0,
         "costblocked": 0,
-        "stale": 2,
-        "unresolved": 4,
+        "stale": 1,
+        "unresolved": 3,
     }
     assert calls == {"reserve": 0, "reviewer": 0}
 
@@ -414,7 +416,8 @@ def test_typed_provider_unavailable_preserves_old_review_and_stops_at_three(
     committed_db,
 ) -> None:
     db, tracked = committed_db
-    seed = _seed(db, tracked, review_status="UNAVAILABLE")
+    # 공개 글의 옛 UNAVAILABLE 기록은 D37 뒤로 백필 대상이 아니다 — 미해결 REVISE 글로 같은 계약을 본다.
+    seed = _seed(db, tracked, review_status="REVISE")
     before = _content_state(seed.item)
     calls = {"reserve": 0, "reviewer": 0}
 

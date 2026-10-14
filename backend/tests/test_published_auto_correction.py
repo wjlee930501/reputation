@@ -576,7 +576,7 @@ def hooks(monkeypatch):
     monkeypatch.setattr(sweep, "trigger_content_site_revalidate_safe", revalidated)
     monkeypatch.setattr(sweep, "_recover_flag_incident", lambda item, *a, **k: hooks.recovered.append(item.id))
     monkeypatch.setattr(
-        sweep, "_open_flag_incident", lambda item, hospital, run_async, **k: hooks.incidents.append(k)
+        sweep, "_settle_flag", lambda db, item, hospital, run_async, **k: hooks.incidents.append(k)
     )
     monkeypatch.setattr(sweep, "write_audit_log_sync", lambda *a, **k: None)
     return hooks

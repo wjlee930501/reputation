@@ -121,3 +121,18 @@ def test_fallback_narrative_query_is_a_registered_read() -> None:
     assert "'fallback'" in sql
     assert "candidate_sha256" in sql
     assert ops_sql_report.parse_args(["--only=q11"]).only == ["q11"]
+
+
+def test_full_automatic_impact_query_lists_newly_publishable_and_visible_posts() -> None:
+    """0091(2026-10-14 D36·D37): 배포 전 영향 — 참고자료 0개·검수 장애로 보류된 발행 전 글과
+    공개 표면에서 숨은 공개 글."""
+
+    drafts, deferred, published = ops_sql_report.QUERIES["q12"]
+    for sql in (drafts, deferred, published):
+        assert sql.strip().upper().startswith("SELECT")
+    assert "jsonb_array_length(c.references_list) = 0" in drafts
+    assert "c.status IN ('DRAFT', 'READY')" in drafts
+    assert "'UNAVAILABLE'" in deferred
+    assert "'PROVIDER_ERROR', 'INVALID_RESPONSE'" in deferred
+    assert "c.status = 'PUBLISHED'" in published
+    assert ops_sql_report.parse_args(["--only=q12"]).only == ["q12"]

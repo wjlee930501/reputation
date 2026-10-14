@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
 from app.models.content import ContentItem
@@ -34,6 +35,11 @@ from app.services.essence_engine import (
     ESSENCE_STATUS_ALIGNED,
     ESSENCE_STATUS_NEEDS_REVIEW,
     EssenceScreeningResult,
+)
+from app.services.reference_requirement import (
+    REFERENCES_OMITTED_KEY,
+    references_omitted_reason,
+    references_required_for,
 )
 
 logger = logging.getLogger(__name__)
@@ -310,6 +316,16 @@ async def generate_reviewed_content(
         ]
     if accepted_reference_findings:
         summary["reference_findings"] = accepted_reference_findings[:5]
+    # D36: 참고자료 필수 글이 검증된 참고자료 없이 저장된다 — 막지 않고 기록한다. 검수 지적으로
+    # 참고자료를 떼어 낸 뒤 비었을 때도 같은 기록이다.
+    if not (last_content.get("references") or []) and references_required_for(
+        item.content_type, content_brief=approved_brief
+    ):
+        summary[REFERENCES_OMITTED_KEY] = last_content.get(REFERENCES_OMITTED_KEY) or {
+            "reason": references_omitted_reason(last_content.get("title")),
+            "drop_notes": [],
+            "at": datetime.now(UTC).isoformat(),
+        }
     if automatic_rewrites > 0:
         summary["automatic_remediation_attempts"] = automatic_rewrites
     if reviewer_driven_rewrites > 0:
