@@ -40,7 +40,8 @@ _BLOCKING_SEVERITIES = frozenset({"HARD", "UNCERTAIN"})
 # ── 허용 목록 판정(2026-10-14 Codex 2차, 오케스트레이터 결정 A) ──────────────────────────
 # Critical이 **아님**을 적극적으로 보일 때만 비-Critical이다. 나머지는 모두 Critical이다(fail closed).
 # 의료·안전 어휘 — 한국어·영어. 지적 문구, 인용, 인용이 가리키는 본문 문장 전체 중 어디에든 있으면
-# Critical이다. 부분 문자열로(대소문자 무시) 본다 — 넓게 걸리는 것이 의도다('약'은 '예약'에도 걸린다).
+# Critical이다. 대소문자를 무시하고 부분 문자열로 보되, 다른 낱말 속에 들어가는 짧은 어간('약'·'주사'·
+# '숨')과 영어 어휘는 낱말 단위로 본다(`_TERM_PATTERNS`).
 MEDICAL_SAFETY_LEXICON: tuple[str, ...] = (
     # 응급·긴급 증상
     "응급", "119", "구급", "즉시", "바로 병원", "흉통", "가슴 통증", "호흡", "숨", "의식", "마비",
@@ -78,11 +79,29 @@ def _field(content: object, name: str) -> str:
     return str(getattr(content, name, None) or "")
 
 
-def mentions_medical_safety(text: object) -> bool:
-    """의료·안전 어휘(`MEDICAL_SAFETY_LEXICON`)가 하나라도 있는가."""
+# 짧아서 다른 낱말 속에 들어가는 어간의 매칭 규칙(낱말 단위). '약'은 '예약·약속·약도·약 2주'에 걸리지
+# 않고 '약을·약물·약이·약국·약사·감기약 '처럼 약을 뜻하는 꼴에만 걸린다. '주사'는 '주사위'가, '숨'은
+# '숨은·숨기다'가 아니다. 영어 어휘는 앞에 영문자가 붙지 않아야 한다('secure'의 cure, 'img'의 mg).
+_TERM_PATTERNS: dict[str, str] = {
+    "약": r"(?<![가-힣])약(?:물|을|은|이|의|과|만|으로|에|들|국|제|품|효|사|봉지|(?=\s|$|[.,;:!?)\]'\"”’]))(?!\s*\d)"
+    r"|(?:감기|진통|수면|두통|소화|변비|처방|해열|안정)약",
+    "주사": r"주사(?!위)",
+    "숨": r"숨(?:이|을|쉬|가|차|결|소리)",
+}
+_LEXICON_RE = re.compile(
+    "|".join(
+        _TERM_PATTERNS.get(term)
+        or (f"(?<![a-z]){re.escape(term)}" if term.isascii() else re.escape(term))
+        for term in MEDICAL_SAFETY_LEXICON
+    ),
+    re.IGNORECASE,
+)
 
-    lowered = str(text or "").lower()
-    return any(term.lower() in lowered for term in MEDICAL_SAFETY_LEXICON)
+
+def mentions_medical_safety(text: object) -> bool:
+    """의료·안전 어휘(`MEDICAL_SAFETY_LEXICON`)가 낱말로 하나라도 있는가."""
+
+    return _LEXICON_RE.search(str(text or "")) is not None
 
 
 def _quote_spans(text: str, quote: str) -> list[tuple[int, int]]:

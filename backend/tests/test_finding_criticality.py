@@ -175,3 +175,32 @@ def test_only_critical_hard_is_the_model_declared_terminal() -> None:
         )
         is GenerationRetryClass.INPUT_CHANGE_REQUIRED
     )
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["예약", "약속", "약도", "예약 가능", "진료 예약은 전화로 받습니다", "약 2주 걸립니다", "주사위",
+     "숨은 그림", "secure 결제", "img 태그"],
+)
+def test_short_stems_do_not_match_inside_unrelated_words(text) -> None:
+    assert not mentions_medical_safety(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["약을 드세요", "약물", "처방약", "약이 듣지 않으면", "감기약 복용", "예방주사", "숨이 차면",
+     "take 5 mg", "Cure rate", "고위험군", "뇌출혈"],
+)
+def test_medical_forms_still_match(text) -> None:
+    assert mentions_medical_safety(text)
+
+
+def test_typical_philosophy_fact_on_a_plain_sentence_is_noncritical() -> None:
+    """운영 표본: '병원 철학 문장의 근거가 없음' 지적이 의료 어휘 없는 문장(예약 안내가 섞여도)을 짚으면
+    비-Critical이다 — 결정적 삭제·조용한 종결 대상."""
+
+    sentence = "본원은 예약 시간을 지키고 환자의 이야기를 끝까지 듣는 것을 진료 철학으로 삼습니다."
+    content = {"title": "허리 통증 안내", "body": f"## 안내\n{sentence}\n증상이 있으면 진료를 받으세요."}
+    finding = _finding("HARD", "HOSPITAL_FACT", "병원 철학 문장의 근거가 없음", quote=sentence)
+
+    assert classify_finding(finding, content) is N
