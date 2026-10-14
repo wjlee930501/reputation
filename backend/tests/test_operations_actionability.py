@@ -88,8 +88,9 @@ def test_generation_prerequisites_describe_automatic_recovery_before_human_actio
     # Then
     assert "운영 기준" in essence_action
     assert "자동으로" in essence_action
-    assert "검토·승인" in essence_action
-    assert "발행 지연이 계속되는 병원만" in essence_action
+    # Phase 4(D33): 승인 단계가 없다 — 사람에게 확인·승인을 시키지 않는다.
+    assert "바로 적용" in essence_action
+    assert "검토·승인" not in essence_action
     assert "한 번 승인" not in essence_action
     assert "비용·자동 작업 안전장치" in cost_action
     assert "중지 해제" in cost_action
@@ -970,8 +971,12 @@ def test_readiness_guidance_names_real_controls_without_dead_end_button_copy() -
     assert "자동으로 처리됩니다" in actions["essence_sources"]
     assert "처리 중" not in actions["essence_sources"]
     assert "처리 중 2건" in readiness_next_actions(processing_source_count=2)["essence_sources"]
-    assert "시스템 자동 검수" in actions["essence_philosophy"]
-    assert "보류된 예외만" in actions["essence_philosophy"]
+    # Phase 4(D33): 운영 기준은 자동으로 만들어 바로 적용한다 — 예외 카드·승인 안내가 없다.
+    assert "자동으로 만들어 바로 적용" in actions["essence_philosophy"]
+    assert all(
+        "예외 카드" not in actions[key] and "승인" not in actions[key]
+        for key in ("essence_philosophy", "essence_freshness", "content_alignment")
+    )
     assert "“승인”을 누르세요" not in actions["essence_philosophy"]
     assert "백그라운드에서 자동으로" in actions["v0_report"]
     assert "설정을 계속 진행" in actions["v0_report"]

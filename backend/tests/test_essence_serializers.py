@@ -38,6 +38,7 @@ def test_serialize_source_exposes_display_labels():
     assert serialized["display"] == {
         "source_type_label": "원장 인터뷰 설문",
         "status_label": "처리완료",
+        "read_only": False,
     }
     assert serialized["source_type"] == SourceType.INTERVIEW
     assert serialized["status"] == SourceStatus.PROCESSED
@@ -176,7 +177,8 @@ def test_serialize_philosophy_exposes_display_labels():
 
     serialized = _serialize_philosophy(philosophy)
 
-    assert serialized["display"] == {"status_label": "승인됨"}
+    # Phase 4(D33): APPROVED는 "현재 적용 중인 판"이다.
+    assert serialized["display"] == {"status_label": "적용 중"}
     assert serialized["status"] == PhilosophyStatus.APPROVED
     assert serialized["avoid_messages"]
     assert serialized["medical_ad_risk_rules"]

@@ -85,7 +85,7 @@ def _accepted(hospital_id):
 
 @pytest.fixture
 def effects(monkeypatch):
-    calls = {"site": [], "v0": [], "fetch": [], "revalidate": [], "geocode": []}
+    calls = {"site": [], "v0": [], "fetch": [], "essence": [], "revalidate": [], "geocode": []}
 
     async def fake_geocode(address):
         calls["geocode"].append(address)
@@ -106,7 +106,10 @@ def effects(monkeypatch):
     monkeypatch.setattr(
         profile_channel_sources.celery_app,
         "send_task",
-        lambda *args, **kw: calls["fetch"].append(kw["args"]),
+        # 채널 fetch와 자동 운영 요약(Phase 4 D33)이 같은 celery 앱으로 나간다 — 태스크 이름으로 가른다.
+        lambda name, *args, **kw: calls[
+            "essence" if name.endswith("auto_review_essence_snapshot") else "fetch"
+        ].append(kw["args"]),
     )
     monkeypatch.setattr(
         "app.services.site_revalidate.trigger_hospital_site_revalidate_safe", fake_revalidate
@@ -163,6 +166,8 @@ async def test_apply_fills_empty_fields_promotes_and_dispatches(pg_async_session
     ).scalars().all()
     assert [row.url for row in sources] == ["https://clinic-autofill.example.com"]
     assert effects["fetch"] == [[str(sources[0].id)]]
+    # 서술 값을 채웠으니 자동 운영 요약이 병원 정보(자동) 자료를 맞추고 다시 판단한다.
+    assert effects["essence"] == [[str(hospital.id)]]
     assert effects["site"] == [[str(hospital.id)]]
     assert effects["v0"] == [hospital.id]
     audit = (

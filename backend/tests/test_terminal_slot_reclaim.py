@@ -249,3 +249,14 @@ def test_hard_without_the_idle_mark_is_still_picked_for_correction(monkeypatch):
     attempt = {k: v for k, v in _IDLE_HARD.items() if k != "hard_finding_idle"}
     assert attempt_is_terminal(attempt) is False
     assert _eligible(monkeypatch, _item(attempt, philosophy=philosophy), philosophy) is True
+
+
+def test_missing_approved_essence_is_never_terminal():
+    """Phase 4(D33): Essence는 승인 없이 자동 적용되므로 판이 없는 것은 잠깐의 준비 상태다."""
+
+    assert (
+        attempt_is_terminal(
+            {"reason": "MISSING_APPROVED_ESSENCE", "retry_class": "INPUT_CHANGE_REQUIRED"}
+        )
+        is False
+    )

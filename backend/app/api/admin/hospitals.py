@@ -60,6 +60,7 @@ from app.services import (
     cost_guard,
     profile_channel_sources,
     profile_completion,
+    profile_facts_source,
     profile_provenance,
 )
 from app.services.asset_storage import store_asset_bytes
@@ -83,6 +84,7 @@ from app.services.essence_readiness import (
     get_essence_readiness_states,
     get_public_approved_philosophy_id,
 )
+from app.services.essence_sources import enqueue_essence_refresh_best_effort
 from app.services.hospital_activation import (
     ActivationOutcome,
     HospitalNotActivatable,
@@ -1035,6 +1037,10 @@ async def update_profile(
     await db.refresh(h)
     # 커밋 뒤에 보낸다 — 워커가 아직 없는 행을 찾아 헛돌지 않게 한다.
     profile_channel_sources.dispatch_channel_source_fetches(fetch_dispatch_ids)
+    # 서술 값(원장·약력·철학·진료 항목·지역·키워드)이 바뀌었으면 자동 요약 태스크가 병원 정보(자동)
+    # 근거 자료를 맞추고 필요하면 운영 기준을 다시 만든다(Phase 4 D33). 유실은 15분 조정이 회수한다.
+    if profile_facts_source.touches_profile_facts(changed_fields):
+        enqueue_essence_refresh_best_effort(h.id)
 
     # 프로파일 완료로 변경되면 V0와 허브 준비를 독립적으로 시작한다(자동 입력 적용과 공용).
     if transitioned:
@@ -1592,7 +1598,7 @@ async def get_readiness(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_d
         ),
         ReadinessCheck(
             "essence_philosophy",
-            "승인된 콘텐츠 운영 기준",
+            "적용 중인 콘텐츠 운영 기준",
             approved_philosophy is not None,
             14,
             readiness_actions["essence_philosophy"],

@@ -563,9 +563,7 @@ def test_only_explicit_authority_change_reopens_automatic_base_review(monkeypatc
     monkeypatch.setattr(review, "_approved_unlocked", lambda *a: base)
     monkeypatch.setattr(review, "_required_sources", lambda *a: [source])
     monkeypatch.setattr(review, "_split_stale_error_sources", lambda rows, now: (rows, []))
-    monkeypatch.setattr(review, "_drafts_for_snapshot", lambda *a: [])
     monkeypatch.setattr(review, "_claim_backoff_active", lambda *a, **kw: False)
-    monkeypatch.setattr(review, "_notes_for_sources", lambda *a: ["evidence"])
     assert review.essence_refresh_needed(None, uuid.uuid4()) is False
     base.unsupported_gaps = [{"field": AUTHORITY_CHANGE_FIELD}]
     assert review.essence_refresh_needed(None, uuid.uuid4()) is True
