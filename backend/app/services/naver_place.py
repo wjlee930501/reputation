@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import unicodedata
 from collections.abc import Sequence
 from dataclasses import dataclass
 from urllib.parse import quote
@@ -135,7 +136,9 @@ def stored_place_id(place_id: str | None, place_url: str | None) -> str | None:
 
 
 def _compact(value: str) -> str:
-    return re.sub(r"[\s()（）·.,\-]+", "", value or "").lower()
+    # NFC — 조합형(NFD) 한글로 온 같은 이름도 같게 본다.
+    text = unicodedata.normalize("NFC", value or "")
+    return re.sub(r"[\s()（）·.,\-]+", "", text).lower()
 
 
 # Jina Reader가 앞에 붙이는 머리 줄과 fetch_place_markdown의 구획 표시 — 상호·주소 후보가 아니다.
@@ -157,8 +160,15 @@ _PROVINCES = frozenset(
 )
 _ADMIN_SUFFIX_RE = re.compile(r"(?:특별자치시|특별자치도|특별시|광역시|도|시|군|구)$")
 _ADDRESS_PART_RE = re.compile(r"^\S+(?:시|군|구|동|읍|면|로|길|리)$|^\d")
-# 지역 낱말 끝의 행정 단위 — "세종시"가 "세종특별자치시" 주소와, "경기도"가 "경기" 주소와 맞게 한다.
-_REGION_UNIT_RE = re.compile(r"(?:특별자치시|특별자치도|특별시|광역시|시|도|군|구)$")
+# 시·도 긴 이름 → 짧은 이름. "세종시"·"세종특별자치시"·"세종"은 같은 시·도다.
+_PROVINCE_LONG_NAMES = {
+    "충청북도": "충북", "충청남도": "충남", "전라북도": "전북", "전북특별자치도": "전북",
+    "전라남도": "전남", "경상북도": "경북", "경상남도": "경남", "제주특별자치도": "제주",
+    "강원특별자치도": "강원",
+}
+_PROVINCE_UNIT_RE = re.compile(r"(?:특별자치시|특별자치도|특별시|광역시|시|도)$")
+# 시·군·구와 읍·면·동 — 주소 앞쪽의 행정 토큰. 도로명(…로·…길)·건물명은 행정 토큰이 아니다.
+_LOCAL_UNIT_RE = re.compile(r"^\S+(?:시|군|구|읍|면|동)$")
 
 
 def _plain_line(line: str) -> str:
@@ -225,12 +235,50 @@ def parse_place_identity(markdown: str) -> tuple[str | None, str | None]:
     return name, address
 
 
-def _region_word_in(word: str, compact_address: str) -> bool:
-    compact = _compact(word)
-    if compact in compact_address:
-        return True
-    stem = _REGION_UNIT_RE.sub("", compact)
-    return len(stem) >= 2 and stem in compact_address
+def _province_key(token: str) -> str | None:
+    compact = _compact(token)
+    if compact in _PROVINCE_LONG_NAMES:
+        return _PROVINCE_LONG_NAMES[compact]
+    if compact in _PROVINCES:
+        return compact
+    stem = _PROVINCE_UNIT_RE.sub("", compact)
+    return stem if stem in _PROVINCES else None
+
+
+def _admin_keys(token: str) -> set[str]:
+    """행정 토큰 하나의 비교 키. 시·도는 짧은 이름, 시·군·구는 이름 그대로와 단위 뺀 이름."""
+
+    province = _province_key(token)
+    if province is not None:
+        return {f"province:{province}"}
+    compact = _compact(token)
+    keys = {compact}
+    stem = re.sub(r"(?:시|군|구)$", "", compact)
+    if len(stem) >= 2:
+        keys.add(stem)
+    return keys
+
+
+def address_admin_tokens(address: str) -> list[str]:
+    """주소 앞에서부터 이어지는 행정 토큰(시·도, 시·군·구, 읍·면·동). 도로명·번지·건물명에서 멈춘다.
+
+    "부산 해운대구 센텀중앙로 97 서울빌딩" → ["부산", "해운대구"]. 건물명 '서울빌딩'은 지역 증거가 아니다.
+    """
+
+    tokens: list[str] = []
+    for token in (address or "").split():
+        if _province_key(token) is not None and not tokens:
+            tokens.append(token)
+            continue
+        if _LOCAL_UNIT_RE.match(token) and _compact(token):
+            tokens.append(token)
+            continue
+        break
+    return tokens
+
+
+def _region_matches_address(words: Sequence[str], admin_keys: set[str]) -> bool:
+    return all(_admin_keys(word) & admin_keys for word in words)
 
 
 def place_matches_hospital(markdown: str, name: str, regions: Sequence[str] = ()) -> bool:
@@ -248,7 +296,12 @@ def place_matches_hospital(markdown: str, name: str, regions: Sequence[str] = ()
         return False
     if not address:
         return False
-    compact_address = _compact(address)
+    # 지역은 주소의 행정 토큰과만 정규화 동등으로 맞춘다 — 도로명·건물명의 부분 문자열은 증거가 아니다.
+    admin_keys: set[str] = set()
+    for token in address_admin_tokens(address):
+        admin_keys |= _admin_keys(token)
+    if not admin_keys:
+        return False
     # 지역 태그는 낱말마다 본다 — "서울 성동구"는 "서울특별시 성동구" 주소와 맞아야 한다.
     region_words = [
         [word for word in str(region).split() if _compact(word)] for region in regions
@@ -256,9 +309,7 @@ def place_matches_hospital(markdown: str, name: str, regions: Sequence[str] = ()
     region_words = [words for words in region_words if words]
     if not region_words:
         return False
-    return any(
-        all(_region_word_in(word, compact_address) for word in words) for words in region_words
-    )
+    return any(_region_matches_address(words, admin_keys) for words in region_words)
 
 
 async def scrape_naver_place(

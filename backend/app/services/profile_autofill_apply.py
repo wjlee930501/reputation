@@ -27,8 +27,11 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import re
+import unicodedata
 import uuid
 from collections.abc import Awaitable, Mapping
 from dataclasses import asdict, dataclass, field
@@ -60,6 +63,8 @@ from app.utils.medical_filter import check_forbidden
 logger = logging.getLogger(__name__)
 
 APPLY_ACTOR = "system:profile-autofill"
+#: 수집 뒤 네이버 신원 입력이 바뀐 병원의 재수집 실행 키(지금 신원의 해시 — 신원마다 한 번).
+RECOLLECT_KEY_PREFIX = "identity:"
 
 STATUS_APPLIED = "APPLIED"
 STATUS_NOTHING = "NOTHING_TO_APPLY"
@@ -100,6 +105,8 @@ class AutofillPlan:
     skipped_unverified_fields: list[str] = field(default_factory=list)
     profile_conflicts: list[dict] = field(default_factory=list)
     create_representative: bool = False
+    identity_changed: bool = False
+    recollect_key: str | None = None
 
 
 @dataclass
@@ -116,6 +123,8 @@ class ApplyOutcome:
     channel_sources: list[dict] = field(default_factory=list)
     completion: dict[str, Any] | None = None
     followup_needed: bool = False
+    identity_changed: bool = False
+    recollect_key: str | None = None
 
     def summary(self) -> dict[str, Any]:
         """실행 요약에 합칠 모양. 수집 단계의 ``conflicts``(출처 간)는 덮지 않는다."""
@@ -269,15 +278,101 @@ def summary_naver_verified(summary: Mapping[str, Any], hospital: Any) -> bool:
     return bool(draft_id) and draft_id == stored
 
 
+def _identity_name(value: Any) -> str:
+    return re.sub(r"\s+", "", unicodedata.normalize("NFC", str(value or ""))).lower()
+
+
+def _identity_regions(values: Any) -> list[str]:
+    items = values if isinstance(values, (list, tuple)) else []
+    return sorted({_identity_name(item) for item in items if _identity_name(item)})
+
+
+def collection_identity(
+    *, name: Any, naver_place_id: str | None, regions: Any
+) -> dict[str, Any]:
+    """수집할 때 네이버 신원을 정한 입력(병원명·저장 place id·지역). 초안에 함께 저장한다."""
+
+    return {
+        "name": _identity_name(name),
+        "naver_place_id": naver_place_id or None,
+        "regions": _identity_regions(regions),
+    }
+
+
+def _current_identity(hospital: Any) -> dict[str, Any]:
+    return collection_identity(
+        name=getattr(hospital, "name", None),
+        naver_place_id=stored_place_id(
+            getattr(hospital, "naver_place_id", None), getattr(hospital, "naver_place_url", None)
+        ),
+        regions=getattr(hospital, "region", None),
+    )
+
+
+def identity_changed_since_collection(summary: Mapping[str, Any], hospital: Any) -> bool:
+    """수집 뒤 병원의 네이버 신원 입력이 바뀌었는가. 바뀌었으면 그 초안의 네이버 값은 다른 병원 것일 수 있다.
+
+    - place id: 지금 저장 id가 수집 때 쓴 id와도, 수집이 찾은 id(초안 자신이 채웠을 수 있다)와도 다르면 변경.
+    - 병원명: 정규화 비교.
+    - 지역: 수집 때 지역이 있었을 때만(검색 신원 확인의 근거였다). 비어 있던 지역은 적용이 채운다.
+    신원 기록이 없는 옛 초안은 검사하지 않는다(그 초안은 `summary_naver_verified`가 따로 막는다).
+    """
+
+    recorded = summary.get("collection_identity")
+    if not isinstance(recorded, Mapping):
+        return False
+    current = _current_identity(hospital)
+    draft = summary.get("draft") if isinstance(summary.get("draft"), Mapping) else {}
+    found = str(draft.get("naver_place_id") or summary.get("naver_place_id") or "").strip() or None
+    used = recorded.get("naver_place_id") or None
+    if current["naver_place_id"] != used and current["naver_place_id"] != found:
+        return True
+    if recorded.get("name") and recorded.get("name") != current["name"]:
+        return True
+    recorded_regions = recorded.get("regions") or []
+    return bool(recorded_regions) and list(recorded_regions) != current["regions"]
+
+
+def recollect_key_for(hospital: Any) -> str:
+    digest = hashlib.sha256(
+        json.dumps(_current_identity(hospital), ensure_ascii=False, sort_keys=True).encode()
+    ).hexdigest()[:12]
+    return f"{RECOLLECT_KEY_PREFIX}{digest}"
+
+
+def _strip_naver_descriptions(value: Any, meta: Mapping[str, Any]) -> Any:
+    naver_names = {
+        str(item.get("name"))
+        for item in meta.get("descriptions") or []
+        if isinstance(item, Mapping) and item.get("source") == "naver"
+    }
+    if not naver_names or not isinstance(value, list):
+        return value
+    return [
+        {**item, "description": None}
+        if isinstance(item, Mapping) and str(item.get("name")) in naver_names
+        else item
+        for item in value
+    ]
+
+
 def plan_autofill(
     hospital: Any, summary: Mapping[str, Any], *, has_physicians: bool
 ) -> AutofillPlan:
-    """초안을 이 병원에 어떻게 적용할지 정한다(병원 행은 바꾸지 않는다)."""
+    """초안을 이 병원에 어떻게 적용할지 정한다(병원 행은 바꾸지 않는다).
+
+    수집 뒤 네이버 신원 입력(place id·병원명·지역)이 바뀌었으면 네이버에서 온 값과 네이버 설명을
+    필드의 ``verified``와 무관하게 모두 버리고 같은 신원으로 다시 수집하라고 표시한다.
+    """
 
     plan = AutofillPlan()
     draft = summary.get("draft") if isinstance(summary.get("draft"), Mapping) else {}
     field_meta = summary.get("field_meta") if isinstance(summary.get("field_meta"), Mapping) else {}
     naver_verified = summary_naver_verified(summary, hospital)
+    if identity_changed_since_collection(summary, hospital):
+        naver_verified = False
+        plan.identity_changed = True
+        plan.recollect_key = recollect_key_for(hospital)
     draft_regions = draft.get("region") if isinstance(draft.get("region"), list) else []
     current_regions = list(getattr(hospital, "region", None) or [])
 
@@ -290,11 +385,13 @@ def plan_autofill(
         meta = field_meta.get(field_name) if isinstance(field_meta.get(field_name), Mapping) else {}
         source = str(meta.get("source") or "unknown")
         verified = meta.get("verified")
-        if verified is None:
-            verified = source != "naver" or naver_verified
+        if verified is None or plan.identity_changed:
+            verified = (verified is not False) and (source != "naver" or naver_verified)
         if not verified:
             plan.skipped_unverified_fields.append(field_name)
             continue
+        if plan.identity_changed and field_name == "treatments":
+            value = _strip_naver_descriptions(value, meta)
         current = getattr(hospital, field_name, None)
         operator_owned = provenance.is_operator_owned(hospital, field_name)
         if operator_owned or not provenance.is_empty_value(current):
@@ -415,6 +512,8 @@ async def apply_autofill_draft(
         skipped_filled_fields=plan.skipped_filled_fields,
         skipped_unverified_fields=plan.skipped_unverified_fields,
         profile_conflicts=plan.profile_conflicts,
+        identity_changed=plan.identity_changed,
+        recollect_key=plan.recollect_key,
     )
     if dry_run:
         # 복원한 원장으로 계획만 하고 아무것도 남기지 않는다.
@@ -571,6 +670,7 @@ __all__ = (
     "ApplyOutcome",
     "AutofillPlan",
     "apply_autofill_draft",
+    "collection_identity",
     "load_survey_text",
     "plan_autofill",
     "summary_naver_verified",

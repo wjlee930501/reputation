@@ -7,6 +7,8 @@
 - ``retry:{n}`` (n=1..3) — 마지막 수집의 초안이 비었거나 소스가 모두 실패했으면 1·3·7일 뒤.
 - ``followup`` — 등록 때 홈페이지·블로그 없이 네이버만 읽었고, 적용으로 주소가 새로 생겼을 때 1회.
 - ``apply:{run_id}`` — 수집 없이 저장된 초안을 다시 적용(적용 실패 회수·백필 CLI, 비용 0).
+- ``identity:{해시}`` — 수집 뒤 네이버 신원 입력(place id·병원명·지역)이 바뀌어 적용이 네이버 값을 버렸을
+  때 지금 신원으로 다시 수집(신원마다 한 번).
 
 수집 실행은 **유료 호출 전에** 실행 키를 RUNNING 행으로 선점한다(lease 15분, 소유자 토큰). 같은 키의 다른
 작업은 그 행을 보고 물러나며, lease가 지난 행(죽은 작업)만 인수한다. 수집 결과는 lease 소유자일 때만
@@ -26,20 +28,24 @@ from typing import Any
 
 import anyio
 from celery.app.task import Task
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, exists, select, update
 from sqlalchemy.exc import IntegrityError
 
 from app.core.celery_app import celery_app
 from app.core.database import get_async_sessionmaker
+from app.models.handoff import HandoffState, HospitalHandoff
 from app.models.hospital import Hospital, HospitalStatus
 from app.models.operations import OperationRun, OperationRunState
 from app.services import cost_guard, profile_completion
 from app.services.audit_log import write_audit_log
 from app.services.hospital_lifecycle import missing_profile_requirement_keys
 from app.services.hospital_profile_autofill import autofill_profile
+from app.services.naver_place import stored_place_id
 from app.services.profile_autofill_apply import (
     APPLY_ACTOR,
+    RECOLLECT_KEY_PREFIX,
     apply_autofill_draft,
+    collection_identity,
     load_survey_text,
 )
 from app.utils.db_locks import acquire_hospital_advisory_lock
@@ -85,7 +91,11 @@ def _existing_run_stmt(hospital_id: uuid.UUID, key: str):
 
 
 def _is_collection_key(key: str) -> bool:
-    return key in _COLLECTION_KEYS or key.startswith(RETRY_KEY_PREFIX)
+    return (
+        key in _COLLECTION_KEYS
+        or key.startswith(RETRY_KEY_PREFIX)
+        or key.startswith(RECOLLECT_KEY_PREFIX)
+    )
 
 
 def _aware(value: datetime) -> datetime:
@@ -152,17 +162,18 @@ async def _autofill_once(
             return {"status": "NOT_FOUND"}
         if getattr(hospital, "status", None) == HospitalStatus.PAUSED:
             return {"status": "SKIPPED_PAUSED"}
-        claim = await _claim_collection(db, hospital_id, key, owner)
-        if isinstance(claim, str):
-            await db.rollback()
-            return {"status": claim}
-        run_id = claim
         name, website_url, blog_url = hospital.name, hospital.website_url, hospital.blog_url
         naver_place_id = getattr(hospital, "naver_place_id", None)
         naver_place_url = getattr(hospital, "naver_place_url", None)
         regions = list(getattr(hospital, "region", None) or [])
-        survey_text = await load_survey_text(db, hospital_id)
         try:
+            claim = await _claim_collection(db, hospital_id, key, owner)
+            if isinstance(claim, str):
+                await db.rollback()
+                return {"status": claim}
+            run_id = claim
+            # 아래 SELECT의 autoflush가 선점 INSERT를 먼저 내보낼 수 있다 — 충돌은 커밋과 같게 다룬다.
+            survey_text = await load_survey_text(db, hospital_id)
             await db.commit()
         except IntegrityError:
             # 같은 키를 다른 작업이 먼저 선점했다 — 유료 호출 전에 물러난다.
@@ -201,6 +212,12 @@ async def _autofill_once(
         "naver_identity": result.naver_identity,
         "sources": sources,
         "collected_without_channels": collected_without_channels,
+        # 적용이 같은 병원인지 다시 확인할 신원 입력 — 수집 뒤 바뀌면 네이버 값을 버린다.
+        "collection_identity": collection_identity(
+            name=name,
+            naver_place_id=stored_place_id(naver_place_id, naver_place_url),
+            regions=regions,
+        ),
         # 적용 전에 멈춰도 스윕이 알아보게 — 적용 결과가 이 값을 덮는다.
         "apply_status": APPLY_PENDING,
         "apply_attempts": 0,
@@ -419,6 +436,10 @@ def next_autofill_key(runs: Sequence[Any], *, now: datetime) -> str | None:
     ):
         # 초안은 커밋됐는데 적용 결과가 없다(저장 직후 작업이 죽었다) — 수집 없이 적용한다.
         return f"{APPLY_KEY_PREFIX}{latest.id}"
+    recollect = summary.get("recollect_key")
+    if isinstance(recollect, str) and recollect.startswith(RECOLLECT_KEY_PREFIX) and recollect not in keys:
+        # 수집 뒤 신원이 바뀌어 네이버 값을 버렸다 — 지금 신원으로 한 번 다시 수집한다.
+        return recollect
     if summary.get("followup_needed") and PROFILE_AUTOFILL_FOLLOWUP_KEY not in keys:
         return PROFILE_AUTOFILL_FOLLOWUP_KEY
     if _draft_is_empty(summary):
@@ -497,6 +518,12 @@ async def promote_completed_profiles(*, limit: int = PROMOTION_SWEEP_LIMIT) -> l
                     .where(
                         Hospital.profile_complete.is_not(True),
                         Hospital.status != HospitalStatus.PAUSED,
+                        # 인수 수락을 상한보다 먼저 거른다 — 수락 안 된 병원이 상한을 채워 뒤의
+                        # 승격 가능 병원을 굶기지 않게.
+                        exists().where(
+                            HospitalHandoff.hospital_id == Hospital.id,
+                            HospitalHandoff.state == HandoffState.HANDOFF_ACCEPTED,
+                        ),
                     )
                     .order_by(Hospital.created_at, Hospital.id)
                 )

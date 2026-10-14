@@ -99,11 +99,13 @@ function TagInput({
   values,
   onChange,
   badge,
+  conflict,
 }: {
   label: string
   values: string[]
   onChange: (v: string[]) => void
   badge?: React.ReactNode
+  conflict?: React.ReactNode
 }) {
   const [input, setInput] = useState('')
   const inputId = useId()
@@ -160,6 +162,7 @@ function TagInput({
         placeholder="입력 후 Enter 또는 쉼표로 추가"
         className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
       />
+      {conflict}
     </div>
   )
 }
@@ -378,6 +381,7 @@ export function FactsSection({
             <p className="text-sm text-slate-400">진료 항목을 추가해 주세요.</p>
           )}
         </div>
+        <ProvenanceConflict info={provenance?.treatments} />
       </SectionShell>
 
       <SectionShell
@@ -626,24 +630,28 @@ export function FactsSection({
           values={profile.region ?? []}
           onChange={(v) => onFieldChange('region', v)}
           badge={badge('region')}
+          conflict={<ProvenanceConflict info={provenance?.region} />}
         />
         <TagInput
           label="전문과목"
           values={profile.specialties ?? []}
           onChange={(v) => onFieldChange('specialties', v)}
           badge={badge('specialties')}
+          conflict={<ProvenanceConflict info={provenance?.specialties} />}
         />
         <TagInput
           label="핵심 키워드"
           values={profile.keywords ?? []}
           onChange={(v) => onFieldChange('keywords', v)}
           badge={badge('keywords')}
+          conflict={<ProvenanceConflict info={provenance?.keywords} />}
         />
         <TagInput
           label="경쟁 병원"
           values={profile.competitors ?? []}
           onChange={(v) => onFieldChange('competitors', v)}
           badge={badge('competitors')}
+          conflict={<ProvenanceConflict info={provenance?.competitors} />}
         />
       </SectionShell>
     </>

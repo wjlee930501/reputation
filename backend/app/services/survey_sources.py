@@ -21,14 +21,22 @@ from app.models.essence import SourceType
 
 MASK = "[가림]"
 
-# 휴대전화: 010-1234-5678, 01012345678, 010 1234 5678, +82 10-1234-5678. 지역번호(02·031…)는 병원
-# 대표번호라 가리지 않는다.
+# 구분자: 하이픈·유니코드 대시(‐‑‒–—―−－)·점·공백 여러 칸. 문서·PDF 추출은 대시를 en dash로, 칸을 여러
+# 공백으로 바꾸기 일쑤다. 본문 자체는 정규화하지 않는다(NFKC는 한글 호환 자모 등 원문 표기를 바꾼다) —
+# 전각 숫자·기호(０-９＋－＠)만 반각으로 바꾼 뒤(길이 보존) 정규식이 나머지 표기를 받는다.
+_FULLWIDTH = str.maketrans("０１２３４５６７８９＋－＠", "0123456789+-@")
+_DASHES = "\\-\u2010\u2011\u2012\u2013\u2014\u2015\u2212\uff0d"
+_SEP = f"[{_DASHES}.\\s]*"
+# 휴대전화: 010-1234-5678, 01012345678, 010 1234 5678, 010–1234–5678, +82 10-1234-5678. 지역번호(02·031…)는
+# 병원 대표번호라 가리지 않는다.
 _MOBILE_RE = re.compile(
-    r"(?<!\d)(?:(?:\+?82[-.\s]?)1[016789]|01[016789])[-.\s)]?\d{3,4}[-.\s]?\d{4}(?!\d)"
+    rf"(?<!\d)(?:(?:[+＋]?82{_SEP})[(]?0?1[016789]|01[016789])[)]?{_SEP}\d{{3,4}}{_SEP}\d{{4}}(?!\d)"
 )
 _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+")
-# 주민등록번호: 생년월일 6자리 + 성별 1~4로 시작하는 7자리.
-_RRN_RE = re.compile(r"(?<!\d)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])[-\s]?[1-4]\d{6}(?!\d)")
+# 주민등록번호: 생년월일 6자리 + 성별 1~4로 시작하는 7자리(구분자는 대시류·공백).
+_RRN_RE = re.compile(
+    rf"(?<!\d)\d{{2}}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])[{_DASHES}\s]*[1-4]\d{{6}}(?!\d)"
+)
 
 SURVEY_DEFAULT_TITLE = "원장 인터뷰 설문"
 GOOGLE_FORMS_MESSAGE = (
@@ -45,7 +53,7 @@ def mask_personal_info(text: str | None) -> str | None:
 
     if not text:
         return text
-    masked = _RRN_RE.sub(MASK, text)
+    masked = _RRN_RE.sub(MASK, text.translate(_FULLWIDTH))
     masked = _EMAIL_RE.sub(MASK, masked)
     return _MOBILE_RE.sub(MASK, masked)
 

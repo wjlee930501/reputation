@@ -146,3 +146,53 @@ def test_business_hours_keep_only_known_days() -> None:
         has_physicians=False,
     )
     assert plan.updates["business_hours"] == {"mon": "09:00-18:00"}
+
+
+def _identified(draft, *, place_id, name="다온의원", regions=(), meta=None):
+    summary = _summary(draft, identity="STORED_ID", meta=meta)
+    summary["collection_identity"] = apply_mod.collection_identity(
+        name=name, naver_place_id=place_id, regions=list(regions)
+    )
+    return summary
+
+
+def test_a_place_id_corrected_after_collection_drops_every_naver_value() -> None:
+    # 리뷰 재현(2차): 111111로 수집하는 동안 마케터가 222222로 정정했다. 필드의 verified=True로
+    # 옛 병원의 주소·전화가 적용됐다.
+    draft = {
+        "address": "부산 해운대구 1",
+        "phone": "051-777-7777",
+        "website_url": "https://daon.example.com",
+        "treatments": [{"name": "치질", "description": "네이버 설명"}],
+    }
+    meta = {
+        "website_url": {"source": "homepage", "verified": True},
+        "treatments": {
+            "source": "homepage",
+            "verified": True,
+            "descriptions": [{"name": "치질", "source": "naver", "verified": True}],
+        },
+    }
+    summary = _identified(draft, place_id="111111", meta=meta)
+    hospital = _hospital(name="다온의원", naver_place_id="222222")
+
+    plan = apply_mod.plan_autofill(hospital, summary, has_physicians=False)
+
+    assert plan.identity_changed is True
+    assert plan.recollect_key and plan.recollect_key.startswith("identity:")
+    assert set(plan.skipped_unverified_fields) == {"address", "phone"}
+    assert plan.updates["website_url"] == "https://daon.example.com"
+    assert plan.updates["treatments"] == [{"name": "치질", "description": None}]
+
+
+def test_identity_is_unchanged_when_the_draft_itself_filled_the_place_id() -> None:
+    summary = _identified({"phone": "02-1"}, place_id=None, regions=["서울"])
+    summary["naver_place_id"] = "333333"
+    hospital = _hospital(name="다온의원", naver_place_id="333333", region=["서울"])
+    plan = apply_mod.plan_autofill(hospital, summary, has_physicians=False)
+    assert plan.identity_changed is False and plan.updates == {"phone": "02-1"}
+
+    renamed = _hospital(name="다온신경과의원", naver_place_id="333333", region=["서울"])
+    assert apply_mod.plan_autofill(renamed, summary, has_physicians=False).identity_changed
+    moved = _hospital(name="다온의원", naver_place_id="333333", region=["부산"])
+    assert apply_mod.plan_autofill(moved, summary, has_physicians=False).identity_changed

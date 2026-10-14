@@ -154,3 +154,19 @@ async def test_exported_plain_text_keeps_its_lines(monkeypatch) -> None:
     )
     assert error is None
     assert text.splitlines()[:2] == ["Q1. 진료 철학은?", "A1. 환자의 이야기를 끝까지 듣습니다."]
+
+
+def test_spacing_dash_and_fullwidth_variants_are_masked() -> None:
+    from app.services.survey_sources import mask_personal_info
+
+    for raw in (
+        "010  1234  5678",
+        "010–1234–5678",
+        "010—1234—5678",
+        "800101–1234567",
+        "800101 - 1234567",
+        "０１０－１２３４－５６７８",
+    ):
+        assert mask_personal_info(f"연락 {raw} 끝") == "연락 [가림] 끝", raw
+    kept = "대표 02-123-4567, 진료 09:00-18:00, 2024-10-14"
+    assert mask_personal_info(kept) == kept

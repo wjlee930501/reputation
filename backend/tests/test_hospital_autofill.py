@@ -753,3 +753,63 @@ def test_unverified_naver_descriptions_never_ride_on_a_verified_homepage_list():
     assert verified.meta["treatments"]["descriptions"] == [
         {"name": "치질", "source": "naver", "verified": True}
     ]
+
+
+def test_building_and_road_names_are_never_region_evidence():
+    # 리뷰 재현(2차): 부산 주소의 건물명 '서울빌딩'이 지역 '서울'을 인증했다.
+    busan = "Title: 다온의원 : 네이버\n주소 부산 해운대구 센텀중앙로 97 서울빌딩"
+    assert naver_place.address_admin_tokens("부산 해운대구 센텀중앙로 97 서울빌딩") == ["부산", "해운대구"]
+    assert not naver_place.place_matches_hospital(busan, "다온의원", ["서울"])
+    assert not naver_place.place_matches_hospital(busan, "다온의원", ["서울 해운대구"])
+    assert naver_place.place_matches_hospital(busan, "다온의원", ["부산 해운대구"])
+    assert naver_place.place_matches_hospital(busan, "다온의원", ["부산광역시"])
+    # 도로명 '성동로'는 '성동구'가 아니다.
+    road = "Title: 다온의원 : 네이버\n주소 경기 수원시 성동로 1"
+    assert not naver_place.place_matches_hospital(road, "다온의원", ["성동구"])
+
+
+def test_hospital_names_compare_after_unicode_normalization():
+    import unicodedata
+
+    nfd = unicodedata.normalize("NFD", "세종다온의원")
+    markdown = "Title: 세종다온의원 : 네이버\n주소 세종 보람동 1"
+    assert naver_place.place_matches_hospital(markdown, nfd, ["세종시"])
+
+
+async def test_a_busan_phone_never_reaches_a_seoul_hospital_through_collect_select_plan(monkeypatch):
+    from types import SimpleNamespace
+
+    from app.services.profile_autofill_apply import plan_autofill
+
+    detail = (
+        "Title: 다온의원 : 네이버\n주소 부산 해운대구 센텀중앙로 97 서울빌딩\n전화 051-777-7777\n진료 내과"
+    )
+
+    async def fake_jina(url: str):
+        if "list?query" in url:
+            return ("[a](https://m.place.naver.com/hospital/7654321)", None)
+        return (detail, None)
+
+    monkeypatch.setattr(af.naver_place, "fetch_via_jina", fake_jina)
+    fields = {
+        "phone": {"candidates": [_cand("051-777-7777", "naver", "051-777-7777", 0.95)]},
+    }
+    monkeypatch.setattr(
+        af._client.chat.completions, "create", lambda **kwargs: _fake_claude_response(fields)
+    )
+
+    result = await af.autofill_profile("다온의원", None, None, regions=["서울"])
+
+    assert result.naver_identity == naver_place.IDENTITY_UNVERIFIED
+    hospital = SimpleNamespace(
+        name="다온의원", region=["서울"], phone=None, profile_field_provenance={},
+        naver_place_id=None, naver_place_url=None,
+    )
+    summary = {
+        "draft": result.draft,
+        "field_meta": result.field_meta,
+        "naver_identity": result.naver_identity,
+    }
+    plan = plan_autofill(hospital, summary, has_physicians=False)
+    assert "phone" not in plan.updates
+    assert "phone" in plan.skipped_unverified_fields

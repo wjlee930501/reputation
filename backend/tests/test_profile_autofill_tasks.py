@@ -322,3 +322,29 @@ def test_onboarding_sweeps_survive_each_others_failures(monkeypatch) -> None:
         "profiles_promoted": 0,
         "profile_autofill_dispatched": 2,
     }
+
+
+def test_an_identity_change_recollects_once_with_the_new_identity() -> None:
+    run = _run("registration", **{**_GOOD, "recollect_key": "identity:abc", "identity_changed": True})
+    assert module.next_autofill_key([run], now=_NOW) == "identity:abc"
+    again = _run("identity:abc", **_GOOD)
+    assert module.next_autofill_key([run, again], now=_NOW) is None
+    assert module._is_collection_key("identity:abc")
+
+
+async def test_a_concurrent_claim_surfacing_at_autoflush_backs_off_before_buying(monkeypatch) -> None:
+    from sqlalchemy.exc import IntegrityError
+
+    hospital = SimpleNamespace(id=uuid.uuid4(), name="x", website_url=None, blog_url=None,
+                               naver_place_id=None, naver_place_url=None, region=[],
+                               status="ONBOARDING")
+    session = _FakeSession(hospital)
+    spy = _patch(monkeypatch, session)
+
+    async def autoflush_conflict(_db, _hospital_id):
+        raise IntegrityError("INSERT", {}, Exception("duplicate key"))
+
+    monkeypatch.setattr(module, "load_survey_text", autoflush_conflict)
+
+    assert (await module._autofill_once(hospital.id))["status"] == "ALREADY_RUNNING"
+    assert spy.calls == []

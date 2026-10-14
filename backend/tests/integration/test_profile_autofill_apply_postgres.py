@@ -641,3 +641,29 @@ async def test_a_dead_claim_is_taken_over_and_the_old_owner_cannot_store(
     [other_run] = await _runs(db, other_id)
     assert other_run.state == "RUNNING" and other_run.result_summary is None
     assert (await _reload(db, other_id)).address is None
+
+
+@pytest.mark.asyncio
+async def test_unaccepted_hospitals_do_not_starve_the_promotion_limit(
+    pg_async_session, effects, monkeypatch
+):
+    db = pg_async_session
+    fields = dict(
+        director_name="김원장", director_career="외과 전문의", address="서울 성동구", phone="02-1",
+        business_hours={"mon": "09:00-18:00"}, website_url="https://a.example",
+        naver_place_url="https://naver.me/x", latitude=37.5, longitude=127.0, region=["성동구"],
+        specialties=["외과"], keywords=["치질"], treatments=[{"name": "치질 수술"}],
+    )
+    # 둘 다 다른 테스트 행보다 오래됐다 — 상한 1의 첫 자리를 수락 안 된 병원이 차지할 수 있다.
+    waiting = _hospital(created_at=datetime(2000, 1, 1, tzinfo=UTC), **fields)
+    accepted = _hospital(created_at=datetime(2000, 1, 2, tzinfo=UTC), **fields)
+    db.add_all([waiting, accepted])
+    await db.flush()
+    db.add(_accepted(accepted.id))
+    await db.commit()
+    accepted_id = accepted.id
+    monkeypatch.setattr(profile_autofill_tasks, "get_async_sessionmaker", _session_factory(db))
+
+    promoted = await profile_autofill_tasks.promote_completed_profiles(limit=1)
+
+    assert promoted == [str(accepted_id)]

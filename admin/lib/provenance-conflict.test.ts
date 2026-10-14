@@ -50,3 +50,13 @@ test('정보 화면은 충돌 줄을 lib 렌더러로만 그리고 문구는 ADM
   assert.doesNotMatch(facts, /\{conflict\.value\}/)
   assert.doesNotMatch(facts, /되어 있습니다/)
 })
+
+test('목록·진료 항목 칸에도 저장된 충돌 줄을 붙인다', () => {
+  const facts = readFileSync(
+    new URL('../app/hospitals/[id]/info/FactsSection.tsx', import.meta.url),
+    'utf8',
+  )
+  for (const key of ['treatments', 'region', 'specialties', 'keywords', 'competitors']) {
+    assert.match(facts, new RegExp(`ProvenanceConflict info=\\{provenance\\?\\.${key}\\}`), key)
+  }
+})
