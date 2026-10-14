@@ -8,6 +8,8 @@
 - S1 다음 시도 시각이 미래인데 예정일 ≤ 내일: 시각을 지금으로 당긴다. 하루 예산·물러서기 판정
   (`retry_is_due`)은 그대로라 당겨도 예산 밖 구매는 없다.
 - S2/S3 주제 교체 후보(`topic_swap_fallback.exhausted_body_sample_reason`): 교체 pass를 그 창에 돌린다.
+  현재 주제의 작가 예산을 다 쓴 슬롯(`current_topic_writers_exhausted`)은 당기지도 보내지도 않고, 교체
+  예산이 남았으면 곧바로 교체(`_swap_one`), 없으면 기존 사다리에 맡긴다 — 살 수 없는 생성은 보내지 않는다.
 - 그 밖에 지금 다시 시도할 수 있는 슬롯(`tasks._generation_retry_is_eligible`): claim하고 글 단위
   생성 태스크로 보낸다(복구 스윕과 같은 경로, `notify=False`).
 
@@ -39,6 +41,7 @@ from app.services.post_publish_review_policy import (
 from app.workers.generation_attempt_state import (
     GENERATION_ATTEMPT_KEY,
     LEGACY_SPEND_UNKNOWN_CODE,
+    current_topic_writers_exhausted,
     read_generation_attempt,
 )
 from app.workers.generation_retry_policy import GenerationRetryClass
@@ -260,12 +263,54 @@ def _legacy_reset(db: Session, item: ContentItem, *, now: datetime) -> bool:
     return False
 
 
+def _swap_writer_exhausted(db: Session, item_id: uuid.UUID, *, now: datetime) -> bool:
+    """작가 예산을 다 쓴 슬롯의 주제를 한 번 바꾼다(교체 pass와 같은 `_swap_one`·경계)."""
+
+    from app.workers.topic_swap_fallback import (
+        BUDGET_EXHAUSTED_REASON,
+        _swap_one,
+        topic_swap_budget_left,
+    )
+
+    item = db.execute(
+        select(ContentItem)
+        .where(
+            ContentItem.id == item_id,
+            ContentItem.status.in_(GENERATION_WRITE_BACK_STATUSES),
+            ContentItem.first_published_at.is_(None),
+            ContentItem.human_edited_at.is_(None),
+        )
+        .options(joinedload(ContentItem.hospital))
+        .with_for_update(of=ContentItem)
+        .execution_options(populate_existing=True)
+    ).scalar_one_or_none()
+    if (
+        item is None
+        or generation_claim_is_active(item, now=now)
+        or not current_topic_writers_exhausted(read_generation_attempt(item))
+        or not topic_swap_budget_left(item)
+    ):
+        db.rollback()
+        return False
+    entry, label = _swap_one(db, item, BUDGET_EXHAUSTED_REASON, now=now)
+    if entry is None:
+        db.rollback()
+        logger.info("stall detector could not swap writer-exhausted slot %s: %s", item_id, label)
+        return False
+    db.commit()
+    return True
+
+
 def run_stall_detector(db: Session, *, now: datetime | None = None) -> StallReport:
     """한 번의 점검. 행동은 슬롯·계단·날짜당 한 번."""
 
     from app.workers import tasks
     from app.workers.generation_batch_run import GenerationBatchRecorder
-    from app.workers.topic_swap_fallback import exhausted_body_sample_reason, swap_exhausted_topics
+    from app.workers.topic_swap_fallback import (
+        exhausted_body_sample_reason,
+        swap_exhausted_topics,
+        topic_swap_budget_left,
+    )
 
     observed = now or datetime.now(UTC)
     report = StallReport()
@@ -289,6 +334,19 @@ def run_stall_detector(db: Session, *, now: datetime | None = None) -> StallRepo
             continue
         if exhausted_body_sample_reason(item) is not None:
             if _claim_action(db, item, RUNG_SWAP, now=observed):
+                swap_needed = True
+                swap_ids.append(item.id)
+                report.count(RUNG_SWAP)
+            continue
+        if current_topic_writers_exhausted(attempt):
+            # 현재 주제가 작가 결과를 더 살 수 없다 — 당기거나 생성으로 보내면 공급자 호출 없이
+            # `WRITER_RESULTS_EXHAUSTED`로 끝난다. 교체 예산이 남았으면 곧바로 교체 계단으로,
+            # 없으면 기존 사다리(소진 일수·사람의 일)에 맡긴다.
+            if (
+                topic_swap_budget_left(item)
+                and _claim_action(db, item, RUNG_SWAP, now=observed)
+                and _swap_writer_exhausted(db, item.id, now=observed)
+            ):
                 swap_needed = True
                 swap_ids.append(item.id)
                 report.count(RUNG_SWAP)
@@ -333,6 +391,9 @@ def _dispatch(db, tasks, recorder_cls, item_ids, observed, window_start, window_
             .execution_options(populate_existing=True)
         ).scalar_one_or_none()
         if item is None or not eligible(item):
+            continue
+        if current_topic_writers_exhausted(read_generation_attempt(item)):
+            # 살 수 없는 생성은 보내지 않는다(교체가 후보를 찾지 못한 슬롯 포함).
             continue
         if not _claim_action(db, item, RUNG_DISPATCH, now=observed):
             continue
