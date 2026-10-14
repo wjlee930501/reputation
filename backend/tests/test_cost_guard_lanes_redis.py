@@ -105,6 +105,21 @@ async def test_lane_cap_blocks_only_that_lane(lane_env):
         await client.aclose()
 
 
+async def test_oversized_first_reservation_of_the_day_is_not_stuck_forever(lane_env, monkeypatch):
+    url, sync = lane_env
+    monkeypatch.setattr(cost_guard.settings, "COST_GUARD_CONTENT_NON_SCHEDULE_HOSPITAL_DAILY", 4)
+    client = redis_async.from_url(url)
+    try:
+        # 상한(adhoc 3·병원 4)보다 큰 한 건도 그날 첫 예약이면 들어간다(예약 천장 50 안).
+        assert (await _reserve(client, cost_guard.LANE_ADHOC, count=9, hospital_id=HOSPITAL_A)).allowed
+        assert (await _reserve(client, cost_guard.LANE_ADHOC, hospital_id=HOSPITAL_B)).allowed is False
+        assert (
+            await _reserve(client, cost_guard.LANE_EVIDENCE, hospital_id=HOSPITAL_A)
+        ).allowed is False
+    finally:
+        await client.aclose()
+
+
 async def test_monthly_pause_stops_non_schedule_lanes_at_85_percent(lane_env):
     url, sync = lane_env
     sync.set(cost_guard._monthly_key("content", MONTH), 8_500)

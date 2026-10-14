@@ -78,7 +78,8 @@ _CATEGORY_LABELS = {
 # content lane(W1) 판정·증가 조각. 카테고리 판정 뒤, 카테고리 증가 전에 같은 Lua 안에서 돈다.
 # ARGV[$a]=lane 모드('none'|'schedule'|'limited'), $a+1 예약 반영 일 천장(-1 없음), $a+2 월 정지 천장
 # (-1 없음), $a+3 lane 일 상한, $a+4 lane 월 상한(0 없음), $a+5 병원 일 상한(0 없음), $a+6 병원 키 유무.
-# KEYS[$k]=lane 일, $k+1 lane 월, $k+2 병원 일 키.
+# KEYS[$k]=lane 일, $k+1 lane 월, $k+2 병원 일 키. lane·병원 상한은 그 기간 첫 예약을 막지 않는다 — 한 번에
+# 상한보다 큰 예약(긴 근거 자료의 구간 수 × 3)이 영원히 막히지 않게 한다. 예약·월 정지선은 그대로 막는다.
 _LANE_CHECK = Template("""
 local lane_mode = ARGV[$a]
 local lane_daily = 0
@@ -97,11 +98,11 @@ if lane_mode == 'limited' then
   local blocked = ''
   if pause_ceiling >= 0 and monthly + count > pause_ceiling then blocked = 'monthly_pause'
   elseif reserve_ceiling >= 0 and daily + count > reserve_ceiling then blocked = 'schedule_reserve'
-  elseif lane_monthly_limit > 0 and lane_monthly + count > lane_monthly_limit then blocked = 'lane_monthly'
-  elseif lane_daily_limit > 0 and lane_daily + count > lane_daily_limit then blocked = 'lane_daily'
+  elseif lane_monthly_limit > 0 and lane_monthly > 0 and lane_monthly + count > lane_monthly_limit then blocked = 'lane_monthly'
+  elseif lane_daily_limit > 0 and lane_daily > 0 and lane_daily + count > lane_daily_limit then blocked = 'lane_daily'
   elseif ARGV[$a + 6] == '1' and hosp_limit > 0 then
     hosp_daily = tonumber(redis.call('GET', KEYS[$k + 2]) or '0')
-    if hosp_daily + count > hosp_limit then blocked = 'hospital_daily' end
+    if hosp_daily > 0 and hosp_daily + count > hosp_limit then blocked = 'hospital_daily' end
   end
   if blocked ~= '' then return $blocked end
 end
