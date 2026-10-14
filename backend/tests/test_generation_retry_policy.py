@@ -1038,3 +1038,53 @@ def test_malformed_prior_topic_spend_never_mints_allowance(malformation: str) ->
 
     with pytest.raises(GenerationBudgetUnknown, match="LEGACY_SPEND_UNKNOWN"):
         reserve_acquisition(attempt, acquisition_id="writer:ctx:topic-b:0", kind="WRITER")
+
+
+def _slot(**fields):
+    from types import SimpleNamespace
+
+    base = {name: None for name in (
+        "title", "body", "faq_question", "image_url", "image_prompt", "generated_at",
+        "generation_philosophy_id", "essence_status", "body_updated_at", "published_at",
+        "first_published_at", "human_edited_at", "active_revision_id", "topic_swap_history",
+        "query_target_id", "essence_check_summary",
+    )}
+    base.update(fields)
+    return SimpleNamespace(**base)
+
+
+def test_never_attempted_slot_reads_as_a_known_zero_budget() -> None:
+    from app.workers.generation_attempt_state import (
+        budget_generation_attempt,
+        never_attempted_slot,
+    )
+
+    for summary in (None, {}, {"generation_attempt": {}}, {"blocking": False}):
+        item = _slot(essence_check_summary=summary)
+        assert never_attempted_slot(item)
+        budget = read_generation_budget(budget_generation_attempt(item))
+        assert budget.legacy_state == "KNOWN_ZERO"
+        assert budget.writer_results == budget.text_http_attempts == 0
+
+
+@pytest.mark.parametrize(
+    "trace",
+    [
+        {"body": "## 본문"},
+        {"title": "제목"},
+        {"generated_at": datetime(2026, 9, 24, tzinfo=UTC)},
+        {"first_published_at": datetime(2026, 9, 24, tzinfo=UTC)},
+        {"topic_swap_history": [{"from": "a"}]},
+        {"essence_check_summary": {"generation_attempt": {"reason": "GENERATION_REJECTED"}}},
+    ],
+)
+def test_slot_with_generation_trace_keeps_legacy_spend_unknown(trace) -> None:
+    from app.workers.generation_attempt_state import (
+        budget_generation_attempt,
+        never_attempted_slot,
+    )
+
+    item = _slot(**trace)
+    assert not never_attempted_slot(item)
+    with pytest.raises(GenerationBudgetUnknown, match="LEGACY_SPEND_UNKNOWN"):
+        read_generation_budget(budget_generation_attempt(item))

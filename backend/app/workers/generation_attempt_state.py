@@ -852,7 +852,7 @@ class GenerationBudgetLedger:
             ).scalar_one_or_none()
             if current is not None:
                 self._item = current
-        return read_generation_attempt(self._item)
+        return budget_generation_attempt(self._item)
 
     def _write(self, attempt: dict[str, Any]) -> None:
         summary = getattr(self._item, "essence_check_summary", None)
@@ -989,6 +989,51 @@ def released_generation_attempt(summary: Any) -> dict:
     else:
         updated.pop(GENERATION_ATTEMPT_KEY, None)
     return updated
+
+
+# 생성이 한 번이라도 지나간 슬롯에 남는 흔적. 하나라도 있으면 지출 기록 없이 0으로 읽지 않는다.
+_GENERATION_TRACE_FIELDS = (
+    "title",
+    "body",
+    "faq_question",
+    "image_url",
+    "image_prompt",
+    "generated_at",
+    "generation_philosophy_id",
+    "essence_status",
+    "body_updated_at",
+    "published_at",
+    "first_published_at",
+    "human_edited_at",
+    "active_revision_id",
+    "topic_swap_history",
+)
+
+
+def never_attempted_slot(item: Any) -> bool:
+    """시도 기록이 아예 없고 생성 흔적도 없는 슬롯인가 — 생성 지출이 0임이 확실하다.
+
+    예산 표시(0)를 슬롯 생성 때만 붙이던 시기(10/9 이전)에 만든 슬롯은, 한 번도 생성 창에
+    들지 않았으면 시도 기록이 없다. 그 슬롯을 `LEGACY_SPEND_UNKNOWN`으로 읽으면 첫 생성이
+    곧바로 사람의 일로 굳는다(2026-10-14 10/16 슬롯 6건). 기록이 있는데 예산이 없는 진짜
+    레거시 기록, 그리고 본문·제목·생성 시각·공개 이력·주제 교체 같은 흔적이 남은 슬롯은
+    종전대로 지출 불명이다.
+    """
+
+    summary = getattr(item, "essence_check_summary", None)
+    if isinstance(summary, dict) and summary.get(GENERATION_ATTEMPT_KEY):
+        return False
+    return all(not getattr(item, field, None) for field in _GENERATION_TRACE_FIELDS)
+
+
+def budget_generation_attempt(item: Any) -> dict:
+    """예산을 읽을 때 쓰는 시도 조각. 한 번도 시도하지 않은 슬롯은 지출 0의 새 예산이다."""
+
+    attempt = read_generation_attempt(item)
+    if not attempt and never_attempted_slot(item):
+        topic = getattr(item, "query_target_id", None)
+        return fresh_generation_attempt(topic_id=str(topic) if topic else None)
+    return attempt
 
 
 def read_generation_attempt(item: Any) -> dict:
