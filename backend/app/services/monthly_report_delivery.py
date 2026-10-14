@@ -197,7 +197,7 @@ def monthly_report_delivery_warnings(report: MonthlyReport) -> list[str]:
     if report_is_baseline_setup(report):
         warnings.append(
             "그 달 고정 측정이 없던 첫 달이라 '기준 설정' 보고서입니다. 언급 비율 없이 콘텐츠 실적을 "
-            "담았고, 다음 달부터 같은 질문으로 측정해 이번 달을 기준으로 비교합니다."
+            "담았고, 다음 달 첫 측정으로 기준점을 만든 뒤 그다음 달부터 비교합니다."
         )
         adequacy = None
     if isinstance(adequacy, Mapping) and adequacy.get("status") == "LIMITED":

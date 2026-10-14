@@ -227,11 +227,11 @@ BASELINE_TITLE = "기준 설정 보고서"
 BASELINE_CURRENT_LABEL = "기준 설정"
 _BASELINE_CONCLUSION = (
     "이번 달은 앞으로 매달 AI에게 물어볼 질문과 방식을 정한 기준 설정의 달입니다. "
-    "다음 달부터 같은 질문으로 물어 결과를 보고드리겠습니다."
+    "다음 달 첫 측정으로 기준점을 만들겠습니다."
 )
-_BASELINE_NOTE = "이번 달은 기준을 세운 달이라 지난달과 견줄 숫자가 아직 없습니다."
+_BASELINE_NOTE = "이번 달은 정기 측정 전이라 견줄 숫자가 아직 없습니다. 다음 달 첫 측정으로 기준점을 만들겠습니다."
 _BASELINE_PRIORITIES = (
-    "다음 달부터 정한 질문을 ChatGPT·Gemini에 같은 방식으로 물어, 우리 병원이 언급되는 비율을 처음으로 보고드리겠습니다.",
+    "다음 달 첫 측정으로 기준점을 만들고, 우리 병원이 언급되는 비율을 처음으로 보고드리겠습니다.",
     "그동안 환자 질문에 바로 답하는 진료 안내 글을 일정에 맞춰 올리겠습니다.",
 )
 
@@ -248,7 +248,7 @@ def _baseline_narrative(
         previous=None,
         comparison_note=_BASELINE_NOTE,
         denominator=(
-            "다음 달부터 같은 질문을 ChatGPT·Gemini에 정해진 횟수만큼 물어 언급 비율을 계산합니다. "
+            "다음 달 첫 측정부터 정한 질문을 ChatGPT·Gemini에 정해진 횟수만큼 물어 언급 비율을 계산합니다. "
             "환자 수가 아닌 AI 답변 횟수 기준입니다."
         ),
         priorities=_BASELINE_PRIORITIES,
@@ -256,10 +256,10 @@ def _baseline_narrative(
         platform_details=(),
         methods=(
             f"측정 방식 버전: {protocol_label or '다음 달 정기 측정부터 기록합니다'}",
-            "이번 달은 정기 측정의 기준을 정했고, 다음 달부터 같은 질문을 같은 방식으로 물어 결과를 셉니다.",
+            "이번 달은 정기 측정 전이라 물어볼 질문과 방식만 정했습니다. 다음 달 첫 측정으로 기준점을 만들겠습니다.",
         ),
         citation_scope=(
-            "우리 병원 글이 AI 답변의 출처로 쓰였는지는 다음 달 정기 측정부터 함께 확인합니다."
+            "우리 병원 글이 AI 답변의 출처로 쓰였는지는 다음 달 첫 측정부터 함께 확인합니다."
         ),
         citation_details=(),
         fulfillment_note=(
@@ -269,10 +269,7 @@ def _baseline_narrative(
         ),
         previous_label="비교 없음",
         current_label=BASELINE_CURRENT_LABEL,
-        result_story=(
-            "이번 달에는 앞으로 매달 물어볼 질문과 방식을 정했습니다. "
-            "다음 달 보고서부터 언급 비율을 숫자로 보여 드리겠습니다."
-        ),
+        result_story="다음 달 보고서에서 첫 측정 결과를 언급 비율 숫자로 보여 드리겠습니다.",
         work_story=_work_story(ordered),
         plan_story=_plan_story(_BASELINE_PRIORITIES),
     )

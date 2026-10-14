@@ -26,6 +26,7 @@ from sqlalchemy.pool import NullPool
 
 from app.models.hospital import Hospital
 from app.models.monthly_control import (
+    HospitalServiceInterval,
     MonthlyDeliveryEvent,
     MonthlyMeasurementCell,
     MonthlyMeasurementManifest,
@@ -105,6 +106,11 @@ def env(monkeypatch: pytest.MonkeyPatch):
             )
         )
         session.execute(delete(OperationRun).where(OperationRun.hospital_id.in_(hospital_ids)))
+        session.execute(
+            delete(HospitalServiceInterval).where(
+                HospitalServiceInterval.hospital_id.in_(hospital_ids)
+            )
+        )
         session.execute(delete(Hospital).where(Hospital.id.in_(hospital_ids)))
         session.commit()
         session.close()
@@ -112,11 +118,20 @@ def env(monkeypatch: pytest.MonkeyPatch):
         engine.dispose()
 
 
-def _hospital(env, name: str) -> Hospital:
+def _hospital(env, name: str, *, in_service: bool = True) -> Hospital:
     hospital = Hospital(id=uuid.uuid4(), name=name, slug=f"w8-{uuid.uuid4().hex}")
     env.hospital_ids.append(hospital.id)
     env.db.add(hospital)
     env.db.flush()
+    if in_service:
+        env.db.add(
+            HospitalServiceInterval(
+                hospital_id=hospital.id,
+                started_at=datetime(2026, 8, 1, tzinfo=UTC),
+                provenance="LEGACY_CUTOVER",
+            )
+        )
+        env.db.flush()
     return hospital
 
 
@@ -352,11 +367,16 @@ def test_safety_net_rebuilds_twice_then_opens_one_developer_incident(env, monkey
     assert [item.idempotency_key[-1] for item in runs] == ["1", "2"]
     _finish(env, runs[-1], judgment + timedelta(hours=7))
 
-    exhausted = monthly_report_safety_net.run_monthly_report_safety_net(
+    # 두 번째 시도가 빨리 끝나도 첫 시도 뒤 18시간(원장 PDF 사고와 같은 창)이 지나야 사람을 부른다.
+    early = monthly_report_safety_net.run_monthly_report_safety_net(
         env.db, now=judgment + timedelta(hours=14)
     )
+    assert early["opened"] == 0
+    exhausted = monthly_report_safety_net.run_monthly_report_safety_net(
+        env.db, now=judgment + timedelta(hours=18)
+    )
     again = monthly_report_safety_net.run_monthly_report_safety_net(
-        env.db, now=judgment + timedelta(hours=15)
+        env.db, now=judgment + timedelta(hours=19)
     )
     env.db.expire_all()
     incidents = list(
@@ -380,7 +400,7 @@ def test_safety_net_rebuilds_twice_then_opens_one_developer_incident(env, monkey
     # 사람이 고치든 늦은 재생성이 성공하든, 전달 가능한 보고서가 생기면 안전망이 닫는다.
     _baseline_ready_report(env, missing)
     healed = monthly_report_safety_net.run_monthly_report_safety_net(
-        env.db, now=judgment + timedelta(hours=16)
+        env.db, now=judgment + timedelta(hours=20)
     )
     env.db.expire_all()
     assert healed["recovered"] == 1
@@ -417,6 +437,94 @@ def test_artifact_only_problem_is_repaired_by_template_refresh_first(env, monkey
     assert result["dispatched"] == 1
     # 숫자는 그대로 두고 PDF만 다시 그린다(템플릿 갱신, 저장된 숫자를 옮기므로 측정 관문을 넘는다).
     assert published_tasks[0]["args"] == [str(hospital.id), 2026, 10, True, True, True, True]
+
+
+def test_repair_dispatcher_refuses_a_month_outside_the_service_interval(env, monkeypatch) -> None:
+    published_tasks: list[dict] = []
+    monkeypatch.setattr(
+        worker_tasks.generate_monthly_report_for_hospital,
+        "apply_async",
+        lambda **kwargs: published_tasks.append(kwargs),
+    )
+    hospital = _hospital(env, "서비스 밖 의원", in_service=False)
+    decision = monthly_report_safety_net.dispatch_report_repair(
+        env.db, hospital, 2026, 10, prefer_template=True, now=datetime(2026, 11, 8, 9, tzinfo=KST)
+    )
+    assert decision.action == "out_of_service"
+    assert published_tasks == [] and _repair_runs(env, hospital.id) == []
+
+
+def test_pdf_incident_owns_escalation_so_the_net_does_not_open_a_duplicate(
+    env, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        worker_tasks.generate_monthly_report_for_hospital, "apply_async", lambda **_kwargs: None
+    )
+    hospital = _hospital(env, "PDF 사고 보유 의원")
+    report = _baseline_ready_report(env, hospital)
+    env.db.execute(
+        update(MonthlyReportArtifact)
+        .where(MonthlyReportArtifact.report_id == report.id)
+        .values(sha256="f" * 64)
+    )
+    env.db.commit()
+    _record_pdf_failure(hospital, report.id, 2026, 10)
+    monkeypatch.setattr(
+        monthly_report_safety_net, "eligible_hospital_ids", lambda *_args: [hospital.id]
+    )
+    start = datetime(2026, 11, 8, 9, 0, tzinfo=KST)
+    for hours in (0, 7):
+        monthly_report_safety_net.run_monthly_report_safety_net(
+            env.db, now=start + timedelta(hours=hours)
+        )
+        for run in _repair_runs(env, hospital.id):
+            if run.state != OperationRunState.FAILED:
+                _finish(env, run, start + timedelta(hours=hours))
+
+    late = monthly_report_safety_net.run_monthly_report_safety_net(
+        env.db, now=start + timedelta(hours=30)
+    )
+    env.db.expire_all()
+    assert late["opened"] == 0
+    assert not env.db.scalar(
+        select(Incident.id).where(
+            Incident.hospital_id == hospital.id,
+            Incident.incident_type == "MONTHLY_REPORT_SAFETY_NET_FAILED",
+        )
+    )
+
+
+def test_actual_byte_corruption_is_detected_and_repaired(env, monkeypatch) -> None:
+    """메타데이터는 맞아도 저장소 바이트가 다르면 전달 가능으로 보지 않는다(일시 장애는 손상 아님)."""
+    from app.services.report_file_integrity import ReportFileUnavailable
+
+    published_tasks: list[dict] = []
+    monkeypatch.setattr(
+        worker_tasks.generate_monthly_report_for_hospital,
+        "apply_async",
+        lambda **kwargs: published_tasks.append(kwargs),
+    )
+    corrupt = _hospital(env, "바이트 손상 의원")
+    flaky = _hospital(env, "저장소 일시 장애 의원")
+    corrupt_report = _baseline_ready_report(env, corrupt)
+    _baseline_ready_report(env, flaky)
+    monkeypatch.setattr(
+        monthly_report_safety_net, "eligible_hospital_ids", lambda *_args: [corrupt.id, flaky.id]
+    )
+
+    def read(path, _sha, _size):
+        if path.endswith(f"{corrupt_report.id}.pdf"):
+            raise ReportFileUnavailable("Report bytes differ from validated artifact")
+        raise ReportFileUnavailable("Report storage unavailable")
+
+    monkeypatch.setattr(monthly_report_safety_net, "read_verified_report", read)
+    result = monthly_report_safety_net.run_monthly_report_safety_net(
+        env.db, now=datetime(2026, 11, 8, 9, 0, tzinfo=KST)
+    )
+
+    assert result["corrupted"] == 1 and result["ready"] == 1 and result["dispatched"] == 1
+    # 숫자는 그대로 두고 PDF만 다시 그린다.
+    assert published_tasks[0]["args"] == [str(corrupt.id), 2026, 10, True, True, True, True]
 
 
 # ── 월간 측정 사고 근거 ───────────────────────────────────────────────────

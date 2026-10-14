@@ -201,11 +201,13 @@ def load_monthly_sov_manifest(
         query_intent, intent_source = _intent_snapshot(
             manifest, cell.query_key, str(live_intent or "LOCAL")
         )
-        legacy_counts = (
-            _legacy_final_counts(cell.state, attempts)
-            if legacy_final and not observation_slots and planned_repeats == 0
-            else None
-        )
+        legacy_counts = None
+        if legacy_final and not observation_slots and planned_repeats == 0:
+            # 셀 하나 = 표본 하나. 언급 여부와 무관한 규칙(가장 이른 확정 답)으로 한 건만 남긴다 —
+            # 성공 시도를 모두 세면 반복이 많았던 셀이 비율을 끌어올린다(언급 5답 셀 + 미언급 1답
+            # 셀이 83%가 된다). 같은 한 건이 점수·대표 사례·서비스별 집계에 똑같이 쓰인다.
+            attempts = _legacy_final_attempt(cell.state, attempts)
+            legacy_counts = _legacy_final_counts(attempts)
         metric_cell = ManifestCellInput(
             query_key=cell.query_key,
             query_text=cell.query_text,
@@ -261,14 +263,31 @@ def load_monthly_sov_manifest(
     )
 
 
-def _legacy_final_counts(state: object, attempts: tuple[CellAttempt, ...]) -> dict[str, object]:
-    confirmed = (
-        sum(attempt.succeeded for attempt in attempts) if _state(state) == "SUCCESS" else 0
+def _legacy_final_attempt(
+    state: object, attempts: tuple[CellAttempt, ...]
+) -> tuple[CellAttempt, ...]:
+    """옛 셀의 표본 한 건 — 가장 이른 확정 답(측정 시각, 같으면 기록 id). 성공 셀이 아니면 없다."""
+    if _state(state) != "SUCCESS":
+        return ()
+    confirmed = [attempt for attempt in attempts if attempt.succeeded]
+    if not confirmed:
+        return ()
+    earliest = min(
+        confirmed,
+        key=lambda attempt: (
+            attempt.measured_at is None,
+            attempt.measured_at.timestamp() if attempt.measured_at is not None else 0.0,
+            attempt.record_id.int,
+        ),
     )
-    planned = max(1, confirmed)
-    missing = planned - confirmed
+    return (earliest,)
+
+
+def _legacy_final_counts(attempts: tuple[CellAttempt, ...]) -> dict[str, object]:
+    confirmed = len(attempts)
+    missing = 1 - confirmed
     return {
-        "planned_repeat_count": planned,
+        "planned_repeat_count": 1,
         "received_answer_count": confirmed,
         "confirmed_slot_count": confirmed,
         "ambiguous_slot_count": 0,

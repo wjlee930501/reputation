@@ -7,6 +7,11 @@
 그래도 남을 때만 개발 대상 사고 하나(`MONTHLY_REPORT_SAFETY_NET_FAILED`)를 열고, 전달 가능해지면
 같은 안전망이 닫는다. 원장 PDF 검증 실패의 자동 재생성(월간 PDF 대조 작업)도 같은 예산을 쓴다.
 
+알림 소유는 하나다: 그 병원·월에 원장 PDF 사고(`MONTHLY_DOCTOR_PDF_BLOCKED`)가 열려 있으면 그
+사고가 승격(18시간 창)을 소유하고 안전망은 따로 열지 않는다. 안전망 사고도 첫 재생성 뒤 같은 창
+(`MONTHLY_ARTIFACT_REPAIR_WINDOW`)이 지나야 연다. 저장 메타데이터만으로는 실제 파일 손상을 모르므로,
+전달 가능한 판의 원장 PDF 바이트를 틱마다 몇 건씩(`BYTE_CHECKS_PER_TICK`) 돌아가며 실제로 읽어 확인한다.
+
 원장에게 보내는 일은 사람이 한다(D39). 여기서는 전달 가능한 artifact가 있게 할 뿐이다.
 """
 
@@ -22,17 +27,21 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.hospital import Hospital
+from app.models.monthly_control import HospitalServiceInterval
 from app.models.operations import Incident, IncidentState, OperationRun, OperationRunState
 from app.services import operation_run_payloads
-from app.services.incident_types import IncidentFingerprint
+from app.services.incident_types import MONTHLY_ARTIFACT_REPAIR_WINDOW, IncidentFingerprint
 from app.services.monthly_period import (
     MonthlyPeriodError,
     eligible_hospital_ids,
     monthly_final_judgment_at,
     prior_month_to_close,
+    reporting_period,
 )
+from app.services.monthly_report_delivery import DeliveryGate
 from app.services.monthly_report_readiness import PeriodReportState, load_period_report_state
 from app.services.ops_incident_alerts import open_ops_incident, recover_ops_incident
+from app.services.report_file_integrity import ReportFileUnavailable, read_verified_report
 
 logger = logging.getLogger(__name__)
 
@@ -47,8 +56,22 @@ _ACTIVE_STATES = (
     OperationRunState.QUEUED,
     OperationRunState.RUNNING,
 )
+# 실제 저장소 바이트가 검증된 artifact와 다르다(손상·덮어쓰기). 일시 장애는 손상으로 보지 않는다.
+STORAGE_MISMATCH_CODE = "doctor_artifact_storage_mismatch"
+# `report_file_integrity.read_verified_report`가 바이트·객체가 검증값과 다를 때만 내는 사유.
+_STORAGE_MISMATCH_REASONS = frozenset(
+    {
+        "Report bytes differ from validated artifact",
+        "Report object metadata mismatch",
+        "Missing report file",
+    }
+)
+BYTE_CHECKS_PER_TICK = 3
 # 원장 PDF만 문제인 판정 — 숫자는 그대로 두고 PDF만 다시 그리면 된다.
-ARTIFACT_GATE_CODES = frozenset({"doctor_artifact_missing", "doctor_artifact_invalid"})
+ARTIFACT_GATE_CODES = frozenset(
+    {"doctor_artifact_missing", "doctor_artifact_invalid", STORAGE_MISMATCH_CODE}
+)
+_PDF_INCIDENT_TYPE = "MONTHLY_DOCTOR_PDF_BLOCKED"
 
 SAFETY_NET_INCIDENT_TYPE = "MONTHLY_REPORT_SAFETY_NET_FAILED"
 _PIPELINE = "monthly_report_safety_net"
@@ -59,9 +82,10 @@ _ACTOR = "monthly-report-safety-net"
 
 @dataclass(frozen=True, slots=True)
 class RepairDecision:
-    action: str  # dispatched | in_flight | waiting | exhausted
+    action: str  # dispatched | in_flight | waiting | exhausted | out_of_service
     run_id: uuid.UUID | None = None
     template_only: bool = False
+    first_attempt_at: datetime | None = None
 
 
 def _period_key(year: int, month: int) -> str:
@@ -90,6 +114,24 @@ def repair_runs(db: Session, hospital_id: uuid.UUID, year: int, month: int) -> l
 def _attempt_number(key: str | None, prefix: str) -> int:
     tail = str(key or "")[len(prefix):]
     return int(tail) if tail.isdigit() else 0
+
+
+def _in_service(db: Session, hospital_id: uuid.UUID, year: int, month: int) -> bool:
+    """그 병원의 서비스 구간이 그 달에 한 번이라도 걸쳤는가(`monthly_period.eligible_hospital_ids`와 같은 규칙)."""
+    period = reporting_period(year, month)
+    return (
+        db.scalar(
+            select(HospitalServiceInterval.id)
+            .where(
+                HospitalServiceInterval.hospital_id == hospital_id,
+                HospitalServiceInterval.started_at < period.ends_at,
+                (HospitalServiceInterval.ended_at.is_(None))
+                | (HospitalServiceInterval.ended_at > period.starts_at),
+            )
+            .limit(1)
+        )
+        is not None
+    )
 
 
 def _report_run_in_flight(db: Session, hospital_id: uuid.UUID, now: datetime) -> bool:
@@ -121,11 +163,14 @@ def dispatch_report_repair(
     재생성이다 — 템플릿 갱신이 숫자 판정으로 거절돼도 다음 시도가 다른 길로 간다. 커밋은 여기서 한다.
     """
     observed = now or datetime.now(timezone.utc)
+    # 서비스 구간 밖의 달은 보고 대상이 아니다 — 어느 진입점이 불러도 다시 만들지 않는다.
+    if not _in_service(db, hospital.id, year, month):
+        return RepairDecision("out_of_service")
     if _report_run_in_flight(db, hospital.id, observed):
         return RepairDecision("in_flight")
     runs = repair_runs(db, hospital.id, year, month)
     if len(runs) >= REPAIR_BUDGET:
-        return RepairDecision("exhausted")
+        return RepairDecision("exhausted", first_attempt_at=_aware(runs[0].created_at))
     if runs and (_aware(runs[-1].created_at) or observed) > observed - REPAIR_SPACING:
         return RepairDecision("waiting")
     attempt = len(runs) + 1
@@ -222,10 +267,34 @@ def run_monthly_report_safety_net(db: Session, *, now: datetime | None = None) -
             )
         ).all()
     }
-    counts = {"ready": 0, "dispatched": 0, "waiting": 0, "opened": 0, "recovered": 0}
-    for hospital in sorted(hospitals, key=lambda row: (row.name, str(row.id))):
+    pdf_incidents = {
+        incident.hospital_id
+        for incident in db.scalars(
+            select(Incident).where(
+                Incident.incident_type == _PDF_INCIDENT_TYPE,
+                Incident.source_id.like(f"%:{period_key}"),
+                Incident.state.in_((IncidentState.OPEN, IncidentState.RETRYING)),
+            )
+        ).all()
+    }
+    counts = {
+        "ready": 0, "dispatched": 0, "waiting": 0, "opened": 0, "recovered": 0, "corrupted": 0,
+    }
+    ordered = sorted(hospitals, key=lambda row: (row.name, str(row.id)))
+    byte_checks = _byte_check_slice(len(ordered), observed)
+    for index, hospital in enumerate(ordered):
         state = load_period_report_state(db, hospital.id, period.year, period.month)
         object_id = f"{hospital.id}:{period_key}"
+        if state.gate.ready and index in byte_checks and _storage_mismatch(state):
+            counts["corrupted"] += 1
+            state = PeriodReportState(
+                state.report,
+                state.manifest,
+                state.artifact,
+                DeliveryGate(
+                    False, STORAGE_MISMATCH_CODE, "저장된 원장 PDF 파일이 검증 정보와 다릅니다."
+                ),
+            )
         if state.gate.ready:
             counts["ready"] += 1
             if hospital.id in open_incidents and _recover(hospital, object_id):
@@ -242,13 +311,48 @@ def run_monthly_report_safety_net(db: Session, *, now: datetime | None = None) -
         if decision.action == "dispatched":
             counts["dispatched"] += 1
         elif decision.action == "exhausted":
-            if hospital.id not in open_incidents:
+            # 승격은 한 사고만: 원장 PDF 사고가 열려 있으면 그쪽이 18시간 창으로 소유한다.
+            first = decision.first_attempt_at
+            due = first is None or observed >= first + MONTHLY_ARTIFACT_REPAIR_WINDOW
+            if (
+                hospital.id not in open_incidents
+                and hospital.id not in pdf_incidents
+                and due
+            ):
                 _open(hospital, object_id, period_key, state)
                 counts["opened"] += 1
+            else:
+                counts["waiting"] += 1
+        elif decision.action == "out_of_service":
+            continue
         else:
             counts["waiting"] += 1
     db.commit()
     return {"status": "completed", "period": period_key, **counts}
+
+
+def _byte_check_slice(count: int, observed: datetime) -> frozenset[int]:
+    """이번 틱에 실제 바이트를 읽을 병원 순번 — 5분 틱마다 `BYTE_CHECKS_PER_TICK`건씩 돌아간다."""
+    if count == 0:
+        return frozenset()
+    tick = (observed.hour * 60 + observed.minute) // 5
+    start = (tick * BYTE_CHECKS_PER_TICK) % count
+    return frozenset((start + offset) % count for offset in range(min(BYTE_CHECKS_PER_TICK, count)))
+
+
+def _storage_mismatch(state: PeriodReportState) -> bool:
+    """전달 가능한 판의 원장 PDF 바이트를 실제로 읽어 확인한다. 일시적인 저장소 장애는 손상이 아니다."""
+    artifact = state.artifact
+    if artifact is None:
+        return False
+    try:
+        read_verified_report(artifact.path, artifact.sha256, artifact.byte_size)
+    except ReportFileUnavailable as exc:
+        return str(exc) in _STORAGE_MISMATCH_REASONS
+    except Exception:  # noqa: BLE001 - unknown storage failure is not proof of corruption.
+        logger.warning("Monthly report byte check failed", exc_info=True)
+        return False
+    return False
 
 
 def _open(hospital: Hospital, object_id: str, period_key: str, state: PeriodReportState) -> None:

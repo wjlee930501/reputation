@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -27,7 +27,7 @@ from app.services.measurement_manifest_policy import (
     manifest_observation_adequacy,
 )
 from app.services.monthly_sov import build_monthly_sov
-from app.services.monthly_sov_repository import _legacy_final_counts
+from app.services.monthly_sov_repository import _legacy_final_attempt, _legacy_final_counts
 from app.services.monthly_sov_types import (
     LEGACY_FINAL_LINEAGE,
     CellAttempt,
@@ -82,13 +82,17 @@ def test_complete_legacy_and_slotted_manifests_keep_their_old_judgment() -> None
     assert not legacy_manifest_is_final(slotted, deadline_reached=True)
 
 
-def _cell(platform: str, state: str, successes: int, *, mentioned: int = 0) -> ManifestCellInput:
+def _cell(
+    platform: str, state: str, successes: int, *, mentioned: int = 0, first_mentioned: bool = True
+) -> ManifestCellInput:
+    """옛 셀 — 성공 시도 여러 건이 남아 있을 수 있다. 로더와 같은 규칙으로 표본 한 건을 고른다."""
+    base = datetime(2026, 9, 20, tzinfo=UTC)
     attempts = tuple(
         CellAttempt(
             record_id=uuid.uuid4(),
-            measured_at=datetime(2026, 9, 20, tzinfo=UTC),
+            measured_at=base + timedelta(minutes=index),
             succeeded=True,
-            is_mentioned=index < mentioned,
+            is_mentioned=(index < mentioned) if first_mentioned else (index >= successes - mentioned),
         )
         for index in range(successes)
     )
@@ -104,7 +108,8 @@ def _cell(platform: str, state: str, successes: int, *, mentioned: int = 0) -> M
         query_intent_source="FROZEN",
         attempts=attempts,
     )
-    return replace(cell, **_legacy_final_counts(state, attempts))
+    chosen = _legacy_final_attempt(state, attempts)
+    return replace(cell, attempts=chosen, **_legacy_final_counts(chosen))
 
 
 def _freeze(payload: dict, cells) -> dict:
@@ -148,6 +153,33 @@ def test_legacy_final_counts_pass_the_delivery_contract(cells, status) -> None:
     if status == "UNAVAILABLE":
         # null은 0이 아니다 — 확인된 답이 없는 달에 언급률을 0으로 쓰지 않는다.
         assert payload["sov_pct"] is None
+
+
+def test_legacy_sample_is_one_unbiased_answer_per_cell() -> None:
+    """반복이 많은 셀이 비율을 끌어올리지 않는다(Codex P1 재현: 5답 언급 셀 + 1답 미언급 셀 + 실패 셀)."""
+    cells = (
+        _cell("chatgpt", "SUCCESS", 5, mentioned=5),
+        _cell("chatgpt", "SUCCESS", 1, mentioned=0),
+        _cell("chatgpt", "FAILED", 0),
+    )
+    summary = build_monthly_sov(cells, ("chatgpt",))
+    payload = _freeze(summary.to_payload(), cells)
+    adequacy = payload["observation_adequacy"]
+
+    assert (adequacy["planned_slots"], adequacy["confirmed_slots"]) == (3, 2)
+    assert delivery._availability_platforms_are_consistent(adequacy)
+    assert summary.sov_pct == 50.0
+    chatgpt = next(row for row in payload["platforms"] if row["platform"] == "chatgpt")
+    assert (chatgpt["confirmed_sample_count"], chatgpt["confirmed_mentioned_count"]) == (2, 1)
+    assert manifest_observation_adequacy(
+        _legacy_manifest("SUCCESS", "SUCCESS", "FAILED"), deadline_reached=True
+    ).confirmed_slots == 2
+
+
+def test_legacy_sample_choice_does_not_prefer_a_mentioned_answer() -> None:
+    # 가장 이른 답이 미언급이면 뒤의 언급 답이 있어도 미언급이다 — 대표 사례 규칙(언급 우선)과 다르다.
+    [answer] = _cell("chatgpt", "SUCCESS", 3, mentioned=2, first_mentioned=False).attempts
+    assert answer.is_mentioned is False
 
 
 # ── V0 PDF는 V0 계약으로 ─────────────────────────────────────────────────
@@ -251,6 +283,9 @@ def test_baseline_doctor_view_says_baseline_not_unmeasured() -> None:
     text = _body_text(_html(view))
 
     assert narrative.title == "기준 설정 보고서"
+    # 이번 달은 측정이 없다 — 다음 달이 첫 측정이고 그것이 기준점이다(이번 달을 기준으로 비교하지 않는다).
+    assert "다음 달 첫 측정으로 기준점을 만들겠습니다" in narrative.conclusion
+    assert "이번 달을 기준으로" not in text
     assert narrative.current is None and narrative.current_label == "기준 설정"
     assert "기준 설정" in text
     for banned in ("측정 없음", "측정 못 함", "확인 못 함", "0.0%"):

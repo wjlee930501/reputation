@@ -1222,8 +1222,8 @@ def _director_copy(
     return {
         "tiles": [tile, *view["tiles"][1:]],
         "coverage_text": (
-            f"측정 범위: 이번 달은 기준을 세운 달입니다. 다음 달부터 {names}에 같은 질문을 "
-            "같은 방식으로 물어 결과를 확인합니다."
+            f"측정 범위: 이번 달은 정기 측정 전입니다. 다음 달 첫 측정에서 {names}에 정한 질문을 "
+            "물어 기준점을 만들겠습니다."
             if baseline
             else _director_coverage_text(
                 coverage, names=names, has_coverage=bool(coverage), records=records
@@ -1232,7 +1232,7 @@ def _director_copy(
         "footnotes": (
             _medical_safe_lines(
                 [
-                    "다음 달부터 같은 질문을 같은 방식으로 물어, 이번 달을 기준으로 변화를 보여 드립니다.",
+                    "다음 달 첫 측정으로 기준점을 만들고, 그다음 달부터 같은 질문으로 변화를 비교해 보여 드립니다.",
                     _DIRECTOR_CAVEAT,
                 ]
             )
@@ -1311,7 +1311,7 @@ def build_doctor_report_view(
         else this_count - prev_count
     )
     if report_kind == "SETUP":
-        delta_sentence = "이번 달은 기준을 세운 달입니다. 다음 달부터 같은 질문으로 비교합니다"
+        delta_sentence = "이번 달은 정기 측정 전입니다. 다음 달 첫 측정으로 기준점을 만들겠습니다"
     elif not measured:
         delta_sentence = "이번 달은 측정이 충분히 이뤄지지 않았습니다"
     elif comparison_reason == "NO_PRIOR_MANIFEST" or (
