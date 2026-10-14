@@ -48,7 +48,9 @@ _UNEXPLAINED_FINDING_MESSAGE = "독립 AI 검수의 판정 근거가 충분하�
 _SYNTHETIC_UNCERTAIN_MESSAGES = frozenset(
     {_LOW_CONFIDENCE_FINDING_MESSAGE, _UNEXPLAINED_FINDING_MESSAGE}
 )
-REVIEW_SCHEMA_VERSION = "content-review-v2"
+# v3(2026-10-14 W4 재설계): 지적마다 검수 모델이 직접 판정한 `critical`을 싣는다. v2 기록(필드 없음)은
+# Critical로 읽는다 — 그 이유만으로 다시 사지 않는다(`finding_criticality.classify_finding`).
+REVIEW_SCHEMA_VERSION = "content-review-v3"
 REVIEWED_CANDIDATE_FIELDS = (
     "title",
     "body",
@@ -102,6 +104,13 @@ DATA_BLOCK에 correction_context가 있으면 이 후보는 직전 검수의 지
 각 finding은 후보의 문장 하나만 다루고, quote에 그 문장을 후보에서 한 글자도 바꾸지 말고
 그대로 복사하세요. 특정 문장을 짚을 수 없는 지적이면 quote를 빈 문자열로 두세요.
 
+각 finding에는 critical(true/false)을 반드시 판정하세요. critical=true는 다음 중 하나입니다:
+(1) 불법 의료광고 — 치료 효과·결과 보장, 최고·최저가·가격 우위, 할인·이벤트·무료 유인,
+(2) 의료 안전 위험 — 응급 상황·119·응급실 안내의 누락이나 오안내, 약 용량·용법, 금기·주의 대상,
+시술·수술의 위험·부작용·합병증, 진단·치료·예후에 관한 위험한 오정보.
+병원 고유 사실(진료 철학·경력·개원 연도·시설·예약·홍보 문구)의 근거 부족, 문체, 참고자료처럼
+환자 안전·의료광고와 무관한 지적만 critical=false입니다. 조금이라도 확실하지 않으면 critical=true로 두세요.
+
 각 finding은 심각도와 종류를 내용 자체로 판정하세요. confidence 숫자만으로 hard/soft를
 나누지 마세요. 병원 고유 사실의 근거 부족, 의료적 위험, 환자 안전 오해는 HARD입니다.
 문체·가독성·구성 개선과 참고자료 주제 불일치는 SOFT입니다. 사실 또는 의료 안전을 판단할 근거가 부족하면
@@ -112,7 +121,7 @@ UNCERTAIN입니다. SOFT만 있으면 안전 게이트를 막지 않지만 구�
   "decision": "PASS 또는 REVISE",
   "confidence": 0.0,
   "findings": [
-    {"severity": "HARD 또는 SOFT 또는 UNCERTAIN", "kind": "HOSPITAL_FACT 또는 MEDICAL_SAFETY 또는 REFERENCE 또는 STYLE", "quote": "지적한 후보 문장 원문 또는 빈 문자열", "message": "수정 가능한 구체적 지적"}
+    {"severity": "HARD 또는 SOFT 또는 UNCERTAIN", "kind": "HOSPITAL_FACT 또는 MEDICAL_SAFETY 또는 REFERENCE 또는 STYLE", "quote": "지적한 후보 문장 원문 또는 빈 문자열", "critical": true, "message": "수정 가능한 구체적 지적"}
   ],
   "summary": "한 문장 검수 요약"
 }
@@ -155,9 +164,17 @@ REVIEW_TOOL = {
                                 "그대로 복사한 원문. 특정 문장이 없으면 빈 문자열."
                             ),
                         },
+                        "critical": {
+                            "type": "boolean",
+                            "description": (
+                                "불법 의료광고(효과 보장·최저가·할인·무료 유인) 또는 의료 안전 위험"
+                                "(응급·119 안내, 용량, 금기, 시술 위험, 위험한 오정보)이면 true. "
+                                "병원 사실·문체·참고자료만의 지적이면 false. 확실하지 않으면 true."
+                            ),
+                        },
                         "message": {"type": "string"},
                     },
-                    "required": ["severity", "kind", "quote", "message"],
+                    "required": ["severity", "kind", "quote", "critical", "message"],
                 },
             },
             "summary": {"type": "string"},
@@ -214,6 +231,8 @@ class ContentAiFinding:
     target: ContentAiFindingTarget = ContentAiFindingTarget.CANDIDATE_TEXT
     # 필수 문구 일치로 SOFT가 되기 전 모델이 매긴 심각도. 기록용이며 판정에 쓰지 않는다.
     original_severity: ContentAiFindingSeverity | None = None
+    # 검수 모델이 판정한 Critical 여부(v3). None(필드 없음·옛 기록·합성 지적)은 Critical로 읽는다.
+    critical: bool | None = None
 
     @property
     def blocks_publication(self) -> bool:
@@ -228,8 +247,8 @@ class ContentAiFinding:
     def targets_must_use_message(self) -> bool:
         return self.target == ContentAiFindingTarget.MUST_USE_MESSAGE
 
-    def payload(self) -> dict[str, str]:
-        payload = {
+    def payload(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
             "severity": self.severity.value,
             "kind": self.kind.value,
             "message": self.message,
@@ -239,6 +258,8 @@ class ContentAiFinding:
             payload["quote"] = self.quote
         if self.original_severity is not None:
             payload["original_severity"] = self.original_severity.value
+        if self.critical is not None:
+            payload["critical"] = self.critical
         return payload
 
 
@@ -347,6 +368,7 @@ def review_from_payload(payload: dict[str, Any]) -> ContentAiReview:
                     if raw.get("original_severity")
                     else None
                 ),
+                critical=raw["critical"] if isinstance(raw.get("critical"), bool) else None,
             )
         )
     unavailable = payload.get("unavailable_reason")
@@ -595,7 +617,15 @@ def _parse_finding(value: object) -> ContentAiFinding | None:
         # REFERENCE는 여기에 들어가지 않는다 — 참고자료 주제 불일치는 사실·안전
         # 판단이 아니라 결정적으로 떼어 낼 수 있는 조언이므로 SOFT로 남는다.
         severity = ContentAiFindingSeverity.UNCERTAIN
-    return ContentAiFinding(severity, kind, message, quote=quote)
+    # 엄격한 bool만 받는다 — 빠졌거나 문자열이면 None(Critical)이다.
+    critical = value.get("critical")
+    return ContentAiFinding(
+        severity,
+        kind,
+        message,
+        quote=quote,
+        critical=critical if isinstance(critical, bool) else None,
+    )
 
 
 #: 필수 문구 원문 지적을 기록용으로 내릴 수 있는 종류. 마케터·원장이 준 병원 사실 문장이 발행을

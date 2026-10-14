@@ -44,6 +44,8 @@ EVENT_LABELS: Final[dict[str, NotificationLabel]] = {
     "GENERATION_BLOCKED_DIGEST": NotificationLabel.ERROR,
     # D35: 배포 전부터 남은 공개 글의 Critical 사후 검수 지적 요약("마케터 검토 필요 N건").
     "POST_PUBLISH_CRITICAL_DIGEST": NotificationLabel.ERROR,
+    # D35: 공개 글 하나의 Critical 사후 검수 지적("마케터 검토 필요", 글당 평생 한 번).
+    "POST_PUBLISH_CRITICAL_ALERT": NotificationLabel.ERROR,
     "CONTENT_BATCH_BLOCKED": NotificationLabel.ERROR,
     # 사람이 고칠 최종 차단만 ERROR다. 자동 복구가 아직 맡은 공백은 아래 REPORT로 간다.
     "MONTHLY_REPORT_GAP_SUMMARY": NotificationLabel.ERROR,

@@ -55,7 +55,10 @@ class _DB:
 
 
 def _wire(monkeypatch, item, review):
-    calls = {"models": [], "recovered": 0, "needs_human": []}
+    calls = {"models": [], "recovered": 0, "needs_human": [], "alerts": []}
+    monkeypatch.setattr(
+        sweep, "_enqueue_notification", lambda _db, intent, _now: calls["alerts"].append(intent)
+    )
 
     async def fake_review(**kwargs):
         calls["models"].append(kwargs.get("model"))
@@ -106,6 +109,7 @@ def test_senior_still_uncertain_is_recorded_once_and_closes_quietly(monkeypatch)
         ContentAiFindingKind.HOSPITAL_FACT,
         "확인할 수 없는 진료 원칙",
         quote=PHILOSOPHY,
+        critical=False,
     )
     calls = _wire(monkeypatch, item, _review(item, status=ContentAiReviewStatus.REVISE, findings=[uncertain]))
 
@@ -130,7 +134,8 @@ def test_senior_critical_finding_asks_the_marketer_once(monkeypatch):
     sweep.senior_rereview_flagged(_DB(), item, object(), object(), asyncio.run, NOW)
 
     assert len(calls["needs_human"]) == 1
-    assert item.essence_check_summary[sweep.POST_PUBLISH_CRITICAL_ALERT_KEY]["critical_alert_sent_at"]
+    assert item.essence_check_summary[sweep.POST_PUBLISH_CRITICAL_ALERT_KEY]["enqueued_at"]
+    assert len(calls["alerts"]) == 1
 
 
 def test_senior_uncertain_medical_finding_is_critical_and_alerts(monkeypatch):

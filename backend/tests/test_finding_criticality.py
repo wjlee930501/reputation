@@ -26,7 +26,8 @@ C, N = Criticality.CRITICAL, Criticality.NONCRITICAL
 
 
 def _finding(severity: str, kind: str, message: str = "지적", **extra) -> dict:
-    return {"severity": severity, "kind": kind, "message": message, **extra}
+    # 검수 모델이 `critical: false`로 판정한 지적이 기본이다(v3) — 필드 없음·true는 따로 본다.
+    return {"severity": severity, "kind": kind, "message": message, "critical": False, **extra}
 
 
 PHILOSOPHY = "본원은 환자 한 분 한 분의 이야기를 끝까지 듣는 것을 진료 원칙으로 삼습니다."
@@ -214,3 +215,66 @@ def _tiers_and_alerts_on(monkeypatch):
 
     monkeypatch.setattr(_settings, "CONTENT_FINDING_TIERS_ENABLED", True)
     monkeypatch.setattr(_settings, "POST_PUBLISH_CRITICAL_ALERTS_ENABLED", True)
+
+
+# ── 2026-10-14 재설계: 등급은 검수 모델의 `critical`이 정하고 어휘는 안전망이다 ──────────────
+
+
+@pytest.mark.parametrize(
+    ("critical", "expected"),
+    [(False, N), (True, C), (None, C), ("false", C), (0, C)],
+)
+def test_reviewer_critical_field_decides_and_missing_is_critical(critical, expected) -> None:
+    finding = _finding("HARD", "HOSPITAL_FACT", "승인 자료에 없는 진료 원칙", quote=PHILOSOPHY)
+    if critical is None:
+        finding.pop("critical")
+    else:
+        finding["critical"] = critical
+
+    assert classify_finding(finding, CONTENT) is expected
+
+
+def test_lexicon_overrides_a_reviewer_false() -> None:
+    """검수 모델이 false라 해도 의료·안전 어휘가 걸리면 Critical이다(추가 안전망)."""
+
+    finding = _finding("HARD", "HOSPITAL_FACT", "복용 용량이 다릅니다", quote=PHILOSOPHY)
+
+    assert finding["critical"] is False
+    assert classify_finding(finding, CONTENT) is C
+
+
+def test_reviewer_false_on_a_medical_safety_kind_is_contradictory_and_critical() -> None:
+    finding = _finding("HARD", "MEDICAL_SAFETY", "승인 자료에 없는 진료 원칙", quote=PHILOSOPHY)
+
+    assert classify_finding(finding, CONTENT) is C
+
+
+def test_review_parser_reads_the_critical_field_strictly() -> None:
+    from app.services import content_ai_review as car
+
+    def parse(**extra):
+        return car._parse_finding(
+            {"severity": "HARD", "kind": "HOSPITAL_FACT", "quote": "q", "message": "m", **extra}
+        )
+
+    assert parse(critical=False).critical is False
+    assert parse(critical=True).critical is True
+    assert parse().critical is None
+    assert parse(critical="false").critical is None
+    assert parse(critical=False).payload()["critical"] is False
+    assert "critical" not in parse().payload()
+    # 저장된 기록에서 되살릴 때도 같다 — 옛 v2 기록(필드 없음)은 None(Critical)이다.
+    stored = car.review_from_payload(
+        {"status": "REVISE", "findings": [parse(critical=False).payload(), parse().payload()]}
+    )
+    assert [finding.critical for finding in stored.findings] == [False, None]
+
+
+def test_review_schema_requires_the_critical_field_and_bumps_the_version() -> None:
+    from app.services import content_ai_review as car
+
+    item = car.REVIEW_TOOL["input_schema"]["properties"]["findings"]["items"]
+    assert item["properties"]["critical"]["type"] == "boolean"
+    assert "critical" in item["required"]
+    assert car.REVIEW_SCHEMA_VERSION == "content-review-v3"
+    assert "critical" in car._SYSTEM_PROMPT and "확실하지 않으면 critical=true" in car._SYSTEM_PROMPT

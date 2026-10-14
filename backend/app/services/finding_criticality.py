@@ -10,7 +10,7 @@
   알 수 없는 지적(fail closed). 감지 자체가 Critical-blocked는 아니다 — 먼저 기존 교정·재작성·주제 교체
   계단을 탄다.
   (출력 주입·tenant 혼입의 결정적 검사는 아직 없다 — 생기면 여기 코드로 더한다.)
-- ``NONCRITICAL``: 의료 내용이 없는 병원 사실(진료 철학 문장·경력·개원 연도·시설·예약·홍보 문구)·
+- ``NONCRITICAL``: 검수 모델이 `critical: false`로 판정한, 의료 내용이 없는 병원 사실(진료 철학 문장·경력·개원 연도·시설·예약·홍보 문구)·
   문체·참고자료·검수 장애·공급자 장애 등. 지적 문장을 결정적으로 지우고 진행하며(숫자를 바꿔 넣지
   않는다) 교정·주제 교체 예산을 쓰지 않는다.
 - ``RESPECT``: 사람이 만든 공개 권한 상태(근거 철회·PAUSED·비공개). Critical처럼 막지만 자동으로
@@ -155,13 +155,22 @@ def is_emergency_guidance_finding(finding: Mapping[str, Any]) -> bool:
     )
 
 
+def reviewer_marked_noncritical(finding: Mapping[str, Any]) -> bool:
+    """검수 모델이 이 지적에 `critical: false`를 **명시**했는가(v3 검수). 빠졌거나 bool이 아니면 아니다."""
+
+    return finding.get("critical") is False
+
+
 def classify_finding(finding: Mapping[str, Any], content: object = None) -> Criticality:
     """독립 검수 지적 하나의 등급 — 허용 목록이다. 아래를 **모두** 만족할 때만 비-Critical이다.
 
-    1. 종류가 `NONCRITICAL_KINDS`(병원 사실·문체·참고자료)다.
+    0. 독립 검수 모델이 그 지적에 `critical: false`를 명시했다(2026-10-14 W4 재설계 — 등급은 검수 모델이
+       정한다). 필드가 없으면(옛 v2 기록·합성 지적) Critical이다 — 그 이유만으로 다시 사지 않는다.
+    1. 종류가 `NONCRITICAL_KINDS`(병원 사실·문체·참고자료)다 — 의료 안전 종류에 false는 모순이라 Critical.
     2. 인용(`quote`)이 있고, 그 인용이 본문의 정확히 한 문장을 가리킨다(제목·메타·FAQ가 아니다).
        `content`(후보 본문)가 없으면 확인할 수 없으므로 Critical이다.
-    3. 지적 문구·인용·그 문장 전체 어디에도 의료·안전 어휘(`MEDICAL_SAFETY_LEXICON`)가 없다.
+    3. 안전망: 지적 문구·인용·그 문장 전체 어디에도 의료·안전 어휘(`MEDICAL_SAFETY_LEXICON`)가 없다 —
+       어휘가 걸리면 검수 모델이 false라 해도 Critical이다.
 
     그 밖은 모두 Critical이다(fail closed) — 의료 안전(확신 부족 포함)·종류 불명·제목 지적·인용 없는
     지적·혼합 언어. 발행을 막지 않는 지적(SOFT·필수 문구를 짚은 지적)은 등급을 매기지 않는다(비-Critical).
@@ -169,6 +178,8 @@ def classify_finding(finding: Mapping[str, Any], content: object = None) -> Crit
 
     if not finding_blocks(finding):
         return Criticality.NONCRITICAL
+    if not reviewer_marked_noncritical(finding):
+        return Criticality.CRITICAL
     if _label(finding.get("kind")) not in NONCRITICAL_KINDS:
         return Criticality.CRITICAL
     sentence = locate_body_sentence(content, finding.get("quote"))

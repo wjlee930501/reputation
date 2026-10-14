@@ -1919,3 +1919,54 @@ async def test_each_row_is_finalized_before_the_next_row_is_sent(outbox_sessions
     # Then: the first row was already committed SENT before the second POST left
     assert result.sent == 2
     assert states_seen_at_second_post == [NotificationOutboxState.SENT.value]
+
+
+@pytest.mark.asyncio
+async def test_a_critical_post_alert_never_closes_after_failures_and_backs_off(outbox_sessions) -> None:
+    """D35(2026-10-14): 글 하나의 Critical 알림은 시도 횟수로 FAILED가 되지 않는다.
+
+    전송 실패가 이어져도 RETRYING으로 남고 간격은 1시간에서 멈춘다(시간당 한 번 이하). 사고에 묶이지
+    않으므로(`incident_id` 없음) 사고 복구의 발송 전 종결 대상도 아니다. Slack이 돌아오면 그 행이 나간다.
+    """
+
+    from app.services.notification_contracts import UNBOUNDED_NOTIFICATION_ATTEMPTS
+
+    key = "OPS-QA-T10-CRITICAL-ALERT"
+    intent = replace(
+        _intent(key, max_attempts=UNBOUNDED_NOTIFICATION_ATTEMPTS),
+        notification_type="POST_PUBLISH_CRITICAL_ALERT",
+    )
+    async with outbox_sessions() as setup:
+        await enqueue_notification(setup, intent, now=_NOW)
+        await setup.commit()
+    down = lambda _request: httpx.Response(503, text="down")  # noqa: E731
+    now = _NOW
+    for _ in range(12):
+        async with httpx.AsyncClient(transport=httpx.MockTransport(down)) as client:
+            await dispatch_notification_batch(
+                outbox_sessions,
+                client,
+                webhook_url="https://hooks.slack.com/services/T/B/X",
+                worker_id=f"worker-{uuid.uuid4().hex}",
+                now=now,
+                limit=10,
+            )
+        async with outbox_sessions() as verify:
+            row = await verify.scalar(select(NotificationOutbox).where(NotificationOutbox.dedupe_key == key))
+            assert row is not None and row.state == NotificationOutboxState.RETRYING
+            assert row.incident_id is None
+            assert row.next_attempt_at - now <= timedelta(hours=1)
+            now = row.next_attempt_at
+    assert row.attempt_count == 12 and row.next_attempt_at - _NOW > timedelta(hours=3)
+
+    ok = lambda _request: httpx.Response(200, text="ok")  # noqa: E731
+    async with httpx.AsyncClient(transport=httpx.MockTransport(ok)) as client:
+        result = await dispatch_notification_batch(
+            outbox_sessions,
+            client,
+            webhook_url="https://hooks.slack.com/services/T/B/X",
+            worker_id=f"worker-{uuid.uuid4().hex}",
+            now=now,
+            limit=10,
+        )
+    assert result.sent == 1

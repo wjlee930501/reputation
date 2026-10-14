@@ -26,9 +26,12 @@ def _flags_off(monkeypatch):
     monkeypatch.setattr(settings, "POST_PUBLISH_CRITICAL_ALERTS_ENABLED", False)
 
 
-def test_both_flags_default_off() -> None:
-    assert Settings.model_fields["CONTENT_FINDING_TIERS_ENABLED"].default is False
-    assert Settings.model_fields["POST_PUBLISH_CRITICAL_ALERTS_ENABLED"].default is False
+def test_both_flags_default_on_and_this_module_switches_them_off() -> None:
+    # 2026-10-14 재설계 뒤 기본 켜짐 — 이 모듈은 롤백 스위치(끔)가 main과 같은지 본다.
+    assert Settings.model_fields["CONTENT_FINDING_TIERS_ENABLED"].default is True
+    assert Settings.model_fields["POST_PUBLISH_CRITICAL_ALERTS_ENABLED"].default is True
+    assert settings.CONTENT_FINDING_TIERS_ENABLED is False
+    assert settings.POST_PUBLISH_CRITICAL_ALERTS_ENABLED is False
 
 
 # ── 사후 검수 스윕 ─────────────────────────────────────────────────────────────

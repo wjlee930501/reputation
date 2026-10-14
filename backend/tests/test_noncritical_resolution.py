@@ -72,8 +72,8 @@ def _philosophy(**extra):
     return SimpleNamespace(**values)
 
 
-def _finding(severity, kind, message, quote=""):
-    return {"severity": severity, "kind": kind, "message": message, "quote": quote}
+def _finding(severity, kind, message, quote="", critical=False):
+    return {"severity": severity, "kind": kind, "message": message, "quote": quote, "critical": critical}
 
 
 def _review(content, *findings, status="REVISE"):
@@ -289,6 +289,7 @@ async def test_run_stops_at_its_own_rereview_limit() -> None:
                     ContentAiFindingKind.HOSPITAL_FACT,
                     "승인 자료에 없는 진료 원칙 문장",
                     quote=quote,
+                    critical=False,
                 ),
             ),
         )

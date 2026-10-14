@@ -182,7 +182,8 @@ def probe_webhook_sync(webhook_url: str, *, timeout: float = 10.0) -> WebhookPro
 
 
 def retry_delay(attempt_count: int, provider_delay: int | None) -> int:
-    return provider_delay or min(15 * (2 ** max(0, attempt_count - 1)), _MAX_RETRY_SECONDS)
+    # 지수를 묶는다 — 닫지 않는 알림(`UNBOUNDED_NOTIFICATION_ATTEMPTS`)의 큰 시도 수에서도 값이 커지지 않는다.
+    return provider_delay or min(15 * (2 ** min(max(0, attempt_count - 1), 16)), _MAX_RETRY_SECONDS)
 
 
 def safe_error_message(code: str | None) -> str | None:

@@ -2091,11 +2091,21 @@ def test_only_a_sample_block_is_forced_into_a_body_repair(monkeypatch):
         essence_check_summary={"ai_review": {"findings": [{
             "severity": "HARD", "kind": "HOSPITAL_FACT",
             "message": "진료 철학 문장이 승인 자료에 없습니다.", "quote": sentence,
+            "critical": False,
         }]}},
     )
     assert tasks._stored_block_is_sample_remediable(
         fact_hard, "CONTENT_AI_HARD_FINDING"
     ) is True
+    # 검수 모델의 `critical`이 없는 옛 기록은 Critical이다 — 표본 재작성이 아니라 종착 계단이다.
+    legacy = dict(fact_hard.essence_check_summary["ai_review"]["findings"][0])
+    legacy.pop("critical")
+    fact_legacy = SimpleNamespace(
+        body=fact_hard.body, essence_check_summary={"ai_review": {"findings": [legacy]}}
+    )
+    assert tasks._stored_block_is_sample_remediable(
+        fact_legacy, "CONTENT_AI_HARD_FINDING"
+    ) is False
 
     synthetic = SimpleNamespace(essence_check_summary={"ai_review": {"findings": [{
         "severity": "UNCERTAIN", "kind": "MEDICAL_SAFETY", "message": "확신이 부족합니다.",

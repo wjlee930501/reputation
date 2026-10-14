@@ -490,17 +490,34 @@ def apply_review_outcome(item: ContentItem, review: ContentAiReview, *, now: dat
     return "REVIEWED"
 
 
-# ── D35 Critical 알림 — 글당 평생 한 번의 알림 의도(2026-10-14 Codex 2차 C·D·E) ─────────────────
+# ── D35 Critical 알림 — 글당 평생 한 번의 전용 알림(2026-10-14 재설계) ─────────────────────────
 # 알림 의도는 Critical 판정을 저장하는 같은 커밋에 글 행(`POST_PUBLISH_CRITICAL_ALERT_KEY`)에 남고, 판정
-# 스냅샷(제목·지적·본문 hash)을 싣는다. 전달은 이후의 FLAG·PASS·교정 상태와 무관하다. 한 번 요청된 글은
-# 본문이 바뀌어도 다시 요청하지 않는다(대표 결정 "글당 한 번"). 전달할 수 없는 의도(공개 중이 아님·
-# 병원 없음·반복 실패)는 닫아 큐를 막지 않는다 — 대기 조회는 미전달·미종결 의도만, 가장 오래된 것부터 본다.
+# 스냅샷(제목·지적·본문 hash)을 싣는다. 곧이어(실패하면 다음 실행 첫머리에) 글 id를 키로 하는 전용 알림
+# (`POST_PUBLISH_CRITICAL_ALERT`)을 outbox에 넣고 같은 커밋에 `enqueued_at`을 적는다. 이 알림은 사고 에피소드에
+# 묶이지 않으므로(`incident_id` 없음) 사고 복구가 발송 전에 종결하지 않고, 시도 횟수로 닫히지 않는다 —
+# 전달 실패는 백오프(최대 1시간 간격)로 계속 다시 보낸다. 한 번 요청된 글은 본문이 바뀌어도 다시 요청하지
+# 않는다(대표 결정 "글당 한 번", 같은 dedupe 키). Admin의 할 일은 알리지 않는 사고(`notify=False`)가 맡는다.
 _ALERT_BATCH = 50
-_ALERT_MAX_ATTEMPTS = 5
-# 배포 전부터 남은 Critical 공개 글(알림 의도가 없는 FLAGGED)을 한 통의 요약으로 알릴 때의 상한.
-_BACKLOG_SCAN_LIMIT = 500
+# 배포 전부터 남은 Critical 공개 글(알림 의도가 없는 FLAGGED)을 한 통의 요약으로 알릴 때 — 커서로 전부
+# 훑고(쪽당 `_BACKLOG_PAGE`) 표시만 30줄이다.
+_BACKLOG_PAGE = 200
 _BACKLOG_DIGEST_LINES = 30
 POST_PUBLISH_CRITICAL_DIGEST_NOTIFICATION_TYPE = "POST_PUBLISH_CRITICAL_DIGEST"
+POST_PUBLISH_CRITICAL_ALERT_NOTIFICATION_TYPE = "POST_PUBLISH_CRITICAL_ALERT"
+
+
+def _enqueue_notification(db, intent, now: datetime) -> None:
+    """알림 하나를 호출부 트랜잭션에 넣는다(커밋하지 않는다)."""
+
+    from app.services.notification_store import enqueue_notification_sync
+
+    enqueue_notification_sync(db, intent, now=now)
+
+
+def critical_alert_dedupe_key(item_id: object) -> str:
+    """글 하나의 Critical 알림 키 — 글당 평생 하나(사고 에피소드와 무관)."""
+
+    return f"post-publish-critical:{item_id}"
 
 
 def _alert_snapshot(item: ContentItem, marker: dict[str, Any]) -> dict[str, Any]:
@@ -523,7 +540,7 @@ def _request_critical_alert(summary: dict[str, Any], item: ContentItem, now: dat
     summary[POST_PUBLISH_CRITICAL_ALERT_KEY] = {
         "requested_at": now.isoformat(),
         "snapshot": _alert_snapshot(item, marker),
-        "attempts": 0,
+        "enqueued_at": None,
         "critical_alert_sent_at": None,
         "closed_at": None,
     }
@@ -531,24 +548,80 @@ def _request_critical_alert(summary: dict[str, Any], item: ContentItem, now: dat
 
 
 def _pending_critical_alert_stmt(limit: int):
-    """미전달·미종결 알림 의도 — 가장 오래된 요청부터. 종결·전달된 의도는 자리를 차지하지 않는다."""
+    """outbox에 아직 넣지 않은 알림 의도 — 가장 오래된 요청부터."""
 
     alert = ContentItem.essence_check_summary[POST_PUBLISH_CRITICAL_ALERT_KEY]
     return (
-        select(ContentItem)
+        select(ContentItem.id)
         .where(
             alert["requested_at"].as_string().is_not(None),
+            alert["enqueued_at"].as_string().is_(None),
             alert["critical_alert_sent_at"].as_string().is_(None),
             alert["closed_at"].as_string().is_(None),
         )
         .order_by(alert["requested_at"].as_string(), ContentItem.id)
-        .options(joinedload(ContentItem.hospital))
         .limit(limit)
     )
 
 
+def build_critical_alert(item: ContentItem, hospital: Hospital, snapshot: dict[str, Any]):
+    """글 하나의 "마케터 검토 필요" 알림(판정 스냅샷 문구)."""
+
+    from app.services.notification_contracts import (
+        UNBOUNDED_NOTIFICATION_ATTEMPTS,
+        NotificationIntent,
+    )
+    from app.services.notification_labels import prefixed_for_event
+    from app.services.notification_milestone_rendering import (
+        RenderedSlackMessage,
+        action_block,
+        admin_url,
+        header_block,
+        safe_text,
+        section_block,
+        validated_message,
+    )
+
+    kind = POST_PUBLISH_CRITICAL_ALERT_NOTIFICATION_TYPE
+    title = safe_text(str(snapshot.get("title") or item.title or ""), 80)
+    hospital_name = safe_text(str(getattr(hospital, "name", "") or "병원"), 60)
+    findings = [safe_text(str(message), 240) for message in (snapshot.get("findings") or [])][:3]
+    action_url = admin_url(settings.ADMIN_BASE_URL, f"/hospitals/{hospital.id}/content")
+    header = f"마케터 검토 필요: {hospital_name}"
+    body = (
+        f"공개된 글 「{title}」의 사후 검수에서 의료 안전·의료광고 지적이 나왔습니다. "
+        "글은 그대로 공개되어 있습니다 — 자동으로 내리지 않았습니다."
+    )
+    if findings:
+        body += "\n" + "\n".join(f"• {message}" for message in findings)
+    blocks = [
+        header_block("post_publish_critical_alert_header", prefixed_for_event(kind, header)),
+        section_block("post_publish_critical_alert_body", body),
+        section_block(
+            "post_publish_critical_alert_next",
+            "콘텐츠 탭에서 지적 문장을 확인해 주세요. 고쳐야 하면 직접 고치거나 비공개로 돌리고, "
+            "문제가 없으면 공개 내용 확인을 기록해 주세요.",
+        ),
+        action_block("post_publish_critical_alert_action", action_url, "콘텐츠 탭 열기"),
+    ]
+    message = validated_message(
+        RenderedSlackMessage(prefixed_for_event(kind, f"{header} — 「{title}」"), tuple(blocks), action_url),
+        settings.ADMIN_BASE_URL,
+    )
+    return NotificationIntent(
+        dedupe_key=critical_alert_dedupe_key(item.id),
+        notification_type=kind,
+        message=message,
+        hospital_id=getattr(hospital, "id", None),
+        max_attempts=UNBOUNDED_NOTIFICATION_ATTEMPTS,
+    )
+
+
 def _deliver_critical_alert(db, item_id, run_async, *, now: datetime | None = None) -> str:
-    """알림 의도 하나를 전달하거나 닫는다. ``SENT``·``CLOSED``·``RETRY``·``SKIPPED``를 돌려준다."""
+    """알림 의도 하나를 outbox에 넣는다(같은 커밋에 `enqueued_at`). ``ENQUEUED``·``CLOSED``·``SKIPPED``.
+
+    outbox에 넣는 데 실패하면 예외가 그대로 나가고 의도는 남는다 — 다음 실행 첫머리가 다시 넣는다.
+    """
 
     observed = now or datetime.now(UTC)
     locked = _lock_item(db, item_id)
@@ -557,6 +630,7 @@ def _deliver_critical_alert(db, item_id, run_async, *, now: datetime | None = No
     if (
         locked is None
         or not isinstance(alert, dict)
+        or alert.get("enqueued_at")
         or alert.get("critical_alert_sent_at")
         or alert.get("closed_at")
     ):
@@ -572,49 +646,39 @@ def _deliver_critical_alert(db, item_id, run_async, *, now: datetime | None = No
         locked.essence_check_summary = summary
         db.commit()
         return "CLOSED"
-    try:
-        _open_critical_incident(locked, hospital, run_async, snapshot=alert.get("snapshot") or {})
-    except Exception:  # noqa: BLE001 - 한 글의 실패가 큐를 멈추지 않는다(시도를 세고 상한에서 닫는다).
-        logger.exception("post-publish critical alert failed for %s", item_id)
-        db.rollback()
-        relocked = _lock_item(db, item_id)
-        current = dict(relocked.essence_check_summary or {}) if relocked is not None else {}
-        pending = current.get(POST_PUBLISH_CRITICAL_ALERT_KEY)
-        if relocked is None or not isinstance(pending, dict):
-            db.rollback()
-            return "RETRY"
-        attempts = int(pending.get("attempts") or 0) + 1
-        updated = {**pending, "attempts": attempts}
-        if attempts >= _ALERT_MAX_ATTEMPTS:
-            updated.update(closed_at=observed.isoformat(), closed_reason="delivery_failed")
-        current[POST_PUBLISH_CRITICAL_ALERT_KEY] = updated
-        relocked.essence_check_summary = current
-        db.commit()
-        return "CLOSED" if attempts >= _ALERT_MAX_ATTEMPTS else "RETRY"
+    snapshot = alert.get("snapshot") or {}
+    _enqueue_notification(db, build_critical_alert(locked, hospital, snapshot), observed)
     summary[POST_PUBLISH_CRITICAL_ALERT_KEY] = {
         **alert,
-        "critical_alert_sent_at": observed.isoformat(),
+        "enqueued_at": observed.isoformat(),
+        "notification_dedupe_key": critical_alert_dedupe_key(locked.id),
     }
     locked.essence_check_summary = summary
     db.commit()
-    return "SENT"
+    try:
+        # Admin의 할 일(운영 센터) — Slack은 위 전용 알림 하나뿐이라 사고는 알리지 않는다.
+        _open_critical_incident(locked, hospital, run_async, snapshot=snapshot)
+    except Exception:  # noqa: BLE001 - 알림은 이미 outbox에 있다. 사고 기록 실패가 알림을 막지 않는다.
+        logger.exception("post-publish critical incident open failed for %s", item_id)
+    return "ENQUEUED"
 
 
 def deliver_pending_critical_alerts(db, run_async, *, now: datetime | None = None) -> int:
-    """미전달 알림 의도를 가장 오래된 것부터 보낸다. 보낸 수."""
+    """outbox에 아직 넣지 않은 알림 의도를 가장 오래된 것부터 넣는다. 넣은 수."""
 
-    sent = 0
-    for item_id in [
-        row.id
-        for row in db.execute(_pending_critical_alert_stmt(_ALERT_BATCH)).unique().scalars().all()
-    ]:
-        if _deliver_critical_alert(db, item_id, run_async, now=now) == "SENT":
-            sent += 1
-    return sent
+    enqueued = 0
+    for item_id in list(db.execute(_pending_critical_alert_stmt(_ALERT_BATCH)).scalars().all()):
+        try:
+            if _deliver_critical_alert(db, item_id, run_async, now=now) == "ENQUEUED":
+                enqueued += 1
+        except Exception:  # noqa: BLE001 - 한 글의 실패가 나머지 의도를 막지 않는다(다음 실행이 다시 본다).
+            db.rollback()
+            logger.exception("post-publish critical alert enqueue failed for %s", item_id)
+    return enqueued
 
 
 def ensure_critical_alert(db, item_id, run_async, *, now: datetime | None = None) -> str:
-    """이 글에 알림 의도가 없고 지금 표시가 Critical이면 의도를 남기고, 미전달 의도를 보낸다."""
+    """이 글에 알림 의도가 없고 지금 표시가 Critical이면 의도를 남기고, 미전달 의도를 outbox에 넣는다."""
 
     observed = now or datetime.now(UTC)
     locked = _lock_item(db, item_id)
@@ -633,32 +697,38 @@ def ensure_critical_alert(db, item_id, run_async, *, now: datetime | None = None
 def _alert_safely(db, item_id, run_async) -> None:
     try:
         ensure_critical_alert(db, item_id, run_async)
-    except Exception:  # noqa: BLE001 - 알림 실패가 저장된 판정을 되돌리지 않는다(의도는 남아 다시 보낸다).
+    except Exception:  # noqa: BLE001 - 알림 실패가 저장된 판정을 되돌리지 않는다(의도는 남아 다시 넣는다).
         db.rollback()
         logger.exception("post-publish critical alert failed for %s", item_id)
 
 
-def _backlog_stmt(limit: int):
-    """알림 의도가 없는 FLAGGED 공개 글 — 배포 전부터 남은 판정(교정 상태와 무관)."""
+def _backlog_page_stmt(after: uuid.UUID | None, limit: int):
+    """알림 의도가 없는 FLAGGED 공개 글의 한 쪽 — id 커서(배포 전부터 남은 판정, 교정 상태와 무관)."""
 
     summary = ContentItem.essence_check_summary
-    return (
+    stmt = (
         select(ContentItem)
         .where(
             ContentItem.status == ContentStatus.PUBLISHED,
             summary[POST_PUBLISH_FLAG_KEY]["status"].as_string() == POST_PUBLISH_FLAGGED,
             summary[POST_PUBLISH_CRITICAL_ALERT_KEY].as_string().is_(None),
         )
-        .order_by(ContentItem.published_at, ContentItem.id)
-        .options(joinedload(ContentItem.hospital))
+        .order_by(ContentItem.id)
         .limit(limit)
+        .with_for_update(of=ContentItem)
     )
+    if after is not None:
+        stmt = stmt.where(ContentItem.id > after)
+    return stmt
 
 
 def build_critical_backlog_digest(items: list[ContentItem], now: datetime):
     """"마케터 검토 필요 N건" 요약 한 통(최대 30줄, 그다음 "외 N건")."""
 
-    from app.services.notification_contracts import NotificationIntent
+    from app.services.notification_contracts import (
+        UNBOUNDED_NOTIFICATION_ATTEMPTS,
+        NotificationIntent,
+    )
     from app.services.notification_labels import prefixed_for_event
     from app.services.notification_milestone_rendering import (
         RenderedSlackMessage,
@@ -706,38 +776,51 @@ def build_critical_backlog_digest(items: list[ContentItem], now: datetime):
         dedupe_key=f"post-publish-critical-digest:{now.date().isoformat()}:{identity}",
         notification_type=kind,
         message=message,
+        max_attempts=UNBOUNDED_NOTIFICATION_ATTEMPTS,
     )
 
 
 def send_critical_backlog_digest(db, *, now: datetime | None = None) -> int:
-    """알림 의도가 없는 Critical FLAGGED 공개 글을 요약 한 통으로 알리고 의도를 '보냄'으로 적는다.
+    """알림 의도가 없는 Critical FLAGGED 공개 글 **전부**를 요약 한 통으로 알리고 의도를 '넣음'으로 적는다.
 
-    배포 첫 실행에서 기존 백로그를 조용히 빼지도, 글마다 쏟아내지도 않는다. 그 뒤로 새 Critical은 판정
-    저장 때 의도가 생기므로 글마다 알린다. 의료 내용이 없는 FLAGGED는 대상이 아니다. 알린 글 수.
+    id 커서로 백로그 전체를 한 트랜잭션에서 훑는다(쪽 상한에 잘려 다음 날 두 번째 요약이 나가지 않는다).
+    요약 outbox 행과 모든 글의 의도가 같은 커밋이다. 배포 첫 실행에서 기존 백로그를 조용히 빼지도, 글마다
+    쏟아내지도 않는다. 그 뒤로 새 Critical은 판정 저장 때 의도가 생기므로 글마다 알린다. Critical이 아닌
+    FLAGGED는 대상이 아니다(조용히 닫는 경로가 맡는다). 알린 글 수.
     """
 
-    from app.services.notification_store import enqueue_notification_sync
-
     observed = now or datetime.now(UTC)
-    rows = list(db.execute(_backlog_stmt(_BACKLOG_SCAN_LIMIT)).unique().scalars().all())
-    critical = [
-        item
-        for item in rows
-        if flag_is_critical((item.essence_check_summary or {}).get(POST_PUBLISH_FLAG_KEY), item)
-    ]
+    critical: list[ContentItem] = []
+    after: uuid.UUID | None = None
+    while True:
+        page = list(db.execute(_backlog_page_stmt(after, _BACKLOG_PAGE)).scalars().all())
+        if not page:
+            break
+        after = page[-1].id
+        critical.extend(
+            item
+            for item in page
+            if flag_is_critical((item.essence_check_summary or {}).get(POST_PUBLISH_FLAG_KEY), item)
+        )
+        if len(page) < _BACKLOG_PAGE:
+            break
     if not critical:
+        db.rollback()
         return 0
-    enqueue_notification_sync(db, build_critical_backlog_digest(critical, observed))
+    critical.sort(key=lambda item: (item.published_at or observed, str(item.id)))
+    intent = build_critical_backlog_digest(critical, observed)
+    _enqueue_notification(db, intent, observed)
     for item in critical:
         summary = dict(item.essence_check_summary or {})
         marker = summary.get(POST_PUBLISH_FLAG_KEY) or {}
         summary[POST_PUBLISH_CRITICAL_ALERT_KEY] = {
             "requested_at": observed.isoformat(),
             "snapshot": _alert_snapshot(item, marker),
-            "attempts": 0,
-            "critical_alert_sent_at": observed.isoformat(),
+            "enqueued_at": observed.isoformat(),
+            "critical_alert_sent_at": None,
             "closed_at": None,
             "via": "BACKLOG_DIGEST",
+            "notification_dedupe_key": intent.dedupe_key,
         }
         item.essence_check_summary = summary
     db.commit()
@@ -799,6 +882,9 @@ def _open_critical_incident(
             admin_path=f"/hospitals/{hospital.id}/content",
             fingerprint=IncidentFingerprint.SAFETY_BLOCKED,
             actor=POST_PUBLISH_AI_REVIEWER,
+            # Slack은 글 id 키의 전용 알림(`POST_PUBLISH_CRITICAL_ALERT`)이 맡는다 — 사고의 열림·복구 알림은
+            # 만들지 않으므로 사고 복구가 그 알림을 종결할 수 없다.
+            notify=False,
         )
     )
 
