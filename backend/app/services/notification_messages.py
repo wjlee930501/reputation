@@ -108,7 +108,7 @@ def _incident_notification(
     else:
         impact = readable_detail(incident.customer_impact, fallback="영향 범위는 연결된 화면에서 확인해 주세요.")
         problem = readable_detail(incident.problem, fallback=copy.title + " 상태입니다.")
-        if incident.incident_type in {"CONTENT_GENERATION_FAILED", "ESSENCE_AUTO_REVIEW_ESCALATED"}:
+        if incident.incident_type == "CONTENT_GENERATION_FAILED":
             problem = copy.title + " 상태입니다. 상세 지적은 연결된 화면에 있습니다."
         action = copy.action
         if incident.incident_type == "DOMAIN_UNHEALTHY":

@@ -10,7 +10,6 @@ from app.services import notification_copy
 from app.services.content_publish_notifications import (
     build_generation_blocked_digest_intent,
     build_generation_rejection_weekly_rollup_intent,
-    build_missing_approved_essence_digest_intent,
     enqueue_generation_rejection_weekly_rollup_sync,
 )
 from app.services.notification_contracts import NotificationPayloadError
@@ -25,26 +24,24 @@ from app.workers.generation_incident_control import (
 )
 
 
-def test_missing_essence_digest_counts_one_cycle_and_one_admin_action() -> None:
-    cycle_date = date(2026, 8, 19)
-    first_hospital_id = uuid.uuid4()
-    outcomes = [
-        {"hospital_id": first_hospital_id},
-        {"hospital_id": first_hospital_id},
-        {"hospital_id": uuid.uuid4()},
-    ]
+def test_missing_essence_digest_is_retired_and_never_claimed() -> None:
+    """Phase 4(D33): Essence가 자동 적용되므로 '승인 기준 없음' 아침 요약은 만들지 않는다."""
 
-    intent = build_missing_approved_essence_digest_intent(cycle_date, outcomes)
-    same_cycle = build_missing_approved_essence_digest_intent(cycle_date, outcomes[:1])
+    from datetime import UTC, datetime
 
-    assert intent.notification_type == "MISSING_APPROVED_ESSENCE_DIGEST"
-    assert intent.dedupe_key == "MISSING_APPROVED_ESSENCE_DIGEST:2026-08-19"
-    assert same_cycle.dedupe_key == intent.dedupe_key
-    payload = intent.message.payload_json()
-    assert "온보딩 병원 2곳 · 글 3건" in payload
-    assert "승인 기준이 없어 생성을 건너뜀" in payload
-    assert payload.count('"type": "button"') == 1
-    assert intent.message.admin_url.endswith("/operations?queue=onboarding")
+    import app.services.content_publish_notifications as module
+    from app.services.notification_store import (
+        RETIRED_NOTIFICATION_TYPES,
+        claimable_notifications_stmt,
+    )
+
+    assert not hasattr(module, "build_missing_approved_essence_digest_intent")
+    assert not hasattr(module, "enqueue_missing_approved_essence_digest_sync")
+    assert "MISSING_APPROVED_ESSENCE_DIGEST" in RETIRED_NOTIFICATION_TYPES
+    statement = claimable_notifications_stmt(claimed_at=datetime.now(UTC), limit=10)
+    compiled = statement.compile()
+    assert "notification_type NOT IN" in str(compiled)
+    assert "MISSING_APPROVED_ESSENCE_DIGEST" in str(compiled.params)
 
 
 def _blocked(

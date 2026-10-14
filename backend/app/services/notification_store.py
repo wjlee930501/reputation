@@ -347,6 +347,15 @@ async def recover_stale_sending(db: AsyncSession, *, now: datetime | None = None
     return recovered
 
 
+#: 더 이상 만들지 않는 알림 종류. 배포 전에 쌓인 행도 보내지 않는다(백필 CLI가 종결한다).
+RETIRED_NOTIFICATION_TYPES: frozenset[str] = frozenset(
+    {
+        # Phase 4(D33): Essence가 승인 없이 자동 적용되어 "승인 기준이 없어 생성 건너뜀" 요약은 없다.
+        "MISSING_APPROVED_ESSENCE_DIGEST",
+    }
+)
+
+
 def claimable_notifications_stmt(*, claimed_at: datetime, limit: int):
     """보낼 차례인 알림.
 
@@ -385,6 +394,7 @@ def claimable_notifications_stmt(*, claimed_at: datetime, limit: int):
         .where(
             NotificationOutbox.state.in_(_SENDABLE_STATES),
             NotificationOutbox.next_attempt_at <= claimed_at,
+            NotificationOutbox.notification_type.notin_(sorted(RETIRED_NOTIFICATION_TYPES)),
             ~quiet_incident,
             ~and_(NotificationOutbox.notification_type == "INCIDENT_OPEN", machine_owned),
             # 종결 대상은 종결 배치(상한 200)가 이번 tick에 닿지 못했어도 집지 않는다.

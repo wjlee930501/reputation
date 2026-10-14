@@ -43,14 +43,9 @@ _CATALOG = {
         "콘텐츠에서 해당 글의 차단 사유와 근거 자료를 확인해 주세요. 병원 자료 수정이 필요한 항목은 확인된 사실로 보완해 주세요.",
         "멈춘 글 확인",
     ),
-    "ESSENCE_AUTO_REVIEW_ESCALATED": ActionCopy(
-        "콘텐츠 운영 기준 확인 필요",
-        "병원 정보에서 운영 기준의 확인 요청 항목을 보완해 주세요. 확인되지 않은 내용은 승인하지 마세요.",
-        "운영 기준 확인",
-    ),
     "ESSENCE_MUST_USE_EXCLUDED": ActionCopy(
         "필수 문구 금지 표현 확인 필요",
-        "병원 정보에서 운영 기준의 해당 필수 문구를 금지 표현 없이 고쳐 다시 승인해 주세요. 그 전까지 이 문구는 새 글에 들어가지 않습니다.",
+        "금지 표현이 든 필수 문구는 새 글에 넣지 않습니다. 원장 인터뷰 설문이나 병원 정보를 고치면 운영 기준이 자동으로 다시 만들어집니다.",
         "운영 기준 확인",
     ),
     "SOURCE_PROCESSING_FAILED": ActionCopy(
@@ -185,9 +180,7 @@ for _kind in (
     "OPERATION_RECOVERY_EXHAUSTED",
 ):
     _CATALOG[_kind] = _CATALOG["BACKGROUND_TASK_FAILED"]
-for _kind in ("ESSENCE_AUTO_REVIEW_COST_BLOCKED", "LEAD_DIAGNOSIS_COST_BLOCKED"):
-    _CATALOG[_kind] = _CATALOG["COST_GUARD_LIMIT_REACHED"]
-_CATALOG["ESSENCE_AUTO_REVIEW_FAILED"] = _CATALOG["ESSENCE_AUTO_REVIEW_ESCALATED"]
+_CATALOG["LEAD_DIAGNOSIS_COST_BLOCKED"] = _CATALOG["COST_GUARD_LIMIT_REACHED"]
 _CATALOG["PUBLISH_NOTIFICATION_FAILED"] = _CATALOG["NOTIFICATION_DELIVERY_FAILED"]
 
 
