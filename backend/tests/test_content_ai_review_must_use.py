@@ -250,13 +250,15 @@ async def test_medical_finding_on_verbatim_must_use_sentence_still_blocks(
 async def test_uncertain_finding_on_verbatim_must_use_sentence_is_recorded_not_blocking(
     monkeypatch,
 ) -> None:
-    sentence = APPROVED_MUST_USE[0]
+    sentence = APPROVED_MUST_USE[3]
     candidate = _candidate(f"{_PARAGRAPH_LEAD} {sentence}")
     review = await _review(
         monkeypatch,
         candidate=candidate,
         must_use=APPROVED_MUST_USE,
-        verdict=_verdict(_finding(quote=sentence, severity="UNCERTAIN", kind="STYLE")),
+        verdict=_verdict(
+            _finding(quote=sentence, severity="UNCERTAIN", kind="STYLE", message="문장이 깁니다.")
+        ),
     )
 
     assert review.status == ContentAiReviewStatus.PASS
@@ -270,7 +272,7 @@ async def test_must_use_finding_is_recorded_but_not_sent_to_the_writer_when_anot
 ) -> None:
     """무관한 HARD는 계속 막고, 필수 문구 지적은 삭제형 재작성 지시에 들어가지 않는다."""
 
-    sentence = APPROVED_MUST_USE[0]
+    sentence = APPROVED_MUST_USE[3]
     candidate = _candidate(f"{_PARAGRAPH_LEAD} {sentence}", OTHER_CLAIM)
     other = {
         "severity": "HARD",
@@ -282,14 +284,16 @@ async def test_must_use_finding_is_recorded_but_not_sent_to_the_writer_when_anot
         monkeypatch,
         candidate=candidate,
         must_use=APPROVED_MUST_USE,
-        verdict=_verdict(_finding(quote=sentence, kind="STYLE"), other),
+        verdict=_verdict(
+            _finding(quote=sentence, kind="STYLE", message="문장이 깁니다."), other
+        ),
     )
 
     _assert_blocks(candidate, review)
     assert [finding.message for finding in review.blocking_findings] == [other["message"]]
     targets = {finding["message"]: finding["target"] for finding in review.payload()["findings"]}
     assert targets[other["message"]] == "CANDIDATE_TEXT"
-    assert targets[" ".join(INCIDENT_FINDING["message"].split())] == "MUST_USE_MESSAGE"
+    assert targets["문장이 깁니다."] == "MUST_USE_MESSAGE"
     removal = hard_removal_findings(review)
     assert other["message"] in removal
     assert all("must_use_messages와 동일" not in message for message in removal)
@@ -569,12 +573,16 @@ async def test_hospital_fact_finding_on_verbatim_must_use_sentence_is_recorded_n
         ("MEDICAL_SAFETY", "검진 주기 안내는 의료 안전 확인이 필요합니다."),
         ("HOSPITAL_FACT", "부작용 설명 없이 검사를 권해 합병증 위험이 빠졌습니다."),
         ("STYLE", "응급 상황이면 119에 먼저 연락하라는 안내가 필요합니다."),
+        ("HOSPITAL_FACT", "Unsubstantiated efficacy claim."),
+        ("HOSPITAL_FACT", "The dosage is unsafe for older patients."),
+        ("HOSPITAL_FACT", "효능이 입증되지 않았습니다."),
+        ("REFERENCE", "이 출처로는 치료 효과를 뒷받침할 수 없습니다."),
     ],
 )
 async def test_critical_finding_on_verbatim_must_use_sentence_still_blocks(
     monkeypatch, kind: str, message: str
 ) -> None:
-    """MEDICAL_SAFETY와, 의료·안전 낱말(응급·119·부작용·합병증 …)이 든 HARD 지적은 막는다."""
+    """fail-closed: MEDICAL_SAFETY와, 지적·인용에 의료 주장·안전 어휘(영문 포함)가 든 지적은 막는다."""
 
     sentence = APPROVED_MUST_USE[1]
     candidate = _candidate(f"{_PARAGRAPH_LEAD} {sentence}")
@@ -589,3 +597,24 @@ async def test_critical_finding_on_verbatim_must_use_sentence_still_blocks(
     [recorded] = review.payload()["findings"]
     assert recorded["severity"] == "HARD"
     assert recorded["target"] == "CANDIDATE_TEXT"
+
+
+def test_exemption_rule_is_fail_closed_on_the_shared_lexicon() -> None:
+    from app.services.content_ai_review import (
+        ContentAiFinding,
+        ContentAiFindingKind,
+        ContentAiFindingSeverity,
+        _must_use_exemption_allowed,
+    )
+
+    def finding(kind: str, message: str, quote: str = "정기 검진을 권합니다.") -> ContentAiFinding:
+        return ContentAiFinding(
+            ContentAiFindingSeverity.HARD, ContentAiFindingKind(kind), message, quote=quote
+        )
+
+    assert _must_use_exemption_allowed(finding("HOSPITAL_FACT", "승인 자료에서 확인되지 않습니다."))
+    assert _must_use_exemption_allowed(finding("STYLE", "문장이 깁니다."))
+    assert not _must_use_exemption_allowed(finding("MEDICAL_SAFETY", "문장이 깁니다."))
+    assert not _must_use_exemption_allowed(finding("STYLE", "문장이 깁니다.", quote="통증이 사라집니다."))
+    assert not _must_use_exemption_allowed(finding("HOSPITAL_FACT", "contraindicated with warfarin"))
+

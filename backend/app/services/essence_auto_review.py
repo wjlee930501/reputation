@@ -1157,6 +1157,8 @@ def refresh_essence_snapshot(
         "dropped_total": report.dropped_total,
         "conflicts": report.conflicts,
         "must_use": report.must_use,
+        # 공개 소개(about)에 쓸 수 있는 문장 — 근거 노트에 글자 그대로 있고 의료 주장 어휘가 없다.
+        "public_about": report.public_about,
         "lost_fields": lost_fields,
         "previous_philosophy_id": str(current_previous.id) if current_previous else None,
         "applied_at": applied_at.isoformat(),

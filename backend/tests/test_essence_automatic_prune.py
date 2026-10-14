@@ -17,8 +17,8 @@ from app.services.essence_engine import (
     MANDATORY_AVOID_MESSAGES,
     MUST_USE_EVIDENCE_KEY,
     MUST_USE_MODE_NONE,
+    MUST_USE_MODE_SOURCE,
     MUST_USE_MODE_SURVEY,
-    MUST_USE_MODE_SYNTHESIZED,
     apply_mandatory_safety_policy,
     contains_operational_fact,
     find_error_marker_fields,
@@ -192,12 +192,12 @@ def test_must_use_prefers_verbatim_survey_sentences_up_to_three() -> None:
     assert report.must_use["items"][0]["evidence_note_ids"] == [str(survey_note.id)]
     assert set(pruned["evidence_map"]["must_use_messages"]) == {str(survey_note.id), str(second.id)}
     dropped = {(item["text"], item["reason"]) for item in report.dropped}
-    assert (paraphrase, "MUST_USE_NOT_SURVEY_VERBATIM") in dropped
+    assert (paraphrase, "MUST_USE_NOT_SOURCE_VERBATIM") in dropped
     assert ("완치를 보장합니다.", "FORBIDDEN_EXPRESSION") in dropped
 
 
 def test_must_use_is_capped_at_three_survey_sentences() -> None:
-    sentences = [f"{index}번째로 저는 환자분과 함께 결정합니다." for index in range(1, 6)]
+    sentences = [f"{word} 저는 환자분과 함께 결정합니다." for word in ("먼저", "그리고", "또", "끝으로", "늘")]
     survey = _source(SourceType.INTERVIEW, " ".join(sentences))
     note = _note(survey, " ".join(sentences), EvidenceNoteType.DOCTOR_PHILOSOPHY)
 
@@ -208,7 +208,7 @@ def test_must_use_is_capped_at_three_survey_sentences() -> None:
     )
 
     assert pruned["must_use_messages"] == sentences[:3]
-    assert sum(item["reason"] == "MUST_USE_LIMIT" for item in report.dropped) == 2
+    assert report.must_use["mode"] == MUST_USE_MODE_SURVEY
 
 
 def test_survey_philosophy_note_is_used_verbatim_when_the_model_paraphrased() -> None:
@@ -228,38 +228,107 @@ def test_survey_philosophy_note_is_used_verbatim_when_the_model_paraphrased() ->
     assert report.must_use["mode"] == MUST_USE_MODE_SURVEY
 
 
-def test_without_a_survey_grounded_synthesized_must_use_is_allowed_with_note_ids() -> None:
+def test_without_a_survey_must_use_is_copied_verbatim_from_other_source_notes() -> None:
+    """설문이 없으면 다른 근거 노트의 원문 문장만 쓴다 — 모델이 쓴 문장은 절대 쓰지 않는다."""
+
     homepage = _source(SourceType.HOMEPAGE)
     note = _note(
         homepage,
-        "검사 전에 충분히 설명합니다. 치료 계획은 함께 정하고 무리한 권유를 하지 않습니다. "
-        "네 번째 문장도 원문에 있습니다.",
+        "검사 전에 충분히 설명합니다. 치료 계획은 함께 정하고 무리한 권유를 하지 않습니다.",
+        EvidenceNoteType.DOCTOR_PHILOSOPHY,
     )
-    messages = ["검사 전에 충분히 설명드립니다.", "치료 계획은 함께 정합니다.", "무리한 권유를 하지 않습니다.", "네 번째 문장입니다."]
     payload = _payload(
-        must_use_messages=[*messages, "[마케터 입력] 원장 약력: 서울대", "원장: 홍길동 원장"],
+        must_use_messages=["검사 전에 충분히 설명드립니다.", "무리한 권유를 하지 않는 병원입니다."],
         evidence_map={"must_use_messages": [str(note.id)]},
     )
 
     pruned, report = prune_automatic_candidate(payload, [note], [homepage])
 
     _assert_invariants(pruned, [note])
-    assert pruned["must_use_messages"] == messages[:3]
-    assert report.must_use["mode"] == MUST_USE_MODE_SYNTHESIZED
+    assert pruned["must_use_messages"] == [
+        "검사 전에 충분히 설명합니다.",
+        "치료 계획은 함께 정하고 무리한 권유를 하지 않습니다.",
+    ]
+    assert report.must_use["mode"] == MUST_USE_MODE_SOURCE
     assert all(item["evidence_note_ids"] == [str(note.id)] for item in report.must_use["items"])
-    reasons = [item["reason"] for item in report.dropped]
-    assert "MUST_USE_NOT_SENTENCE" in reasons and "MUST_USE_LIMIT" in reasons
+    reasons = {(item["text"], item["reason"]) for item in report.dropped}
+    assert ("검사 전에 충분히 설명드립니다.", "MUST_USE_NOT_SOURCE_VERBATIM") in reasons
 
 
-def test_ungrounded_synthesized_must_use_is_dropped() -> None:
+def test_must_use_is_empty_when_no_source_sentence_is_clean() -> None:
     homepage = _source(SourceType.HOMEPAGE)
-    note = _note(homepage, "자료")
+    note = _note(homepage, "통증이 사라집니다.", EvidenceNoteType.KEY_MESSAGE)
     pruned, report = prune_automatic_candidate(
         _payload(must_use_messages=["근거 없는 문구입니다."]), [note], [homepage]
     )
     assert pruned["must_use_messages"] == []
     assert report.must_use["mode"] == MUST_USE_MODE_NONE
     assert "must_use_messages" not in pruned["evidence_map"]
+
+
+@pytest.mark.parametrize(
+    "claim",
+    [
+        "진료 전에 충분히 설명하며 암을 없앱니다.",
+        "진료 전에 충분히 설명하면 통증이 사라집니다.",
+        "Our injection treatment eliminates cancer.",
+        "We explain before treatment and the cancer is cured.",
+        "진료 전에 백 번 충분히 설명합니다.",
+        "진료 전에 충분히 설명하면 재발하지 않습니다.",
+    ],
+)
+def test_codex_claim_variants_never_reach_positioning_must_use_or_public_about(claim: str) -> None:
+    """재현(Codex 2차 P1): 활용형·영문·수량·의미 반전 주장은 원문에 없으면 어디에도 남지 않는다."""
+
+    homepage = _source(SourceType.HOMEPAGE)
+    note = _note(
+        homepage,
+        "진료 전에 한 번 충분히 설명합니다. 재발 위험은 개인마다 다릅니다.",
+        EvidenceNoteType.DOCTOR_PHILOSOPHY,
+    )
+    payload = _payload(
+        positioning_statement=f"진료 전에 충분히 설명합니다. {claim}",
+        patient_promise=claim,
+        must_use_messages=[claim, f"설명합니다. {claim}"],
+        evidence_map={
+            "positioning_statement": [str(note.id)],
+            "patient_promise": [str(note.id)],
+            "must_use_messages": [str(note.id)],
+        },
+    )
+
+    pruned, report = prune_automatic_candidate(payload, [note], [homepage])
+
+    everything = " ".join(
+        [
+            str(pruned["positioning_statement"] or ""),
+            str(pruned["patient_promise"] or ""),
+            *pruned["must_use_messages"],
+            *report.public_about,
+        ]
+    )
+    assert claim not in everything
+    for word in ("없앱", "사라집", "eliminat", "cured", "백 번", "재발하지"):
+        assert word not in everything
+    assert pruned["positioning_statement"] == "진료 전에 충분히 설명합니다."
+    assert pruned["must_use_messages"] == ["진료 전에 한 번 충분히 설명합니다."] or (
+        pruned["must_use_messages"] == []
+    )
+
+
+def test_public_about_uses_only_verbatim_clean_source_sentences() -> None:
+    homepage = _source(SourceType.HOMEPAGE)
+    note = _note(homepage, "진료 전에 충분히 설명합니다.")
+    payload = _payload(
+        positioning_statement="진료 전에 충분히 설명합니다. 충분한 설명을 중시하는 의원입니다.",
+        evidence_map={"positioning_statement": [str(note.id)]},
+    )
+
+    pruned, report = prune_automatic_candidate(payload, [note], [homepage])
+
+    assert "충분한 설명을 중시하는 의원입니다." in pruned["positioning_statement"]
+    # 모델이 쓴 문장은 쓰기 힌트로만 남고 공개 소개에는 원문 문장만 간다.
+    assert report.public_about == ["진료 전에 충분히 설명합니다."]
 
 
 def test_survey_wins_a_voice_conflict_and_the_homepage_sentence_is_dropped() -> None:
@@ -344,6 +413,45 @@ def test_marketer_fact_beats_the_homepage_and_undecidable_conflicts_drop_both() 
     assert {"CONFLICT_LOWER_PRIORITY", "CONFLICT_UNDECIDED"} <= reasons
 
 
+def test_a_losing_career_sentence_never_returns_through_must_use_or_fallback() -> None:
+    """재현(Codex 2차 P1): 마케터 "전문의 15년"에 진 설문 "20년" 문장은 판 어디에도 없다."""
+
+    profile = _source(SourceType.INTERNAL_NOTE, profile_facts=True)
+    survey = _source(SourceType.INTERVIEW)
+    marketer = _note(
+        profile,
+        "[마케터 입력] 원장 약력: 정형외과 전문의 15년",
+        EvidenceNoteType.PROOF_POINT,
+        system_kind=PROFILE_FACTS_SYSTEM_KIND,
+        label="원장 약력",
+        tag="마케터 입력",
+    )
+    loser = "저는 정형외과 전문의로 20년 동안 진료했습니다."
+    survey_note = _note(survey, loser, EvidenceNoteType.DOCTOR_PHILOSOPHY)
+    calm = _note(survey, "진료 전에 충분히 설명합니다.", EvidenceNoteType.TONE_SIGNAL)
+    payload = _payload(
+        positioning_statement=loser,
+        must_use_messages=[loser],
+        evidence_map={
+            "positioning_statement": [str(survey_note.id), str(marketer.id)],
+            "must_use_messages": [str(survey_note.id)],
+        },
+        conflict_notes=[
+            {"text": "경력 연수", "evidence_note_ids": [str(marketer.id), str(survey_note.id)]}
+        ],
+    )
+
+    pruned, report = prune_automatic_candidate(
+        payload, [marketer, survey_note, calm], [profile, survey]
+    )
+
+    flat = repr(pruned) + repr(report.must_use) + repr(report.public_about)
+    assert "20년" not in flat
+    assert str(survey_note.id) not in flat
+    assert pruned["must_use_messages"] == ["진료 전에 충분히 설명합니다."]
+    assert report.conflicts[0]["dropped_note_ids"] == [str(survey_note.id)]
+
+
 def test_unsupported_medical_claim_never_survives_on_an_unrelated_note() -> None:
     """재현(Codex P1): 근거 노트 id만 맞는 효능 주장은 포지셔닝·필수 문구에 남지 않는다."""
 
@@ -366,13 +474,14 @@ def test_unsupported_medical_claim_never_survives_on_an_unrelated_note() -> None
     _assert_invariants(pruned, [note])
     assert pruned["positioning_statement"] is None
     assert pruned["patient_promise"] == "진료 전에 충분히 설명합니다."
-    assert pruned["must_use_messages"] == ["진료 전에 충분히 설명드립니다."]
+    # 필수 문구는 원문 문장만 — 모델의 두 문구 모두 버리고 노트 원문을 쓴다.
+    assert pruned["must_use_messages"] == ["진료 전에 충분히 설명합니다."]
     reasons = {(item["field"], item["reason"]) for item in report.dropped}
     assert ("positioning_statement", "UNSUPPORTED_CLAIM") in reasons
-    assert ("must_use_messages", "MUST_USE_MEDICAL_CLAIM") in reasons
+    assert ("must_use_messages", "MUST_USE_NOT_SOURCE_VERBATIM") in reasons
 
 
-def test_supported_medical_claims_stay_but_synthesized_must_use_never_carries_one() -> None:
+def test_verbatim_medical_claims_stay_as_hints_but_never_become_must_use() -> None:
     homepage = _source(SourceType.HOMEPAGE)
     note = _note(homepage, "체외충격파 치료로 통증 완화를 기대할 수 있습니다.")
     sentence = "체외충격파 치료로 통증 완화를 기대할 수 있습니다."
@@ -611,4 +720,4 @@ def test_deterministic_fallback_never_turns_profile_fact_lines_into_must_use() -
     assert pruned["must_use_messages"] == ["환자분이 이해하실 때까지 설명합니다."]
     assert "[" not in (pruned["positioning_statement"] or "")
     assert mode == essence_engine.SYNTHESIS_MODE_DETERMINISTIC
-    assert report.must_use["mode"] == MUST_USE_MODE_SYNTHESIZED
+    assert report.must_use["mode"] == MUST_USE_MODE_SOURCE

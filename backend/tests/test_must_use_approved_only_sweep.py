@@ -115,8 +115,9 @@ def test_stored_rereview_keeps_hard_on_a_stale_brief_must_use_sentence(monkeypat
     assert stored["blocking"] is True
     assert public_candidate_review_safe(item) is False
     by_quote = findings_by_quote(stored)
-    # 현재 승인본 1cm 문장 지적은 기록용이고, 옛 가이드 2cm 문장 지적은 차단으로 남는다.
-    assert by_quote[APPROVED_1CM]["target"] == "MUST_USE_MESSAGE"
-    assert by_quote[APPROVED_1CM]["severity"] == "SOFT"
+    # 옛 가이드 2cm 문장 지적은 차단으로 남는다.
+    # 인용 문장에 수치(1cm)가 있어 fail-closed로 면제하지 않는다(의료 주장 어휘, Phase 4 D33).
+    assert by_quote[APPROVED_1CM]["target"] == "CANDIDATE_TEXT"
+    assert by_quote[APPROVED_1CM]["severity"] == "HARD"
     assert by_quote[STALE_BRIEF_2CM]["target"] == "CANDIDATE_TEXT"
     assert by_quote[STALE_BRIEF_2CM]["severity"] == "HARD"

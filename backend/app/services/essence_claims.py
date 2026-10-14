@@ -40,24 +40,38 @@ _STOPWORDS = frozenset(
         "원문", "유지", "항목", "기반", "말할",
     }
 )
-# 의료 효능·결과, 자격, 비교 주장 낱말. 이 낱말이 든 문장은 그 낱말이 근거 노트에 있어야 한다.
-_CLAIM_WORDS = (
-    # 효능·결과
+# 의료 효능·결과·보장·비교 주장 어휘(한국어 활용형 어간 + 영문). **한 곳의 정본**이다 — 자동 판의
+# 필수 문구·공개 소개 선택, 합성 문장 정리, 필수 문구 지적 면제 판정이 모두 이 목록을 쓴다.
+# 미검출을 안전으로 보지 않도록 넓게 잡는다(오탐은 문장을 버릴 뿐이다, fail-closed).
+MEDICAL_CLAIM_LEXICON: tuple[str, ...] = (
+    # 효능·결과(활용형 어간)
     "효과", "효능", "개선", "완화", "회복", "제거", "완치", "치유", "호전", "재발", "성공", "예방",
-    "억제", "해결", "근본", "낫", "나아", "좋아지", "사라지", "없애", "줄여", "줄이", "고치", "고쳐",
-    "치료합니다", "치료됩니다", "치료해", "치료할 수",
-    # 자격
-    "전문의", "자격", "인증", "박사", "석사", "수료", "졸업", "경력", "학회", "정회원", "펠로우",
-    "교수", "수상", "면허", "출신",
-    # 비교
+    "억제", "해결", "근본", "낫", "나아", "나았", "나을", "좋아지", "좋아집", "좋아져", "사라지",
+    "사라집", "사라져", "사라졌", "없애", "없앱", "없앴", "줄여", "줄이", "줄입", "고치", "고쳐",
+    "고칩", "치료합니다", "치료됩니다", "치료해", "치료할 수", "치료 효과", "통증 없", "흉터 없",
+    "부작용 없", "안전합니다", "회복됩니다",
+    # 보장·단정
+    "보장", "확실", "반드시", "영구", "평생", "100%", "백퍼",
+    # 비교·최상급
     "최초", "유일", "최고", "최상", "가장", "1위", "최다", "최신", "우수", "탁월", "독보", "뛰어난",
-    "더 나은", "보다 나은",
+    "더 나은", "보다 나은", "넘버원",
+    # 영문
+    "cure", "curing", "eliminat", "remov", "heal", "effective", "efficac", "guarantee",
+    "permanent", "recover", "prevent", "relief", "relieve", "painless", "no side effect",
+    "best", "#1", "number one", "first", "only",
 )
-# 수치 주장(기간·비율·횟수·크기). "1인칭" 같은 말은 수치 주장이 아니다.
+# 필수 문구 지적을 기록용으로 내리지 못하게 하는 안전 어휘(어휘 목록과 함께 쓴다).
+SAFETY_TERMS: tuple[str, ...] = (
+    "응급", "119", "용량", "dosage", "dose", "금기", "contraindicat", "부작용", "side effect",
+    "합병증", "complication", "효능", "efficacy", "unsubstantiated", "unsafe", "치료 효과",
+)
+# 수치 주장 — 아라비아 숫자와 한국어 수사+단위("한 번"·"백 번"·"수백 명").
 _QUANTITY = re.compile(
-    r"[0-9]+(?:[.,][0-9]+)?\s*(?:%|퍼센트|년|명|건|회|배|위|cm|mm|kg|일|개월|주|시간|분)"
+    r"[0-9]+(?:[.,][0-9]+)?\s*(?:%|퍼센트|년|명|건|회|번|배|위|cm|mm|kg|일|개월|주|시간|분|살|세)"
+    r"|(?:한|두|세|네|다섯|여섯|일곱|여덟|아홉|열|스무|서른|백|천|만|수십|수백|수천|수만)\s*"
+    r"(?:번|회|명|건|배|년|개월|일|시간|분|살|세|가지|차례)"
 )
-_SENTENCE_END = re.compile(r"(?<=[.!?。！？])\s+")
+_SENTENCE_END = re.compile(r"(?<=[.!?。！？])(?![0-9])\s*")
 # 결정적 폴백 문장의 틀 머리말. 대조는 콜론 뒤의 근거 발췌로 한다.
 _TEMPLATE_PREFIXES = (
     "자료에서 확인된 핵심 메시지:",
@@ -106,15 +120,36 @@ def without_template_prefix(text: str) -> str:
 
 
 def claim_words(text: str) -> list[str]:
-    """문장에 든 효능·결과·자격·비교 낱말과 수치."""
+    """문장에 든 의료 효능·결과·보장·비교 어휘와 수치(`MEDICAL_CLAIM_LEXICON`)."""
 
-    found = [word for word in _CLAIM_WORDS if word in (text or "")]
+    lowered = (text or "").lower()
+    found = [word for word in MEDICAL_CLAIM_LEXICON if word in lowered]
     found.extend(match.group(0) for match in _QUANTITY.finditer(text or ""))
     return found
 
 
 def is_medical_claim(text: str) -> bool:
     return bool(claim_words(text))
+
+
+def has_critical_terms(*texts: str | None) -> bool:
+    """의료 주장 어휘나 안전 어휘가 하나라도 들었는가(필수 문구 지적 면제의 fail-closed 판정)."""
+
+    joined = " ".join(text for text in texts if text).lower()
+    return bool(claim_words(joined)) or any(term in joined for term in SAFETY_TERMS)
+
+
+def normalize_sentence(text: str) -> str:
+    return re.sub(r"\s+", " ", str(text or "")).strip().strip("\"'“”‘’「」『』").strip()
+
+
+def is_verbatim_in(sentence: str, texts: Iterable[str]) -> bool:
+    """문장이 어느 근거 본문에 글자 그대로(공백만 정규화) 있는가."""
+
+    needle = normalize_sentence(sentence)
+    if not needle:
+        return False
+    return any(needle in normalize_sentence(text) for text in texts if text)
 
 
 @dataclass(frozen=True)
@@ -189,9 +224,14 @@ __all__ = (
     "CLAIM_SUPPORT_RATIO",
     "GENERAL_SUPPORT_RATIO",
     "claim_is_supported",
+    "MEDICAL_CLAIM_LEXICON",
+    "SAFETY_TERMS",
     "claim_words",
     "content_stems",
+    "has_critical_terms",
     "is_medical_claim",
+    "is_verbatim_in",
+    "normalize_sentence",
     "split_sentences",
     "support_ratio",
     "without_template_prefix",

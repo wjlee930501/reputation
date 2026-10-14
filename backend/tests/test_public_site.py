@@ -1205,18 +1205,21 @@ def test_hero_url_accepts_the_relative_public_asset_path_the_admin_stores():
     assert _safe_hero_url("/api/v1/public/hospitals/test-clinic/assets/not-a-uuid") is None
 
 
-def test_automatic_essence_about_drops_medical_claim_sentences():
-    """승인 없는 자동 판(D33)의 공개 소개에는 효능·결과·비교 주장 문장이 나가지 않는다."""
+def test_automatic_essence_about_uses_only_verbatim_clean_source_sentences():
+    """승인 없는 자동 판(D33)의 공개 소개는 적용 때 고른 원문 문장(public_about)만 쓴다."""
 
     philosophy = SimpleNamespace(
         status=PhilosophyStatus.APPROVED,
-        positioning_statement=(
-            "충분히 설명하는 진료를 지향합니다. 체외충격파 치료로 통증 완화를 기대할 수 있습니다."
-        ),
+        positioning_statement="모델이 쓴 포지셔닝 문장입니다.",
         patient_promise="가장 빠른 회복을 돕습니다.",
-        synthesis_metadata={"mode": "AUTOMATIC"},
+        synthesis_metadata={
+            "mode": "AUTOMATIC",
+            "public_about": ["진료 전에 충분히 설명합니다.", "통증이 사라집니다."],
+        },
     )
-    assert _vetted_public_about(philosophy) == "충분히 설명하는 진료를 지향합니다."
+    assert _vetted_public_about(philosophy) == "진료 전에 충분히 설명합니다."
+    philosophy.synthesis_metadata = {"mode": "AUTOMATIC", "public_about": []}
+    assert _vetted_public_about(philosophy) is None
     # 옛 승인본(사람·AI 검수 승인)은 종전 그대로다.
     philosophy.synthesis_metadata = {}
-    assert "통증 완화" in _vetted_public_about(philosophy)
+    assert "모델이 쓴 포지셔닝" in _vetted_public_about(philosophy)
