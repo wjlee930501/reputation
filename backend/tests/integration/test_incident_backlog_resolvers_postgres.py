@@ -98,12 +98,18 @@ def test_lead_measurement_failure_closes_once_that_diagnosis_measured(db, kind):
     _lead, done = _diagnosis(db, execution_status="SUCCEEDED")
     _lead2, still = _diagnosis(db, execution_status="FAILED")
     closable = _incident(db, kind, source_type="LEAD_DIAGNOSIS", source_id=str(done.id))
-    open_one = _incident(db, kind, source_type="LEAD_DIAGNOSIS", source_id=str(still.id))
+    # 리드가 NEW이고 14일 안이면 아직 열어 둔다(Full-Automatic W9 — 14일이 지나면 닫힌다).
+    open_one = _incident(
+        db, kind, source_type="LEAD_DIAGNOSIS", source_id=str(still.id), seen=NOW - timedelta(days=2)
+    )
+    _lead3, aged = _diagnosis(db, execution_status="FAILED")
+    aged_one = _incident(db, kind, source_type="LEAD_DIAGNOSIS", source_id=str(aged.id))
 
     close_resolved_backlog_incidents(db, now=NOW)
 
     assert _state(db, closable) == "ACKNOWLEDGED"
     assert _state(db, open_one) == "OPEN"
+    assert _state(db, aged_one) == "ACKNOWLEDGED"
 
 
 def test_lead_report_block_closes_once_a_servable_report_is_built_after_it(db):

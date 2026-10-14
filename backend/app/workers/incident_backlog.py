@@ -333,7 +333,7 @@ def _lead_measurement_recovered(db: Session, incident: Incident, _now: datetime)
     if gone is not None or diagnosis is None:
         return gone
     # 폴러나 다른 경로가 그 진단의 측정을 리포트 가능한 상태로 끝냈다. 여전히 FAILED인 활성
-    # 진단은 사람이 복구를 다시 걸어야 할 수 있으므로 나이와 무관하게 열어 둔다.
+    # 진단의 리드 상태·나이 근거는 `_lead_measurement_settled`(W9)가 더한다.
     if diagnosis.execution_status in REPORTABLE_EXECUTION_STATUSES:
         return "lead_measurement_succeeded"
     return None
