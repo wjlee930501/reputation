@@ -219,10 +219,10 @@ def _assert_blocks(candidate: dict, review) -> None:
         pytest.param(INCIDENT_CITED_SENTENCE, id="incident-cited-2cm-sentence"),
     ],
 )
-async def test_incident_finding_on_verbatim_must_use_sentence_no_longer_blocks(
+async def test_medical_finding_on_verbatim_must_use_sentence_still_blocks(
     monkeypatch, must_use_first: str
 ) -> None:
-    """9/26 장앤김: 필수 문구를 원문 그대로 쓴 2cm 문장에 대한 HARD 지적(원문)이 게시를 막지 않는다."""
+    """9/26 장앤김의 2cm 문장 HARD 의료 지적은 필수 문구 원문이어도 이제 게시를 막는다(D33)."""
 
     must_use = [must_use_first, *APPROVED_MUST_USE[1:]]
     sentence = must_use_first if must_use_first.endswith(".") else f"{must_use_first}."
@@ -235,35 +235,30 @@ async def test_incident_finding_on_verbatim_must_use_sentence_no_longer_blocks(
         verdict=_verdict(_finding(quote=sentence)),
     )
 
-    assert review.status == ContentAiReviewStatus.PASS
-    assert review.blocking_findings == ()
+    # Phase 4(D33): 운영 기준이 승인 없이 자동 적용되므로 필수 문구 원문이어도 의료 안전·병원 사실
+    # 지적은 내리지 않는다 — 그대로 막는다(Codex P1 재현: HARD MEDICAL_SAFETY가 SOFT로 내려갔다).
+    _assert_blocks(candidate, review)
     payload = review.payload()
-    assert payload["blocking"] is False
-    # 기록은 남는다 — 원문 지적, 모델이 매긴 심각도, 문제 종류.
+    assert payload["blocking"] is True
     [recorded] = payload["findings"]
-    assert recorded["message"] == " ".join(INCIDENT_FINDING["message"].split())
     assert recorded["kind"] == "MEDICAL_SAFETY"
-    assert recorded["severity"] == "SOFT"
-    assert recorded["original_severity"] == "HARD"
-    assert recorded["target"] == "MUST_USE_MESSAGE"
-    assert recorded["quote"] == sentence
-    # 발행·공개 게이트, 재시도 분류, 재작성 지시 어디에서도 차단 사유가 아니다.
-    assert public_candidate_review_safe(_stored_item(candidate, review)) is True
-    assert has_model_declared_hard_finding(payload) is False
-    assert hard_removal_findings(review) == []
-    assert non_reference_remediation_messages(review) == []
+    assert recorded["severity"] == "HARD"
+    assert recorded["target"] == "CANDIDATE_TEXT"
+    assert public_candidate_review_safe(_stored_item(candidate, review)) is False
 
 
 async def test_uncertain_finding_on_verbatim_must_use_sentence_is_recorded_not_blocking(
     monkeypatch,
 ) -> None:
-    sentence = APPROVED_MUST_USE[0]
+    sentence = APPROVED_MUST_USE[3]
     candidate = _candidate(f"{_PARAGRAPH_LEAD} {sentence}")
     review = await _review(
         monkeypatch,
         candidate=candidate,
         must_use=APPROVED_MUST_USE,
-        verdict=_verdict(_finding(quote=sentence, severity="UNCERTAIN")),
+        verdict=_verdict(
+            _finding(quote=sentence, severity="UNCERTAIN", kind="STYLE", message="문장이 깁니다.")
+        ),
     )
 
     assert review.status == ContentAiReviewStatus.PASS
@@ -277,7 +272,7 @@ async def test_must_use_finding_is_recorded_but_not_sent_to_the_writer_when_anot
 ) -> None:
     """무관한 HARD는 계속 막고, 필수 문구 지적은 삭제형 재작성 지시에 들어가지 않는다."""
 
-    sentence = APPROVED_MUST_USE[0]
+    sentence = APPROVED_MUST_USE[3]
     candidate = _candidate(f"{_PARAGRAPH_LEAD} {sentence}", OTHER_CLAIM)
     other = {
         "severity": "HARD",
@@ -289,14 +284,16 @@ async def test_must_use_finding_is_recorded_but_not_sent_to_the_writer_when_anot
         monkeypatch,
         candidate=candidate,
         must_use=APPROVED_MUST_USE,
-        verdict=_verdict(_finding(quote=sentence), other),
+        verdict=_verdict(
+            _finding(quote=sentence, kind="STYLE", message="문장이 깁니다."), other
+        ),
     )
 
     _assert_blocks(candidate, review)
     assert [finding.message for finding in review.blocking_findings] == [other["message"]]
     targets = {finding["message"]: finding["target"] for finding in review.payload()["findings"]}
     assert targets[other["message"]] == "CANDIDATE_TEXT"
-    assert targets[" ".join(INCIDENT_FINDING["message"].split())] == "MUST_USE_MESSAGE"
+    assert targets["문장이 깁니다."] == "MUST_USE_MESSAGE"
     removal = hard_removal_findings(review)
     assert other["message"] in removal
     assert all("must_use_messages와 동일" not in message for message in removal)
@@ -535,3 +532,89 @@ def test_uncertain_alone_does_not_buy_a_removal_rewrite() -> None:
         "UNCERTAIN", "HOSPITAL_FACT", "승인 자료에 없는 진료 철학입니다.", "내 가족처럼 진료합니다."
     )
     assert hard_removal_findings(_blocked(uncertain)) == []
+
+
+# ── 대표 결정: 필수 문구 원문 지적은 Critical만 막는다 ─────────────────────────
+
+
+async def test_hospital_fact_finding_on_verbatim_must_use_sentence_is_recorded_not_blocking(
+    monkeypatch,
+) -> None:
+    """마케터·원장이 준 병원 사실 문장은 HARD 사실 지적이어도 발행을 멈추지 않는다."""
+
+    sentence = APPROVED_MUST_USE[3]
+    candidate = _candidate(f"{_PARAGRAPH_LEAD} {sentence}")
+    review = await _review(
+        monkeypatch,
+        candidate=candidate,
+        must_use=APPROVED_MUST_USE,
+        verdict=_verdict(
+            _finding(
+                quote=sentence,
+                kind="HOSPITAL_FACT",
+                severity="HARD",
+                message="숙련도 차이 주장은 승인 자료에서 확인되지 않습니다.",
+            )
+        ),
+    )
+
+    assert review.status == ContentAiReviewStatus.PASS
+    [recorded] = review.payload()["findings"]
+    assert recorded["kind"] == "HOSPITAL_FACT"
+    assert recorded["severity"] == "SOFT"
+    assert recorded["original_severity"] == "HARD"
+    assert recorded["target"] == "MUST_USE_MESSAGE"
+    assert public_candidate_review_safe(_stored_item(candidate, review)) is True
+
+
+@pytest.mark.parametrize(
+    ("kind", "message"),
+    [
+        ("MEDICAL_SAFETY", "검진 주기 안내는 의료 안전 확인이 필요합니다."),
+        ("HOSPITAL_FACT", "부작용 설명 없이 검사를 권해 합병증 위험이 빠졌습니다."),
+        ("STYLE", "응급 상황이면 119에 먼저 연락하라는 안내가 필요합니다."),
+        ("HOSPITAL_FACT", "Unsubstantiated efficacy claim."),
+        ("HOSPITAL_FACT", "The dosage is unsafe for older patients."),
+        ("HOSPITAL_FACT", "효능이 입증되지 않았습니다."),
+        ("REFERENCE", "이 출처로는 치료 효과를 뒷받침할 수 없습니다."),
+    ],
+)
+async def test_critical_finding_on_verbatim_must_use_sentence_still_blocks(
+    monkeypatch, kind: str, message: str
+) -> None:
+    """fail-closed: MEDICAL_SAFETY와, 지적·인용에 의료 주장·안전 어휘(영문 포함)가 든 지적은 막는다."""
+
+    sentence = APPROVED_MUST_USE[1]
+    candidate = _candidate(f"{_PARAGRAPH_LEAD} {sentence}")
+    review = await _review(
+        monkeypatch,
+        candidate=candidate,
+        must_use=APPROVED_MUST_USE,
+        verdict=_verdict(_finding(quote=sentence, kind=kind, severity="HARD", message=message)),
+    )
+
+    _assert_blocks(candidate, review)
+    [recorded] = review.payload()["findings"]
+    assert recorded["severity"] == "HARD"
+    assert recorded["target"] == "CANDIDATE_TEXT"
+
+
+def test_exemption_rule_is_fail_closed_on_the_shared_lexicon() -> None:
+    from app.services.content_ai_review import (
+        ContentAiFinding,
+        ContentAiFindingKind,
+        ContentAiFindingSeverity,
+        _must_use_exemption_allowed,
+    )
+
+    def finding(kind: str, message: str, quote: str = "정기 검진을 권합니다.") -> ContentAiFinding:
+        return ContentAiFinding(
+            ContentAiFindingSeverity.HARD, ContentAiFindingKind(kind), message, quote=quote
+        )
+
+    assert _must_use_exemption_allowed(finding("HOSPITAL_FACT", "승인 자료에서 확인되지 않습니다."))
+    assert _must_use_exemption_allowed(finding("STYLE", "문장이 깁니다."))
+    assert not _must_use_exemption_allowed(finding("MEDICAL_SAFETY", "문장이 깁니다."))
+    assert not _must_use_exemption_allowed(finding("STYLE", "문장이 깁니다.", quote="통증이 사라집니다."))
+    assert not _must_use_exemption_allowed(finding("HOSPITAL_FACT", "contraindicated with warfarin"))
+

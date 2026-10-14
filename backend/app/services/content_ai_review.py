@@ -23,6 +23,7 @@ from app.models.essence import HospitalContentPhilosophy
 from app.models.hospital import Hospital
 from app.services import cost_guard, llm_structured_output, openrouter
 from app.services.ai_prompt_boundary import untrusted_json_block
+from app.services.essence_claims import has_critical_terms
 from app.services.essence_engine import effective_safety_policy
 from app.services.must_use_exclusions import approved_must_use_messages_with_record
 from app.services.must_use_verbatim import matched_must_use_message
@@ -597,17 +598,41 @@ def _parse_finding(value: object) -> ContentAiFinding | None:
     return ContentAiFinding(severity, kind, message, quote=quote)
 
 
+#: 필수 문구 원문 지적을 기록용으로 내릴 수 있는 종류. 마케터·원장이 준 병원 사실 문장이 발행을
+#: 멈추지 않게 HOSPITAL_FACT도 포함한다. MEDICAL_SAFETY(Critical)는 절대 내리지 않는다.
+_MUST_USE_EXEMPT_KINDS = frozenset(
+    {
+        ContentAiFindingKind.STYLE,
+        ContentAiFindingKind.REFERENCE,
+        ContentAiFindingKind.HOSPITAL_FACT,
+    }
+)
+
+
+def _must_use_exemption_allowed(finding: ContentAiFinding) -> bool:
+    """필수 문구 원문 지적을 기록용으로 내려도 되는가 — fail-closed(대표 결정: Critical만 막는다).
+
+    종류가 문체·참고자료·병원 사실이고, 지적 문구와 인용 문장 어디에도 의료 주장 어휘
+    (`essence_claims.MEDICAL_CLAIM_LEXICON`)나 안전 어휘(`SAFETY_TERMS` — 응급·119·용량·금기·
+    부작용·합병증·효능·efficacy·dosage·unsafe …)가 없을 때만 내린다. 그 밖에는 그대로 막는다.
+    """
+
+    if finding.kind not in _MUST_USE_EXEMPT_KINDS:
+        return False
+    return not has_critical_terms(finding.message, finding.quote)
+
+
 def _record_must_use_findings(
     findings: list[ContentAiFinding],
     *,
     must_use_messages: list[str],
     reviewed_content: dict[str, Any] | object | None,
 ) -> list[ContentAiFinding]:
-    """승인된 필수 문구를 원문 그대로 쓴 문장에 대한 차단 지적을 기록용 SOFT로 내린다.
+    """승인된 필수 문구를 원문 그대로 쓴 문장에 대한 비-Critical 차단 지적을 기록용 SOFT로 내린다.
 
     판정은 지적의 인용문과 필수 문구 원문의 정규화 문자열 완전 일치뿐이다
     (`must_use_verbatim.matched_must_use_message`). 인용문이 없거나, 일부만 겹치거나,
-    말을 덧붙인 문장은 그대로 차단한다.
+    말을 덧붙인 문장은 그대로 차단한다. 면제 판정은 `_must_use_exemption_allowed`(fail-closed)다.
     """
 
     if not must_use_messages or reviewed_content is None:
@@ -615,11 +640,15 @@ def _record_must_use_findings(
     candidate = candidate_review_payload(reviewed_content)
     recorded: list[ContentAiFinding] = []
     for finding in findings:
-        if finding.blocks_publication and matched_must_use_message(
+        if (
+            finding.blocks_publication
+            and _must_use_exemption_allowed(finding)
+            and matched_must_use_message(
             quote=finding.quote,
             finding_message=finding.message,
             messages=must_use_messages,
             candidate=candidate,
+            )
         ):
             finding = replace(
                 finding,

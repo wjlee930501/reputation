@@ -164,6 +164,56 @@ def test_must_use_exclusion_closes_once_that_version_is_no_longer_approved(db):
     assert _state(db, still) == "OPEN"
 
 
+@pytest.mark.parametrize(
+    "incident_type",
+    [
+        "ESSENCE_AUTO_REVIEW_ESCALATED",
+        "ESSENCE_AUTO_REVIEW_FAILED",
+        "ESSENCE_AUTO_REVIEW_COST_BLOCKED",
+    ],
+)
+@pytest.mark.parametrize("state", ["OPEN", "RETRYING"])
+def test_retired_essence_review_incidents_close_quietly_once_an_essence_is_applied(
+    db, incident_type, state
+):
+    """Phase 4(D33): 옛 Essence 자동 검수 사고는 적용 중인 판이 생기면 알림 없이 닫힌다."""
+
+    applied = _hospital(db)
+    waiting = _hospital(db)
+    db.add(HospitalContentPhilosophy(hospital_id=applied.id, version=1, status=PhilosophyStatus.APPROVED))
+    db.flush()
+    closable = _incident(db, incident_type, hospital=applied, state=state, sla=NOW + timedelta(days=1))
+    still = _incident(db, incident_type, hospital=waiting, state=state, sla=NOW + timedelta(days=1))
+    db.add(
+        NotificationOutbox(
+            hospital_id=applied.id,
+            incident_id=closable.id,
+            dedupe_key=f"INCIDENT_OPEN:{closable.id}:e1",
+            notification_type="INCIDENT_OPEN",
+            channel="SLACK",
+            state="SENT",
+            sent_at=NOW - timedelta(days=1),
+            next_attempt_at=None,
+            payload={},
+            fallback_text="열림",
+        )
+    )
+    db.flush()
+
+    close_resolved_backlog_incidents(db, now=NOW)
+
+    assert _state(db, closable) == "ACKNOWLEDGED"
+    assert _state(db, still) == state
+    # 조용한 종류라 나간 열림 알림이 있어도 복구 알림을 넣지 않는다.
+    recovered = db.scalars(
+        select(NotificationOutbox).where(
+            NotificationOutbox.incident_id == closable.id,
+            NotificationOutbox.notification_type == "INCIDENT_RECOVERED",
+        )
+    ).all()
+    assert recovered == []
+
+
 def test_naver_failure_closes_once_a_later_run_stored_that_post(db):
     hospital = _hospital(db)
     url_hash = "a" * 64

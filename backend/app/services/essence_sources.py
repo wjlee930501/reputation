@@ -65,6 +65,25 @@ def required_text_source_predicate() -> ColumnElement[bool]:
     )
 
 
+def enqueue_essence_refresh_best_effort(hospital_id: uuid.UUID) -> None:
+    """자동 운영 요약(Essence) 태스크를 바로 보낸다. 실패해도 15분 정기 조정이 다시 집는다."""
+
+    hospital_id_text = str(hospital_id)
+    try:
+        celery_app.send_task(
+            "app.workers.tasks.auto_review_essence_snapshot",
+            args=[hospital_id_text],
+            queue="content",
+            headers=build_dispatch_headers("auto-review-essence-snapshot", hospital_id_text),
+        )
+    except Exception:
+        logger.exception(
+            "Failed to enqueue immediate Essence refresh for hospital %s; "
+            "periodic reconciliation will retry",
+            hospital_id,
+        )
+
+
 class SourceRegistrationError(Exception):
     """URL 자료 등록 실패. 메시지는 그대로 운영자에게 보여 줄 수 있는 문장만 담는다.
 

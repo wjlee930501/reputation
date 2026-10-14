@@ -775,7 +775,9 @@ def attempt_is_terminal(attempt: Mapping | None) -> bool:
     - 본문 표본 실패(`SAMPLE_BODY_CODES`)가 `OPERATOR_REQUIRED`까지 소진된 것 — 주제 교체는
       별도 pass(`topic_swap_fallback`)가 소유한다.
     - 사람이 정하는 참고자료 보류(`OPERATOR_DECIDES_KEY`).
-    - 승인된 Essence가 없는 `MISSING_APPROVED_ESSENCE`(입력 지문이 바뀌어야 풀린다).
+
+    `MISSING_APPROVED_ESSENCE`는 종착이 아니다 — Essence는 승인 없이 자동으로 만들어져 곧 적용되므로
+    (Phase 4 D33) 다음 스윕이 다시 집어 새 판으로 쓴다. 생성 경로가 그 자리에서 자동 요약을 요청한다.
 
     `INPUT_CHANGE_REQUIRED`인 `CONTENT_AI_HARD_FINDING`은 뺀다 — 최소 교정 패스가 아직 그 지적을
     풀 수 있는 단계다. 단 직전 실행이 아무것도 맡지 못하고 끝났다는 표시(`HARD_FINDING_IDLE_KEY`)가
@@ -794,7 +796,7 @@ def attempt_is_terminal(attempt: Mapping | None) -> bool:
         )
     if retry_class != GenerationRetryClass.INPUT_CHANGE_REQUIRED.value:
         return False
-    return reason == "MISSING_APPROVED_ESSENCE" or (
+    return (
         reason == "CONTENT_AI_HARD_FINDING"
         and bool(attempt.get(HARD_FINDING_IDLE_KEY))
         and settings.CONTENT_HARD_FINDING_IDLE_TERMINAL

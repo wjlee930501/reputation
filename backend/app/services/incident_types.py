@@ -322,8 +322,15 @@ INCIDENT_TYPE_POLICIES: dict[str, IncidentTypePolicy] = {
         sweep_owned=True, retry_window=_one_day_window
     ),
     "CONTENT_DISPATCH_FAILED": IncidentTypePolicy(sweep_owned=True, retry_window=_one_day_window),
-    # 자동 재검수 예산이 남은 보류. 다음 시도 시각은 호출자가 안다(`retry_until`).
-    "ESSENCE_AUTO_REVIEW_ESCALATED": IncidentTypePolicy(sweep_owned=True),
+    # Phase 4(D33) — Essence는 승인 단계 없이 자동 적용되므로 이 세 종류는 더 이상 열리지 않는다.
+    # 배포 전에 열린 행은 조용히 남았다가(Slack·할 일 없음) 그 병원에 적용 중인 판이 생기면 근거
+    # 정리(`incident_backlog`)가 알림 없이 닫는다. RETRYING 행도 닫을 수 있게 스윕 소유로 둔다.
+    "ESSENCE_AUTO_REVIEW_ESCALATED": IncidentTypePolicy(sweep_owned=True, quiet=True),
+    "ESSENCE_AUTO_REVIEW_FAILED": IncidentTypePolicy(sweep_owned=True, quiet=True),
+    "ESSENCE_AUTO_REVIEW_COST_BLOCKED": IncidentTypePolicy(sweep_owned=True, quiet=True),
+    # 자동 판은 금지 표현이 든 필수 문구를 애초에 버린다. 이 사고는 옛 승인본에서만 생기며, 제외
+    # 로직(작가 프롬프트에서 빼기)은 그대로라 사람의 일이 아니다 — 행만 남긴다.
+    "ESSENCE_MUST_USE_EXCLUDED": IncidentTypePolicy(quiet=True),
     # 재시도가 끝난 V0 실패는 같은 실행을 6시간 뒤로 미뤄 최대 3회 다시 돈다(재실행 시각 + 유예,
     # 호출자 기한). 소진·측정 기준 변경은 기한 없이 사람의 일이다. V0 리포트가 생기면 근거가 닫는다.
     "V0_REPORT_FAILED": IncidentTypePolicy(sweep_owned=True),

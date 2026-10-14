@@ -41,7 +41,6 @@ EVENT_LABELS: Final[dict[str, NotificationLabel]] = {
     # ERROR, 전달 준비 완료·전달 기록처럼 읽고 다음 일을 잡으면 되는 항목은 REPORT다.
     # "전달 준비 완료"가 오류로 읽히면 채널의 Error가 신호를 잃는다.
     "MILESTONE_SUMMARY": NotificationLabel.ERROR,
-    "MISSING_APPROVED_ESSENCE_DIGEST": NotificationLabel.ERROR,
     "GENERATION_BLOCKED_DIGEST": NotificationLabel.ERROR,
     # D35: 배포 전부터 남은 공개 글의 Critical 사후 검수 지적 요약("마케터 검토 필요 N건").
     "POST_PUBLISH_CRITICAL_DIGEST": NotificationLabel.ERROR,

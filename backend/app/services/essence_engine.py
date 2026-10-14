@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import logging
@@ -35,11 +36,25 @@ from app.models.essence import (
     HospitalSourceEvidenceNote,
     PhilosophyStatus,
     SourceStatus,
+    SourceType,
 )
 from app.models.hospital import Hospital
 from app.services import llm_structured_output, openrouter
+from app.services.essence_claims import (
+    claim_is_supported,
+    is_medical_claim,
+    is_verbatim_in,
+    normalize_sentence,
+    split_sentences,
+    support_ratio,
+    without_template_prefix,
+)
 from app.services.essence_sources import required_text_source_predicate
 from app.services.openrouter import is_retryable_llm_error
+from app.services.profile_facts_source import (
+    is_profile_facts_source,
+    profile_fact_note_payloads,
+)
 from app.utils.error_page import looks_like_error_page_text
 from app.utils.medical_filter import FORBIDDEN_EXPRESSIONS, check_forbidden
 
@@ -230,6 +245,21 @@ def process_source_asset(
     """
     if not asset.raw_text or not asset.raw_text.strip():
         raise ValueError("원문 텍스트가 없는 자료는 처리할 수 없습니다.")
+
+    if is_profile_facts_source(asset):
+        # 병원 정보(자동) 자료는 줄 하나가 노트 하나다 — LLM을 부르지 않는다(Phase 4 E2).
+        return [
+            EvidenceNotePayload(
+                note_type=note.note_type,
+                claim=note.claim,
+                source_excerpt=note.source_excerpt,
+                excerpt_start=note.excerpt_start,
+                excerpt_end=note.excerpt_end,
+                confidence=1.0,
+                note_metadata=dict(note.note_metadata),
+            )
+            for note in profile_fact_note_payloads(asset.raw_text)
+        ]
 
     if use_llm and llm_enabled():
         try:
@@ -700,6 +730,18 @@ def _process_source_asset_deterministic(asset: HospitalSourceAsset) -> list[Evid
     return payloads
 
 
+SYNTHESIS_MODE_LLM = "LLM"
+SYNTHESIS_MODE_DETERMINISTIC = "DETERMINISTIC"
+#: 합성 결과에 함께 실려 오는 서버 전용 키. 저장 전에 반드시 빠진다(`strip_private_synthesis_keys`).
+MUST_USE_EVIDENCE_KEY = "_must_use_evidence"
+
+
+def strip_private_synthesis_keys(payload: dict[str, Any]) -> dict[str, Any]:
+    for key in [key for key in payload if str(key).startswith("_")]:
+        payload.pop(key, None)
+    return payload
+
+
 def synthesize_philosophy(
     hospital: Hospital,
     sources: list[HospitalSourceAsset],
@@ -712,6 +754,26 @@ def synthesize_philosophy(
 
     OPENROUTER_API_KEY가 있으면 LLM으로 합성하고, 없으면 deterministic 폴백을 쓴다.
     LLM 합성이 실패하거나 grounding 검증을 통과하지 못하면 deterministic 폴백으로 떨어진다.
+    """
+    payload, _mode = synthesize_philosophy_with_mode(
+        hospital, sources, notes, operator_note, use_llm=use_llm
+    )
+    return strip_private_synthesis_keys(payload)
+
+
+def synthesize_philosophy_with_mode(
+    hospital: Hospital,
+    sources: list[HospitalSourceAsset],
+    notes: list[HospitalSourceEvidenceNote],
+    operator_note: str | None = None,
+    *,
+    use_llm: bool = True,
+) -> tuple[dict[str, Any], str]:
+    """`synthesize_philosophy`와 같되 어느 경로(LLM·결정적 폴백)로 만들었는지 함께 돌려준다.
+
+    자동 요약(D33)은 이 값으로 "폴백 판으로 좋은 판을 덮지 않는다"를 지킨다. 결과에는 서버 전용
+    키(`_must_use_evidence` — 필수 문구 항목별 근거 노트 id)가 남아 있으며 자동 정리
+    (`prune_automatic_candidate`)가 읽고 지운다.
     """
     # 차단·오류 페이지 잔재("Title: 403 Forbidden" 등)가 든 근거 노트는 철학 조립에서 제외한다.
     # (기존 오염 노트가 DB에 남아 있어도 positioning/promise 등 핵심 필드로 새지 않게 한다.)
@@ -730,13 +792,19 @@ def synthesize_philosophy(
                 and payload.get("evidence_map")  # grounded 필드가 최소 1개는 있어야 함
                 and not validate_philosophy_grounding(payload, notes)
             ):
-                return payload
+                return payload, SYNTHESIS_MODE_LLM
             logger.info("essence LLM synthesis ungrounded or empty; using deterministic fallback")
         except Exception as exc:  # noqa: BLE001 — LLM 실패 시 폴백으로 계속
             logger.warning("essence LLM synthesis failed (%s); using deterministic fallback", exc)
 
-    return apply_mandatory_safety_policy(
-        _synthesize_philosophy_deterministic(hospital, sources, notes, operator_note)
+    # 결정적 폴백도 출처 우선순위(설문 → 병원 정보 → 홈페이지 → 블로그)로 노트를 고른다(D34).
+    return (
+        apply_mandatory_safety_policy(
+            _synthesize_philosophy_deterministic(
+                hospital, sources, order_notes_for_synthesis(notes, sources), operator_note
+            )
+        ),
+        SYNTHESIS_MODE_DETERMINISTIC,
     )
 
 
@@ -768,6 +836,16 @@ _SYNTHESIS_SYSTEM = """\
 7. 핵심 운영 기준만 최대 14개 entry로 압축합니다. 모든 근거 노트를 억지로 반영하지 말고,
    각 entry의 patient_language와 cautions는 각각 최대 2개, evidence_note_ids는 그 문장을
    직접 뒷받침하는 최소 개수만 사용합니다.
+8. 각 노트의 src는 자료 종류입니다. INTERVIEW는 원장 인터뷰 설문, PROFILE_FACTS는 병원 정보
+   화면의 값(태그 [마케터 입력]은 마케터가 확인한 값), HOMEPAGE·NAVER_BLOG는 공식 채널입니다.
+   doctor_voice·positioning_statement·patient_promise·treatment_narrative는 src=INTERVIEW 근거를
+   최우선으로 씁니다. 같은 주제에서 INTERVIEW와 다른 자료가 다르면 INTERVIEW를 따르고
+   conflict_note로 남깁니다. INTERVIEW가 없으면 PROFILE_FACTS의 [마케터 입력] → HOMEPAGE →
+   NAVER_BLOG 순으로 따릅니다.
+9. 주소·전화번호·진료시간·휴진일 같은 운영 사실은 어떤 필드에도 쓰지 않습니다.
+10. must_use_message는 최대 3개입니다. src=INTERVIEW 발췌에 있는 원장의 문장을 한 글자도 바꾸지
+    않고 그대로 옮깁니다(질문 문장은 쓰지 않습니다). INTERVIEW 근거가 없거나 쓸 만한 원장 문장이
+    없을 때만 근거 노트에 묶인 짧은 문장으로 씁니다.
 
 출력은 JSON 객체 하나만, 코드블록/설명 없이 entries 배열로 반환합니다.
 모든 entry는 아래 키를 전부 가지며 사용하지 않는 문자열/배열은 빈 값으로 둡니다.
@@ -918,10 +996,12 @@ def _synthesize_philosophy_llm(
     LLM이 참조한 evidence_note_ids는 입력 노트 id 집합으로 필터링되어 환각 참조를 막는다.
     """
     valid_ids = {_note_id(note): note for note in notes}
+    kinds = source_kinds_by_id(sources)
     notes_block = "\n".join(
-        f"- id={_note_id(note)} | type={_note_type_value(note)} | "
-        f"excerpt={_short(note.source_excerpt, 160)}"
-        for note in notes
+        f"- id={_note_id(note)} | src={_note_source_kind(note, kinds)} | "
+        f"type={_note_type_value(note)} | "
+        f"excerpt={_short(note.source_excerpt, _note_excerpt_limit(note, kinds))}"
+        for note in order_notes_for_synthesis(notes, sources)
     )
     operator_block = (
         f"\n[운영자 작성 방향 operator_note]\n{operator_note.strip()}\n" if operator_note else ""
@@ -962,6 +1042,10 @@ def _synthesize_philosophy_llm(
         ids = _unique_ids(_id for _, _id_list in items for _id in _id_list)
         if ids:
             evidence_map[field_name] = ids
+        if field_name == "must_use_messages":
+            payload[MUST_USE_EVIDENCE_KEY] = [
+                {"text": text, "evidence_note_ids": list(item_ids)} for text, item_ids in items
+            ]
 
     treatment_narratives, treatment_ids = _extract_treatment_narratives(
         data.get("treatment_narratives"), valid_ids
@@ -1141,6 +1225,90 @@ def _note_type_value(note: HospitalSourceEvidenceNote) -> str:
     return note_type.value if hasattr(note_type, "value") else str(note_type)
 
 
+
+# ── 자료 종류(src) — 합성 프롬프트·자동 정리 공용 ─────────────────────────────
+SOURCE_KIND_PROFILE_FACTS = "PROFILE_FACTS"
+#: 서술 우선순위(D34): 설문 > 마케터 입력(병원 정보) > 홈페이지 > 블로그 > 그 밖.
+_NARRATIVE_SOURCE_RANK = {
+    SourceType.INTERVIEW.value: 0,
+    SOURCE_KIND_PROFILE_FACTS: 1,
+    SourceType.HOMEPAGE.value: 2,
+    SourceType.NAVER_BLOG.value: 3,
+}
+_INTERVIEW_EXCERPT_LIMIT = 400
+_DEFAULT_EXCERPT_LIMIT = 160
+
+
+def source_kind(source: Any) -> str:
+    """노트·합성 메타데이터가 쓰는 자료 종류. 병원 정보(자동) 자료는 PROFILE_FACTS다."""
+
+    if is_profile_facts_source(source):
+        return SOURCE_KIND_PROFILE_FACTS
+    value = getattr(source, "source_type", None)
+    return str(getattr(value, "value", value) or "OTHER")
+
+
+def source_kinds_by_id(sources: Iterable[Any]) -> dict[str, str]:
+    return {str(source.id): source_kind(source) for source in sources}
+
+
+def _note_source_kind(note: Any, kinds: dict[str, str]) -> str:
+    return kinds.get(str(getattr(note, "source_asset_id", "")), "OTHER")
+
+
+def _note_excerpt_limit(note: Any, kinds: dict[str, str]) -> int:
+    if _note_source_kind(note, kinds) == SourceType.INTERVIEW.value:
+        return _INTERVIEW_EXCERPT_LIMIT
+    return _DEFAULT_EXCERPT_LIMIT
+
+
+def narrative_source_rank(kind: str) -> int:
+    return _NARRATIVE_SOURCE_RANK.get(kind, len(_NARRATIVE_SOURCE_RANK))
+
+
+def _is_marketer_profile_note(note: Any) -> bool:
+    metadata = getattr(note, "note_metadata", None) or {}
+    return metadata.get("tag") == "마케터 입력"
+
+
+def order_notes_for_synthesis(notes: list[Any], sources: Iterable[Any]) -> list[Any]:
+    """설문 → 병원 정보(마케터 입력 줄 먼저) → 홈페이지 → 블로그 → 그 밖 순서."""
+
+    kinds = source_kinds_by_id(sources)
+    indexed = list(enumerate(notes))
+    indexed.sort(
+        key=lambda pair: (
+            narrative_source_rank(_note_source_kind(pair[1], kinds)),
+            0 if _is_marketer_profile_note(pair[1]) else 1,
+            pair[0],
+        )
+    )
+    return [note for _index, note in indexed]
+
+
+_PROFILE_FACT_PREFIX = re.compile(r"^\[[^\]]+\] ")
+
+
+def _note_text(note: Any) -> str:
+    """결정적 폴백이 보여 줄 발췌. 병원 정보(자동) 줄의 출처 태그는 떼어 낸다."""
+
+    excerpt = str(getattr(note, "source_excerpt", "") or "")
+    metadata = getattr(note, "note_metadata", None) or {}
+    if metadata.get("system_kind") == SOURCE_KIND_PROFILE_FACTS:
+        return _PROFILE_FACT_PREFIX.sub("", excerpt)
+    return excerpt
+
+
+def _must_use_text_from_note(note: Any) -> str | None:
+    metadata = getattr(note, "note_metadata", None) or {}
+    if metadata.get("system_kind") == SOURCE_KIND_PROFILE_FACTS:
+        if metadata.get("label") != "진료 철학":
+            return None
+        text = _note_text(note).split(":", 1)[-1].strip()
+        return _short(text, 160) if text else None
+    return _short(_note_text(note), 160)
+
+
 def _synthesize_philosophy_deterministic(
     hospital: Hospital,
     sources: list[HospitalSourceAsset],
@@ -1148,7 +1316,14 @@ def _synthesize_philosophy_deterministic(
     operator_note: str | None = None,
 ) -> dict[str, Any]:
     """근거 노트에서 규칙 기반으로 철학 초안을 합성 — LLM 키가 없는 폴백."""
-    grouped = _group_notes(notes)
+    if notes and all(
+        (getattr(note, "note_metadata", None) or {}).get("system_kind") == SOURCE_KIND_PROFILE_FACTS
+        for note in notes
+    ):
+        return _synthesize_profile_only(hospital, sources, notes)
+    # 노트는 출처 우선순위 순서로 온다(`order_notes_for_synthesis`) — 종류가 순위를 덮지 않게
+    # 원래 순서대로 고른다.
+    grouped = notes
 
     key_notes = _pick_notes(
         grouped,
@@ -1177,7 +1352,7 @@ def _synthesize_philosophy_deterministic(
     positioning_statement = None
     if key_notes:
         positioning_statement = (
-            f"자료에서 확인된 핵심 메시지: {_short(key_notes[0].source_excerpt, 140)}"
+            f"자료에서 확인된 핵심 메시지: {_short(_note_text(key_notes[0]), 140)}"
         )
         evidence_map["positioning_statement"] = [_note_id(key_notes[0])]
     else:
@@ -1187,7 +1362,7 @@ def _synthesize_philosophy_deterministic(
 
     doctor_voice = None
     if tone_notes:
-        doctor_voice = f"자료 표현 기준 문체: {_short(tone_notes[0].source_excerpt, 140)}"
+        doctor_voice = f"자료 표현 기준 문체: {_short(_note_text(tone_notes[0]), 140)}"
         evidence_map["doctor_voice"] = [_note_id(tone_notes[0])]
     else:
         unsupported_gaps.append(
@@ -1196,7 +1371,7 @@ def _synthesize_philosophy_deterministic(
 
     patient_promise = None
     if promise_notes:
-        patient_promise = f"환자에게 말할 수 있는 약속은 이 근거 범위로 제한: {_short(promise_notes[0].source_excerpt, 140)}"
+        patient_promise = f"환자에게 말할 수 있는 약속은 이 근거 범위로 제한: {_short(_note_text(promise_notes[0]), 140)}"
         evidence_map["patient_promise"] = [_note_id(promise_notes[0])]
     else:
         unsupported_gaps.append(
@@ -1204,7 +1379,7 @@ def _synthesize_philosophy_deterministic(
         )
 
     content_principles = [
-        f"근거 문장을 벗어나지 않고 설명합니다: {_short(note.source_excerpt, 120)}"
+        f"근거 문장을 벗어나지 않고 설명합니다: {_short(_note_text(note), 120)}"
         for note in key_notes[:3]
     ]
     if content_principles:
@@ -1215,17 +1390,24 @@ def _synthesize_philosophy_deterministic(
         )
 
     tone_guidelines = [
-        f"원문 톤을 유지합니다: {_short(note.source_excerpt, 120)}" for note in tone_notes
+        f"원문 톤을 유지합니다: {_short(_note_text(note), 120)}" for note in tone_notes
     ]
     if tone_guidelines:
         evidence_map["tone_guidelines"] = [_note_id(note) for note in tone_notes]
 
-    must_use_messages = [_short(note.source_excerpt, 160) for note in key_notes]
+    # 병원 정보(자동) 줄은 "원장: 홍길동" 같은 사실 표기라 필수 문구가 될 수 없다 — 진료 철학 줄만
+    # 값을 문구로 쓴다.
+    must_use_items = [
+        (text, note)
+        for note in key_notes
+        if (text := _must_use_text_from_note(note))
+    ]
+    must_use_messages = [text for text, _note in must_use_items]
     if must_use_messages:
-        evidence_map["must_use_messages"] = [_note_id(note) for note in key_notes]
+        evidence_map["must_use_messages"] = [_note_id(note) for _text, note in must_use_items]
 
     avoid_messages = [
-        f"검수 필요 표현 또는 약속: {_short(note.source_excerpt, 120)}" for note in risk_notes
+        f"검수 필요 표현 또는 약속: {_short(_note_text(note), 120)}" for note in risk_notes
     ]
     if avoid_messages:
         evidence_map["avoid_messages"] = [_note_id(note) for note in risk_notes]
@@ -1235,7 +1417,7 @@ def _synthesize_philosophy_deterministic(
         treatment_narratives.append(
             {
                 "treatment": (note.note_metadata or {}).get("treatment") or "자료 기반 진료 항목",
-                "angle": _short(note.source_excerpt, 140),
+                "angle": _short(_note_text(note), 140),
                 "explanation_style": "근거 발췌에 포함된 표현만 사용합니다.",
                 "cautions": ["치료 결과를 단정하거나 보장하지 않습니다."],
                 "evidence_note_ids": [_note_id(note)],
@@ -1251,7 +1433,7 @@ def _synthesize_philosophy_deterministic(
     local_context = {"region_terms": [], "local_patient_context": [], "avoid_region_stuffing": True}
     if local_notes:
         local_context["local_patient_context"] = [
-            _short(note.source_excerpt, 120) for note in local_notes
+            _short(_note_text(note), 120) for note in local_notes
         ]
         local_context["evidence_note_ids"] = [_note_id(note) for note in local_notes]
         evidence_map["local_context"] = [_note_id(note) for note in local_notes]
@@ -1262,10 +1444,10 @@ def _synthesize_philosophy_deterministic(
         if violations:
             medical_ad_risk_rules.append(
                 f"{', '.join(violations)} 표현은 근거와 별도 심의 없이 사용하지 않습니다: "
-                f"{_short(note.source_excerpt, 120)}"
+                f"{_short(_note_text(note), 120)}"
             )
         else:
-            medical_ad_risk_rules.append(f"리스크 표현 검수: {_short(note.source_excerpt, 120)}")
+            medical_ad_risk_rules.append(f"리스크 표현 검수: {_short(_note_text(note), 120)}")
     if medical_ad_risk_rules:
         evidence_map["medical_ad_risk_rules"] = [_note_id(note) for note in risk_notes]
 
@@ -1278,7 +1460,7 @@ def _synthesize_philosophy_deterministic(
         )
 
     conflict_payload = [
-        {"text": _short(note.source_excerpt, 160), "evidence_note_ids": [_note_id(note)]}
+        {"text": _short(_note_text(note), 160), "evidence_note_ids": [_note_id(note)]}
         for note in conflict_notes
     ]
 
@@ -1297,6 +1479,10 @@ def _synthesize_philosophy_deterministic(
         "content_principles": content_principles,
         "tone_guidelines": tone_guidelines,
         "must_use_messages": must_use_messages,
+        MUST_USE_EVIDENCE_KEY: [
+            {"text": text, "evidence_note_ids": [_note_id(note)]}
+            for text, note in must_use_items
+        ],
         "avoid_messages": avoid_messages,
         "treatment_narratives": treatment_narratives,
         "local_context": local_context,
@@ -1308,6 +1494,112 @@ def _synthesize_philosophy_deterministic(
         "synthesis_notes": (
             "Deterministic MVP synthesis. Raw source text/operator notes were the only evidence; "
             "unsupported fields were left empty or listed in unsupported_gaps."
+        ),
+        "source_snapshot_hash": compute_sources_snapshot_hash(sources),
+    }
+
+
+def _profile_value(note: Any) -> str:
+    return _note_text(note).split(":", 1)[-1].strip()
+
+
+def _synthesize_profile_only(
+    hospital: Hospital,
+    sources: list[HospitalSourceAsset],
+    notes: list[HospitalSourceEvidenceNote],
+) -> dict[str, Any]:
+    """병원 정보(자동) 자료만 있을 때의 최소 자동 판 — 병원명·전문 과목·진료 항목·진료 철학.
+
+    다른 자료가 모두 오염돼 빠졌거나 아직 없어도 생성이 기다리지 않게 하는 결정적 판이다(D33).
+    문장은 노트 값을 그대로 잇기만 하므로 근거 대조를 통과한다.
+    """
+
+    by_label: dict[str, list[HospitalSourceEvidenceNote]] = {}
+    for note in notes:
+        if _note_type_value(note) == EvidenceNoteType.RISK_SIGNAL.value:
+            continue
+        label = str((note.note_metadata or {}).get("label") or "")
+        by_label.setdefault(label, []).append(note)
+    evidence_map: dict[str, list[str]] = {}
+    unsupported_gaps: list[dict[str, str]] = []
+
+    name_notes = by_label.get("병원명", [])
+    specialty_notes = by_label.get("전문 과목", [])
+    positioning_statement = None
+    if name_notes:
+        name = _profile_value(name_notes[0])
+        specialty = _profile_value(specialty_notes[0]) if specialty_notes else ""
+        positioning_statement = (
+            f"{name}은 {specialty} 진료를 안내합니다." if specialty else f"{name}의 진료를 안내합니다."
+        )
+        evidence_map["positioning_statement"] = [
+            _note_id(note) for note in [*name_notes[:1], *specialty_notes[:1]]
+        ]
+    else:
+        unsupported_gaps.append(
+            {"field": "positioning_statement", "reason": "병원명 근거 note가 없습니다."}
+        )
+
+    philosophy_notes = by_label.get("진료 철학", [])
+    must_use_messages = [
+        text for note in philosophy_notes[:1] if (text := _must_use_text_from_note(note))
+    ]
+    if must_use_messages:
+        evidence_map["must_use_messages"] = [_note_id(philosophy_notes[0])]
+
+    treatment_narratives = []
+    for note in by_label.get("진료 항목", [])[:8]:
+        value = _profile_value(note)
+        name, _sep, description = value.partition(" — ")
+        treatment_narratives.append(
+            {
+                "treatment": name.strip(),
+                "angle": (description or name).strip(),
+                "explanation_style": "근거 발췌에 포함된 표현만 사용합니다.",
+                "cautions": ["치료 결과를 단정하거나 보장하지 않습니다."],
+                "evidence_note_ids": [_note_id(note)],
+            }
+        )
+    if treatment_narratives:
+        evidence_map["treatment_narratives"] = [
+            item["evidence_note_ids"][0] for item in treatment_narratives
+        ]
+
+    local_context: dict[str, Any] = {
+        "region_terms": [],
+        "local_patient_context": [],
+        "avoid_region_stuffing": True,
+    }
+    region_notes = by_label.get("지역", [])
+    if region_notes:
+        local_context["region_terms"] = [
+            term.strip() for term in _profile_value(region_notes[0]).split(",") if term.strip()
+        ]
+        local_context["evidence_note_ids"] = [_note_id(region_notes[0])]
+        evidence_map["local_context"] = [_note_id(region_notes[0])]
+
+    return {
+        "positioning_statement": positioning_statement,
+        "doctor_voice": None,
+        "patient_promise": None,
+        "content_principles": [],
+        "tone_guidelines": [],
+        "must_use_messages": must_use_messages,
+        MUST_USE_EVIDENCE_KEY: [
+            {"text": text, "evidence_note_ids": [_note_id(philosophy_notes[0])]}
+            for text in must_use_messages
+        ],
+        "avoid_messages": [],
+        "treatment_narratives": treatment_narratives,
+        "local_context": local_context,
+        "medical_ad_risk_rules": [],
+        "evidence_map": evidence_map,
+        "source_asset_ids": [str(source.id) for source in sources],
+        "unsupported_gaps": unsupported_gaps,
+        "conflict_notes": [],
+        "synthesis_notes": (
+            "Minimal deterministic summary from hospital profile facts only "
+            "(name, specialties, treatments, philosophy)."
         ),
         "source_snapshot_hash": compute_sources_snapshot_hash(sources),
     }
@@ -1430,6 +1722,778 @@ def find_error_marker_fields(payload: Any) -> list[str]:
         if any(looks_like_error_page_text(text) for text in _iter_field_texts(value)):
             flagged.append(field_name)
     return flagged
+
+
+# ── 자동 요약 정리(Phase 4 D33) ─────────────────────────────────────────────
+# 자동 요약은 승인 단계가 없다. 그래서 지금까지 "보류 사유"였던 것을 모두 결정적으로 **버린다**:
+# 근거 노트에 묶이지 않는 주장, 의료광고 금지 표현, 차단·오류 페이지 잔재, 운영 사실(E5). 버린 것은
+# 합성 메타데이터(`synthesis_metadata.dropped`)에만 남는다 — 사고·Slack 없음.
+AUTOMATIC_MUST_USE_LIMIT = 3
+AUTOMATIC_DROPPED_LIMIT = 50
+MUST_USE_MODE_SURVEY = "SURVEY_VERBATIM"
+MUST_USE_MODE_SOURCE = "SOURCE_VERBATIM"
+MUST_USE_MODE_NONE = "NONE"
+DROP_UNGROUNDED = "UNGROUNDED"
+DROP_FORBIDDEN = "FORBIDDEN_EXPRESSION"
+DROP_ERROR_PAGE = "ERROR_PAGE_RESIDUE"
+DROP_OPERATIONAL_FACT = "OPERATIONAL_FACT"
+DROP_MUST_USE_LIMIT = "MUST_USE_LIMIT"
+DROP_MUST_USE_NOT_SOURCE_VERBATIM = "MUST_USE_NOT_SOURCE_VERBATIM"
+DROP_MUST_USE_SHAPE = "MUST_USE_NOT_SENTENCE"
+DROP_UNSUPPORTED_CLAIM = "UNSUPPORTED_CLAIM"
+DROP_CONFLICT_LOWER_PRIORITY = "CONFLICT_LOWER_PRIORITY"
+DROP_CONFLICT_UNDECIDED = "CONFLICT_UNDECIDED"
+CONFLICT_RESOLUTION_RULE = "D34_NARRATIVE_PRIORITY"
+CONFLICT_FACT_RESOLUTION_RULE = "D34_FACT_PRIORITY"
+_GENERIC_TREATMENT_LABEL = "자료 기반 진료 항목"
+
+_PRUNE_POSITIVE_SINGLE = ("positioning_statement", "doctor_voice", "patient_promise")
+_PRUNE_POSITIVE_LIST = ("content_principles", "tone_guidelines", "must_use_messages")
+_PRUNE_POLICY_LIST = ("avoid_messages", "medical_ad_risk_rules")
+_PRUNE_GROUNDED_FIELDS = (
+    *_PRUNE_POSITIVE_SINGLE,
+    *_PRUNE_POSITIVE_LIST,
+    *_PRUNE_POLICY_LIST,
+    "treatment_narratives",
+    "local_context",
+)
+# 주소·전화·진료시간 같은 운영 사실은 Essence에 싣지 않는다(E5) — 생성은 그 값을 병원 행에서 읽는다.
+_OPERATIONAL_FACT_PATTERNS = (
+    re.compile(r"(?<![0-9])[0-2]?[0-9]\s*:\s*[0-5][0-9](?![0-9])"),
+    re.compile(r"(?:오전|오후)\s*[0-9]{1,2}\s*시"),
+    re.compile(r"(?<![0-9])0[0-9]{1,2}\s*[-.)]\s*[0-9]{3,4}\s*[-.]\s*[0-9]{4}(?![0-9])"),
+    re.compile(r"(?<![0-9])1[5-9][0-9]{2}\s*-\s*[0-9]{4}(?![0-9])"),
+    re.compile(r"진료\s*시간|휴진|점심\s*시간"),
+)
+_PROFILE_FACT_LINE = re.compile(r"^\[[^\]]+\]\s")
+_PROFILE_FACT_LABEL_FORM = re.compile(
+    r"^(?:원장|원장 약력|전문 과목|진료 항목|지역|핵심 키워드)\s*:"
+)
+_QUOTE_CHARS = "\"'“”‘’「」『』"
+_MIN_MUST_USE_CHARS = 8
+
+
+def contains_operational_fact(text: str) -> bool:
+    return any(pattern.search(text or "") for pattern in _OPERATIONAL_FACT_PATTERNS)
+
+
+def _collapse(text: Any) -> str:
+    return re.sub(r"\s+", " ", str(text or "")).strip()
+
+
+@dataclass
+class AutomaticPruneReport:
+    dropped: list[dict[str, Any]] = field(default_factory=list)
+    conflicts: list[dict[str, Any]] = field(default_factory=list)
+    must_use: dict[str, Any] = field(default_factory=dict)
+    public_about: list[str] = field(default_factory=list)
+    dropped_total: int = 0
+
+    def add(self, field_name: str, text: Any, reason: str) -> None:
+        self.dropped_total += 1
+        if len(self.dropped) < AUTOMATIC_DROPPED_LIMIT:
+            self.dropped.append(
+                {"field": field_name, "text": _short(_collapse(text), 80), "reason": reason}
+            )
+
+
+def _offending_reason(text: str, *, positive: bool) -> str | None:
+    if looks_like_error_page_text(text):
+        return DROP_ERROR_PAGE
+    if positive and check_forbidden(text):
+        return DROP_FORBIDDEN
+    if positive and contains_operational_fact(text):
+        return DROP_OPERATIONAL_FACT
+    return None
+
+
+def _must_use_shape_ok(text: str) -> bool:
+    return (
+        len(text) >= _MIN_MUST_USE_CHARS
+        and not text.endswith("?")
+        and not _PROFILE_FACT_LINE.match(text)
+        and not _PROFILE_FACT_LABEL_FORM.match(text)
+    )
+
+
+def _note_sentences(note: Any) -> list[str]:
+    """노트 발췌의 문장들(원문 그대로). 병원 정보(자동) 줄은 값 부분만 문장으로 본다."""
+
+    text = _note_text(note)
+    metadata = getattr(note, "note_metadata", None) or {}
+    if metadata.get("system_kind") == SOURCE_KIND_PROFILE_FACTS:
+        if metadata.get("label") != "진료 철학":
+            return []
+        text = text.split(":", 1)[-1]
+    return [normalize_sentence(sentence) for sentence in split_sentences(text)]
+
+
+def _clean_source_sentence(sentence: str) -> bool:
+    """필수 문구·공개 소개로 옮길 수 있는 원문 문장인가 — 의료 필터와 의료 주장 어휘 모두 통과."""
+
+    return (
+        _MIN_MUST_USE_CHARS <= len(sentence) <= _DEFAULT_EXCERPT_LIMIT
+        and _must_use_shape_ok(sentence)
+        and _offending_reason(sentence, positive=True) is None
+        and not is_medical_claim(sentence)
+    )
+
+
+def _excerpts(notes_by_id: dict[str, Any], ids: Iterable[str]) -> list[str]:
+    return [
+        str(getattr(notes_by_id[note_id], "source_excerpt", "") or "")
+        for note_id in ids
+        if note_id in notes_by_id
+    ]
+
+
+def _field_ids(result: dict[str, Any], field_name: str, valid: set[str]) -> list[str]:
+    raw = result.get("evidence_map") if isinstance(result.get("evidence_map"), dict) else {}
+    return [note_id for note_id in _flatten_ids(raw.get(field_name)) if note_id in valid]
+
+
+def _sentence_kept(
+    sentence: str, support: list[str], allowed: list[str], *, require_general: bool
+) -> bool:
+    """의료 주장 어휘가 든 문장은 근거 노트에 글자 그대로 있을 때만 남는다(fail-closed).
+
+    그 밖의 문장은 연결된 노트 본문으로 뒷받침돼야 한다(문체 묘사는 의료 주장일 때만 대조).
+    """
+
+    body = without_template_prefix(sentence)
+    if is_medical_claim(body):
+        return is_verbatim_in(body, allowed)
+    return claim_is_supported(body, support, require_general=require_general)
+
+
+def _text_kept(text: str, support: list[str], allowed: list[str], *, require_general: bool) -> bool:
+    """여러 문장이면 문장마다 본다 — 하나라도 남지 못하면 그 항목을 통째로 버린다."""
+
+    return all(
+        _sentence_kept(sentence, support, allowed, require_general=require_general)
+        for sentence in split_sentences(text) or [text]
+    )
+
+
+def _grounded_text(
+    text: str,
+    support: list[str],
+    allowed: list[str],
+    *,
+    require_general: bool,
+) -> tuple[str | None, list[str]]:
+    """문장마다 근거 대조해 뒷받침되는 문장만 남긴다. (남은 글, 버린 문장들)."""
+
+    kept: list[str] = []
+    dropped: list[str] = []
+    for sentence in split_sentences(text) or [text]:
+        if _sentence_kept(sentence, support, allowed, require_general=require_general):
+            kept.append(sentence)
+        else:
+            dropped.append(sentence)
+    return (" ".join(kept) if kept else None), dropped
+
+
+# 사실 충돌 우선순위(D34): 마케터 입력 > 네이버 > 설문 > 홈페이지 > 블로그.
+_FACT_TAG_RANK = {
+    "마케터 입력": 0.0,
+    "병원 정보": 0.5,
+    "자동 수집·네이버": 1.0,
+    "자동 수집·설문": 2.0,
+    "자동 수집·홈페이지": 3.0,
+    "자동 수집·블로그": 4.0,
+}
+# 서술(목소리·철학·진료 서술) 우선순위: 설문 > 마케터 입력 > 홈페이지 > 블로그 > 네이버.
+_NARRATIVE_TAG_RANK = {
+    "자동 수집·설문": 0.0,
+    "마케터 입력": 1.0,
+    "병원 정보": 1.5,
+    "자동 수집·홈페이지": 2.0,
+    "자동 수집·블로그": 3.0,
+    "자동 수집·네이버": 4.5,
+}
+_FACT_KIND_RANK = {
+    SourceType.INTERVIEW.value: 2.0,
+    SourceType.HOMEPAGE.value: 3.0,
+    SourceType.NAVER_BLOG.value: 4.0,
+}
+_NARRATIVE_KIND_RANK = {
+    SourceType.INTERVIEW.value: 0.0,
+    SourceType.HOMEPAGE.value: 2.0,
+    SourceType.NAVER_BLOG.value: 3.0,
+}
+
+
+def _is_fact_conflict(notes: list[Any], kinds: dict[str, str]) -> bool:
+    for note in notes:
+        metadata = getattr(note, "note_metadata", None) or {}
+        if _note_type_value(note) == EvidenceNoteType.PROOF_POINT.value:
+            return True
+        if (
+            _note_source_kind(note, kinds) == SOURCE_KIND_PROFILE_FACTS
+            and metadata.get("label") != "진료 철학"
+        ):
+            return True
+    return False
+
+
+def _priority_rank(note: Any, kinds: dict[str, str], *, fact: bool) -> float:
+    kind = _note_source_kind(note, kinds)
+    if kind == SOURCE_KIND_PROFILE_FACTS:
+        tag = str((getattr(note, "note_metadata", None) or {}).get("tag") or "병원 정보")
+        table = _FACT_TAG_RANK if fact else _NARRATIVE_TAG_RANK
+        return table.get(tag, 1.5)
+    return (_FACT_KIND_RANK if fact else _NARRATIVE_KIND_RANK).get(kind, 5.0)
+
+
+def _best_support(text: str, linked: list[Any]) -> tuple[Any | None, float]:
+    best, best_ratio = None, 0.0
+    for note in linked:
+        ratio = support_ratio(text, [str(getattr(note, "source_excerpt", "") or "")])
+        if ratio > best_ratio:
+            best, best_ratio = note, ratio
+    return best, best_ratio
+
+
+_MUST_USE_SURVEY_NOTE_ORDER = (
+    EvidenceNoteType.DOCTOR_PHILOSOPHY.value,
+    EvidenceNoteType.PATIENT_PROMISE.value,
+    EvidenceNoteType.TONE_SIGNAL.value,
+    EvidenceNoteType.KEY_MESSAGE.value,
+    EvidenceNoteType.TREATMENT_SIGNAL.value,
+    EvidenceNoteType.LOCAL_CONTEXT.value,
+)
+
+
+def _select_must_use(
+    result: dict[str, Any],
+    notes: list[Any],
+    sources: list[Any],
+    report: AutomaticPruneReport,
+    excluded_ids: set[str],
+) -> list[str]:
+    """필수 문구(Q2, fail-closed): 모델이 쓴 문장은 절대 쓰지 않는다.
+
+    (a) 설문 원문에 글자 그대로 있는 원장 문장 최대 3개, 없으면 (b) 다른 근거 노트(홈페이지·블로그·
+    병원 정보의 진료 철학)에 글자 그대로 있는 문장 최대 3개, 그것도 없으면 비운다. 어느 쪽이든
+    의료광고 필터와 의료 주장 어휘(`essence_claims.MEDICAL_CLAIM_LEXICON`)를 통과해야 한다.
+    충돌에서 진 노트는 고르지 않는다. 모델이 고른 원문 문장을 먼저 쓴다.
+    """
+
+    kinds = source_kinds_by_id(sources)
+    proposed = [
+        normalize_sentence(item.get("text") if isinstance(item, dict) else item)
+        for item in result.get("must_use_messages") or []
+    ]
+    proposed = [text for text in proposed if text]
+    usable_notes = [
+        note
+        for note in notes
+        if _note_id(note) not in excluded_ids
+        and _note_type_value(note) in _MUST_USE_SURVEY_NOTE_ORDER
+    ]
+
+    def pool(survey: bool) -> list[tuple[str, str]]:
+        chosen = [
+            note
+            for note in usable_notes
+            if (_note_source_kind(note, kinds) == SourceType.INTERVIEW.value) == survey
+        ]
+        chosen.sort(
+            key=lambda note: (
+                narrative_source_rank(_note_source_kind(note, kinds)),
+                _MUST_USE_SURVEY_NOTE_ORDER.index(_note_type_value(note)),
+            )
+        )
+        sentences: list[tuple[str, str]] = []
+        for note in chosen:
+            for sentence in _note_sentences(note):
+                if _clean_source_sentence(sentence):
+                    sentences.append((sentence, _note_id(note)))
+        # 모델이 고른 원문 문장을 앞에 둔다(같은 문장이면 그대로 쓴다).
+        sentences.sort(key=lambda item: 0 if item[0] in proposed else 1)
+        return sentences
+
+    selected: list[tuple[str, list[str]]] = []
+    mode = MUST_USE_MODE_NONE
+    for survey, pool_mode in ((True, MUST_USE_MODE_SURVEY), (False, MUST_USE_MODE_SOURCE)):
+        for sentence, note_id in pool(survey):
+            existing = next((item for item in selected if item[0] == sentence), None)
+            if existing is not None:
+                if note_id not in existing[1]:
+                    existing[1].append(note_id)
+                continue
+            if len(selected) >= AUTOMATIC_MUST_USE_LIMIT:
+                break
+            selected.append((sentence, [note_id]))
+        if selected:
+            mode = pool_mode
+            break
+    chosen_texts = {text for text, _ids in selected}
+    for text in proposed:
+        if text not in chosen_texts:
+            report.add("must_use_messages", text, DROP_MUST_USE_NOT_SOURCE_VERBATIM)
+    report.must_use = {
+        "mode": mode,
+        "items": [{"text": text, "evidence_note_ids": ids} for text, ids in selected],
+    }
+    result["must_use_messages"] = [text for text, _ids in selected]
+    return _unique_ids(note_id for _text, ids in selected for note_id in ids)
+
+
+def _must_use_item_ids(
+    raw: Any, must_use_evidence: Any, field_ids: list[str], valid: set[str]
+) -> list[str]:
+    text = str(raw.get("text") if isinstance(raw, dict) else raw or "").strip()
+    for entry in must_use_evidence if isinstance(must_use_evidence, list) else []:
+        if isinstance(entry, dict) and str(entry.get("text") or "").strip() == text:
+            return [
+                note_id for note_id in _flatten_ids(entry.get("evidence_note_ids")) if note_id in valid
+            ]
+    return list(field_ids)
+
+
+def _apply_conflicts(
+    result: dict[str, Any],
+    narratives: list[dict[str, Any]],
+    must_use_evidence: Any,
+    notes_by_id: dict[str, Any],
+    kinds: dict[str, str],
+    report: AutomaticPruneReport,
+) -> set[str]:
+    """충돌 노트를 우선순위로 실제로 푼다(D34). 진 노트 id 집합을 돌려준다.
+
+    충돌마다 관련 노트의 출처 우선순위를 매긴다 — 사실(약력·경력·병원 정보 값)은 마케터 입력 >
+    네이버 > 설문 > 홈페이지 > 블로그, 서술(목소리·철학·진료 서술)은 설문이 먼저다. 우선순위가 낮은
+    노트가 가장 잘 뒷받침하는 결과 문장은 버리고 그 노트를 근거에서 뺀다. 우열을 가릴 수 없으면
+    양쪽 문장을 모두 조용히 버린다. 실제로 적용한 해결만 `report.conflicts`에 남긴다.
+    """
+
+    valid = set(notes_by_id)
+    loser_reason: dict[str, str] = {}
+    decided: list[dict[str, Any]] = []
+    for item in result.get("conflict_notes") or []:
+        text = item.get("text") if isinstance(item, dict) else item
+        ids = _unique_ids(
+            note_id
+            for note_id in _flatten_ids(item.get("evidence_note_ids") if isinstance(item, dict) else [])
+            if note_id in valid
+        )
+        if len(ids) < 2:
+            continue
+        involved = [notes_by_id[note_id] for note_id in ids]
+        fact = _is_fact_conflict(involved, kinds)
+        ranks = {note_id: _priority_rank(notes_by_id[note_id], kinds, fact=fact) for note_id in ids}
+        best = min(ranks.values())
+        losers = {note_id for note_id, rank in ranks.items() if rank > best}
+        if not losers:
+            for note_id in ids:
+                loser_reason.setdefault(note_id, DROP_CONFLICT_UNDECIDED)
+            continue
+        for note_id in losers:
+            loser_reason[note_id] = DROP_CONFLICT_LOWER_PRIORITY
+        winners = [note_id for note_id in ids if note_id not in losers]
+        decided.append(
+            {
+                "text": _short(_collapse(text), 200),
+                "evidence_note_ids": ids,
+                "kept_note_ids": winners,
+                "dropped_note_ids": sorted(losers),
+                "source_kinds": sorted(
+                    {_note_source_kind(notes_by_id[note_id], kinds) for note_id in ids},
+                    key=lambda kind: (narrative_source_rank(kind), kind),
+                ),
+                "preferred_source": _note_source_kind(notes_by_id[winners[0]], kinds),
+                "resolved_by": CONFLICT_FACT_RESOLUTION_RULE if fact else CONFLICT_RESOLUTION_RULE,
+                "dropped_sentences": 0,
+            }
+        )
+    if not loser_reason:
+        return set()
+    dropped_by_note: dict[str, int] = {}
+
+    def keep(field_name: str, text: str, linked_ids: list[str]) -> bool:
+        linked = [notes_by_id[note_id] for note_id in linked_ids if note_id in notes_by_id]
+        if not any(str(note.id) in loser_reason for note in linked):
+            return True
+        best, _ratio = _best_support(text, linked)
+        if best is None:
+            best = next(note for note in linked if str(note.id) in loser_reason)
+        if str(best.id) not in loser_reason:
+            return True
+        report.add(field_name, text, loser_reason[str(best.id)])
+        dropped_by_note[str(best.id)] = dropped_by_note.get(str(best.id), 0) + 1
+        return False
+
+    for field_name in _PRUNE_POSITIVE_SINGLE:
+        value = result.get(field_name)
+        if isinstance(value, str) and value.strip():
+            linked = _field_ids(result, field_name, valid)
+            kept = [
+                sentence
+                for sentence in split_sentences(value) or [value]
+                if keep(field_name, sentence, linked)
+            ]
+            result[field_name] = " ".join(kept) if kept else None
+    for field_name in ("content_principles", "tone_guidelines"):
+        linked = _field_ids(result, field_name, valid)
+        result[field_name] = [
+            item
+            for item in result.get(field_name) or []
+            if keep(field_name, " ".join(_iter_field_texts(item)), linked)
+        ]
+    field_must_use = _field_ids(result, "must_use_messages", valid)
+    result["must_use_messages"] = [
+        item
+        for item in result.get("must_use_messages") or []
+        if keep(
+            "must_use_messages",
+            " ".join(_iter_field_texts(item)),
+            _must_use_item_ids(item, must_use_evidence, field_must_use, valid),
+        )
+    ]
+    narratives[:] = [
+        item
+        for item in narratives
+        if keep(
+            "treatment_narratives",
+            " ".join(
+                _iter_field_texts(
+                    {key: value for key, value in item.items() if key != "evidence_note_ids"}
+                )
+            ),
+            list(item["evidence_note_ids"]),
+        )
+    ]
+    # 진 노트는 어떤 필드의 근거로도 남기지 않는다.
+    for item in narratives:
+        item["evidence_note_ids"] = [
+            note_id for note_id in item["evidence_note_ids"] if note_id not in loser_reason
+        ]
+    narratives[:] = [item for item in narratives if item["evidence_note_ids"]]
+    evidence_map = result.get("evidence_map") if isinstance(result.get("evidence_map"), dict) else {}
+    result["evidence_map"] = {
+        key: [note_id for note_id in _flatten_ids(raw_ids) if note_id not in loser_reason]
+        for key, raw_ids in evidence_map.items()
+    }
+    for entry in must_use_evidence if isinstance(must_use_evidence, list) else []:
+        if isinstance(entry, dict):
+            entry["evidence_note_ids"] = [
+                note_id
+                for note_id in _flatten_ids(entry.get("evidence_note_ids"))
+                if note_id not in loser_reason
+            ]
+    for record in decided:
+        record["dropped_sentences"] = sum(
+            dropped_by_note.get(note_id, 0) for note_id in record["dropped_note_ids"]
+        )
+        report.conflicts.append(record)
+    return set(loser_reason)
+
+
+def _ground_sentences(
+    result: dict[str, Any],
+    narratives: list[dict[str, Any]],
+    notes_by_id: dict[str, Any],
+    allowed: list[str],
+    report: AutomaticPruneReport,
+) -> None:
+    """합성 문장마다 연결된 노트 본문으로 뒷받침되는지 대조하고 아니면 버린다(D33).
+
+    포지셔닝·환자 약속은 내용어가 노트와 겹쳐야 하고, 의료 효능·결과·자격·비교·수치 주장은 그
+    낱말과 수치가 노트에 그대로 있어야 한다. 목소리·원칙·톤 같은 문체 묘사는 의료 주장일 때만
+    대조한다. 진료 서술은 진료 항목 이름이 노트에 있어야 하고 각 표현은 의료 주장일 때 대조한다.
+    """
+
+    valid = set(notes_by_id)
+    for field_name in _PRUNE_POSITIVE_SINGLE:
+        value = result.get(field_name)
+        if not (isinstance(value, str) and value.strip()):
+            continue
+        support = _excerpts(notes_by_id, _field_ids(result, field_name, valid))
+        kept, dropped = _grounded_text(
+            value, support, allowed, require_general=field_name != "doctor_voice"
+        )
+        for sentence in dropped:
+            report.add(field_name, sentence, DROP_UNSUPPORTED_CLAIM)
+        result[field_name] = kept
+    for field_name in ("content_principles", "tone_guidelines"):
+        support = _excerpts(notes_by_id, _field_ids(result, field_name, valid))
+        kept_items: list[Any] = []
+        for item in result.get(field_name) or []:
+            text = " ".join(_iter_field_texts(item))
+            if _text_kept(text, support, allowed, require_general=False):
+                kept_items.append(item)
+            else:
+                report.add(field_name, text, DROP_UNSUPPORTED_CLAIM)
+        result[field_name] = kept_items
+    grounded: list[dict[str, Any]] = []
+    for item in narratives:
+        support = _excerpts(notes_by_id, item["evidence_note_ids"])
+        name = str(item.get("treatment") or "").strip()
+        if (
+            name
+            and name != _GENERIC_TREATMENT_LABEL
+            and not _text_kept(name, support, allowed, require_general=True)
+        ):
+            report.add("treatment_narratives", name, DROP_UNSUPPORTED_CLAIM)
+            continue
+        cleaned = dict(item)
+        for key, value in item.items():
+            if key in {"evidence_note_ids", "treatment"}:
+                continue
+            if isinstance(value, str) and value.strip():
+                if not _text_kept(value, support, allowed, require_general=False):
+                    report.add("treatment_narratives", value, DROP_UNSUPPORTED_CLAIM)
+                    cleaned[key] = ""
+            elif isinstance(value, list):
+                phrases: list[Any] = []
+                for phrase in value:
+                    text = " ".join(_iter_field_texts(phrase))
+                    if _text_kept(text, support, allowed, require_general=False):
+                        phrases.append(phrase)
+                    else:
+                        report.add("treatment_narratives", text, DROP_UNSUPPORTED_CLAIM)
+                cleaned[key] = phrases
+        grounded.append(cleaned)
+    narratives[:] = grounded
+
+
+def prune_automatic_candidate(
+    payload: dict[str, Any],
+    notes: list[Any],
+    sources: list[Any],
+) -> tuple[dict[str, Any], AutomaticPruneReport]:
+    """자동 요약 후보에서 보류 사유가 될 것을 모두 버린다(D33). 순수 함수.
+
+    불변식: 결과에 대해 `validate_philosophy_grounding(result, notes) == []`,
+    `find_error_marker_fields(result) == []`, 긍정 운영 필드에 의료광고 금지 표현·운영 사실 없음,
+    남은 합성 문장은 연결된 노트 본문으로 뒷받침된다(`essence_claims`). 충돌은 우선순위로 실제로
+    풀고(D34) 적용한 해결만 `report.conflicts`에 남긴다.
+    """
+
+    result = copy.deepcopy(payload)
+    must_use_evidence = result.pop(MUST_USE_EVIDENCE_KEY, None)
+    strip_private_synthesis_keys(result)
+    report = AutomaticPruneReport()
+    valid = {_note_id(note) for note in notes}
+    notes_by_id = {_note_id(note): note for note in notes}
+    kinds = source_kinds_by_id(sources)
+
+    for field_name in _PRUNE_POSITIVE_SINGLE:
+        value = result.get(field_name)
+        if isinstance(value, str) and value.strip():
+            reason = _offending_reason(value, positive=True)
+            if reason:
+                report.add(field_name, value, reason)
+                result[field_name] = None
+        elif value is not None and not isinstance(value, str):
+            result[field_name] = None
+
+    for field_name in (*_PRUNE_POSITIVE_LIST, *_PRUNE_POLICY_LIST):
+        kept: list[Any] = []
+        for item in result.get(field_name) or []:
+            text = " ".join(_iter_field_texts(item))
+            if not text.strip():
+                continue
+            reason = _offending_reason(text, positive=field_name not in _PRUNE_POLICY_LIST)
+            if reason:
+                report.add(field_name, text, reason)
+                continue
+            kept.append(item)
+        result[field_name] = kept
+
+    narratives: list[dict[str, Any]] = []
+    for item in result.get("treatment_narratives") or []:
+        if not isinstance(item, dict):
+            report.add("treatment_narratives", item, DROP_UNGROUNDED)
+            continue
+        text = " ".join(
+            _iter_field_texts({key: value for key, value in item.items() if key != "evidence_note_ids"})
+        )
+        reason = _offending_reason(text, positive=True)
+        if reason:
+            report.add("treatment_narratives", text, reason)
+            continue
+        ids = [note_id for note_id in _flatten_ids(item.get("evidence_note_ids")) if note_id in valid]
+        if not ids:
+            report.add("treatment_narratives", text, DROP_UNGROUNDED)
+            continue
+        narratives.append({**item, "evidence_note_ids": _unique_ids(ids)})
+
+    excluded_ids = _apply_conflicts(
+        result, narratives, must_use_evidence, notes_by_id, kinds, report
+    )
+    # 충돌에서 진 노트는 이후 어떤 선택(원문 대조·필수 문구·공개 소개)에도 쓰지 않는다.
+    allowed = [
+        str(getattr(note, "source_excerpt", "") or "")
+        for note in notes
+        if _note_id(note) not in excluded_ids
+    ]
+    _ground_sentences(result, narratives, notes_by_id, allowed, report)
+    result["treatment_narratives"] = narratives
+
+    local = result.get("local_context")
+    local = dict(local) if isinstance(local, dict) else {}
+    for key in ("region_terms", "local_patient_context"):
+        kept_terms: list[Any] = []
+        for item in local.get(key) or []:
+            text = " ".join(_iter_field_texts(item))
+            reason = _offending_reason(text, positive=True) if text.strip() else None
+            if reason:
+                report.add("local_context", text, reason)
+                continue
+            if text.strip():
+                kept_terms.append(item)
+        local[key] = kept_terms
+    local_ids = [
+        note_id for note_id in _flatten_ids(local.get("evidence_note_ids")) if note_id in valid
+    ] or [
+        note_id
+        for note_id in _flatten_ids((result.get("evidence_map") or {}).get("local_context"))
+        if note_id in valid
+    ]
+    has_local = bool(local.get("region_terms") or local.get("local_patient_context"))
+    if has_local and not local_ids:
+        for key in ("region_terms", "local_patient_context"):
+            for item in local.get(key) or []:
+                report.add("local_context", item, DROP_UNGROUNDED)
+            local[key] = []
+        has_local = False
+    local.pop("evidence_note_ids", None)
+    if has_local:
+        local["evidence_note_ids"] = _unique_ids(local_ids)
+    local["avoid_region_stuffing"] = True
+    result["local_context"] = local
+
+    must_use_ids = _select_must_use(result, notes, sources, report, excluded_ids)
+
+    raw_map = result.get("evidence_map") if isinstance(result.get("evidence_map"), dict) else {}
+    evidence_map: dict[str, list[str]] = {}
+    for key, raw_ids in raw_map.items():
+        ids = _unique_ids(note_id for note_id in _flatten_ids(raw_ids) if note_id in valid)
+        if ids:
+            evidence_map[str(key)] = ids
+    if narratives:
+        evidence_map["treatment_narratives"] = _unique_ids(
+            note_id for item in narratives for note_id in item["evidence_note_ids"]
+        )
+    else:
+        evidence_map.pop("treatment_narratives", None)
+    if has_local:
+        evidence_map["local_context"] = local["evidence_note_ids"]
+    else:
+        evidence_map.pop("local_context", None)
+    if must_use_ids:
+        evidence_map["must_use_messages"] = must_use_ids
+    else:
+        evidence_map.pop("must_use_messages", None)
+
+    for field_name in _PRUNE_POSITIVE_SINGLE:
+        if result.get(field_name) and not evidence_map.get(field_name):
+            report.add(field_name, result[field_name], DROP_UNGROUNDED)
+            result[field_name] = None
+    for field_name in ("content_principles", "tone_guidelines"):
+        if result.get(field_name) and not evidence_map.get(field_name):
+            for item in result[field_name]:
+                report.add(field_name, " ".join(_iter_field_texts(item)), DROP_UNGROUNDED)
+            result[field_name] = []
+    for field_name, mandatory in (
+        ("avoid_messages", MANDATORY_AVOID_MESSAGES),
+        ("medical_ad_risk_rules", MANDATORY_MEDICAL_AD_RISK_RULES),
+    ):
+        source_backed = [item for item in result.get(field_name) or [] if item not in mandatory]
+        if source_backed and not evidence_map.get(field_name):
+            for item in source_backed:
+                report.add(field_name, " ".join(_iter_field_texts(item)), DROP_UNGROUNDED)
+            result[field_name] = [item for item in result[field_name] if item in mandatory]
+
+    for key in list(evidence_map):
+        if key in _PRUNE_GROUNDED_FIELDS and not _field_has_source_backed_value(
+            key, result.get(key)
+        ):
+            evidence_map.pop(key)
+    result["evidence_map"] = evidence_map
+    result["conflict_notes"] = []
+    _scrub_conflict_losers(result, notes_by_id, excluded_ids, report)
+    # 공개 소개(about)는 근거 노트에 글자 그대로 있고 의료 주장 어휘가 없는 문장만 쓴다(fail-closed).
+    report.public_about = list(
+        dict.fromkeys(
+            body
+            for field_name in ("positioning_statement", "patient_promise")
+            for sentence in split_sentences(str(result.get(field_name) or ""))
+            if (body := normalize_sentence(without_template_prefix(sentence)))
+            and is_verbatim_in(body, allowed)
+            and _clean_source_sentence(body)
+        )
+    )
+    return result, report
+
+
+def _scrub_conflict_losers(
+    result: dict[str, Any],
+    notes_by_id: dict[str, Any],
+    excluded_ids: set[str],
+    report: AutomaticPruneReport,
+) -> None:
+    """마지막 확인: 진 노트의 id와 문장이 판 어디에도 남지 않게 한다."""
+
+    if not excluded_ids:
+        return
+    loser_sentences = [
+        sentence
+        for note_id in excluded_ids
+        if note_id in notes_by_id
+        for sentence in _note_sentences(notes_by_id[note_id])
+        + [normalize_sentence(getattr(notes_by_id[note_id], "source_excerpt", ""))]
+        if sentence
+    ]
+
+    def tainted(text: str) -> bool:
+        normalized = normalize_sentence(text)
+        return any(
+            sentence in normalized or (len(normalized) >= _MIN_MUST_USE_CHARS and normalized in sentence)
+            for sentence in loser_sentences
+        )
+
+    for field_name in _PRUNE_POSITIVE_SINGLE:
+        value = result.get(field_name)
+        if isinstance(value, str) and value.strip():
+            kept = [sentence for sentence in split_sentences(value) if not tainted(sentence)]
+            for sentence in split_sentences(value):
+                if tainted(sentence):
+                    report.add(field_name, sentence, DROP_CONFLICT_LOWER_PRIORITY)
+            result[field_name] = " ".join(kept) or None
+    for field_name in ("content_principles", "tone_guidelines", "must_use_messages"):
+        kept_items = []
+        for item in result.get(field_name) or []:
+            if tainted(" ".join(_iter_field_texts(item))):
+                report.add(field_name, item, DROP_CONFLICT_LOWER_PRIORITY)
+            else:
+                kept_items.append(item)
+        result[field_name] = kept_items
+    report.must_use["items"] = [
+        item
+        for item in report.must_use.get("items", [])
+        if item["text"] in result["must_use_messages"]
+        and not set(item["evidence_note_ids"]) & excluded_ids
+    ]
+    result["treatment_narratives"] = [
+        item
+        for item in result.get("treatment_narratives") or []
+        if not set(_flatten_ids(item.get("evidence_note_ids"))) & excluded_ids
+    ]
+    evidence_map = result.get("evidence_map") or {}
+    result["evidence_map"] = {
+        key: [note_id for note_id in ids if note_id not in excluded_ids]
+        for key, ids in evidence_map.items()
+        if [note_id for note_id in ids if note_id not in excluded_ids]
+    }
+    for key in list(result["evidence_map"]):
+        if key in _PRUNE_GROUNDED_FIELDS and not _field_has_source_backed_value(
+            key, result.get(key)
+        ):
+            result["evidence_map"].pop(key)
 
 
 def approved_philosophy_issues(
@@ -1765,24 +2829,15 @@ def _guess_treatment_label(excerpt: str) -> str | None:
     return "".join(match.groups())
 
 
-def _group_notes(
-    notes: list[HospitalSourceEvidenceNote],
-) -> dict[EvidenceNoteType, list[HospitalSourceEvidenceNote]]:
-    grouped: dict[EvidenceNoteType, list[HospitalSourceEvidenceNote]] = {}
-    for note in notes:
-        grouped.setdefault(note.note_type, []).append(note)
-    return grouped
-
-
 def _pick_notes(
-    grouped: dict[EvidenceNoteType, list[HospitalSourceEvidenceNote]],
+    notes: list[HospitalSourceEvidenceNote],
     types: list[EvidenceNoteType],
     limit: int,
 ) -> list[HospitalSourceEvidenceNote]:
-    picked: list[HospitalSourceEvidenceNote] = []
-    for note_type in types:
-        picked.extend(grouped.get(note_type, []))
-    return picked[:limit]
+    """종류가 맞는 노트를 **입력 순서 그대로**(= 출처 우선순위) 고른다."""
+
+    wanted = {getattr(note_type, "value", note_type) for note_type in types}
+    return [note for note in notes if _note_type_value(note) in wanted][:limit]
 
 
 def _payload_get(payload: Any, field_name: str) -> Any:

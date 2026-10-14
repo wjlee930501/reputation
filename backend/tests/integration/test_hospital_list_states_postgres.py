@@ -34,9 +34,9 @@ from app.services.evidence_noise import compute_evidence_noise_hash
 
 pytestmark = pytest.mark.asyncio
 
-# 병원 페이지 1 + 콘텐츠 준비 묶음 4(승인·자료·노이즈·예외 초안) + 예외 수 1 + 담당 AE 1.
+# 병원 페이지 1 + 콘텐츠 준비 묶음 3(승인·자료·노이즈) + 예외 수 1 + 담당 AE 1.
 # 병원 수와 무관해야 한다 — 늘어나면 목록이 N+1이다.
-_LIST_STATEMENT_BUDGET = 7
+_LIST_STATEMENT_BUDGET = 6
 
 
 async def _admin_user(db, name: str = "AE 담당") -> AdminUser:
@@ -275,8 +275,9 @@ async def test_list_rows_count_open_exceptions_and_name_the_ae_owner(pg_async_se
 
     # 기존 보류 초안과 인시던트가 있어도 승인된 base의 자동 발행은 유지한다.
     assert rows[str(excepted.id)]["content_state"] == {"kind": "auto", "remaining": []}
-    # 원인 묶음 2 + 자동 검수 보류 초안 1 — 현황 화면이 보여줄 카드 수와 같다.
-    assert rows[str(excepted.id)]["open_exception_count"] == 3
+    # 원인 묶음 2 — 현황 화면이 보여줄 카드 수와 같다. 남은 보류 초안은 Phase 4(D33)부터 예외가
+    # 아니다(운영 기준은 승인 없이 자동 적용된다).
+    assert rows[str(excepted.id)]["open_exception_count"] == 2
     assert rows[str(excepted.id)]["ae_owner"] is None
     assert rows[str(excepted.id)]["domain_state"]["kind"] == "unused"
     assert rows[str(owned.id)]["open_exception_count"] == 0

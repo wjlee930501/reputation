@@ -164,6 +164,8 @@ class PhilosophyResponse(BaseModel):
     conflict_notes: list[Any]
     synthesis_notes: str | None
     source_snapshot_hash: str | None
+    # 자동 운영 요약(Phase 4 D33)의 합성 메타데이터 — 만든 방식·입력 자료·버린 주장·충돌·제외 입력.
+    synthesis_metadata: dict[str, Any] = Field(default_factory=dict)
     created_by: str | None
     reviewed_by: str | None
     approved_at: str | None

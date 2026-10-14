@@ -87,9 +87,9 @@ class PhilosophyStatus(str, enum.Enum):
     ARCHIVED = "ARCHIVED"
 
 
-# unsupported_gaps 중 서버만 쓰는 field 이름. 자동 검수(essence_auto_review)가 기록하고
-# Admin API가 클라이언트 PATCH로부터 보호한다 — 두 쪽이 같은 문자열을 봐야 하므로
-# 모델 모듈 한 곳에만 둔다(H-03).
+# unsupported_gaps 중 서버만 쓰는 field 이름. 옛 자동 검수가 보류 초안에 기록했던 이름은 옛 행에만
+# 남는다(Phase 4 D33부터 판 PATCH는 410이라 클라이언트가 쓸 길이 없다). 처리 오류 자료 제외
+# 표식(excluded_error_source)은 자동 요약이 지금도 적는다(H-03).
 AUTO_REVIEW_GAP_FIELD = "automatic_ai_review"
 AUTO_RECOVERY_CYCLE_GAP_FIELD = "automatic_recovery_cycle"
 # 마지막 자동 재검수 시각(ISO). 사이클 수와 함께 읽어야 다음 재시도 시점이 정해지므로

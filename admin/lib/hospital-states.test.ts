@@ -67,7 +67,7 @@ test('zero sources and a stopped service are human-readable conditions', () => {
 // 같은 병원의 남은 일이 화면마다 달라 보인다.
 test('list rows carry the same conditions as bare keys', () => {
   assert.equal(remainingConditionLabel('sources:2'), '근거 자료 처리 2건')
-  assert.equal(remainingConditionLabel('essence_review'), '콘텐츠 운영 기준 자동 검수')
+  assert.equal(remainingConditionLabel('essence_review'), '콘텐츠 운영 기준 자동 생성')
   assert.equal(remainingConditionLabel('schedule'), '발행 요일 설정')
   assert.deepEqual(
     describePublicService({ kind: 'not_live', remaining: ['profile_complete', 'site_built'] }),

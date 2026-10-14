@@ -15,9 +15,9 @@ function read(relative: string): string {
 const page = read('../app/hospitals/[id]/page.tsx')
 const statusCards = read('../app/hospitals/[id]/status/StatusCards.tsx')
 const exceptionCards = read('../app/hospitals/[id]/status/ExceptionCards.tsx')
-const escalatedDraft = read('../app/hospitals/[id]/status/EscalatedDraftCard.tsx')
+const appliedEssence = read('../app/hospitals/[id]/status/AppliedEssencePanel.tsx')
 const monthSummary = read('../app/hospitals/[id]/status/MonthSummary.tsx')
-const all = [page, statusCards, exceptionCards, escalatedDraft, monthSummary].join('\n')
+const all = [page, statusCards, exceptionCards, appliedEssence, monthSummary].join('\n')
 
 test('현황은 헤더가 받아 둔 overview만 읽는다', () => {
   assert.match(page, /useHospitalHeader/)
@@ -51,7 +51,7 @@ test('현황은 판정·버튼·요약을 공용 함수에서 받는다', () => 
   assert.match(page, /<StatusCards/)
   assert.match(page, /<ExceptionCards/)
   assert.match(page, /<MonthSummary/)
-  assert.match(exceptionCards, /EscalatedDraftCard/)
+  assert.match(page, /<AppliedEssencePanel/)
 })
 
 test('인시던트 행동은 운영 센터와 같은 배관을 쓴다', () => {
@@ -70,19 +70,18 @@ test('인시던트 행동은 운영 센터와 같은 배관을 쓴다', () => {
   assert.match(exceptionCards, /method: action\.method/)
 })
 
-test('예외 초안 카드는 편집·재검수·예외 승인 세 경로를 모두 가진다', () => {
-  assert.match(escalatedDraft, /\/essence\/philosophies/)
-  assert.match(escalatedDraft, /\/philosophy\//)
-  assert.match(escalatedDraft, /\/re-review/)
-  assert.match(escalatedDraft, /\/approve/)
-  assert.match(escalatedDraft, /method: 'PATCH'/)
-  assert.match(escalatedDraft, /RE_REVIEW_CONFIRM/)
-  assert.match(escalatedDraft, /reReviewNotice/)
-  assert.match(escalatedDraft, /reReviewErrorMessage/)
-  assert.match(escalatedDraft, /approveErrorMessage/)
-  // 검토자는 로그인 계정이다 — 화면이 고른 이름으로 승인 기록을 남기지 않는다.
-  assert.match(escalatedDraft, /fetchCurrentAccount/)
-  assert.match(escalatedDraft, /근거 노트와 원문 발췌를 검토했습니다\./)
+test('운영 기준은 읽기 전용 패널로만 보이고 편집·재검수·승인 경로가 없다', () => {
+  // Phase 4(D33): 운영 기준은 승인 없이 자동 적용된다 — 해당 API는 410이다.
+  assert.match(appliedEssence, /\/essence\/philosophy\/approved/)
+  assert.match(appliedEssence, /ADMIN_COPY\.appliedEssenceTitle/)
+  assert.match(appliedEssence, /appliedEssenceSummary/)
+  for (const banned of ['/re-review', "method: 'PATCH'", 'draft-copy', '<button']) {
+    assert.equal(appliedEssence.includes(banned), false, `운영 기준 패널에 ${banned}이(가) 있다`)
+  }
+  // 조회 경로 `/philosophy/approved`는 있지만 승인 경로 `/approve`는 없다.
+  assert.doesNotMatch(appliedEssence, /\/approve(?!d)/)
+  assert.equal(exceptionCards.includes('EscalatedDraftCard'), false)
+  assert.equal(exceptionCards.includes('escalated_draft'), false)
 })
 
 test('예외가 없을 때와 현황을 못 받았을 때 할 말이 있다', () => {
@@ -94,26 +93,6 @@ test('예외가 없을 때와 현황을 못 받았을 때 할 말이 있다', ()
 test('이번 달 요약은 콘텐츠·보고서 화면으로만 이어진다', () => {
   assert.match(monthSummary, /\/hospitals\/\$\{hospitalId\}\/content/)
   assert.match(monthSummary, /\/hospitals\/\$\{hospitalId\}\/reports/)
-})
-
-test('예외 승인은 근거 자료 상태를 확인한 뒤에만 열린다', () => {
-  // 운영 기준 화면과 같은 게이트다. 근거를 확인할 수 없는 상태에서 "검토했습니다"를
-  // 체크할 수 있으면, 확인할 수 없는 것을 확인했다고 선언하는 승인이 통과한다.
-  assert.match(escalatedDraft, /\/essence\/sources/)
-  assert.match(escalatedDraft, /requiredSourceApprovalBlockers/)
-  assert.match(escalatedDraft, /disabled=\{evidenceBlockers\.length > 0\}/)
-  assert.match(escalatedDraft, /evidenceBlockers\.length > 0 \|\|/)
-  assert.match(escalatedDraft, /근거 자료 보기/)
-  assert.match(escalatedDraft, /info#info-sources/)
-})
-
-test('재검수·승인 결과 안내는 카드가 사라져도 화면에 남는다', () => {
-  // 두 요청은 예외 카드 자체를 없앤다. 카드 안에만 적은 문구는 갱신되는 순간 사라진다.
-  assert.match(escalatedDraft, /onNotice\?: \(text: string\) => void/)
-  assert.match(escalatedDraft, /publishNotice\(reReviewNotice\(result\)\)/)
-  assert.match(exceptionCards, /onNotice=\{onNotice\}/)
-  assert.match(page, /onNotice=\{setNotice\}/)
-  assert.match(page, /role="status"/)
 })
 
 test('담당 지정 폼은 상세를 읽은 뒤에만 열리고, 실패하면 다시 시도한다', () => {

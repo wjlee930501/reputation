@@ -1,32 +1,21 @@
 """Admin API — hospital source-backed content operating standard."""
 
 import asyncio
-import copy
-import hashlib
-import json
 import logging
 import uuid
-from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from fastapi.responses import FileResponse, RedirectResponse
-from kombu.exceptions import OperationalError as BrokerOperationalError
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import delete, func, or_, select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.admin.accounts import require_active_account
-from app.core.celery_app import celery_app
 from app.core.database import get_db
 from app.models.admin_user import ADMIN_ROLES, AdminUser
-from app.models.audit import AdminAuditLog
-from app.models.content import ContentItem
 from app.models.essence import (
-    AUTO_REVIEW_GAP_FIELD,
     PHOTO_SOURCE_TYPES,
-    SERVER_OWNED_GAP_FIELDS,
     HospitalContentPhilosophy,
     HospitalSourceAsset,
     HospitalSourceEvidenceNote,
@@ -38,8 +27,6 @@ from app.models.hospital import Hospital, HospitalStatus
 from app.models.operations import OperationRun
 from app.schemas.essence import (
     ApprovedPhilosophyResponse,
-    PhilosophyApprove,
-    PhilosophyPatch,
     PhilosophyResponse,
     SourceAddendumCreate,
     SourceAssetCreate,
@@ -58,27 +45,23 @@ from app.services.asset_storage import (
     resolve_local_asset_path,
     store_asset_bytes,
 )
-from app.services.audit_log import default_actor, verified_request_actor, write_audit_log
+from app.services.audit_log import default_actor, write_audit_log
 from app.services.essence_engine import (
     compute_source_content_hash,
-    compute_sources_snapshot_hash,
     effective_safety_policy,
-    mandatory_safety_findings,
-    validate_philosophy_grounding,
 )
 from app.services.essence_sources import (
     SourceRegistrationError,
+    enqueue_essence_refresh_best_effort,
     register_url_source,
-    required_text_source_predicate,
 )
 from app.services.essence_sources import (
     start_source_processing_best_effort as _start_source_processing_best_effort,
 )
-from app.services.evidence_noise import load_evidence_noise_hash, not_noise_note_predicate
+from app.services.evidence_noise import not_noise_note_predicate
 from app.services.gcs_utils import get_signed_url
 from app.services.incident_types import IncidentFingerprint
 from app.services.knowledge_changes import (
-    authority_refresh_required,
     future_addendum_metadata,
     invalidate_source_authority,
     preserve_source_version_authority,
@@ -112,6 +95,12 @@ from app.services.photo_provenance import (
     normalize_provenance_input,
     serialize_photo_provenance,
 )
+from app.services.profile_facts_source import (
+    PROFILE_FACTS_READ_ONLY_CODE,
+    PROFILE_FACTS_READ_ONLY_MESSAGE,
+    PROFILE_FACTS_TITLE,
+    is_profile_facts_source,
+)
 from app.services.public_surface_intents import enqueue_public_surface_intent
 from app.services.site_revalidate import (
     ensure_site_revalidate_configured,
@@ -127,38 +116,20 @@ from app.services.source_processing_runs import (
 )
 from app.services.survey_sources import mask_interview_text
 from app.utils.db_locks import acquire_hospital_advisory_lock
-from app.workers.dispatch_auth import build_dispatch_headers
-from app.workers.tasks import auto_review_essence_snapshot
 
 MAX_UPLOAD_BYTES = 12 * 1024 * 1024  # 12MB
 UPLOAD_CHUNK_BYTES = 1024 * 1024  # 1MB
 # 재검수 한 번은 워커에서 유료 합성을 최대 두 번 부른다. 전역 비용 가드만으로는
 # 한 병원이 클릭 속도만큼 예산을 소진할 수 있어, 병원별 최소 간격을 둔다.
-RE_REVIEW_COOLDOWN = timedelta(minutes=30)
 # PATCH 감사 기록의 before/after 값 하나(JSON 직렬화 문자 수)의 상한과, 넘을 때 남기는
 # 앞부분 길이. 필드 전체를 다시 쓴 PATCH가 감사 행을 필드 크기의 두 배로 키우지 않게 한다.
-PATCH_AUDIT_VALUE_MAX_CHARS = 4000
-PATCH_AUDIT_PREVIEW_CHARS = 500
 logger = logging.getLogger(__name__)
 
 
 def _enqueue_essence_review_best_effort(hospital_id: uuid.UUID) -> None:
     """Immediate path; the periodic reconciler remains the durable fallback."""
 
-    hospital_id_text = str(hospital_id)
-    try:
-        celery_app.send_task(
-            "app.workers.tasks.auto_review_essence_snapshot",
-            args=[hospital_id_text],
-            queue="content",
-            headers=build_dispatch_headers("auto-review-essence-snapshot", hospital_id_text),
-        )
-    except Exception:
-        logger.exception(
-            "Failed to enqueue immediate Essence review for hospital %s; "
-            "periodic reconciliation will retry",
-            hospital_id,
-        )
+    enqueue_essence_refresh_best_effort(hospital_id)
 
 
 async def _read_upload_within_limit(file: UploadFile) -> bytes:
@@ -489,7 +460,8 @@ SOURCE_STATUS_DISPLAY_LABELS = {
     SourceStatus.ERROR: "오류",
 }
 PHILOSOPHY_STATUS_DISPLAY_LABELS = {
-    PhilosophyStatus.APPROVED: "승인됨",
+    # Phase 4(D33): APPROVED는 "현재 적용 중인 판"이다 — 승인 단계는 없다.
+    PhilosophyStatus.APPROVED: "적용 중",
     PhilosophyStatus.DRAFT: "초안",
     PhilosophyStatus.ARCHIVED: "보관됨",
 }
@@ -644,7 +616,7 @@ async def create_source_addendum(
     """Append future evidence without changing an approved source or active article."""
 
     await acquire_hospital_advisory_lock(db, hospital_id)
-    source = await _get_source_or_404(db, hospital_id, source_id)
+    source = await _get_mutable_source_or_404(db, hospital_id, source_id)
     if source.source_type in PHOTO_SOURCE_TYPES:
         raise HTTPException(status_code=422, detail="사진 자료는 future-only 추가 자료를 지원하지 않습니다.")
     if source.status == SourceStatus.EXCLUDED:
@@ -699,7 +671,7 @@ async def patch_source(
     await acquire_hospital_advisory_lock(db, hospital_id)
     # 행 잠금 — 채널 fetch 워커가 같은 행을 잠그고 본문을 저장한다. 잠근 뒤 다시 읽어야 유형을 설문으로
     # 바꾸는 이 수정이 방금 저장된 본문까지 가린다(E6).
-    source = await _get_source_or_404(db, hospital_id, source_id, for_update=True)
+    source = await _get_mutable_source_or_404(db, hospital_id, source_id, for_update=True)
     update = body.model_dump(exclude_unset=True)
     pending_source_type = update.get("source_type", source.source_type)
     if "source_metadata" in update and pending_source_type in PHOTO_SOURCE_TYPES:
@@ -798,7 +770,7 @@ async def process_source(
     source_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
 ):
-    source = await _get_source_or_404(db, hospital_id, source_id)
+    source = await _get_mutable_source_or_404(db, hospital_id, source_id)
     await _get_hospital_or_404(db, hospital_id)
     if source.status == SourceStatus.EXCLUDED:
         raise HTTPException(status_code=400, detail="제외 처리된 자료는 처리할 수 없습니다.")
@@ -954,7 +926,7 @@ async def exclude_source(
     db: AsyncSession = Depends(get_db),
 ):
     await acquire_hospital_advisory_lock(db, hospital_id)
-    source = await _get_source_or_404(db, hospital_id, source_id)
+    source = await _get_mutable_source_or_404(db, hospital_id, source_id)
     previous_status = source.status
     hospital = await _get_hospital_or_404(db, hospital_id)
     should_revalidate = _has_public_site(hospital)
@@ -1020,7 +992,7 @@ async def reinclude_source(
     제외 해제가 조용히 다시 공개하면 안 된다.
     """
     await acquire_hospital_advisory_lock(db, hospital_id)
-    source = await _get_source_or_404(db, hospital_id, source_id)
+    source = await _get_mutable_source_or_404(db, hospital_id, source_id)
     if source.status != SourceStatus.EXCLUDED:
         raise HTTPException(status_code=400, detail="제외 상태가 아닌 자료입니다.")
     hospital = await _get_hospital_or_404(db, hospital_id)
@@ -1445,7 +1417,7 @@ async def toggle_source_public(
     권리 근거를 같은 요청에 실어 보낼 수 있다. 0052 배포로 비공개가 된 기존 사진은
     이 경로로 근거를 채우면서 다시 공개한다.
     """
-    source = await _get_source_or_404(db, hospital_id, source_id)
+    source = await _get_mutable_source_or_404(db, hospital_id, source_id)
     if source.source_type not in PHOTO_SOURCE_TYPES:
         raise HTTPException(
             status_code=400, detail="공개 토글은 사진 자료(PHOTO_*)에만 적용됩니다."
@@ -1559,99 +1531,22 @@ async def get_approved_philosophy(hospital_id: uuid.UUID, db: AsyncSession = Dep
     return {"approved": _serialize_philosophy(approved) if approved else None}
 
 
-# 승인본을 사람이 고칠 초안으로 복사할 때 옮기는 내용 컬럼. 식별자·생애주기·승인
-# 메타데이터(id, version, status, is_base, created_by, reviewed_by, approved_at,
-# approval_note, evidence_noise_hash, created_at, updated_at)는 옮기지 않는다 —
-# evidence_noise_hash는 승인 시점의 제외 집합이라 승인이 다시 기록한다.
-PHILOSOPHY_DRAFT_COPY_FIELDS = (
-    "positioning_statement",
-    "doctor_voice",
-    "patient_promise",
-    "content_principles",
-    "tone_guidelines",
-    "must_use_messages",
-    "avoid_messages",
-    "treatment_narratives",
-    "local_context",
-    "medical_ad_risk_rules",
-    "evidence_map",
-    "source_asset_ids",
-    "unsupported_gaps",
-    "conflict_notes",
-    "synthesis_notes",
-    "source_snapshot_hash",
+ESSENCE_APPROVAL_RETIRED_CODE = "ESSENCE_APPROVAL_RETIRED"
+ESSENCE_APPROVAL_RETIRED_MESSAGE = (
+    "콘텐츠 운영 기준은 이제 병원 정보·자료·원장 인터뷰 설문으로 자동으로 만들어 바로 적용합니다. "
+    "승인·재검수·직접 수정 단계는 없습니다. 내용을 바꾸려면 병원 정보나 근거 자료를 고쳐 주세요."
 )
 
 
-@dataclass(frozen=True)
-class _SourceSnapshotCheck:
-    unprocessed_count: int
-    current_snapshot_hash: str
-    # 처리되지 않은 자료가 없을 때만 의미가 있다. 승인은 그 검사를 먼저 한다.
-    matches: bool
+def _essence_approval_retired() -> HTTPException:
+    """Phase 4(D33): 사람 승인·재검수·판 직접 수정 라우트는 없어졌다(410)."""
 
-
-async def _check_required_source_snapshot(
-    db: AsyncSession,
-    hospital_id: uuid.UUID,
-    philosophy: HospitalContentPhilosophy,
-) -> _SourceSnapshotCheck:
-    """운영 기준 행이 선언한 자료 snapshot이 지금의 필수 자료 전체와 같은지 본다.
-
-    승인과 승인본 복사가 같은 판정을 쓴다 — 복사가 따로 판정하면 승인이 거절할 사본을
-    만들 수 있다.
-    """
-    # A draft may have been created from a selected subset. Approval is only valid
-    # for the complete processed-source snapshot that exists at approval time.
-    required_result = await db.execute(
-        select(HospitalSourceAsset).where(
-            HospitalSourceAsset.hospital_id == hospital_id,
-            required_text_source_predicate(),
-        )
-    )
-    current_sources = list(required_result.scalars().all())
-    unprocessed = [source for source in current_sources if source.status != SourceStatus.PROCESSED]
-    current_snapshot_hash = compute_sources_snapshot_hash(current_sources)
-    # snapshot hash는 지금 필수인 자료들만 요약한다. 초안이 선언한 자료 집합이 그보다
-    # 넓으면(예: 본문 없는 URL 전용 자료) hash는 같아도 승인 근거가 달라진다.
-    declared_source_ids = {str(source_id) for source_id in (philosophy.source_asset_ids or [])}
-    current_source_ids = {str(source.id) for source in current_sources}
-    return _SourceSnapshotCheck(
-        unprocessed_count=len(unprocessed),
-        current_snapshot_hash=current_snapshot_hash,
-        matches=(
-            bool(current_sources)
-            and philosophy.source_snapshot_hash == current_snapshot_hash
-            and declared_source_ids == current_source_ids
-        ),
-    )
-
-
-# 자료 집합이 달라 승인할 수 없을 때의 다음 행동. 승인과 승인본 복사의 409가 같이 쓴다.
-REGENERATE_FROM_CURRENT_SOURCES_ACTION = (
-    "현재 전체 자료로 콘텐츠 운영 기준 초안을 다시 생성해 주세요."
-)
-
-# 승인본 복사의 409 detail. 이 파일의 409는 대부분 문자열 detail이다.
-COPY_DRAFT_EXISTS_DETAIL = (
-    "이미 검토 중인 초안이 있습니다. 그 초안을 승인하거나 보관한 뒤 다시 복사해 주세요."
-)
-COPY_AUTHORITY_REFRESH_PENDING_DETAIL = (
-    "근거 자료가 철회·수정되어 운영 기준 재생성이 예정되어 있습니다. "
-    "재생성이 끝난 뒤 다시 복사해 주세요."
-)
-COPY_SOURCES_CHANGED_DETAIL = (
-    "승인본을 만든 뒤 처리된 병원 자료가 변경되어(자료 집합이 다릅니다) 이 승인본을 "
-    "복사한 초안은 승인할 수 없습니다. 초안을 만들지 않았습니다. "
-    + REGENERATE_FROM_CURRENT_SOURCES_ACTION
-)
-COPY_CONCURRENT_CHANGE_DETAIL = "운영 기준이 동시에 변경되었습니다. 새로고침 후 다시 확인해 주세요."
-
-
-def _copy_unprocessed_sources_detail(count: int) -> str:
-    return (
-        f"처리되지 않은 병원 자료 {count}개가 남아 있어 이 승인본을 복사한 초안은 "
-        "승인할 수 없습니다. 초안을 만들지 않았습니다."
+    return HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail={
+            "code": ESSENCE_APPROVAL_RETIRED_CODE,
+            "message": ESSENCE_APPROVAL_RETIRED_MESSAGE,
+        },
     )
 
 
@@ -1660,197 +1555,13 @@ def _copy_unprocessed_sources_detail(count: int) -> str:
     status_code=status.HTTP_201_CREATED,
     response_model=PhilosophyResponse,
 )
-async def copy_approved_philosophy_to_draft(
-    hospital_id: uuid.UUID,
-    philosophy_id: uuid.UUID,
-    db: AsyncSession = Depends(get_db),
-):
-    """승인된 운영 기준을 사람이 문장을 고칠 새 초안으로 복사한다.
-
-    승인본은 수정할 수 없고 초안은 워커의 자동 재합성만 만든다. 사람이 승인본의 문장을
-    고치려면 이 복사본을 PATCH한 뒤 기존 승인 경로로 승인한다. 복사만으로는 합성·검수·
-    큐 등록을 하지 않는다 — 초안의 작성자가 사람이므로 워커는 이 초안을 재시도 대상으로
-    보지 않는다.
-
-    병원에 초안이 이미 있으면(어떤 초안이든) 만들지 않는다. 병원 advisory lock 아래에서
-    확인하므로 동시 요청도 초안을 둘 만들지 못한다. 자료가 승인본의 snapshot과 어긋나
-    승인 경로가 사본을 거절할 상황이면 초안을 만들지 않는다.
-    """
-    creator = verified_request_actor()
-    if creator is None:
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                "요청자의 로그인 계정을 확인할 수 없습니다. 다시 로그인한 뒤 "
-                "승인본을 초안으로 복사해 주세요."
-            ),
-        )
-    await acquire_hospital_advisory_lock(db, hospital_id)
-    await _get_hospital_or_404(db, hospital_id)
-    approved = await db.scalar(
-        select(HospitalContentPhilosophy)
-        .where(
-            HospitalContentPhilosophy.id == philosophy_id,
-            HospitalContentPhilosophy.hospital_id == hospital_id,
-        )
-        .with_for_update()
-        .execution_options(populate_existing=True)
-    )
-    if approved is None:
-        raise HTTPException(status_code=404, detail="Philosophy not found")
-    if approved.status != PhilosophyStatus.APPROVED:
-        raise HTTPException(
-            status_code=400,
-            detail="승인된 콘텐츠 운영 기준만 초안으로 복사할 수 있습니다.",
-        )
-    if authority_refresh_required(approved):
-        # 근거 철회·수정으로 재합성이 예정된 승인본이다. 지금 복사하면 워커가 새 판을
-        # 자동 승인해 사람이 고친 초안이 옛 근거 위에 남는다.
-        raise HTTPException(status_code=409, detail=COPY_AUTHORITY_REFRESH_PENDING_DETAIL)
-    existing_draft_id = await db.scalar(
-        select(HospitalContentPhilosophy.id)
-        .where(
-            HospitalContentPhilosophy.hospital_id == hospital_id,
-            HospitalContentPhilosophy.status == PhilosophyStatus.DRAFT,
-        )
-        .limit(1)
-    )
-    if existing_draft_id is not None:
-        raise HTTPException(status_code=409, detail=COPY_DRAFT_EXISTS_DETAIL)
-    # 사본은 승인본의 자료 snapshot을 그대로 가져가고 사람은 그 값을 고칠 수 없다. 승인이
-    # 이 사본을 거절할 상황이면 여기서 막는다 — 만들면 그 초안이 다음 복사까지 막는다.
-    snapshot = await _check_required_source_snapshot(db, hospital_id, approved)
-    if snapshot.unprocessed_count:
-        raise HTTPException(
-            status_code=409,
-            detail=_copy_unprocessed_sources_detail(snapshot.unprocessed_count),
-        )
-    if not snapshot.matches:
-        raise HTTPException(status_code=409, detail=COPY_SOURCES_CHANGED_DETAIL)
-    max_version = await db.scalar(
-        select(func.max(HospitalContentPhilosophy.version)).where(
-            HospitalContentPhilosophy.hospital_id == hospital_id
-        )
-    )
-    draft = HospitalContentPhilosophy(
-        id=uuid.uuid4(),
-        hospital_id=hospital_id,
-        version=int(max_version or 0) + 1,
-        status=PhilosophyStatus.DRAFT,
-        is_base=False,
-        created_by=creator,
-        **{
-            field_name: copy.deepcopy(getattr(approved, field_name))
-            for field_name in PHILOSOPHY_DRAFT_COPY_FIELDS
-        },
-    )
-    db.add(draft)
-    await write_audit_log(
-        db,
-        action="copy_philosophy_to_draft",
-        hospital_id=hospital_id,
-        actor=creator,
-        target_type="philosophy",
-        target_id=draft.id,
-        detail={
-            "source_philosophy_id": str(approved.id),
-            "source_version": approved.version,
-            "new_philosophy_id": str(draft.id),
-            "new_version": draft.version,
-        },
-    )
-    try:
-        await db.commit()
-    except IntegrityError as exc:
-        # 같은 병원 lock을 잡지 않는 경로가 같은 version을 먼저 만든 경우.
-        await db.rollback()
-        raise HTTPException(status_code=409, detail=COPY_CONCURRENT_CHANGE_DETAIL) from exc
-    await db.refresh(draft)
-    return _serialize_philosophy(draft)
-
-
-def _patch_audit_value(value):
-    """PATCH 감사 기록의 before/after 값. 큰 값은 앞부분과 전체 hash·길이만 남긴다.
-
-    작은 값은 그대로 둔다. 잘린 값의 기준은 `json.dumps(value, ensure_ascii=False,
-    sort_keys=True, default=str)` 문자열이며, 그 UTF-8 sha256으로 원래 값과 대조한다.
-    """
-    serialized = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
-    if len(serialized) <= PATCH_AUDIT_VALUE_MAX_CHARS:
-        return value
-    return {
-        "truncated": True,
-        "preview": serialized[:PATCH_AUDIT_PREVIEW_CHARS],
-        "sha256": hashlib.sha256(serialized.encode("utf-8")).hexdigest(),
-        "length": len(serialized),
-    }
+async def copy_approved_philosophy_to_draft(hospital_id: uuid.UUID, philosophy_id: uuid.UUID):
+    raise _essence_approval_retired()
 
 
 @router.patch("/philosophy/{philosophy_id}", response_model=PhilosophyResponse)
-async def patch_philosophy(
-    hospital_id: uuid.UUID,
-    philosophy_id: uuid.UUID,
-    body: PhilosophyPatch,
-    db: AsyncSession = Depends(get_db),
-):
-    await acquire_hospital_advisory_lock(db, hospital_id)
-    philosophy = await _get_philosophy_or_404(db, hospital_id, philosophy_id)
-    if philosophy.status != PhilosophyStatus.DRAFT:
-        raise HTTPException(
-            status_code=400, detail="승인 또는 보관된 콘텐츠 운영 기준은 직접 수정할 수 없습니다."
-        )
-
-    update = body.model_dump(exclude_unset=True)
-    before = {field_name: getattr(philosophy, field_name) for field_name in update}
-    if "unsupported_gaps" in update:
-        # 자동 검수 finding은 서버 소유다 — 클라이언트가 지워서 예외 승인 게이트를 우회하지
-        # 못하게 저장된 항목을 그대로 보존한다(H-03). 지우는 유일한 경로는 재검수다.
-        stored_server_owned = [
-            gap
-            for gap in (philosophy.unsupported_gaps or [])
-            if isinstance(gap, dict) and gap.get("field") in SERVER_OWNED_GAP_FIELDS
-        ]
-        incoming = [
-            gap
-            for gap in (update["unsupported_gaps"] or [])
-            if not (isinstance(gap, dict) and gap.get("field") in SERVER_OWNED_GAP_FIELDS)
-        ]
-        update["unsupported_gaps"] = incoming + stored_server_owned
-    for field_name, value in update.items():
-        setattr(philosophy, field_name, value)
-
-    if _touches_source_backed_fields(update):
-        notes = await _get_notes_for_philosophy(db, philosophy)
-        grounding_errors = validate_philosophy_grounding(
-            philosophy,
-            notes,
-            require_text_support=True,
-        )
-        if grounding_errors:
-            raise HTTPException(status_code=422, detail={"grounding_errors": grounding_errors})
-
-    # 사람이 어느 문장을 바꿨는지 남긴다. 실제로 값이 달라진 필드만 기록한다.
-    changes = {
-        field_name: {
-            "before": _patch_audit_value(before[field_name]),
-            "after": _patch_audit_value(getattr(philosophy, field_name)),
-        }
-        for field_name in update
-        if before[field_name] != getattr(philosophy, field_name)
-    }
-    if changes:
-        await write_audit_log(
-            db,
-            action="patch_philosophy",
-            hospital_id=hospital_id,
-            actor=default_actor(),
-            target_type="philosophy",
-            target_id=philosophy.id,
-            detail={"version": philosophy.version, "changes": changes},
-        )
-    await db.commit()
-    await db.refresh(philosophy)
-    return _serialize_philosophy(philosophy)
+async def patch_philosophy(hospital_id: uuid.UUID, philosophy_id: uuid.UUID):
+    raise _essence_approval_retired()
 
 
 def _archive_draft_or_400(philosophy: HospitalContentPhilosophy) -> str:
@@ -1889,310 +1600,14 @@ async def archive_philosophy(
     return _serialize_philosophy(philosophy)
 
 
-async def _guard_re_review_cooldown(db: AsyncSession, hospital_id: uuid.UUID) -> None:
-    """감사 로그를 쿨다운의 저장소로 쓴다 — 인스턴스 재시작·다중 인스턴스에도 남는다."""
-
-    last_requested_at = await db.scalar(
-        select(func.max(AdminAuditLog.created_at)).where(
-            AdminAuditLog.action == "request_philosophy_re_review",
-            AdminAuditLog.hospital_id == hospital_id,
-        )
-    )
-    if last_requested_at is None:
-        return
-    if last_requested_at.tzinfo is None:
-        last_requested_at = last_requested_at.replace(tzinfo=timezone.utc)
-    retry_after = last_requested_at + RE_REVIEW_COOLDOWN - datetime.now(timezone.utc)
-    if retry_after <= timedelta(0):
-        return
-    raise HTTPException(
-        status_code=429,
-        detail={
-            "code": "RE_REVIEW_COOLDOWN",
-            "retry_after_seconds": int(retry_after.total_seconds()),
-            "message": (
-                "최근 30분 안에 이미 자동 재검수를 요청했습니다. "
-                "결과를 기다린 뒤 다시 시도해 주세요."
-            ),
-        },
-    )
-
-
 @router.post("/philosophy/{philosophy_id}/re-review", response_model=PhilosophyResponse)
-async def request_philosophy_re_review(
-    hospital_id: uuid.UUID,
-    philosophy_id: uuid.UUID,
-    db: AsyncSession = Depends(get_db),
-):
-    """보류된 초안을 보관하고 자료·근거 노트를 기준으로 자동 재합성·검수를 요청한다.
-
-    사람이 초안을 다시 검수받고 싶을 때의 유일한 경로다. 수동 합성은 없다 —
-    합성·검수·승인은 언제나 워커의 자동 경로가 수행한다(H-04).
-    초안 본문 수정은 재합성 입력이 아니다 — 사람이 고친 문장을 채택하려면 예외
-    승인(H-03)을 쓴다.
-
-    한 번의 요청이 유료 합성을 최대 두 번 부르므로 병원별로 30분 쿨다운을 둔다.
-    dispatch 실패 시에도 보관은 유효하며 `reconcile_essence_snapshots`가 재검수를
-    회수한다. 다만 이 태스크는 15분마다 병원 200곳씩만 순환하므로, 회수까지
-    걸리는 시간은 병원 수에 따라 ceil(N/200) × 15분까지 늘어난다.
-    """
-    await acquire_hospital_advisory_lock(db, hospital_id)
-    hospital = await _get_hospital_or_404(db, hospital_id)
-    philosophy = await _get_philosophy_or_404(db, hospital_id, philosophy_id)
-    await _guard_re_review_cooldown(db, hospital_id)
-    previous_status = _archive_draft_or_400(philosophy)
-    await write_audit_log(
-        db,
-        action="request_philosophy_re_review",
-        hospital_id=hospital_id,
-        actor=default_actor(),
-        target_type="philosophy",
-        target_id=philosophy_id,
-        detail={"previous_status": previous_status},
-    )
-    await db.commit()
-    await db.refresh(philosophy)
-    # 커밋 이후의 외부 효과. 유실되면 15분 reconcile(reconcile_essence_snapshots)이 회수한다.
-    # 여기서 500을 내면 보관은 이미 끝났는데 재시도는 400("초안 상태만")으로 막힌다.
-    dispatched = True
-    try:
-        auto_review_essence_snapshot.apply_async(
-            args=[str(hospital.id)],
-            queue="content",
-            headers=build_dispatch_headers("auto-review-essence-snapshot", str(hospital.id)),
-        )
-    except (BrokerOperationalError, OSError):
-        dispatched = False
-        logger.warning(
-            "Failed to enqueue Essence re-review for hospital %s; "
-            "periodic reconciliation will retry",
-            hospital_id,
-        )
-    return _serialize_philosophy(philosophy) | {"re_review_dispatched": dispatched}
+async def request_philosophy_re_review(hospital_id: uuid.UUID, philosophy_id: uuid.UUID):
+    raise _essence_approval_retired()
 
 
 @router.post("/philosophy/{philosophy_id}/approve", response_model=PhilosophyResponse)
-async def approve_philosophy(
-    hospital_id: uuid.UUID,
-    philosophy_id: uuid.UUID,
-    body: PhilosophyApprove,
-    db: AsyncSession = Depends(get_db),
-):
-    reviewer = verified_request_actor()
-    if reviewer is None:
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                "승인 요청자의 로그인 계정을 확인할 수 없습니다. 다시 로그인한 뒤 "
-                "콘텐츠 운영 기준을 다시 승인해 주세요."
-            ),
-        )
-    await acquire_hospital_advisory_lock(db, hospital_id)
-    hospital = await _get_hospital_or_404(db, hospital_id)
-    philosophy = await _get_philosophy_or_404(db, hospital_id, philosophy_id)
-    if philosophy.status != PhilosophyStatus.DRAFT:
-        raise HTTPException(
-            status_code=400, detail="초안 상태의 콘텐츠 운영 기준만 승인할 수 있습니다."
-        )
-    if not body.confirm_evidence_reviewed:
-        raise HTTPException(
-            status_code=400,
-            detail="검토된 병원 자료와 근거 노트를 확인해야 콘텐츠 운영 기준을 승인할 수 있습니다.",
-        )
-
-    notes = await _get_notes_for_philosophy(db, philosophy)
-    grounding_errors = validate_philosophy_grounding(philosophy, notes, require_text_support=True)
-    grounding_errors.extend(mandatory_safety_findings(philosophy))
-    if grounding_errors:
-        raise HTTPException(status_code=422, detail={"grounding_errors": grounding_errors})
-
-    # 자동 검수가 보류한 사유는 체크박스 하나로 지나칠 수 없다. 자료를 보완해 재검수를
-    # 받거나, 각 사유를 확인한 근거를 예외 승인 사유로 남겨야 한다(H-03).
-    auto_findings = [
-        str(gap.get("reason"))
-        for gap in (philosophy.unsupported_gaps or [])
-        if (
-            isinstance(gap, dict)
-            and gap.get("field") == AUTO_REVIEW_GAP_FIELD
-            and gap.get("reason")
-        )
-    ]
-    if auto_findings and not body.override_reason:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": "AUTO_REVIEW_FINDINGS_UNRESOLVED",
-                "findings": auto_findings,
-                "message": (
-                    "자동 검수가 보류한 사유가 남아 있습니다. 초안을 수정해 재검수를 요청하거나, "
-                    "각 사유를 확인한 근거를 예외 승인 사유(20자 이상)에 적어 주세요."
-                ),
-            },
-        )
-
-    snapshot = await _check_required_source_snapshot(db, hospital_id, philosophy)
-    if snapshot.unprocessed_count:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                f"처리되지 않은 병원 자료 {snapshot.unprocessed_count}개가 남아 있습니다. "
-                "자료를 처리하거나 제외한 뒤 초안을 다시 생성해 주세요."
-            ),
-        )
-    current_snapshot_hash = snapshot.current_snapshot_hash
-    if not snapshot.matches:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "초안 생성 후 처리된 병원 자료가 변경되었습니다(자료 집합이 다릅니다). "
-                + REGENERATE_FROM_CURRENT_SOURCES_ACTION
-            ),
-        )
-
-    previous_result = await db.execute(
-        select(HospitalContentPhilosophy).where(
-            HospitalContentPhilosophy.hospital_id == hospital_id,
-            or_(
-                HospitalContentPhilosophy.is_base.is_(True),
-                HospitalContentPhilosophy.status == PhilosophyStatus.APPROVED,
-            ),
-        )
-    )
-    for previous in previous_result.scalars().all():
-        if previous.id != philosophy.id:
-            if previous.status == PhilosophyStatus.APPROVED:
-                previous.status = PhilosophyStatus.ARCHIVED
-            previous.is_base = False
-    await db.flush()
-
-    philosophy.status = PhilosophyStatus.APPROVED
-    # Human approval is the explicit onboarding/re-onboarding boundary that may
-    # replace the stable base. Ordinary source ingestion never reaches this path.
-    philosophy.is_base = True
-    # 승인은 그 시점에 운영자가 근거에서 뺀 집합까지 확정한다(H-02).
-    philosophy.evidence_noise_hash = await load_evidence_noise_hash(db, hospital_id)
-    # 검토자는 확인된 로그인 계정만 기록한다. 요청 본문의 이름은 감사 비교용 주장일 뿐,
-    # 승인 권한이나 기록된 승인자 identity의 대체값이 될 수 없다(C-3).
-    philosophy.reviewed_by = reviewer
-    philosophy.approval_note = body.approval_note
-    philosophy.approved_at = datetime.now(timezone.utc)
-
-    # A newly approved standard must immediately become authoritative for
-    # already-generated content as well. Otherwise old v1 items keep their
-    # stale ALIGNED flag (and stay public) even after v2 archives v1.
-    content_result = await db.execute(
-        select(ContentItem).where(
-            ContentItem.hospital_id == hospital_id,
-            ContentItem.body.isnot(None),
-        )
-        .with_for_update(of=ContentItem)
-        .execution_options(populate_existing=True)
-    )
-    from app.models.content import ContentStatus
-
-    content_items = list(content_result.scalars().all())
-    previously_published = {
-        item.id for item in content_items if item.status == ContentStatus.PUBLISHED
-    }
-    rescreened = _rescreen_content_items(content_items, philosophy)
-    if previously_published:
-        from app.services import indexnow
-
-        for item in content_items:
-            if item.id in previously_published and item.status != ContentStatus.PUBLISHED:
-                await indexnow.enqueue_content_published(
-                    db,
-                    slug=hospital.slug,
-                    content_id=item.id,
-                    aeo_domain=hospital.aeo_domain,
-                    treatments=hospital.treatments,
-                    revision=int(item.content_revision or 1),
-                )
-    needs_site_revalidate = _has_public_site(hospital)
-    if needs_site_revalidate:
-        ensure_site_revalidate_configured()
-    await write_audit_log(
-        db,
-        action="approve_philosophy",
-        hospital_id=hospital_id,
-        actor=default_actor(),
-        target_type="philosophy",
-        target_id=philosophy.id,
-        detail={
-            "version": philosophy.version,
-            "claimed_reviewer": body.reviewed_by,
-            "recorded_reviewer": philosophy.reviewed_by,
-            "evidence_reviewed_confirmed": True,
-            "approval_note": body.approval_note,
-            "override_reason": body.override_reason,
-            "overridden_auto_review_findings": auto_findings,
-            "source_asset_count": len(philosophy.source_asset_ids or []),
-            "content_rescreened": rescreened,
-        },
-    )
-    try:
-        await db.commit()
-    except IntegrityError as exc:
-        await db.rollback()
-        raise HTTPException(
-            status_code=409,
-            detail="운영 기준이 동시에 변경되었습니다. 새로고침 후 다시 확인해 주세요.",
-        ) from exc
-    await db.refresh(philosophy)
-    try:
-        await recover_ops_incident(
-            pipeline="essence_auto_review",
-            object_type="essence_snapshot",
-            object_id=f"{hospital_id}:{current_snapshot_hash}",
-            fingerprint=IncidentFingerprint.VALIDATION_FAILED,
-            hospital_name=hospital.name,
-            actor=default_actor(),
-            reason="operator approved the reviewed Essence snapshot",
-        )
-    except Exception:
-        # Approval is already durable. Incident recovery is retried independently
-        # and must never turn a successful operator action into an API failure.
-        logger.exception(
-            "Failed to recover Essence review incident after manual approval: %s:%s",
-            hospital_id,
-            current_snapshot_hash,
-        )
-    # A signed UP_TO_DATE task is the independent recovery fallback if the direct
-    # incident transition above was temporarily unavailable.
-    _enqueue_essence_review_best_effort(hospital_id)
-    if needs_site_revalidate:
-        await trigger_hospital_site_revalidate_safe(
-            hospital.slug,
-            hospital.treatments,
-            hospital_name=hospital.name,
-        )
-    return _serialize_philosophy(philosophy)
-
-
-def _rescreen_content_items(
-    items: list[ContentItem],
-    philosophy: HospitalContentPhilosophy,
-) -> dict[str, int]:
-    # Function-local import avoids coupling the ingestion/review module import
-    # graph to publication while preserving unresolved independent findings.
-    from app.services.content_provenance import mark_removed_source_dependency
-    from app.services.content_publication import (
-        apply_essence_revalidation,
-    )
-
-    counts = {"total": 0, "aligned": 0, "needs_review": 0}
-    for item in items:
-        if mark_removed_source_dependency(item, philosophy):
-            counts["total"] += 1
-            counts["needs_review"] += 1
-            continue
-        essence_status = apply_essence_revalidation(item, philosophy)
-        counts["total"] += 1
-        if essence_status == "ALIGNED":
-            counts["aligned"] += 1
-        else:
-            counts["needs_review"] += 1
-    return counts
+async def approve_philosophy(hospital_id: uuid.UUID, philosophy_id: uuid.UUID):
+    raise _essence_approval_retired()
 
 
 async def _get_hospital_or_404(db: AsyncSession, hospital_id: uuid.UUID) -> Hospital:
@@ -2221,6 +1636,31 @@ async def _get_source_or_404(
         source = await db.get(HospitalSourceAsset, source_id)
     if not source or source.hospital_id != hospital_id:
         raise HTTPException(status_code=404, detail="Source not found")
+    return source
+
+
+async def _get_mutable_source_or_404(
+    db: AsyncSession,
+    hospital_id: uuid.UUID,
+    source_id: uuid.UUID,
+    *,
+    for_update: bool = False,
+) -> HospitalSourceAsset:
+    """사람이 바꿀 수 있는 자료만 돌려준다. 병원 정보(자동) 자료는 읽기 전용이다(409)."""
+
+    source = (
+        await _get_source_or_404(db, hospital_id, source_id, for_update=True)
+        if for_update
+        else await _get_source_or_404(db, hospital_id, source_id)
+    )
+    if is_profile_facts_source(source):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": PROFILE_FACTS_READ_ONLY_CODE,
+                "message": PROFILE_FACTS_READ_ONLY_MESSAGE,
+            },
+        )
     return source
 
 
@@ -2330,21 +1770,6 @@ async def _get_notes_for_sources(
     return result.scalars().all()
 
 
-async def _get_notes_for_philosophy(
-    db: AsyncSession,
-    philosophy: HospitalContentPhilosophy,
-) -> list[HospitalSourceEvidenceNote]:
-    source_ids = [uuid.UUID(str(source_id)) for source_id in (philosophy.source_asset_ids or [])]
-    if not source_ids:
-        result = await db.execute(
-            _included_notes_query().where(
-                HospitalSourceEvidenceNote.hospital_id == philosophy.hospital_id
-            )
-        )
-        return result.scalars().all()
-    return await _get_notes_for_sources(db, source_ids)
-
-
 def _serialize_source(
     source: HospitalSourceAsset,
     evidence_note_count: int = 0,
@@ -2428,9 +1853,16 @@ def _asset_response(
 
 
 def _serialize_source_display(source: HospitalSourceAsset) -> dict:
+    profile_facts = is_profile_facts_source(source)
     return {
-        "source_type_label": _display_label(SOURCE_TYPE_DISPLAY_LABELS, source.source_type),
+        "source_type_label": (
+            PROFILE_FACTS_TITLE
+            if profile_facts
+            else _display_label(SOURCE_TYPE_DISPLAY_LABELS, source.source_type)
+        ),
         "status_label": _display_label(SOURCE_STATUS_DISPLAY_LABELS, source.status),
+        # 병원 정보(자동) 자료는 병원 정보 화면의 값으로만 바뀐다 — 수정·제외·재처리 없음.
+        "read_only": profile_facts,
     }
 
 
@@ -2482,6 +1914,7 @@ def _serialize_philosophy(philosophy: HospitalContentPhilosophy) -> dict:
         "conflict_notes": philosophy.conflict_notes or [],
         "synthesis_notes": philosophy.synthesis_notes,
         "source_snapshot_hash": philosophy.source_snapshot_hash,
+        "synthesis_metadata": dict(getattr(philosophy, "synthesis_metadata", None) or {}),
         "created_by": philosophy.created_by,
         "reviewed_by": philosophy.reviewed_by,
         "approved_at": philosophy.approved_at.isoformat() if philosophy.approved_at else None,
@@ -2511,20 +1944,3 @@ def _clean_optional(value: str | None) -> str | None:
         return None
     value = value.strip()
     return value or None
-
-
-def _touches_source_backed_fields(update: dict) -> bool:
-    source_backed_fields = {
-        "positioning_statement",
-        "doctor_voice",
-        "patient_promise",
-        "content_principles",
-        "tone_guidelines",
-        "must_use_messages",
-        "avoid_messages",
-        "treatment_narratives",
-        "local_context",
-        "medical_ad_risk_rules",
-        "evidence_map",
-    }
-    return bool(source_backed_fields.intersection(update.keys()))

@@ -10,7 +10,7 @@ from datetime import UTC, date, datetime, timedelta
 
 import arrow
 import pytest
-from sqlalchemy import event, select
+from sqlalchemy import event
 
 from app.api.admin.hospital_overview import get_hospital_overview
 from app.api.admin.operations_center_incident_queries import count_operator_incidents
@@ -30,7 +30,6 @@ from app.models.operations import Incident, IncidentSeverity, OperationRun
 from app.models.sov import QueryMatrix, SovRecord
 from app.schemas.operations import OperationsQueue
 from app.services.content_revision_storage import reconcile_content_revisions
-from app.services.essence_auto_review import AUTO_ESSENCE_ACTOR
 from app.services.essence_engine import ESSENCE_STATUS_ALIGNED, compute_sources_snapshot_hash
 from app.services.evidence_noise import compute_evidence_noise_hash
 from app.services.image_engine import (
@@ -42,11 +41,11 @@ from tests.publication_test_support import verified_reference_checks
 
 pytestmark = pytest.mark.asyncio
 
-# 병원 1 + 콘텐츠 준비 묶음 4(승인·자료·노이즈·예외 초안) + 인시던트 2 + 이번 달 콘텐츠 1 +
-# 공개 기준 묶음 2 + 주간 언급률 1. 인시던트·콘텐츠·예외 초안이 몇 건이든 이 수는 그대로여야
-# 한다 — 예외 초안은 준비 묶음이 읽고, 당월 유효 약정은 콘텐츠 조회에 scalar subquery로
+# 병원 1 + 콘텐츠 준비 묶음 3(승인·자료·노이즈) + 인시던트 2 + 이번 달 콘텐츠 1 +
+# 공개 기준 묶음 2 + 주간 언급률 1. 인시던트·콘텐츠·남은 초안이 몇 건이든 이 수는 그대로여야
+# 한다 — 남은 보류 초안은 Phase 4(D33)부터 읽지 않고, 당월 유효 약정은 콘텐츠 조회에 scalar subquery로
 # 결합한다. 다음 달 요금제 변경이나 발행 글 0건도 별도 왕복 조회를 추가하지 않는다.
-_OVERVIEW_STATEMENT_BUDGET = 11
+_OVERVIEW_STATEMENT_BUDGET = 10
 
 
 async def _hospital(
@@ -348,20 +347,9 @@ async def test_preparing_hospital_splits_human_work_from_system_work(pg_async_se
         ("public_permission_missing", "human", None),
         ("site_not_built", "system", None),
     ]
-    # 예외는 준비 중보다 앞선다 — 사람이 손대야 나머지가 풀린다.
-    assert overview.content.kind == "exception"
-    assert overview.content.label == "예외 있음"
-
-    card = next(item for item in overview.exceptions if item.kind == "escalated_draft")
-    assert "근거 없는 효과 표현" in card.evidence
-    assert "출처가 확인되지 않은 수치" in card.evidence
-    assert card.allowed_actions == ["re_review", "approve_with_override"]
-    # 재검수·예외 승인은 essence 라우트다 — 운영 센터 mutation 서술자로 만들지 않는다.
-    assert card.actions == []
-    assert card.hospital_id == hospital.id
-    assert card.incident_id is None
-    # 옛 `/essence` 경로는 현황 탭으로 redirect되고 2026-10-09에 사라진다.
-    assert card.href == f"/hospitals/{hospital.id}"
+    # Phase 4(D33): 남은 보류 초안은 사람의 예외가 아니다 — 운영 기준은 시스템이 자동으로 만든다.
+    assert overview.content.kind == "preparing"
+    assert overview.exceptions == []
 
     assert overview.month.published_count == 0
     assert overview.month.planned_total == 0
@@ -439,9 +427,10 @@ async def test_same_cause_incidents_are_one_exception_on_both_screens(pg_async_s
     overview = await _overview(db, hospital.id)
     counts = await count_operator_incidents(db, [hospital.id], now=datetime.now(UTC))
 
-    assert [card.kind for card in overview.exceptions] == ["incident", "escalated_draft"]
-    # 목록이 내려보내는 예외 수 = 인시던트 묶음 + 예외 초안(hospitals.list_hospitals와 같은 합).
-    assert counts[hospital.id] + 1 == len(overview.exceptions) == 2
+    assert [card.kind for card in overview.exceptions] == ["incident"]
+    # 목록이 내려보내는 예외 수 = 인시던트 묶음(hospitals.list_hospitals와 같은 합). 남은 보류
+    # 초안은 Phase 4(D33)부터 예외가 아니다.
+    assert counts[hospital.id] == len(overview.exceptions) == 1
 
 
 async def test_paused_hospital_withholds_every_published_item(pg_async_session):
@@ -482,70 +471,23 @@ async def test_a_hospital_without_sources_asks_a_person_not_the_system(pg_async_
     ]
 
 
-async def _make_draft_machine_owned(db, hospital, *, cycle: int) -> None:
-    """자동 검수가 만든 그대로의 보류 초안으로 되돌린다(사이클 표식 + 마지막 시도 시각).
-
-    같은 트랜잭션 안에서는 PostgreSQL now()가 고정이라 `updated_at`이 `created_at`과 같게
-    유지된다 — 사람이 손대지 않은 시스템 초안 그대로다.
-    """
-    draft = (
-        await db.execute(
-            select(HospitalContentPhilosophy).where(
-                HospitalContentPhilosophy.hospital_id == hospital.id,
-                HospitalContentPhilosophy.status == PhilosophyStatus.DRAFT,
-            )
-        )
-    ).scalar_one()
-    draft.created_by = AUTO_ESSENCE_ACTOR
-    draft.unsupported_gaps = [
-        *(draft.unsupported_gaps or []),
-        {"field": "automatic_recovery_cycle", "reason": str(cycle)},
-        {"field": "automatic_recovery_last_at", "reason": datetime.now(UTC).isoformat()},
-    ]
-    await db.flush()
-
-
-async def test_a_draft_the_automatic_re_review_still_owns_is_not_an_exception_card(
-    pg_async_session,
-):
-    """자동 재검수 예산이 남은 보류는 운영자의 할 일이 아니다 — 예외 카드로 띄우지 않는다."""
+async def test_a_leftover_review_draft_is_never_an_exception_card(pg_async_session):
+    """Phase 4(D33): 운영 기준은 승인 없이 자동 적용된다 — 남은 보류 초안은 카드가 아니다."""
     db = pg_async_session
     hospital = await _hospital(
         db,
-        "자동 재검수 대기 의원",
+        "남은 초안 의원",
         approved_essence=False,
         escalated_findings=("근거 없는 효과 표현",),
     )
-    await _make_draft_machine_owned(db, hospital, cycle=1)
 
     overview = await _overview(db, hospital.id)
 
-    assert [card.kind for card in overview.exceptions if card.kind == "escalated_draft"] == []
-    # 예외가 아니라 준비 중이고, 남은 일의 주인은 사람이 아니라 시스템이다.
+    assert overview.exceptions == []
     assert overview.content.kind == "preparing"
     assert [(c.key, c.actor) for c in overview.content.remaining if c.key == "essence_review"] == [
         ("essence_review", "system")
     ]
-
-
-async def test_a_draft_whose_automatic_budget_is_spent_becomes_an_exception_card(
-    pg_async_session,
-):
-    """예산을 다 쓴 뒤에는 같은 초안이 사람의 일이 된다."""
-    db = pg_async_session
-    hospital = await _hospital(
-        db,
-        "자동 재검수 소진 의원",
-        approved_essence=False,
-        escalated_findings=("근거 없는 효과 표현",),
-    )
-    await _make_draft_machine_owned(db, hospital, cycle=4)
-
-    overview = await _overview(db, hospital.id)
-
-    card = next(item for item in overview.exceptions if item.kind == "escalated_draft")
-    assert "근거 없는 효과 표현" in card.evidence
-    assert card.allowed_actions == ["re_review", "approve_with_override"]
 
 
 async def test_an_escalated_draft_from_an_older_snapshot_stops_being_an_exception(

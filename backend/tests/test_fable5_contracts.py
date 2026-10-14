@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from app.core.celery_app import celery_app
 from app.models.essence import PHOTO_SOURCE_TYPES, SourceType
 from app.schemas.hospital import HospitalListItem
-from app.services.essence_auto_review import AUTO_ESSENCE_ACTOR
+from app.services.essence_auto_review import AUTOMATIC_ESSENCE_ACTOR
 from app.workers.tasks import AUTO_PUBLISH_ACTOR
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -58,7 +58,7 @@ def test_hospital_response_keeps_domain_live_check_as_nullable_display_data() ->
 def test_automatic_essence_approval_and_0800_publish_are_the_normal_runtime() -> None:
     publish_entry = celery_app.conf.beat_schedule["morning-content-auto-publish"]
 
-    assert AUTO_ESSENCE_ACTOR == "SYSTEM_ESSENCE_AI_REVIEW"
+    assert AUTOMATIC_ESSENCE_ACTOR == "system:essence-auto"
     assert AUTO_PUBLISH_ACTOR == "SYSTEM_AUTO_PUBLISH"
     assert publish_entry["task"] == "app.workers.tasks.morning_content_auto_publish"
     # The first publication remains 08:00; safe late-ready work gets same-day catch-up.

@@ -45,9 +45,10 @@ from app.models.essence import HospitalSourceAsset, SourceStatus, SourceType
 from app.models.hospital import Hospital, HospitalStatus
 from app.models.operations import OperationRun
 from app.models.physician import HospitalPhysician
-from app.services import profile_channel_sources, profile_completion
+from app.services import profile_channel_sources, profile_completion, profile_facts_source
 from app.services import profile_provenance as provenance
 from app.services.audit_log import write_audit_log
+from app.services.essence_sources import enqueue_essence_refresh_best_effort
 from app.services.hospital_geocoding import GeocodingError, geocode_address
 from app.services.hospital_lifecycle import (
     missing_profile_requirement_keys,
@@ -654,6 +655,9 @@ async def apply_autofill_draft(
     # 커밋 뒤에만 보낸다 — 워커가 아직 없는 행을 찾아 헛돌지 않게 한다. 여기서의 실패는 이미 커밋된
     # 적용을 되돌리지 않는다(실패 기록으로 바꾸면 스윕이 같은 초안을 다시 적용하려 든다).
     profile_channel_sources.dispatch_channel_source_fetches(fetch_ids)
+    # 채운 서술 값은 자동 요약 태스크가 병원 정보(자동) 근거 자료로 싣는다(Phase 4 D33).
+    if profile_facts_source.touches_profile_facts(outcome.applied_fields):
+        enqueue_essence_refresh_best_effort(hospital_id)
     if completion.transitioned:
         await _after_commit(
             "completion side effects",

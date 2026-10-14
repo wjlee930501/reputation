@@ -8,7 +8,7 @@ import uuid
 from datetime import UTC, datetime
 
 import pytest
-from sqlalchemy import event, select
+from sqlalchemy import event
 
 from app.models.essence import (
     AUTO_REVIEW_GAP_FIELD,
@@ -21,7 +21,6 @@ from app.models.essence import (
     SourceType,
 )
 from app.models.hospital import Hospital, HospitalStatus
-from app.services.essence_auto_review import AUTO_ESSENCE_ACTOR
 from app.services.essence_engine import compute_sources_snapshot_hash
 from app.services.essence_readiness import get_essence_readiness_states
 from app.services.evidence_noise import compute_evidence_noise_hash
@@ -29,8 +28,9 @@ from app.services.hospital_states import content_state
 
 pytestmark = pytest.mark.asyncio
 
-# 승인 행 1 + 필수 자료 1 + 노이즈 제외 노트 1 + 예외 초안 1. 병원 수와 무관해야 한다.
-_READINESS_STATEMENT_BUDGET = 4
+# 승인 행 1 + 필수 자료 1 + 노이즈 제외 노트 1. 병원 수와 무관해야 한다(Phase 4 D33부터 보류
+# 초안은 읽지 않는다).
+_READINESS_STATEMENT_BUDGET = 3
 
 
 async def _source(db, hospital: Hospital, *, status: SourceStatus = SourceStatus.PROCESSED):
@@ -163,7 +163,8 @@ async def test_readiness_states_answer_each_hospital_from_its_own_rows(pg_async_
     assert states[ready.id].escalated_draft is False
     assert states[waiting.id].current is True
     assert states[waiting.id].unprocessed_sources == 1
-    assert states[escalated.id].escalated_draft is True
+    # Phase 4(D33): 남은 보류 초안은 사람의 예외가 아니다(운영 기준은 승인 없이 자동 적용된다).
+    assert states[escalated.id].escalated_draft is False
     # PR-1: 자료 처리·노이즈 변경·기존 보류 초안은 승인된 base를 무효화하지 않는다.
     assert states[escalated.id].current is True
     assert states[noisy.id].current is True
@@ -187,47 +188,9 @@ async def test_content_state_reads_the_batched_rows(pg_async_session):
         )
 
     assert _state(ready).kind == "auto"
-    assert states[escalated.id].escalated_draft is True
+    assert states[escalated.id].escalated_draft is False
     assert _state(escalated).kind == "auto"
     assert _state(escalated).remaining == ()
-
-
-async def _make_draft_machine_owned(db, hospital, *, cycle: int) -> None:
-    """자동 검수가 만든 그대로의 보류 초안으로 되돌린다(사이클 표식 + 마지막 시도 시각)."""
-    draft = (
-        await db.execute(
-            select(HospitalContentPhilosophy).where(
-                HospitalContentPhilosophy.hospital_id == hospital.id,
-                HospitalContentPhilosophy.status == PhilosophyStatus.DRAFT,
-            )
-        )
-    ).scalar_one()
-    draft.created_by = AUTO_ESSENCE_ACTOR
-    draft.unsupported_gaps = [
-        *(draft.unsupported_gaps or []),
-        {"field": "automatic_recovery_cycle", "reason": str(cycle)},
-        {"field": "automatic_recovery_last_at", "reason": datetime.now(UTC).isoformat()},
-    ]
-    await db.flush()
-
-
-async def test_automatic_re_review_budget_keeps_a_draft_out_of_the_exception_state(
-    pg_async_session,
-):
-    """자동 복구가 소유한 보류는 예외가 아니라 준비 중이다(운영 철학: 기계의 일)."""
-    db = pg_async_session
-    waiting = await _hospital(db, "자동 재검수 대기 의원", escalated_draft=True)
-    await _make_draft_machine_owned(db, waiting, cycle=1)
-
-    states = await get_essence_readiness_states(db, [waiting.id])
-
-    assert states[waiting.id].escalated_draft is False
-    assert states[waiting.id].escalated_draft_id is None
-
-    # 예산을 다 쓰면 같은 초안이 사람의 일이 된다.
-    await _make_draft_machine_owned(db, waiting, cycle=4)
-    spent = await get_essence_readiness_states(db, [waiting.id])
-    assert spent[waiting.id].escalated_draft is True
 
 
 async def test_a_draft_from_an_older_source_snapshot_is_not_an_exception(pg_async_session):

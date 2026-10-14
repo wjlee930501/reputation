@@ -19,7 +19,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 from app.models.essence import (
-    AUTO_REVIEW_GAP_FIELD,
     HospitalContentPhilosophy,
     HospitalSourceAsset,
     PhilosophyStatus,
@@ -387,20 +386,6 @@ async def get_essence_readiness_states(
     sources_by_hospital: dict[uuid.UUID, list[Any]] = {}
     for row in source_rows:
         sources_by_hospital.setdefault(row.hospital_id, []).append(row)
-    # 지금 자료 집합의 snapshot — 예외 초안을 이 판으로만 좁힌다. 승인 행이 없는 병원도
-    # 자기 snapshot은 있으므로 자료 행에서 직접 센다.
-    snapshot_hashes = {
-        hospital_id: compute_sources_snapshot_hash(
-            [
-                row
-                for row in sources_by_hospital.get(hospital_id, ())
-                if row.status == SourceStatus.PROCESSED
-            ]
-        )
-        for hospital_id in ids
-    }
-    escalated_drafts = await _load_escalated_drafts(db, ids, snapshot_hashes)
-
     resolved: dict[uuid.UUID, EssenceReadinessState] = {}
     for hospital_id in ids:
         sources = sources_by_hospital.get(hospital_id, [])
@@ -409,7 +394,6 @@ async def get_essence_readiness_states(
             sources,
             excluded_note_hash=noise_hashes.get(hospital_id),
         )
-        draft_id, findings = escalated_drafts.get(hospital_id, (None, ()))
         resolved[hospital_id] = EssenceReadinessState(
             current=readiness is not None and readiness.current is not None,
             # `resolve_essence_readiness`와 같은 정의(PROCESSED가 아닌 필수 자료). 승인 행이
@@ -418,9 +402,9 @@ async def get_essence_readiness_states(
                 1 for row in sources if row.status != SourceStatus.PROCESSED
             ),
             required_sources=len(sources),
-            escalated_draft=hospital_id in escalated_drafts,
-            escalated_draft_id=draft_id,
-            escalated_draft_findings=findings,
+            # Phase 4(D33): 자동 요약은 보류 초안을 만들지 않고, 남은 초안은 승인할 길도 없다 —
+            # 사람의 예외가 아니다. 필드는 옛 응답 호환으로 남긴다.
+            escalated_draft=False,
         )
     return resolved
 
@@ -437,70 +421,6 @@ def _group_base_candidates(rows: Iterable[Any]) -> dict[uuid.UUID, Any]:
         ):
             selected[row.hospital_id] = row
     return selected
-
-
-async def _load_escalated_drafts(
-    db: AsyncSession,
-    hospital_ids: list[uuid.UUID],
-    snapshot_hashes: dict[uuid.UUID, str],
-) -> dict[uuid.UUID, tuple[uuid.UUID, tuple[str, ...]]]:
-    """자동 검수가 보류한 DRAFT — 사람이 손대야 풀리는 예외와 그 보류 사유 전부.
-
-    지금 자료 집합의 snapshot으로 만든 초안만 예외로 센다(쓰기 경로의
-    `essence_auto_review._drafts_for_snapshot`와 같은 조건). 자료가 바뀌어 새 판이 자동
-    승인된 뒤에도 옛 초안은 DRAFT로 남으므로, 판을 보지 않으면 그 병원은 영영 "예외 있음"이다.
-
-    자동 재검수 예산이 남은 시스템 초안은 세지 않는다 — 그 병원의 콘텐츠 상태는 예외가
-    아니라 "준비 중(essence_review)"이고, 인시던트도 RETRYING으로 남는다.
-
-    `unsupported_gaps`는 postgres에서만 JSONB인 variant라 컨테인먼트를 SQL로 강제하면 다른
-    dialect에서 깨진다. 병원당 초안은 소수이므로 gap 목록만 읽어 파이썬에서 거른다.
-    사유는 하나라도 빠지면 승인 게이트와 화면이 어긋나므로 전부 싣는다
-    (`api/admin/essence.py`의 예외 승인 조건과 같은 목록).
-    """
-    # 자동 재검수 예산이 남은 보류는 아직 기계의 일이다 — 판정은 자동 검수 쪽 한 곳에만
-    # 둔다(모듈 순환을 피하려고 여기서만 늦게 가져온다).
-    from app.services.essence_auto_review import automatic_recovery_owns_draft
-
-    rows = (
-        await db.execute(
-            select(
-                HospitalContentPhilosophy.hospital_id,
-                HospitalContentPhilosophy.id,
-                HospitalContentPhilosophy.source_snapshot_hash,
-                HospitalContentPhilosophy.unsupported_gaps,
-                HospitalContentPhilosophy.created_by,
-                HospitalContentPhilosophy.reviewed_by,
-                HospitalContentPhilosophy.approved_at,
-                HospitalContentPhilosophy.created_at,
-                HospitalContentPhilosophy.updated_at,
-            ).where(
-                HospitalContentPhilosophy.hospital_id.in_(hospital_ids),
-                HospitalContentPhilosophy.status == PhilosophyStatus.DRAFT,
-            )
-        )
-    ).all()
-    escalated: dict[uuid.UUID, tuple[uuid.UUID, tuple[str, ...]]] = {}
-    for row in rows:
-        if row.source_snapshot_hash != snapshot_hashes.get(row.hospital_id):
-            continue
-        # 사람이 손대지 않은 시스템 초안이고 자동 재검수가 한 번 더 남아 있으면 예외로
-        # 세지 않는다. 자동 복구 중인 일을 운영자의 할 일로 만들지 않는다(운영 철학).
-        # 예산이 끝나거나 사람이 손댄 초안은 그대로 예외다.
-        if automatic_recovery_owns_draft(row):
-            continue
-        gaps = [
-            gap
-            for gap in (row.unsupported_gaps or [])
-            if isinstance(gap, dict) and gap.get("field") == AUTO_REVIEW_GAP_FIELD
-        ]
-        findings = tuple(str(gap["reason"]) for gap in gaps if gap.get("reason"))
-        # 사유가 없으면 승인 게이트도 막지 않는다 — 목록의 예외 수와 현황의 카드가
-        # 갈리지 않도록 여기서도 세지 않는다.
-        if not findings:
-            continue
-        escalated.setdefault(row.hospital_id, (row.id, findings))
-    return escalated
 
 
 def _public_philosophy_id(

@@ -24,7 +24,6 @@ from app.services.content_batch_messages import (
 from app.services.content_publish_notifications import (
     build_generation_blocked_digest_intent,
     build_generation_rejection_weekly_rollup_intent,
-    build_missing_approved_essence_digest_intent,
 )
 from app.services.cost_guard import _build_cost_alert_intent
 from app.services.fleet_heartbeat import FleetFacts, build_fleet_heartbeat
@@ -345,13 +344,6 @@ _SAMPLES: tuple[tuple[str, NotificationLabel, object], ...] = (
         lambda: build_monthly_report_gap_auto_summary(
             period_key="2026-08",
             gaps=[MonthlyReportGap("장편한외과의원", "MISSING", recoverable=True)],
-        ),
-    ),
-    (
-        "MISSING_APPROVED_ESSENCE_DIGEST",
-        NotificationLabel.ERROR,
-        lambda: build_missing_approved_essence_digest_intent(
-            date(2026, 9, 20), ({"hospital_id": str(_HOSPITAL)},)
         ),
     ),
     (
