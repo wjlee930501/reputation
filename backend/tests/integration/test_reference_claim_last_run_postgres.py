@@ -157,10 +157,10 @@ def test_last_run_neither_holds_nor_touches_a_claimed_cost_post(
     행은 보고할 것도 없고 행도 그대로다."""
 
     db = gate_db
-    hospital, item = _claimed_cost_post(db, claimed_at=_kst(TODAY, 22, 10))
+    hospital, item = _claimed_cost_post(db, claimed_at=_kst(TODAY, 22, 40))
     before = _stored(db, item)
 
-    fetcher = _publisher_run(db, monkeypatch, _kst(TODAY, 23))
+    fetcher = _publisher_run(db, monkeypatch, _kst(TODAY, 23, 30))
 
     assert fetcher.calls == [] and incidents == []
     assert _digests_for(db, hospital) == []
@@ -189,10 +189,10 @@ def test_s2_a_claimed_cost_post_with_a_dead_outside_url_is_not_held(
     db = gate_db
     hospital, schedule = _hospital(db)
     item = _written(db, hospital, schedule, title=COST_TITLE, scheduled_date=TODAY, sequence_no=1)
-    _claim(db, item, _kst(TODAY, 22, 10))
+    _claim(db, item, _kst(TODAY, 22, 40))
     before = _stored(db, item)
 
-    fetcher = _publisher_run(db, monkeypatch, _kst(TODAY, 23))
+    fetcher = _publisher_run(db, monkeypatch, _kst(TODAY, 23, 30))
 
     assert fetcher.calls == [DEAD_URL]  # 종전 23시처럼 잠금 전 GET
     assert incidents == []
@@ -211,7 +211,7 @@ def test_a_claimed_row_whose_site_is_down_at_the_last_run_is_deferred_like_an_un
     unclaimed = _written(
         db, hospital, schedule, title=COST_TITLE, scheduled_date=TODAY, sequence_no=2
     )
-    _claim(db, claimed, _kst(TODAY, 22, 10))
+    _claim(db, claimed, _kst(TODAY, 22, 40))
     before = _stored(db, claimed)
     enqueued: list[dict] = []
     enqueue = content_publish_notifications.enqueue_generation_blocked_digest_sync
@@ -223,7 +223,7 @@ def test_a_claimed_row_whose_site_is_down_at_the_last_run_is_deferred_like_an_un
     monkeypatch.setattr(tasks, "enqueue_generation_blocked_digest_sync", recording_enqueue)
 
     fetcher = _publisher_run(
-        db, monkeypatch, _kst(TODAY, 23), pages={DEAD_URL: TimeoutError("site down")}
+        db, monkeypatch, _kst(TODAY, 23, 30), pages={DEAD_URL: TimeoutError("site down")}
     )
 
     assert fetcher.calls == [DEAD_URL]  # 같은 실행 안의 같은 주소는 캐시가 한 번만 연다
@@ -317,10 +317,10 @@ def test_the_real_incident_does_not_write_a_live_claimed_row_at_the_last_run(
     )
     item.meta_description = "완치를 약속드립니다."
     db.commit()
-    _claim(db, item, _kst(TODAY, 22, 10))
+    _claim(db, item, _kst(TODAY, 22, 40))
     before = _row_json(db, item)
 
-    _publisher_run(db, monkeypatch, _kst(TODAY, 23))
+    _publisher_run(db, monkeypatch, _kst(TODAY, 23, 30))
 
     assert _row_json(db, item) == before  # 모든 열이 바이트 그대로
     [incident] = _item_incidents(db, item)
@@ -333,11 +333,11 @@ def test_the_real_incident_opens_nothing_for_a_cost_post_with_a_pre_d23_operator
     """D23 이전에 남은 '사람이 정하는 참고자료 보류' 기록이 있어도 진료비 글은 이제 보류가 아니다."""
 
     db = real_incidents
-    hospital, item = _claimed_cost_post(db, claimed_at=_kst(TODAY, 20, 10))
+    hospital, item = _claimed_cost_post(db, claimed_at=_kst(TODAY, 20, 40))
     item.essence_check_summary = {"generation_attempt": _decided_attempt()}
     db.commit()
 
-    _publisher_run(db, monkeypatch, _kst(TODAY, 23))
+    _publisher_run(db, monkeypatch, _kst(TODAY, 23, 30))
 
     assert _item_incidents(db, item) == []
     assert _operator_lines(db, hospital) == 0
