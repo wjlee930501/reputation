@@ -78,6 +78,11 @@ gcloud run jobs execute reputation-migrate --project mso-platform-481505 --regio
   --args=python,-m,app.utils.ops_sql_report,--only=q1,--only=q3
 ```
 
+D36(참고자료 없이 발행)·D37(검수 장애면 선발행) 배포 전에는 `--only=q16`으로 영향을 양방향으로 본다 — `q16` 참고자료
+0개로 보류된 발행 전 글, `q16b` 검수 장애로 보류된 발행 전 글(배포 즉시 발행될 수 있다), `q16c` 이미 공개됐지만 참고자료
+0개·검수 장애로 공개 표면에서 숨은 글(배포 즉시 다시 보일 수 있다). 롤백 전에도 `q16c`로 목록을 남긴다 — 옛 코드는 그 글들을
+다시 숨긴다.
+
 ## 이전 운영 배포 — 2026-10-01 미결 PR 정리·원장 보고서 개편
 
 main `a8a86b57`을 5개 서비스에, #194·#196·#197(최종 `ce731db7`)을 API·Worker·Beat에 배포했다. 현재 리비전은
