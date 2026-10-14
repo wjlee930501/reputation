@@ -2183,3 +2183,43 @@ def test_medical_risk_reported_as_a_hospital_fact_takes_the_critical_ladder(work
     record = item.essence_check_summary[mc.AUTO_CORRECTION_KEY]
     assert record.get("passes") == 1 and not record.get(mc.NONCRITICAL_REREVIEWS_KEY)
     assert "20" not in item.body.replace("2026", "")
+
+
+async def test_deletion_below_min_length_is_a_warning_not_an_error(caplog):
+    """2026-10-15: 지운 뒤 분량 하한 아래로 내려가는 거절은 정상 경로 — ERROR(경보)를 내지 않는다."""
+
+    import logging
+
+    from app.services.content_engine import CONTENT_BODY_MIN_CHARS, body_plain_length
+
+    padding: list[str] = []
+    while body_plain_length(_body(NEUTRAL_A, *padding, UNAPPROVED_PHILOSOPHY)) < CONTENT_BODY_MIN_CHARS:
+        padding.append(f"허리 건강을 지키는 생활 습관 안내 {len(padding) + 1}번째 문장입니다.")
+    body = _body(NEUTRAL_A, *padding, UNAPPROVED_PHILOSOPHY)
+    assert body_plain_length(body.replace(UNAPPROVED_PHILOSOPHY, "")) < CONTENT_BODY_MIN_CHARS
+    content = _content(body)
+    review = _review_payload(
+        content,
+        _finding("HARD", "HOSPITAL_FACT", "승인 자료에 없는 진료 원칙입니다.", quote=UNAPPROVED_PHILOSOPHY),
+    )
+
+    async def deleting_llm(*, targets, **_kwargs):
+        return {targets[0].key: ("DELETE", "")}
+
+    with caplog.at_level(logging.WARNING, logger="app.services.content_minimal_correction"):
+        outcome = await mc.run_minimal_correction(
+            hospital=_hospital(),
+            philosophy=_philosophy(),
+            content=content,
+            review=review,
+            content_brief=None,
+            must_use_messages=[],
+            state=None,
+            limits=mc.CorrectionLimits(max_passes=2, max_rereviews=2),
+            dependencies=mc.CorrectionDependencies(propose=deleting_llm, review=_no_provider),
+        )
+
+    assert outcome.status == "REJECTED"
+    scope = [r for r in caplog.records if "could not stay within the finding scope" in r.getMessage()]
+    assert scope and all(r.levelno == logging.WARNING and r.exc_info is None for r in scope)
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]

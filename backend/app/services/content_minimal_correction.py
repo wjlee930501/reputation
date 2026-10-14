@@ -1116,9 +1116,12 @@ async def run_minimal_correction(
                 verify_correction_scope(
                     current, corrected, plan, sources=sources, must_use_messages=must_use
                 )
-            except CorrectionScopeError:
+            except CorrectionScopeError as scope_exc:
                 # 결정적 삭제조차 범위를 지키지 못한다 — 이 회차는 저장하지 않고 실패로 센다.
-                logger.exception("Minimal correction could not stay within the finding scope")
+                # 지운 뒤 분량 하한 아래로 내려가는 등 정상적인 거절 경로라 ERROR(경보)가 아니다.
+                logger.warning(
+                    "Minimal correction could not stay within the finding scope (%s)", scope_exc
+                )
                 passes += 1
                 status = "REJECTED" if last_review is None else "BLOCKED"
                 break

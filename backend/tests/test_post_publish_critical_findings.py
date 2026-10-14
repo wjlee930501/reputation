@@ -133,6 +133,9 @@ def test_critical_flag_asks_the_marketer_and_keeps_the_post_public(monkeypatch, 
     _lock_to(monkeypatch, item)
 
     sweep._settle_flag(_DB(), item, item.hospital, asyncio.run, needs_human_reason="blocked", now=NOW)
+    # 판정 때는 의도만 남는다 — Slack은 실행 끝에 병원별로 묶여 나간다.
+    assert calls["alerts"] == [] and item.essence_check_summary[KEY]["enqueued_at"] is None
+    assert sweep._deliver_critical_alert(_DB(), item.id, asyncio.run, now=NOW) == "ENQUEUED"
 
     assert [item_id for item_id, _title in calls["critical"]] == [item.id]
     [alert] = calls["alerts"]
@@ -194,6 +197,7 @@ def test_medical_or_unverifiable_flags_are_never_closed_quietly(monkeypatch, cal
     _lock_to(monkeypatch, item)
 
     sweep._settle_flag(_DB(), item, item.hospital, asyncio.run, needs_human_reason="blocked", now=NOW)
+    sweep._deliver_critical_alert(_DB(), item.id, asyncio.run, now=NOW)
 
     assert item.post_publish_reviewed_at is None
     assert len(calls["critical"]) == 1
@@ -248,12 +252,15 @@ def test_one_alert_per_post_lifetime_even_when_the_body_changes(monkeypatch, cal
     item = _item()
     sweep.apply_review_outcome(item, _critical_review(item), now=NOW)
     _lock_to(monkeypatch, item)
-    assert sweep.ensure_critical_alert(_DB(), item.id, asyncio.run, now=NOW) == "ENQUEUED"
+    # 판정 저장이 이미 의도를 남겼다 — 다시 만들지 않고, 실행 끝 전달이 한 번 넣는다.
+    assert sweep.ensure_critical_alert(_DB(), item.id, asyncio.run, now=NOW) == "SKIPPED"
+    assert sweep._deliver_critical_alert(_DB(), item.id, asyncio.run, now=NOW) == "ENQUEUED"
 
     item.body = item.body + "\n새 문단입니다."
     sweep.apply_review_outcome(item, _critical_review(item, "다른 위험한 오정보"), now=NOW)
     assert sweep.ensure_critical_alert(_DB(), item.id, asyncio.run, now=NOW) == "SKIPPED"
     sweep._settle_flag(_DB(), item, item.hospital, asyncio.run, needs_human_reason="blocked", now=NOW)
+    assert sweep._deliver_critical_alert(_DB(), item.id, asyncio.run, now=NOW) == "SKIPPED"
 
     assert len(calls["critical"]) == 1 and len(calls["alerts"]) == 1
 
@@ -367,6 +374,124 @@ def test_the_critical_alert_survives_gate_rewrites_of_the_summary() -> None:
     content_publication.apply_publication_assessment(item, assessment)
 
     assert item.essence_check_summary[KEY]["critical_alert_sent_at"] == "t"
+
+
+# ── 같은 실행의 Critical은 병원마다 한 통(2026-10-15) ─────────────────────────────────
+
+
+class _PendingDB(_DB):
+    """미전달 의도 조회(`(id, hospital_id)`)만 흉내 낸다."""
+
+    def __init__(self, rows):
+        super().__init__()
+        self.rows = rows
+
+    def execute(self, _stmt):
+        return SimpleNamespace(all=lambda: list(self.rows))
+
+
+def _pending(items, monkeypatch):
+    by_id = {item.id: item for item in items}
+    monkeypatch.setattr(sweep, "_lock_item", lambda _db, item_id: by_id.get(item_id))
+    for item in items:
+        sweep.apply_review_outcome(item, _critical_review(item), now=NOW)
+    return _PendingDB([(item.id, item.hospital.id) for item in items])
+
+
+def test_same_run_criticals_of_one_hospital_go_out_as_one_slack(monkeypatch, calls):
+    """03:10 실행이 한 병원에 7통을 3분 안에 보냈다 — 병원마다 "마케터 검토 필요 N건" 한 통."""
+
+    hospital = SimpleNamespace(id=uuid.uuid4(), name="신기한속내과연합의원")
+    same = [_item(hospital=hospital, title=f"글 {index}") for index in range(7)]
+    other = _item(title="다른 병원 글")
+    db = _pending([*same, other], monkeypatch)
+
+    assert sweep.deliver_pending_critical_alerts(db, asyncio.run, now=NOW) == 8
+
+    grouped, single = calls["alerts"]
+    assert grouped.notification_type == single.notification_type == (
+        sweep.POST_PUBLISH_CRITICAL_ALERT_NOTIFICATION_TYPE
+    )
+    payload = grouped.message.payload_json()
+    assert grouped.message.fallback_text.startswith("[Error : 오류 발생] 마케터 검토 필요 7건")
+    assert "신기한속내과연합의원" in payload and payload.count("「글 ") == 7
+    assert grouped.hospital_id == hospital.id and grouped.incident_id is None
+    # 한 건뿐인 병원은 종전의 글 단위 알림(글 id 키) 그대로다.
+    assert single.dedupe_key == sweep.critical_alert_dedupe_key(other.id)
+    for item in same:
+        alert = item.essence_check_summary[KEY]
+        assert alert["enqueued_at"] == NOW.isoformat() and alert["via"] == "HOSPITAL_GROUP"
+        assert alert["notification_dedupe_key"] == grouped.dedupe_key
+    # 글마다 평생 표시가 남아 다시 알리지 않고, Admin 할 일(사고)은 글마다 열린다.
+    assert sorted(item_id for item_id, _t in calls["critical"]) == sorted(
+        item.id for item in [*same, other]
+    )
+    assert sweep.deliver_pending_critical_alerts(db, asyncio.run, now=NOW) == 0
+    assert len(calls["alerts"]) == 2
+
+
+def test_group_shows_ten_titles_then_the_rest_as_a_count(monkeypatch, calls):
+    hospital = SimpleNamespace(id=uuid.uuid4(), name="강남병원")
+    items = [_item(hospital=hospital, title=f"제목{index:02d}") for index in range(13)]
+    db = _pending(items, monkeypatch)
+
+    assert sweep.deliver_pending_critical_alerts(db, asyncio.run, now=NOW) == 13
+
+    [intent] = calls["alerts"]
+    payload = intent.message.payload_json()
+    assert "마케터 검토 필요 13건" in payload and "외 3건" in payload
+    assert payload.count("「제목") == 10
+
+
+def test_one_hospital_failure_does_not_block_the_others(monkeypatch, calls):
+    broken = SimpleNamespace(id=uuid.uuid4(), name="망가진 병원")
+    fine = SimpleNamespace(id=uuid.uuid4(), name="정상 병원")
+    bad = [_item(hospital=broken) for _ in range(2)]
+    good = [_item(hospital=fine) for _ in range(2)]
+    db = _pending([*bad, *good], monkeypatch)
+    delivered = []
+
+    def enqueue(_db, intent, _now):
+        if intent.hospital_id == broken.id:
+            raise RuntimeError("outbox down")
+        delivered.append(intent)
+
+    monkeypatch.setattr(sweep, "_enqueue_notification", enqueue)
+
+    assert sweep.deliver_pending_critical_alerts(db, asyncio.run, now=NOW) == 2
+    assert [intent.hospital_id for intent in delivered] == [fine.id]
+    assert all(item.essence_check_summary[KEY]["enqueued_at"] is None for item in bad)
+
+
+def test_sweep_delivers_pending_alerts_even_when_a_stage_dies(monkeypatch):
+    """실행 끝(`finally`)에서 병원별 전달을 한다 — 시간 제한 등으로 단계가 죽어도 의도가 하루 묵지 않는다."""
+
+    from app.core.config import settings as _settings
+
+    class _Session:
+        def __enter__(self):
+            return _DB()
+
+        def __exit__(self, *_exc):
+            return False
+
+    delivered = []
+    monkeypatch.setattr(sweep, "require_dispatch", lambda *_a, **_k: None)
+    monkeypatch.setattr(sweep, "SyncSessionLocal", _Session)
+    monkeypatch.setattr(_settings, "POST_PUBLISH_CRITICAL_ALERTS_ENABLED", True)
+    monkeypatch.setattr(_settings, "POST_PUBLISH_AI_REVIEW_DAILY_CAP", 5)
+
+    def dying(*_a, **_k):
+        raise RuntimeError("soft time limit")
+
+    monkeypatch.setattr(sweep, "_review_post_publish_samples_in", dying)
+    monkeypatch.setattr(
+        sweep, "deliver_pending_critical_alerts", lambda db, run_async: delivered.append(db)
+    )
+
+    with pytest.raises(RuntimeError):
+        sweep.review_post_publish_samples.run()
+    assert len(delivered) == 1
 
 
 # ── 배포 전 백로그: 요약 한 통(Codex 2차 E) ──────────────────────────────────────────
