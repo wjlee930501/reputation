@@ -204,17 +204,18 @@ def test_topic_swap_budget_is_one_function(monkeypatch):
     assert tasks.topic_swap_budget_left is topic_swap_budget_left
 
 
-def test_critical_cause_gets_a_second_swap_but_other_causes_do_not(monkeypatch):
-    """W6(O5): Critical 원인은 교체 두 번, 그 밖 원인은 한 번. 세 번째는 없다."""
+def test_every_cause_gets_a_second_swap_but_no_third(monkeypatch):
+    """누락 방지 5(2026-10-14): Critical이 아닌 원인도 Critical과 같은 두 번. 세 번째는 없다."""
 
     monkeypatch.setattr("app.workers.topic_swap_fallback.settings.CONTENT_AUTO_TOPIC_SWAP_MAX", 2)
-    assert (topic_swap_limit(), topic_swap_limit(critical=False)) == (2, 1)
+    assert (topic_swap_limit(), topic_swap_limit(critical=False)) == (2, 2)
     summary = {"generation_attempt": fresh_generation_attempt(topic_id="topic-a")}
     once = SimpleNamespace(topic_swap_history=[{}], essence_check_summary=summary)
     twice = SimpleNamespace(topic_swap_history=[{}, {}], essence_check_summary=summary)
     assert topic_swap_budget_left(once, critical=True) is True
-    assert topic_swap_budget_left(once) is False
+    assert topic_swap_budget_left(once) is True
     assert topic_swap_budget_left(twice, critical=True) is False
+    assert topic_swap_budget_left(twice) is False
     # 설정을 예산 기록의 상한보다 크게 줘도 두 번을 넘지 않는다.
     monkeypatch.setattr("app.workers.topic_swap_fallback.settings.CONTENT_AUTO_TOPIC_SWAP_MAX", 5)
     assert topic_swap_limit() == 2

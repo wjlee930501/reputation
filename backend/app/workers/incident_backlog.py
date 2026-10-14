@@ -783,7 +783,21 @@ def _post_publish_flag_settled(db: Session, incident: Incident, _now: datetime) 
     return None
 
 
+def _revision_publish_settled(db: Session, incident: Incident, _now: datetime) -> str | None:
+    """승인 판 미생성 사고의 근거: 글이 공개됐거나 자동 발행 대상(초안·준비)에서 빠졌다."""
+
+    item = db.get(ContentItem, incident.source_id) if incident.source_id else None
+    if item is None:
+        return "content_missing"
+    if item.status == ContentStatus.PUBLISHED:
+        return "content_published"
+    if item.status not in (ContentStatus.DRAFT, ContentStatus.READY):
+        return "content_left_publication"
+    return None
+
+
 RESOLVERS: dict[str, Resolver] = {
+    "AUTO_PUBLISH_REVISION_NOT_CREATED": _revision_publish_settled,
     "OPERATION_RECOVERY_EXHAUSTED": _stopped_runs_recovered,
     "MONTHLY_SOV_COHORT_GAP": _monthly_cohort_enrolled,
     "WEEKLY_SOV_MEASUREMENT_FAILED": _same_period_measurement,

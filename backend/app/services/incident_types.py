@@ -344,6 +344,9 @@ INCIDENT_TYPE_POLICIES: dict[str, IncidentTypePolicy] = {
     "COST_GUARD_FAIL_OPEN": _DEVELOPER,
     # 공급자 사용량 기록 spool이 넘쳐 오래된 기록을 버렸다(provider_usage).
     "PROVIDER_USAGE_SPOOL_TRUNCATED": _DEVELOPER,
+    # 2026-10-14 누락 방지 1 — 발행 검사를 통과한 글이 승인 판 SQL(`reconcile_content_revisions`)에서
+    # 판을 얻지 못했다. DB 함수의 조건이라 AE가 고칠 수 없다. 글이 발행되면 근거 정리가 닫는다.
+    "AUTO_PUBLISH_REVISION_NOT_CREATED": _DEVELOPER,
     # Phase 2 — 온보딩 정체와 자체 도메인 DNS 미설정은 사람이 병원 정보·공개 주소에서 정하는
     # 일이다. 운영 담당·Slack 알림·처음부터 OPEN(스윕 소유 아님). 기본값과 같지만 의도를 남긴다.
     "ONBOARDING_PROFILE_INCOMPLETE": _DEFAULT_POLICY,

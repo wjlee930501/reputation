@@ -217,6 +217,20 @@ def blocking_findings(review: object) -> list[Mapping[str, Any]]:
     return [f for f in findings if isinstance(f, Mapping) and finding_blocks(f)]
 
 
+def review_lacks_tier_verdict(review: object) -> bool:
+    """확신 부족(UNCERTAIN)만 남은 차단에 검수 모델의 `critical` 판정이 **없는** 것이 있는가.
+
+    v3 검수 출력은 모든 지적에 `critical` 키를 싣는다(값이 null이어도). 키가 없는 차단 지적은 등급을
+    받은 적이 없어 `classify_finding`이 Critical로 읽는다(2026-10-14 누락 방지 3). 모델이 HARD로 단정한
+    지적이 있으면 대상이 아니다 — 그 차단은 교정 계단이 맡고, 교정본은 v3 검수를 다시 받는다.
+    """
+
+    blocking = blocking_findings(review)
+    if any(_label(finding.get("severity")) == "HARD" for finding in blocking):
+        return False
+    return any("critical" not in finding for finding in blocking)
+
+
 def critical_findings(findings: Iterable[object], content: object = None) -> list[Mapping[str, Any]]:
     return [
         finding
