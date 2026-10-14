@@ -19,8 +19,6 @@ KST 기준이므로 일/월 경계도 KST로 맞춰야 집계가 직관적이다
 import logging
 import math
 import uuid
-from collections.abc import Iterator
-from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
@@ -412,18 +410,28 @@ class CostLaneScope:
 _LANE_CONTEXT: ContextVar[CostLaneScope | None] = ContextVar("cost_guard_lane", default=None)
 
 
-@contextmanager
-def cost_lane(lane: str, *, hospital_id: object | None = None) -> Iterator[CostLaneScope]:
-    """이 블록 안의 content 예약을 `lane`(과 병원)으로 센다. 동기·비동기 호출 모두 같은 맥락을 본다."""
+class cost_lane:  # noqa: N801 — 함수처럼 쓰는 맥락 관리자(`with cost_guard.cost_lane(...)`)
+    """이 블록 안의 content 예약을 `lane`(과 병원)으로 센다. 동기·비동기 호출 모두 같은 맥락을 본다.
 
-    if lane not in CONTENT_LANES:
-        raise ValueError(f"unknown cost_guard lane: {lane}")
-    scope = CostLaneScope(lane, str(hospital_id) if hospital_id else None)
-    token = _LANE_CONTEXT.set(scope)
-    try:
-        yield scope
-    finally:
-        _LANE_CONTEXT.reset(token)
+    제너레이터 기반 맥락 관리자는 블록 안 예외를 제너레이터로 다시 던져 예외 객체를 건드리므로
+    쓰지 않는다 — 여기서는 맥락만 되돌리고 예외는 그대로 흘려보낸다.
+    """
+
+    def __init__(self, lane: str, *, hospital_id: object | None = None) -> None:
+        if lane not in CONTENT_LANES:
+            raise ValueError(f"unknown cost_guard lane: {lane}")
+        self._scope = CostLaneScope(lane, str(hospital_id) if hospital_id else None)
+        self._token = None
+
+    def __enter__(self) -> CostLaneScope:
+        self._token = _LANE_CONTEXT.set(self._scope)
+        return self._scope
+
+    def __exit__(self, *_exc_info: object) -> bool:
+        if self._token is not None:
+            _LANE_CONTEXT.reset(self._token)
+            self._token = None
+        return False
 
 
 def generation_cost_lane(scheduled_date: date | None, *, today: date | None = None) -> str:
