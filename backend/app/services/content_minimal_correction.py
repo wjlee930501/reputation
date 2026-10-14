@@ -40,10 +40,7 @@ from app.services.content_ai_review import (
     hospital_review_profile,
 )
 from app.services.content_engine import CONTENT_BODY_MIN_CHARS, body_plain_length
-from app.services.finding_criticality import (
-    mentions_medical_safety,
-    review_blocks_only_noncritically,
-)
+from app.services.finding_criticality import review_blocks_only_noncritically
 from app.services.must_use_verbatim import (
     appears_as_standalone_sentence,
     normalize_verbatim,
@@ -1217,9 +1214,11 @@ def plan_noncritical_fixes(
     plan = plan_corrections(content, review, must_use_messages=must_use, include_uncertain=True)
     if not plan.targets or plan.insertions or plan.uncorrectable:
         return None
-    # 실제로 지울 문장 전체가 의료·안전 어휘 검사를 통과해야 한다 — 부분 인용으로 같은 문장의 응급 안내
-    # ("흉통에는 즉시 119")까지 지우지 않는다(Codex 2차 P1-2).
-    if any(mentions_medical_safety(target.sentence) for target in plan.targets):
+    # 지울 문장 전체에 응급 안내가 있으면 맡지 않는다 — 부분 인용으로 같은 문장의 응급 안내
+    # ("흉통에는 즉시 119")까지 지우지 않는다(Codex 2차 P1-2). 삭제가 지키는 내용은 응급 안내와 필수
+    # 문구 문장뿐이다(2026-10-15 대표 결정). 넓은 의료 어휘(정형외과·검사·진단·통증 …)로 막으면 병원
+    # 사실 같은 평범한 비-Critical 문장을 영영 지우지 못한다(578acbf2 — 진료과목·검사 연계 문장).
+    if any(mentions_emergency_guidance(target.sentence) for target in plan.targets):
         return None
     decisions = {
         target.key: SentenceDecision(target.key, None, "noncritical_delete")
@@ -1232,15 +1231,33 @@ def plan_noncritical_fixes(
     return NoncriticalFixPlan(plan=plan, decisions=decisions)
 
 
-EMERGENCY_GUIDANCE_TERMS = ("119", "응급실", "즉시 내원")
+# 결정적 삭제가 지키는 응급 안내 표현(2026-10-15 대표 결정). 영어는 대소문자를 가리지 않는다.
+EMERGENCY_GUIDANCE_TERMS = (
+    "119",
+    "응급",
+    "응급실",
+    "즉시 내원",
+    "구급차",
+    "emergency",
+    "ambulance",
+)
+
+
+def _emergency_terms_in(text: object) -> set[str]:
+    lowered = str(text or "").lower()
+    return {term for term in EMERGENCY_GUIDANCE_TERMS if term in lowered}
+
+
+def mentions_emergency_guidance(text: object) -> bool:
+    """응급 안내 표현(`EMERGENCY_GUIDANCE_TERMS`)이 하나라도 있는가 — 결정적 삭제의 보호 대상."""
+
+    return bool(_emergency_terms_in(text))
 
 
 def emergency_guidance_lost(before: Mapping[str, Any], after: Mapping[str, Any]) -> bool:
     """지우기 전 본문의 응급 안내 표현 가운데 지운 뒤에 사라진 것이 있는가."""
 
-    old = str(before.get("body") or "")
-    new = str(after.get("body") or "")
-    return any(term in old and term not in new for term in EMERGENCY_GUIDANCE_TERMS)
+    return bool(_emergency_terms_in(before.get("body")) - _emergency_terms_in(after.get("body")))
 
 
 async def run_noncritical_resolution(

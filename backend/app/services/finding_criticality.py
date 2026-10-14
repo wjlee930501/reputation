@@ -106,8 +106,8 @@ def mentions_medical_safety(text: object) -> bool:
 
 # ── Critical 판정의 안전망 어휘(2026-10-14 대표 결정) ─────────────────────────────────────
 # 검수 모델의 판정을 덮는 어휘는 이 넷뿐이다 — 완치·보장·최저가·할인(활용·띄어쓰기 포함)과 영어 대응어.
-# 위 `MEDICAL_SAFETY_LEXICON`은 등급 어휘가 아니라 결정적 삭제의 편집 안전 검사(응급 안내·의료 문장을
-# 지우지 않는다)에만 쓴다.
+# 위 `MEDICAL_SAFETY_LEXICON`은 등급 어휘가 아니다. 결정적 삭제의 보호 대상도 아니다 — 삭제는 응급 안내와
+# 필수 문구 문장만 지킨다(2026-10-15 대표 결정, `content_minimal_correction.EMERGENCY_GUIDANCE_TERMS`).
 CRITICAL_OVERRIDE_PATTERNS: tuple[str, ...] = (
     r"완\s*치",
     r"보\s*장(?!\s*성)",
