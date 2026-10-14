@@ -322,6 +322,8 @@ def test_three_day_partial_budget_round_robin_runs_through_report_entrypoint(mon
         monkeypatch.setattr(tasks, "eligible_hospital_ids", lambda *_args: list(hospital_ids))
         monkeypatch.setattr(tasks, "_hospital_requires_monthly_sov_success", lambda *_args: True)
         monkeypatch.setattr(tasks, "_monthly_sov_measurement_succeeded", lambda *_args: False)
+        # 그 달 매니페스트가 있는(측정이 덜 끝난) 경우다 — 없으면 마감 뒤 '기준 설정'으로 만든다(D38).
+        monkeypatch.setattr(tasks, "_monthly_manifest_absent_after_deadline", lambda *_args: False)
         monkeypatch.setattr(tasks, "_start_monthly_report_batch_run", lambda *_args: None)
         monkeypatch.setattr(tasks, "_finish_monthly_report_batch_run", lambda *_args, **_kwargs: None)
         monkeypatch.setattr(tasks, "_record_weekly_sov_failure", lambda *_args, **_kwargs: None)
