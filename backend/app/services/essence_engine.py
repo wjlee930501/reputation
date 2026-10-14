@@ -40,6 +40,12 @@ from app.models.essence import (
 )
 from app.models.hospital import Hospital
 from app.services import llm_structured_output, openrouter
+from app.services.essence_claims import (
+    claim_is_supported,
+    is_medical_claim,
+    split_sentences,
+    support_ratio,
+)
 from app.services.essence_sources import required_text_source_predicate
 from app.services.openrouter import is_retryable_llm_error
 from app.services.profile_facts_source import (
@@ -788,9 +794,12 @@ def synthesize_philosophy_with_mode(
         except Exception as exc:  # noqa: BLE001 — LLM 실패 시 폴백으로 계속
             logger.warning("essence LLM synthesis failed (%s); using deterministic fallback", exc)
 
+    # 결정적 폴백도 출처 우선순위(설문 → 병원 정보 → 홈페이지 → 블로그)로 노트를 고른다(D34).
     return (
         apply_mandatory_safety_policy(
-            _synthesize_philosophy_deterministic(hospital, sources, notes, operator_note)
+            _synthesize_philosophy_deterministic(
+                hospital, sources, order_notes_for_synthesis(notes, sources), operator_note
+            )
         ),
         SYNTHESIS_MODE_DETERMINISTIC,
     )
@@ -1304,6 +1313,11 @@ def _synthesize_philosophy_deterministic(
     operator_note: str | None = None,
 ) -> dict[str, Any]:
     """근거 노트에서 규칙 기반으로 철학 초안을 합성 — LLM 키가 없는 폴백."""
+    if notes and all(
+        (getattr(note, "note_metadata", None) or {}).get("system_kind") == SOURCE_KIND_PROFILE_FACTS
+        for note in notes
+    ):
+        return _synthesize_profile_only(hospital, sources, notes)
     grouped = _group_notes(notes)
 
     key_notes = _pick_notes(
@@ -1480,6 +1494,112 @@ def _synthesize_philosophy_deterministic(
     }
 
 
+def _profile_value(note: Any) -> str:
+    return _note_text(note).split(":", 1)[-1].strip()
+
+
+def _synthesize_profile_only(
+    hospital: Hospital,
+    sources: list[HospitalSourceAsset],
+    notes: list[HospitalSourceEvidenceNote],
+) -> dict[str, Any]:
+    """병원 정보(자동) 자료만 있을 때의 최소 자동 판 — 병원명·전문 과목·진료 항목·진료 철학.
+
+    다른 자료가 모두 오염돼 빠졌거나 아직 없어도 생성이 기다리지 않게 하는 결정적 판이다(D33).
+    문장은 노트 값을 그대로 잇기만 하므로 근거 대조를 통과한다.
+    """
+
+    by_label: dict[str, list[HospitalSourceEvidenceNote]] = {}
+    for note in notes:
+        if _note_type_value(note) == EvidenceNoteType.RISK_SIGNAL.value:
+            continue
+        label = str((note.note_metadata or {}).get("label") or "")
+        by_label.setdefault(label, []).append(note)
+    evidence_map: dict[str, list[str]] = {}
+    unsupported_gaps: list[dict[str, str]] = []
+
+    name_notes = by_label.get("병원명", [])
+    specialty_notes = by_label.get("전문 과목", [])
+    positioning_statement = None
+    if name_notes:
+        name = _profile_value(name_notes[0])
+        specialty = _profile_value(specialty_notes[0]) if specialty_notes else ""
+        positioning_statement = (
+            f"{name}은 {specialty} 진료를 안내합니다." if specialty else f"{name}의 진료를 안내합니다."
+        )
+        evidence_map["positioning_statement"] = [
+            _note_id(note) for note in [*name_notes[:1], *specialty_notes[:1]]
+        ]
+    else:
+        unsupported_gaps.append(
+            {"field": "positioning_statement", "reason": "병원명 근거 note가 없습니다."}
+        )
+
+    philosophy_notes = by_label.get("진료 철학", [])
+    must_use_messages = [
+        text for note in philosophy_notes[:1] if (text := _must_use_text_from_note(note))
+    ]
+    if must_use_messages:
+        evidence_map["must_use_messages"] = [_note_id(philosophy_notes[0])]
+
+    treatment_narratives = []
+    for note in by_label.get("진료 항목", [])[:8]:
+        value = _profile_value(note)
+        name, _sep, description = value.partition(" — ")
+        treatment_narratives.append(
+            {
+                "treatment": name.strip(),
+                "angle": (description or name).strip(),
+                "explanation_style": "근거 발췌에 포함된 표현만 사용합니다.",
+                "cautions": ["치료 결과를 단정하거나 보장하지 않습니다."],
+                "evidence_note_ids": [_note_id(note)],
+            }
+        )
+    if treatment_narratives:
+        evidence_map["treatment_narratives"] = [
+            item["evidence_note_ids"][0] for item in treatment_narratives
+        ]
+
+    local_context: dict[str, Any] = {
+        "region_terms": [],
+        "local_patient_context": [],
+        "avoid_region_stuffing": True,
+    }
+    region_notes = by_label.get("지역", [])
+    if region_notes:
+        local_context["region_terms"] = [
+            term.strip() for term in _profile_value(region_notes[0]).split(",") if term.strip()
+        ]
+        local_context["evidence_note_ids"] = [_note_id(region_notes[0])]
+        evidence_map["local_context"] = [_note_id(region_notes[0])]
+
+    return {
+        "positioning_statement": positioning_statement,
+        "doctor_voice": None,
+        "patient_promise": None,
+        "content_principles": [],
+        "tone_guidelines": [],
+        "must_use_messages": must_use_messages,
+        MUST_USE_EVIDENCE_KEY: [
+            {"text": text, "evidence_note_ids": [_note_id(philosophy_notes[0])]}
+            for text in must_use_messages
+        ],
+        "avoid_messages": [],
+        "treatment_narratives": treatment_narratives,
+        "local_context": local_context,
+        "medical_ad_risk_rules": [],
+        "evidence_map": evidence_map,
+        "source_asset_ids": [str(source.id) for source in sources],
+        "unsupported_gaps": unsupported_gaps,
+        "conflict_notes": [],
+        "synthesis_notes": (
+            "Minimal deterministic summary from hospital profile facts only "
+            "(name, specialties, treatments, philosophy)."
+        ),
+        "source_snapshot_hash": compute_sources_snapshot_hash(sources),
+    }
+
+
 def validate_philosophy_grounding(
     payload: Any,
     notes: list[HospitalSourceEvidenceNote],
@@ -1615,7 +1735,13 @@ DROP_OPERATIONAL_FACT = "OPERATIONAL_FACT"
 DROP_MUST_USE_LIMIT = "MUST_USE_LIMIT"
 DROP_MUST_USE_NOT_SURVEY = "MUST_USE_NOT_SURVEY_VERBATIM"
 DROP_MUST_USE_SHAPE = "MUST_USE_NOT_SENTENCE"
+DROP_UNSUPPORTED_CLAIM = "UNSUPPORTED_CLAIM"
+DROP_MUST_USE_MEDICAL_CLAIM = "MUST_USE_MEDICAL_CLAIM"
+DROP_CONFLICT_LOWER_PRIORITY = "CONFLICT_LOWER_PRIORITY"
+DROP_CONFLICT_UNDECIDED = "CONFLICT_UNDECIDED"
 CONFLICT_RESOLUTION_RULE = "D34_NARRATIVE_PRIORITY"
+CONFLICT_FACT_RESOLUTION_RULE = "D34_FACT_PRIORITY"
+_GENERIC_TREATMENT_LABEL = "자료 기반 진료 항목"
 
 _PRUNE_POSITIVE_SINGLE = ("positioning_statement", "doctor_voice", "patient_promise")
 _PRUNE_POSITIVE_LIST = ("content_principles", "tone_guidelines", "must_use_messages")
@@ -1712,6 +1838,98 @@ def _survey_verbatim_ids(
     return []
 
 
+def _excerpts(notes_by_id: dict[str, Any], ids: Iterable[str]) -> list[str]:
+    return [
+        str(getattr(notes_by_id[note_id], "source_excerpt", "") or "")
+        for note_id in ids
+        if note_id in notes_by_id
+    ]
+
+
+def _field_ids(result: dict[str, Any], field_name: str, valid: set[str]) -> list[str]:
+    raw = result.get("evidence_map") if isinstance(result.get("evidence_map"), dict) else {}
+    return [note_id for note_id in _flatten_ids(raw.get(field_name)) if note_id in valid]
+
+
+def _grounded_text(
+    text: str,
+    support: list[str],
+    *,
+    require_general: bool,
+) -> tuple[str | None, list[str]]:
+    """문장마다 근거 대조해 뒷받침되는 문장만 남긴다. (남은 글, 버린 문장들)."""
+
+    kept: list[str] = []
+    dropped: list[str] = []
+    for sentence in split_sentences(text) or [text]:
+        if claim_is_supported(sentence, support, require_general=require_general):
+            kept.append(sentence)
+        else:
+            dropped.append(sentence)
+    return (" ".join(kept) if kept else None), dropped
+
+
+# 사실 충돌 우선순위(D34): 마케터 입력 > 네이버 > 설문 > 홈페이지 > 블로그.
+_FACT_TAG_RANK = {
+    "마케터 입력": 0.0,
+    "병원 정보": 0.5,
+    "자동 수집·네이버": 1.0,
+    "자동 수집·설문": 2.0,
+    "자동 수집·홈페이지": 3.0,
+    "자동 수집·블로그": 4.0,
+}
+# 서술(목소리·철학·진료 서술) 우선순위: 설문 > 마케터 입력 > 홈페이지 > 블로그 > 네이버.
+_NARRATIVE_TAG_RANK = {
+    "자동 수집·설문": 0.0,
+    "마케터 입력": 1.0,
+    "병원 정보": 1.5,
+    "자동 수집·홈페이지": 2.0,
+    "자동 수집·블로그": 3.0,
+    "자동 수집·네이버": 4.5,
+}
+_FACT_KIND_RANK = {
+    SourceType.INTERVIEW.value: 2.0,
+    SourceType.HOMEPAGE.value: 3.0,
+    SourceType.NAVER_BLOG.value: 4.0,
+}
+_NARRATIVE_KIND_RANK = {
+    SourceType.INTERVIEW.value: 0.0,
+    SourceType.HOMEPAGE.value: 2.0,
+    SourceType.NAVER_BLOG.value: 3.0,
+}
+
+
+def _is_fact_conflict(notes: list[Any], kinds: dict[str, str]) -> bool:
+    for note in notes:
+        metadata = getattr(note, "note_metadata", None) or {}
+        if _note_type_value(note) == EvidenceNoteType.PROOF_POINT.value:
+            return True
+        if (
+            _note_source_kind(note, kinds) == SOURCE_KIND_PROFILE_FACTS
+            and metadata.get("label") != "진료 철학"
+        ):
+            return True
+    return False
+
+
+def _priority_rank(note: Any, kinds: dict[str, str], *, fact: bool) -> float:
+    kind = _note_source_kind(note, kinds)
+    if kind == SOURCE_KIND_PROFILE_FACTS:
+        tag = str((getattr(note, "note_metadata", None) or {}).get("tag") or "병원 정보")
+        table = _FACT_TAG_RANK if fact else _NARRATIVE_TAG_RANK
+        return table.get(tag, 1.5)
+    return (_FACT_KIND_RANK if fact else _NARRATIVE_KIND_RANK).get(kind, 5.0)
+
+
+def _best_support(text: str, linked: list[Any]) -> tuple[Any | None, float]:
+    best, best_ratio = None, 0.0
+    for note in linked:
+        ratio = support_ratio(text, [str(getattr(note, "source_excerpt", "") or "")])
+        if ratio > best_ratio:
+            best, best_ratio = note, ratio
+    return best, best_ratio
+
+
 def _select_must_use(
     result: dict[str, Any],
     must_use_evidence: Any,
@@ -1789,12 +2007,21 @@ def _select_must_use(
             if text not in chosen and text not in seen:
                 report.add("must_use_messages", text, DROP_MUST_USE_NOT_SURVEY)
     else:
+        notes_by_id = {_note_id(note): note for note in notes}
         for text, ids in candidates:
             if not ids:
                 report.add("must_use_messages", text, DROP_UNGROUNDED)
                 continue
             if not _must_use_shape_ok(text):
                 report.add("must_use_messages", text, DROP_MUST_USE_SHAPE)
+                continue
+            # 합성 필수 문구는 모든 글에 원문 그대로 들어간다 — 효능·결과·자격·비교 주장은
+            # 근거가 있어도 싣지 않는다(과정·태도 문장만). 문장 내용도 노트로 뒷받침돼야 한다.
+            if is_medical_claim(text):
+                report.add("must_use_messages", text, DROP_MUST_USE_MEDICAL_CLAIM)
+                continue
+            if not claim_is_supported(text, _excerpts(notes_by_id, ids)):
+                report.add("must_use_messages", text, DROP_UNSUPPORTED_CLAIM)
                 continue
             if len(selected) >= AUTOMATIC_MUST_USE_LIMIT:
                 report.add("must_use_messages", text, DROP_MUST_USE_LIMIT)
@@ -1812,6 +2039,218 @@ def _select_must_use(
     return _unique_ids(note_id for _text, ids in selected for note_id in ids)
 
 
+def _must_use_item_ids(
+    raw: Any, must_use_evidence: Any, field_ids: list[str], valid: set[str]
+) -> list[str]:
+    text = str(raw.get("text") if isinstance(raw, dict) else raw or "").strip()
+    for entry in must_use_evidence if isinstance(must_use_evidence, list) else []:
+        if isinstance(entry, dict) and str(entry.get("text") or "").strip() == text:
+            return [
+                note_id for note_id in _flatten_ids(entry.get("evidence_note_ids")) if note_id in valid
+            ]
+    return list(field_ids)
+
+
+def _apply_conflicts(
+    result: dict[str, Any],
+    narratives: list[dict[str, Any]],
+    must_use_evidence: Any,
+    notes_by_id: dict[str, Any],
+    kinds: dict[str, str],
+    report: AutomaticPruneReport,
+) -> None:
+    """충돌 노트를 우선순위로 실제로 푼다(D34).
+
+    충돌마다 관련 노트의 출처 우선순위를 매긴다 — 사실(약력·경력·병원 정보 값)은 마케터 입력 >
+    네이버 > 설문 > 홈페이지 > 블로그, 서술(목소리·철학·진료 서술)은 설문이 먼저다. 우선순위가 낮은
+    노트가 가장 잘 뒷받침하는 결과 문장은 버리고 그 노트를 근거에서 뺀다. 우열을 가릴 수 없으면
+    양쪽 문장을 모두 조용히 버린다. 실제로 적용한 해결만 `report.conflicts`에 남긴다.
+    """
+
+    valid = set(notes_by_id)
+    loser_reason: dict[str, str] = {}
+    decided: list[dict[str, Any]] = []
+    for item in result.get("conflict_notes") or []:
+        text = item.get("text") if isinstance(item, dict) else item
+        ids = _unique_ids(
+            note_id
+            for note_id in _flatten_ids(item.get("evidence_note_ids") if isinstance(item, dict) else [])
+            if note_id in valid
+        )
+        if len(ids) < 2:
+            continue
+        involved = [notes_by_id[note_id] for note_id in ids]
+        fact = _is_fact_conflict(involved, kinds)
+        ranks = {note_id: _priority_rank(notes_by_id[note_id], kinds, fact=fact) for note_id in ids}
+        best = min(ranks.values())
+        losers = {note_id for note_id, rank in ranks.items() if rank > best}
+        if not losers:
+            for note_id in ids:
+                loser_reason.setdefault(note_id, DROP_CONFLICT_UNDECIDED)
+            continue
+        for note_id in losers:
+            loser_reason[note_id] = DROP_CONFLICT_LOWER_PRIORITY
+        winners = [note_id for note_id in ids if note_id not in losers]
+        decided.append(
+            {
+                "text": _short(_collapse(text), 200),
+                "evidence_note_ids": ids,
+                "kept_note_ids": winners,
+                "dropped_note_ids": sorted(losers),
+                "source_kinds": sorted(
+                    {_note_source_kind(notes_by_id[note_id], kinds) for note_id in ids},
+                    key=lambda kind: (narrative_source_rank(kind), kind),
+                ),
+                "preferred_source": _note_source_kind(notes_by_id[winners[0]], kinds),
+                "resolved_by": CONFLICT_FACT_RESOLUTION_RULE if fact else CONFLICT_RESOLUTION_RULE,
+                "dropped_sentences": 0,
+            }
+        )
+    if not loser_reason:
+        return
+    dropped_by_note: dict[str, int] = {}
+
+    def keep(field_name: str, text: str, linked_ids: list[str]) -> bool:
+        linked = [notes_by_id[note_id] for note_id in linked_ids if note_id in notes_by_id]
+        if not any(str(note.id) in loser_reason for note in linked):
+            return True
+        best, _ratio = _best_support(text, linked)
+        if best is None:
+            best = next(note for note in linked if str(note.id) in loser_reason)
+        if str(best.id) not in loser_reason:
+            return True
+        report.add(field_name, text, loser_reason[str(best.id)])
+        dropped_by_note[str(best.id)] = dropped_by_note.get(str(best.id), 0) + 1
+        return False
+
+    for field_name in _PRUNE_POSITIVE_SINGLE:
+        value = result.get(field_name)
+        if isinstance(value, str) and value.strip():
+            linked = _field_ids(result, field_name, valid)
+            kept = [
+                sentence
+                for sentence in split_sentences(value) or [value]
+                if keep(field_name, sentence, linked)
+            ]
+            result[field_name] = " ".join(kept) if kept else None
+    for field_name in ("content_principles", "tone_guidelines"):
+        linked = _field_ids(result, field_name, valid)
+        result[field_name] = [
+            item
+            for item in result.get(field_name) or []
+            if keep(field_name, " ".join(_iter_field_texts(item)), linked)
+        ]
+    field_must_use = _field_ids(result, "must_use_messages", valid)
+    result["must_use_messages"] = [
+        item
+        for item in result.get("must_use_messages") or []
+        if keep(
+            "must_use_messages",
+            " ".join(_iter_field_texts(item)),
+            _must_use_item_ids(item, must_use_evidence, field_must_use, valid),
+        )
+    ]
+    narratives[:] = [
+        item
+        for item in narratives
+        if keep(
+            "treatment_narratives",
+            " ".join(
+                _iter_field_texts(
+                    {key: value for key, value in item.items() if key != "evidence_note_ids"}
+                )
+            ),
+            list(item["evidence_note_ids"]),
+        )
+    ]
+    # 진 노트는 어떤 필드의 근거로도 남기지 않는다.
+    for item in narratives:
+        item["evidence_note_ids"] = [
+            note_id for note_id in item["evidence_note_ids"] if note_id not in loser_reason
+        ]
+    narratives[:] = [item for item in narratives if item["evidence_note_ids"]]
+    evidence_map = result.get("evidence_map") if isinstance(result.get("evidence_map"), dict) else {}
+    result["evidence_map"] = {
+        key: [note_id for note_id in _flatten_ids(raw_ids) if note_id not in loser_reason]
+        for key, raw_ids in evidence_map.items()
+    }
+    for entry in must_use_evidence if isinstance(must_use_evidence, list) else []:
+        if isinstance(entry, dict):
+            entry["evidence_note_ids"] = [
+                note_id
+                for note_id in _flatten_ids(entry.get("evidence_note_ids"))
+                if note_id not in loser_reason
+            ]
+    for record in decided:
+        record["dropped_sentences"] = sum(
+            dropped_by_note.get(note_id, 0) for note_id in record["dropped_note_ids"]
+        )
+        report.conflicts.append(record)
+
+
+def _ground_sentences(
+    result: dict[str, Any],
+    narratives: list[dict[str, Any]],
+    notes_by_id: dict[str, Any],
+    report: AutomaticPruneReport,
+) -> None:
+    """합성 문장마다 연결된 노트 본문으로 뒷받침되는지 대조하고 아니면 버린다(D33).
+
+    포지셔닝·환자 약속은 내용어가 노트와 겹쳐야 하고, 의료 효능·결과·자격·비교·수치 주장은 그
+    낱말과 수치가 노트에 그대로 있어야 한다. 목소리·원칙·톤 같은 문체 묘사는 의료 주장일 때만
+    대조한다. 진료 서술은 진료 항목 이름이 노트에 있어야 하고 각 표현은 의료 주장일 때 대조한다.
+    """
+
+    valid = set(notes_by_id)
+    for field_name in _PRUNE_POSITIVE_SINGLE:
+        value = result.get(field_name)
+        if not (isinstance(value, str) and value.strip()):
+            continue
+        support = _excerpts(notes_by_id, _field_ids(result, field_name, valid))
+        kept, dropped = _grounded_text(
+            value, support, require_general=field_name != "doctor_voice"
+        )
+        for sentence in dropped:
+            report.add(field_name, sentence, DROP_UNSUPPORTED_CLAIM)
+        result[field_name] = kept
+    for field_name in ("content_principles", "tone_guidelines"):
+        support = _excerpts(notes_by_id, _field_ids(result, field_name, valid))
+        kept_items: list[Any] = []
+        for item in result.get(field_name) or []:
+            text = " ".join(_iter_field_texts(item))
+            if claim_is_supported(text, support, require_general=False):
+                kept_items.append(item)
+            else:
+                report.add(field_name, text, DROP_UNSUPPORTED_CLAIM)
+        result[field_name] = kept_items
+    grounded: list[dict[str, Any]] = []
+    for item in narratives:
+        support = _excerpts(notes_by_id, item["evidence_note_ids"])
+        name = str(item.get("treatment") or "").strip()
+        if name and name != _GENERIC_TREATMENT_LABEL and not claim_is_supported(name, support):
+            report.add("treatment_narratives", name, DROP_UNSUPPORTED_CLAIM)
+            continue
+        cleaned = dict(item)
+        for key, value in item.items():
+            if key in {"evidence_note_ids", "treatment"}:
+                continue
+            if isinstance(value, str) and value.strip():
+                if not claim_is_supported(value, support, require_general=False):
+                    report.add("treatment_narratives", value, DROP_UNSUPPORTED_CLAIM)
+                    cleaned[key] = ""
+            elif isinstance(value, list):
+                phrases: list[Any] = []
+                for phrase in value:
+                    text = " ".join(_iter_field_texts(phrase))
+                    if claim_is_supported(text, support, require_general=False):
+                        phrases.append(phrase)
+                    else:
+                        report.add("treatment_narratives", text, DROP_UNSUPPORTED_CLAIM)
+                cleaned[key] = phrases
+        grounded.append(cleaned)
+    narratives[:] = grounded
+
+
 def prune_automatic_candidate(
     payload: dict[str, Any],
     notes: list[Any],
@@ -1820,8 +2259,9 @@ def prune_automatic_candidate(
     """자동 요약 후보에서 보류 사유가 될 것을 모두 버린다(D33). 순수 함수.
 
     불변식: 결과에 대해 `validate_philosophy_grounding(result, notes) == []`,
-    `find_error_marker_fields(result) == []`, 긍정 운영 필드에 의료광고 금지 표현·운영 사실 없음.
-    `conflict_notes`는 보류 사유가 아니라 메타데이터(`report.conflicts`)로 옮긴다(D34).
+    `find_error_marker_fields(result) == []`, 긍정 운영 필드에 의료광고 금지 표현·운영 사실 없음,
+    남은 합성 문장은 연결된 노트 본문으로 뒷받침된다(`essence_claims`). 충돌은 우선순위로 실제로
+    풀고(D34) 적용한 해결만 `report.conflicts`에 남긴다.
     """
 
     result = copy.deepcopy(payload)
@@ -1829,6 +2269,8 @@ def prune_automatic_candidate(
     strip_private_synthesis_keys(result)
     report = AutomaticPruneReport()
     valid = {_note_id(note) for note in notes}
+    notes_by_id = {_note_id(note): note for note in notes}
+    kinds = source_kinds_by_id(sources)
 
     for field_name in _PRUNE_POSITIVE_SINGLE:
         value = result.get(field_name)
@@ -1870,6 +2312,9 @@ def prune_automatic_candidate(
             report.add("treatment_narratives", text, DROP_UNGROUNDED)
             continue
         narratives.append({**item, "evidence_note_ids": _unique_ids(ids)})
+
+    _apply_conflicts(result, narratives, must_use_evidence, notes_by_id, kinds, report)
+    _ground_sentences(result, narratives, notes_by_id, report)
     result["treatment_narratives"] = narratives
 
     local = result.get("local_context")
@@ -1953,29 +2398,6 @@ def prune_automatic_candidate(
         ):
             evidence_map.pop(key)
     result["evidence_map"] = evidence_map
-
-    kinds = source_kinds_by_id(sources)
-    notes_by_id = {_note_id(note): note for note in notes}
-    for item in result.get("conflict_notes") or []:
-        text = item.get("text") if isinstance(item, dict) else item
-        ids = [
-            note_id
-            for note_id in _flatten_ids(item.get("evidence_note_ids") if isinstance(item, dict) else [])
-            if note_id in valid
-        ]
-        involved = sorted(
-            {_note_source_kind(notes_by_id[note_id], kinds) for note_id in ids},
-            key=lambda kind: (narrative_source_rank(kind), kind),
-        )
-        report.conflicts.append(
-            {
-                "text": _short(_collapse(text), 200),
-                "evidence_note_ids": ids,
-                "source_kinds": involved,
-                "preferred_source": involved[0] if involved else None,
-                "resolved_by": CONFLICT_RESOLUTION_RULE,
-            }
-        )
     result["conflict_notes"] = []
     return result, report
 

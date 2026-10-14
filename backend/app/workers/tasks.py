@@ -4233,8 +4233,6 @@ def auto_review_essence_snapshot(self, hospital_id: str) -> dict[str, object]:
     refresh_claim_token = (
         f"{str(self.request.id or uuid.uuid4())}:retry:{int(self.request.retries or 0)}"
     )
-    # 병원 정보(자동) 자료를 먼저 병원 행과 맞춘다 — 프로필 저장이 이 태스크를 부른다(D33).
-    _sync_profile_facts_sources([hospital_uuid])
     try:
         with SyncSessionLocal() as db:
             hospital = db.get(Hospital, hospital_uuid)

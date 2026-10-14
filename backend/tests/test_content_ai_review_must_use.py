@@ -219,10 +219,10 @@ def _assert_blocks(candidate: dict, review) -> None:
         pytest.param(INCIDENT_CITED_SENTENCE, id="incident-cited-2cm-sentence"),
     ],
 )
-async def test_incident_finding_on_verbatim_must_use_sentence_no_longer_blocks(
+async def test_medical_finding_on_verbatim_must_use_sentence_still_blocks(
     monkeypatch, must_use_first: str
 ) -> None:
-    """9/26 장앤김: 필수 문구를 원문 그대로 쓴 2cm 문장에 대한 HARD 지적(원문)이 게시를 막지 않는다."""
+    """9/26 장앤김의 2cm 문장 HARD 의료 지적은 필수 문구 원문이어도 이제 게시를 막는다(D33)."""
 
     must_use = [must_use_first, *APPROVED_MUST_USE[1:]]
     sentence = must_use_first if must_use_first.endswith(".") else f"{must_use_first}."
@@ -235,23 +235,16 @@ async def test_incident_finding_on_verbatim_must_use_sentence_no_longer_blocks(
         verdict=_verdict(_finding(quote=sentence)),
     )
 
-    assert review.status == ContentAiReviewStatus.PASS
-    assert review.blocking_findings == ()
+    # Phase 4(D33): 운영 기준이 승인 없이 자동 적용되므로 필수 문구 원문이어도 의료 안전·병원 사실
+    # 지적은 내리지 않는다 — 그대로 막는다(Codex P1 재현: HARD MEDICAL_SAFETY가 SOFT로 내려갔다).
+    _assert_blocks(candidate, review)
     payload = review.payload()
-    assert payload["blocking"] is False
-    # 기록은 남는다 — 원문 지적, 모델이 매긴 심각도, 문제 종류.
+    assert payload["blocking"] is True
     [recorded] = payload["findings"]
-    assert recorded["message"] == " ".join(INCIDENT_FINDING["message"].split())
     assert recorded["kind"] == "MEDICAL_SAFETY"
-    assert recorded["severity"] == "SOFT"
-    assert recorded["original_severity"] == "HARD"
-    assert recorded["target"] == "MUST_USE_MESSAGE"
-    assert recorded["quote"] == sentence
-    # 발행·공개 게이트, 재시도 분류, 재작성 지시 어디에서도 차단 사유가 아니다.
-    assert public_candidate_review_safe(_stored_item(candidate, review)) is True
-    assert has_model_declared_hard_finding(payload) is False
-    assert hard_removal_findings(review) == []
-    assert non_reference_remediation_messages(review) == []
+    assert recorded["severity"] == "HARD"
+    assert recorded["target"] == "CANDIDATE_TEXT"
+    assert public_candidate_review_safe(_stored_item(candidate, review)) is False
 
 
 async def test_uncertain_finding_on_verbatim_must_use_sentence_is_recorded_not_blocking(
@@ -263,7 +256,7 @@ async def test_uncertain_finding_on_verbatim_must_use_sentence_is_recorded_not_b
         monkeypatch,
         candidate=candidate,
         must_use=APPROVED_MUST_USE,
-        verdict=_verdict(_finding(quote=sentence, severity="UNCERTAIN")),
+        verdict=_verdict(_finding(quote=sentence, severity="UNCERTAIN", kind="STYLE")),
     )
 
     assert review.status == ContentAiReviewStatus.PASS
@@ -289,7 +282,7 @@ async def test_must_use_finding_is_recorded_but_not_sent_to_the_writer_when_anot
         monkeypatch,
         candidate=candidate,
         must_use=APPROVED_MUST_USE,
-        verdict=_verdict(_finding(quote=sentence), other),
+        verdict=_verdict(_finding(quote=sentence, kind="STYLE"), other),
     )
 
     _assert_blocks(candidate, review)

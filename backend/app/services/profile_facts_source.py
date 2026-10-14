@@ -38,7 +38,9 @@ from app.models.essence import (
 )
 from app.models.hospital import Hospital
 from app.services import profile_provenance
+from app.utils.error_page import looks_like_error_page_text
 from app.utils.medical_filter import check_forbidden
+from app.utils.prompt_injection import has_prompt_injection
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +63,7 @@ TAG_OPERATOR = "마케터 입력"
 TAG_UNKNOWN = "병원 정보"
 
 #: 줄 라벨 → (병원 필드, 노트 종류). 순서가 곧 렌더 순서다.
+LABEL_NAME = "병원명"
 LABEL_DIRECTOR = "원장"
 LABEL_CAREER = "원장 약력"
 LABEL_PHILOSOPHY = "진료 철학"
@@ -70,6 +73,7 @@ LABEL_REGION = "지역"
 LABEL_KEYWORDS = "핵심 키워드"
 
 _LABEL_NOTE_TYPES: dict[str, EvidenceNoteType] = {
+    LABEL_NAME: EvidenceNoteType.KEY_MESSAGE,
     LABEL_DIRECTOR: EvidenceNoteType.KEY_MESSAGE,
     LABEL_CAREER: EvidenceNoteType.PROOF_POINT,
     LABEL_PHILOSOPHY: EvidenceNoteType.DOCTOR_PHILOSOPHY,
@@ -82,6 +86,7 @@ _LABEL_NOTE_TYPES: dict[str, EvidenceNoteType] = {
 #: 저장은 자동 요약 태스크를 부른다 — 태스크가 잠금 아래서 자료를 맞춘다.
 PROFILE_FACT_FIELDS = frozenset(
     {
+        "name",
         "director_name",
         "director_career",
         "director_philosophy",
@@ -163,15 +168,37 @@ def _joined(values: Iterable[Any]) -> str:
     return ", ".join(item for item in (_one_line(value) for value in values or []) if item)
 
 
-def render_profile_fact_lines(hospital: Any) -> list[FactLine]:
-    """병원 행의 서술 값을 줄로 만든다. 운영 사실(주소·전화·진료시간)은 넣지 않는다(E5)."""
+def _poisoned_reason(value: str) -> str | None:
+    if has_prompt_injection(value):
+        return "PROMPT_INJECTION"
+    if looks_like_error_page_text(value):
+        return "ERROR_PAGE"
+    return None
+
+
+def render_profile_fact_lines(
+    hospital: Any, *, excluded: list[dict[str, str]] | None = None
+) -> list[FactLine]:
+    """병원 행의 서술 값을 줄로 만든다. 운영 사실(주소·전화·진료시간)은 넣지 않는다(E5).
+
+    프롬프트 주입 의심·차단 페이지 잔재가 든 값은 그 줄만 뺀다(`excluded`에 라벨과 사유를
+    남긴다). 한 칸의 오염이 나머지 안전한 병원 정보까지 입력에서 빼지 않게 한다.
+    """
 
     lines: list[FactLine] = []
 
     def add(label: str, field: str, value: str) -> None:
-        if value:
-            lines.append(FactLine(label=label, tag=_tag(hospital, field), value=value))
+        if not value:
+            return
+        reason = _poisoned_reason(value)
+        if reason:
+            if excluded is not None:
+                excluded.append({"label": label, "field": field, "reason": reason})
+            return
+        lines.append(FactLine(label=label, tag=_tag(hospital, field), value=value))
 
+    # 병원명은 언제나 있다 — 다른 자료가 모두 빠져도 최소 자동 판의 근거가 된다.
+    add(LABEL_NAME, "name", _one_line(getattr(hospital, "name", None)))
     add(LABEL_DIRECTOR, "director_name", _one_line(getattr(hospital, "director_name", None)))
     add(LABEL_CAREER, "director_career", _one_line(getattr(hospital, "director_career", None)))
     add(
@@ -199,8 +226,10 @@ def render_profile_fact_lines(hospital: Any) -> list[FactLine]:
     return list(dict.fromkeys(lines))
 
 
-def render_profile_facts_text(hospital: Any) -> str | None:
-    lines = render_profile_fact_lines(hospital)
+def render_profile_facts_text(
+    hospital: Any, *, excluded: list[dict[str, str]] | None = None
+) -> str | None:
+    lines = render_profile_fact_lines(hospital, excluded=excluded)
     if not lines:
         return None
     return "\n".join(line.render() for line in lines)
@@ -291,7 +320,8 @@ def sync_profile_facts_source(db: Session, hospital: Hospital | None) -> SyncRes
 
     if hospital is None:
         return SyncResult(status="NOT_FOUND")
-    raw_text = render_profile_facts_text(hospital)
+    excluded_lines: list[dict[str, str]] = []
+    raw_text = render_profile_facts_text(hospital, excluded=excluded_lines)
     source = existing_profile_facts_source(db, hospital.id)
     if source is None and raw_text is None:
         return SyncResult(status="EMPTY")
@@ -404,6 +434,8 @@ def sync_profile_facts_source(db: Session, hospital: Hospital | None) -> SyncRes
     source.processed_at = now
     source.updated_by = PROFILE_FACTS_ACTOR
     source.source_metadata = _source_metadata(raw_text, content_hash)
+    if excluded_lines:
+        source.source_metadata = {**source.source_metadata, "excluded_lines": excluded_lines}
     # 워커가 이 행을 다시 집어도(일괄 재처리) 같은 입력이면 건너뛰게 한다.
     source.source_metadata = {
         **source.source_metadata,

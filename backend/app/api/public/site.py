@@ -35,6 +35,7 @@ from app.services.content_visibility import (
     approved_public_view,
     assess_public_visibility,
 )
+from app.services.essence_claims import is_medical_claim, split_sentences
 from app.services.essence_engine import ESSENCE_STATUS_ALIGNED
 from app.services.essence_readiness import (
     get_public_approved_philosophy_id,
@@ -430,13 +431,21 @@ def _vetted_public_about(philosophy: HospitalContentPhilosophy | None) -> str | 
     if status_value != PhilosophyStatus.APPROVED.value:
         return None
 
+    automatic = (getattr(philosophy, "synthesis_metadata", None) or {}).get("mode") == "AUTOMATIC"
     sentences: list[str] = []
     for raw in (philosophy.positioning_statement, philosophy.patient_promise):
         text = (raw or "").strip()
         # 금지 표현 또는 차단·오류 페이지 잔재("Title: 403 Forbidden" 등)가 섞인 문장은
         # 공개 표면에 노출하지 않는다 (보수적으로 전체 단편 폐기). 이 계층은 배포 즉시
         # 기존 오염 데이터가 렌더되지 않게 막는 최종 안전망이다.
-        if text and not check_forbidden(text) and not looks_like_error_page_text(text):
+        if not text or check_forbidden(text) or looks_like_error_page_text(text):
+            continue
+        if automatic:
+            # 승인 단계 없는 자동 판(D33)은 문장 근거 대조를 통과한 글만 담지만, 공개 소개는
+            # 병원의 직접 주장으로 읽힌다 — 의료 효능·결과·자격·비교·수치 주장 문장은 싣지 않는다.
+            kept = [sentence for sentence in split_sentences(text) if not is_medical_claim(sentence)]
+            text = " ".join(kept)
+        if text:
             sentences.append(text)
     if not sentences:
         return None

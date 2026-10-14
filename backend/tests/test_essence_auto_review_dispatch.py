@@ -32,7 +32,6 @@ class _EssenceTaskDB:
 def _run_essence_task(monkeypatch, result, *, revalidated=None, schedules=None):
     hospital = SimpleNamespace(id=result.hospital_id, name="에센스테스트의원", slug="essence-test")
     opened: list[dict] = []
-    synced: list = []
 
     async def fake_open(**kwargs):
         opened.append(kwargs)
@@ -44,7 +43,6 @@ def _run_essence_task(monkeypatch, result, *, revalidated=None, schedules=None):
 
     monkeypatch.setattr(tasks, "require_dispatch", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: _EssenceTaskDB(hospital))
-    monkeypatch.setattr(tasks, "_sync_profile_facts_sources", lambda ids: synced.extend(ids) or 0)
     monkeypatch.setattr(tasks, "refresh_essence_snapshot", lambda *_args, **_kwargs: result)
     monkeypatch.setattr(tasks, "open_ops_incident", fake_open)
     monkeypatch.setattr(tasks, "trigger_hospital_site_revalidate_safe", fake_revalidate)
@@ -57,8 +55,6 @@ def _run_essence_task(monkeypatch, result, *, revalidated=None, schedules=None):
         or "CREATED",
     )
     response = tasks.auto_review_essence_snapshot.run(str(result.hospital_id))
-    # 합성 전에 병원 정보(자동) 자료를 그 병원 하나만 맞춘다.
-    assert synced == [result.hospital_id]
     return response, opened
 
 
@@ -167,7 +163,6 @@ def test_unexpected_failure_releases_the_claim_and_retries_without_an_incident(m
 
     monkeypatch.setattr(tasks, "require_dispatch", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: _EssenceTaskDB(None))
-    monkeypatch.setattr(tasks, "_sync_profile_facts_sources", lambda _ids: 0)
     monkeypatch.setattr(tasks, "refresh_essence_snapshot", boom)
     monkeypatch.setattr(
         tasks, "release_essence_refresh_claim", lambda _db, **kwargs: released.append(kwargs)

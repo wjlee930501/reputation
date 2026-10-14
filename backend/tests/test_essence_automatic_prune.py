@@ -112,7 +112,7 @@ def _assert_invariants(payload, notes) -> None:
 
 def test_ungrounded_forbidden_residue_and_operational_facts_are_dropped_not_escalated() -> None:
     homepage = _source(SourceType.HOMEPAGE)
-    good = _note(homepage, "진료 전에 충분히 설명합니다.")
+    good = _note(homepage, "진료 전에 충분히 설명합니다. 도수치료는 목이 결리는 분께 안내합니다.")
     unknown = str(uuid.uuid4())
     payload = _payload(
         positioning_statement="충분한 설명을 중시하는 동네 의원",
@@ -230,7 +230,11 @@ def test_survey_philosophy_note_is_used_verbatim_when_the_model_paraphrased() ->
 
 def test_without_a_survey_grounded_synthesized_must_use_is_allowed_with_note_ids() -> None:
     homepage = _source(SourceType.HOMEPAGE)
-    note = _note(homepage, "검사 전에 충분히 설명합니다.")
+    note = _note(
+        homepage,
+        "검사 전에 충분히 설명합니다. 치료 계획은 함께 정하고 무리한 권유를 하지 않습니다. "
+        "네 번째 문장도 원문에 있습니다.",
+    )
     messages = ["검사 전에 충분히 설명드립니다.", "치료 계획은 함께 정합니다.", "무리한 권유를 하지 않습니다.", "네 번째 문장입니다."]
     payload = _payload(
         must_use_messages=[*messages, "[마케터 입력] 원장 약력: 서울대", "원장: 홍길동 원장"],
@@ -258,29 +262,149 @@ def test_ungrounded_synthesized_must_use_is_dropped() -> None:
     assert "must_use_messages" not in pruned["evidence_map"]
 
 
-def test_conflicts_are_resolved_silently_in_metadata_by_narrative_priority() -> None:
-    survey = _source(SourceType.INTERVIEW)
-    blog = _source(SourceType.NAVER_BLOG)
-    survey_note = _note(survey, "설문")
-    blog_note = _note(blog, "블로그")
+def test_survey_wins_a_voice_conflict_and_the_homepage_sentence_is_dropped() -> None:
+    """D34 서술 우선순위를 실제로 적용한다 — 기록만 하지 않는다(재현: 수술 먼저 vs 비수술 먼저)."""
+
+    survey = _source(SourceType.INTERVIEW, "비수술 치료를 먼저 설명합니다.")
+    homepage = _source(SourceType.HOMEPAGE, "수술을 먼저 권합니다.")
+    survey_note = _note(survey, "비수술 치료를 먼저 설명합니다.", EvidenceNoteType.DOCTOR_PHILOSOPHY)
+    home_note = _note(homepage, "수술을 먼저 권합니다.")
     payload = _payload(
+        positioning_statement="수술을 먼저 권합니다. 비수술 치료를 먼저 설명합니다.",
+        content_principles=["수술을 먼저 권합니다.", "비수술 치료를 먼저 설명합니다."],
+        evidence_map={
+            "positioning_statement": [str(home_note.id), str(survey_note.id)],
+            "content_principles": [str(home_note.id), str(survey_note.id)],
+        },
         conflict_notes=[
-            {"text": "설문과 블로그의 치료 방침이 다름", "evidence_note_ids": [str(blog_note.id), str(survey_note.id)]}
-        ]
+            {
+                "text": "홈페이지와 설문의 첫 치료 방침이 다름",
+                "evidence_note_ids": [str(home_note.id), str(survey_note.id)],
+            }
+        ],
     )
 
-    pruned, report = prune_automatic_candidate(payload, [survey_note, blog_note], [survey, blog])
+    pruned, report = prune_automatic_candidate(
+        payload, [survey_note, home_note], [survey, homepage]
+    )
 
-    assert pruned["conflict_notes"] == []
-    assert report.conflicts == [
-        {
-            "text": "설문과 블로그의 치료 방침이 다름",
-            "evidence_note_ids": [str(blog_note.id), str(survey_note.id)],
-            "source_kinds": ["INTERVIEW", "NAVER_BLOG"],
-            "preferred_source": "INTERVIEW",
-            "resolved_by": "D34_NARRATIVE_PRIORITY",
-        }
+    _assert_invariants(pruned, [survey_note, home_note])
+    assert pruned["positioning_statement"] == "비수술 치료를 먼저 설명합니다."
+    assert pruned["content_principles"] == ["비수술 치료를 먼저 설명합니다."]
+    assert str(home_note.id) not in [
+        note_id for ids in pruned["evidence_map"].values() for note_id in ids
     ]
+    [conflict] = report.conflicts
+    assert conflict["preferred_source"] == "INTERVIEW"
+    assert conflict["dropped_note_ids"] == [str(home_note.id)]
+    assert conflict["dropped_sentences"] == 2
+    assert conflict["resolved_by"] == "D34_NARRATIVE_PRIORITY"
+
+
+def test_marketer_fact_beats_the_homepage_and_undecidable_conflicts_drop_both() -> None:
+    profile = _source(SourceType.INTERNAL_NOTE, profile_facts=True)
+    homepage = _source(SourceType.HOMEPAGE)
+    blog_a = _source(SourceType.NAVER_BLOG)
+    blog_b = _source(SourceType.NAVER_BLOG)
+    marketer = _note(
+        profile,
+        "[마케터 입력] 원장 약력: 정형외과 전문의 15년",
+        EvidenceNoteType.PROOF_POINT,
+        system_kind=PROFILE_FACTS_SYSTEM_KIND,
+        label="원장 약력",
+        tag="마케터 입력",
+    )
+    home_fact = _note(homepage, "원장은 정형외과 전문의 20년 경력입니다.", EvidenceNoteType.PROOF_POINT)
+    blog_one = _note(blog_a, "주말에도 상담을 이어갑니다.")
+    blog_two = _note(blog_b, "주말에는 상담을 쉽니다.")
+    payload = _payload(
+        positioning_statement="원장은 정형외과 전문의 20년 경력입니다.",
+        tone_guidelines=["주말에도 상담을 이어갑니다.", "주말에는 상담을 쉽니다."],
+        evidence_map={
+            "positioning_statement": [str(home_fact.id), str(marketer.id)],
+            "tone_guidelines": [str(blog_one.id), str(blog_two.id)],
+        },
+        conflict_notes=[
+            {"text": "경력 연수", "evidence_note_ids": [str(home_fact.id), str(marketer.id)]},
+            {"text": "주말 상담", "evidence_note_ids": [str(blog_one.id), str(blog_two.id)]},
+        ],
+    )
+
+    pruned, report = prune_automatic_candidate(
+        payload,
+        [marketer, home_fact, blog_one, blog_two],
+        [profile, homepage, blog_a, blog_b],
+    )
+
+    assert pruned["positioning_statement"] is None
+    assert pruned["tone_guidelines"] == []
+    assert [item["resolved_by"] for item in report.conflicts] == ["D34_FACT_PRIORITY"]
+    assert report.conflicts[0]["kept_note_ids"] == [str(marketer.id)]
+    reasons = {item["reason"] for item in report.dropped}
+    assert {"CONFLICT_LOWER_PRIORITY", "CONFLICT_UNDECIDED"} <= reasons
+
+
+def test_unsupported_medical_claim_never_survives_on_an_unrelated_note() -> None:
+    """재현(Codex P1): 근거 노트 id만 맞는 효능 주장은 포지셔닝·필수 문구에 남지 않는다."""
+
+    homepage = _source(SourceType.HOMEPAGE, "진료 전에 충분히 설명합니다.")
+    note = _note(homepage, "진료 전에 충분히 설명합니다.")
+    claim = "본원의 주사 치료는 암세포를 제거합니다."
+    payload = _payload(
+        positioning_statement=claim,
+        patient_promise="진료 전에 충분히 설명합니다.",
+        must_use_messages=[claim, "진료 전에 충분히 설명드립니다."],
+        evidence_map={
+            "positioning_statement": [str(note.id)],
+            "patient_promise": [str(note.id)],
+            "must_use_messages": [str(note.id)],
+        },
+    )
+
+    pruned, report = prune_automatic_candidate(payload, [note], [homepage])
+
+    _assert_invariants(pruned, [note])
+    assert pruned["positioning_statement"] is None
+    assert pruned["patient_promise"] == "진료 전에 충분히 설명합니다."
+    assert pruned["must_use_messages"] == ["진료 전에 충분히 설명드립니다."]
+    reasons = {(item["field"], item["reason"]) for item in report.dropped}
+    assert ("positioning_statement", "UNSUPPORTED_CLAIM") in reasons
+    assert ("must_use_messages", "MUST_USE_MEDICAL_CLAIM") in reasons
+
+
+def test_supported_medical_claims_stay_but_synthesized_must_use_never_carries_one() -> None:
+    homepage = _source(SourceType.HOMEPAGE)
+    note = _note(homepage, "체외충격파 치료로 통증 완화를 기대할 수 있습니다.")
+    sentence = "체외충격파 치료로 통증 완화를 기대할 수 있습니다."
+    payload = _payload(
+        positioning_statement=sentence,
+        must_use_messages=[sentence],
+        evidence_map={
+            "positioning_statement": [str(note.id)],
+            "must_use_messages": [str(note.id)],
+        },
+    )
+
+    pruned, report = prune_automatic_candidate(payload, [note], [homepage])
+
+    assert pruned["positioning_statement"] == sentence
+    assert pruned["must_use_messages"] == []
+    assert report.must_use["mode"] == MUST_USE_MODE_NONE
+
+
+def test_deterministic_fallback_picks_the_survey_over_the_homepage() -> None:
+    survey = _source(SourceType.INTERVIEW, "비수술 치료를 먼저 설명합니다.")
+    homepage = _source(SourceType.HOMEPAGE, "수술을 먼저 권합니다.")
+    notes = [
+        _note(homepage, "수술을 먼저 권합니다."),
+        _note(survey, "비수술 치료를 먼저 설명합니다."),
+    ]
+
+    payload, _mode = essence_engine.synthesize_philosophy_with_mode(
+        SimpleNamespace(name="병원"), [homepage, survey], notes, use_llm=False
+    )
+
+    assert "비수술 치료를 먼저 설명합니다." in payload["positioning_statement"]
 
 
 @pytest.mark.parametrize(
@@ -381,6 +505,7 @@ def test_public_synthesize_philosophy_never_leaks_private_keys() -> None:
 
 def _hospital(**fields):
     base = {
+        "name": "서울바른의원",
         "director_name": "홍길동",
         "director_career": "서울대학교 의과대학 졸업\n정형외과 전문의",
         "director_philosophy": "환자분이 이해하실 때까지 설명합니다.",
@@ -404,6 +529,7 @@ def _hospital(**fields):
 def test_profile_facts_render_narrative_fields_with_origin_tags_and_no_operational_facts() -> None:
     text = render_profile_facts_text(_hospital())
     assert text.splitlines() == [
+        "[병원 정보] 병원명: 서울바른의원",
         "[마케터 입력] 원장: 홍길동",
         "[자동 수집·홈페이지] 원장 약력: 서울대학교 의과대학 졸업 정형외과 전문의",
         "[병원 정보] 진료 철학: 환자분이 이해하실 때까지 설명합니다.",
@@ -416,6 +542,7 @@ def test_profile_facts_render_narrative_fields_with_origin_tags_and_no_operation
     assert "테헤란로" not in text and "02-1234" not in text and "09:00" not in text
     assert render_profile_facts_text(
         _hospital(
+            name=None,
             director_name=None,
             director_career=None,
             director_philosophy=None,
@@ -425,7 +552,7 @@ def test_profile_facts_render_narrative_fields_with_origin_tags_and_no_operation
             keywords=[],
         )
     ) is None
-    assert len(render_profile_fact_lines(_hospital(treatments=[{"name": "도수치료"}, {"name": "도수치료"}]))) == 7
+    assert len(render_profile_fact_lines(_hospital(treatments=[{"name": "도수치료"}, {"name": "도수치료"}]))) == 8
 
 
 def test_profile_fact_notes_are_deterministic_verbatim_lines() -> None:

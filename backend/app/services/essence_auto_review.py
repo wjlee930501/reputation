@@ -29,7 +29,6 @@ Essence는 사람·AI 검수자의 승인을 기다리지 않는다. 마케터�
 from __future__ import annotations
 
 import copy
-import re
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -82,11 +81,15 @@ from app.services.evidence_noise import (
     not_noise_note_predicate,
 )
 from app.services.knowledge_changes import authority_refresh_required
-from app.services.profile_facts_source import is_profile_facts_source
+from app.services.profile_facts_source import (
+    is_profile_facts_source,
+    sync_profile_facts_source,
+)
 from app.services.public_surface_intents import enqueue_public_surface_intent
 from app.utils.db_locks import acquire_hospital_advisory_lock_sync
 from app.utils.error_page import looks_like_error_page_text
 from app.utils.medical_filter import check_forbidden
+from app.utils.prompt_injection import has_prompt_injection
 
 #: 자동 판을 만들고 적용한 주체(감사·`created_by`·`reviewed_by`).
 AUTOMATIC_ESSENCE_ACTOR = "system:essence-auto"
@@ -116,13 +119,6 @@ _CLAIM_RETRY_BASE_BACKOFF = timedelta(minutes=15)
 _CLAIM_RETRY_MAX_BACKOFF = timedelta(hours=24)
 _ESSENCE_REFRESH_OPERATION = "ESSENCE_SNAPSHOT_REFRESH"
 _ESSENCE_REFRESH_LEASE = timedelta(minutes=15)
-_PROMPT_INJECTION_PATTERNS = (
-    re.compile(r"ignore\s+(?:all\s+)?previous\s+instructions?", re.IGNORECASE),
-    re.compile(r"이전\s*(?:모든\s*)?(?:지시|명령)(?:를|을)?\s*(?:무시|잊)"),
-    re.compile(r"(?:system|developer)\s*prompt", re.IGNORECASE),
-    re.compile(r"자동\s*승인(?:하라|해|하세요)"),
-    re.compile(r"<\/?(?:system|developer|assistant)>", re.IGNORECASE),
-)
 
 TRIGGER_NO_ESSENCE = "T1_NO_ESSENCE"
 TRIGGER_AUTHORITY_CHANGE = "T2_AUTHORITY_CHANGE"
@@ -248,9 +244,16 @@ def _iter_text(value: object):
 
 
 
-def _has_prompt_injection_text(*parts: str | None) -> bool:
-    text = "\n".join(part for part in parts if part)
-    return any(pattern.search(text) for pattern in _PROMPT_INJECTION_PATTERNS)
+def poisoned_profile_lines(source: Any) -> dict[str, str]:
+    """병원 정보(자동) 자료에서 오염된 줄 → 사유. 새 렌더는 이런 줄을 만들지 않는다(옛 행 방어)."""
+
+    poisoned: dict[str, str] = {}
+    for line in str(getattr(source, "raw_text", None) or "").split("\n"):
+        if has_prompt_injection(line):
+            poisoned[line] = EXCLUDED_PROMPT_INJECTION
+        elif looks_like_error_page_text(line):
+            poisoned[line] = EXCLUDED_ERROR_PAGE
+    return poisoned
 
 
 def partition_automatic_inputs(
@@ -260,6 +263,8 @@ def partition_automatic_inputs(
 
     프롬프트 주입 의심 문구가 원문·메모에 있는 자료, 차단·오류 페이지 잔재인 자료는 입력에서
     빠지고 `excluded_inputs`에만 남는다. 사람이 자료를 고치면 새 hash로 다시 들어온다.
+    병원 정보(자동) 자료는 병원 전체가 한 자료이므로 통째로 빼지 않고 오염된 **줄**만 뺀다
+    (그 줄의 노트는 합성 입력에서 빠진다) — 안전한 병원 정보는 언제나 최소 자동 판의 근거다.
     """
 
     usable: list[HospitalSourceAsset] = []
@@ -267,7 +272,19 @@ def partition_automatic_inputs(
     for source in sources:
         reason = None
         raw_text = getattr(source, "raw_text", None)
-        if _has_prompt_injection_text(raw_text, getattr(source, "operator_note", None)):
+        if is_profile_facts_source(source):
+            for line, line_reason in poisoned_profile_lines(source).items():
+                excluded.append(
+                    {
+                        "source_id": str(source.id),
+                        "reason": f"{line_reason}_LINE",
+                        "content_hash": getattr(source, "content_hash", None),
+                        "line": line[:80],
+                    }
+                )
+            usable.append(source)
+            continue
+        if has_prompt_injection(raw_text, getattr(source, "operator_note", None)):
             reason = EXCLUDED_PROMPT_INJECTION
         elif looks_like_error_page_text(raw_text or ""):
             reason = EXCLUDED_ERROR_PAGE
@@ -887,10 +904,9 @@ def essence_refresh_needed(db: Session, hospital_id: uuid.UUID) -> bool:
     sources, _stale = _split_stale_error_sources(_required_sources(db, hospital_id), now)
     if _trigger_for(previous, sources, now) is None:
         return False
+    # 처리된 자료가 없거나 모두 오염돼도 기다리지 않는다 — 태스크가 병원 정보(자동) 자료를 맞춰
+    # 그것만으로 최소 자동 판을 만든다(D33).
     processed = _processed(sources)
-    usable, _excluded = partition_automatic_inputs(processed)
-    if not usable:
-        return False
     return not _claim_backoff_active(
         db,
         hospital_id=hospital_id,
@@ -1042,6 +1058,12 @@ def refresh_essence_snapshot(
     hospital = db.get(Hospital, hospital_id)
     if hospital is None:
         return EssenceRefreshResult(EssenceRefreshStatus.NOT_FOUND, hospital_id)
+    # 병원 정보(자동) 자료를 먼저 병원 행과 맞춘다 — 병원명은 언제나 있으므로 다른 자료가 모두
+    # 없거나 오염돼도 이 자료만으로 최소 자동 판을 만들 수 있다. 바뀌었으면 커밋하고 다시 잠근다.
+    if sync_profile_facts_source(db, hospital).changed:
+        db.commit()
+        acquire_hospital_advisory_lock_sync(db, hospital_id)
+        hospital = db.get(Hospital, hospital_id)
     previous = _approved(db, hospital_id)
     previous_id = previous.id if previous else None
     now = datetime.now(timezone.utc)
@@ -1072,7 +1094,16 @@ def refresh_essence_snapshot(
         )
     # 자료 snapshot과 같은 잠금 안에서 읽어야 CAS가 성립한다.
     noise_hash = load_evidence_noise_hash_sync(db, hospital_id)
-    notes = _notes_for_sources(db, hospital_id, [source.id for source in usable])
+    poisoned_lines = {
+        str(source.id): set(poisoned_profile_lines(source))
+        for source in usable
+        if is_profile_facts_source(source)
+    }
+    notes = [
+        note
+        for note in _notes_for_sources(db, hospital_id, [source.id for source in usable])
+        if note.source_excerpt not in poisoned_lines.get(str(note.source_asset_id), set())
+    ]
     pending_inputs = [
         str(source.id)
         for source in sources
