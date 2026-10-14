@@ -23,8 +23,9 @@ class PhysicianNameRequired(ValueError):
 def normalized_physicians(items: Sequence[Mapping]) -> list[dict]:
     """저장할 의료진 목록을 정규화한다 — 원본을 바꾸지 않고 새 dict를 만든다.
 
-    이름이 빈 행은 화면의 빈 입력 칸이므로 버린다. 대표 표시가 하나도 없으면 직함·순번으로
-    한 명을 대표로 삼는다 — 대표가 없으면 병원 단위 `director_*`를 파생할 수 없다.
+    이름이 빈 행은 화면의 빈 입력 칸이므로 버린다. 대표 표시는 운영자가 저장한 그대로
+    둔다 — 대표가 하나도 없어도 몰래 체크하지 않는다. 대표가 필요한 표시값은
+    `effective_representatives`가 저장값을 바꾸지 않고 정한다.
     """
     cleaned: list[dict] = []
     for item in items:
@@ -35,17 +36,17 @@ def normalized_physicians(items: Sequence[Mapping]) -> list[dict]:
 
     if items and not cleaned:
         raise PhysicianNameRequired("의료진 이름을 한 명 이상 입력해 주세요.")
-
-    if cleaned and not any(item.get("is_representative") for item in cleaned):
-        chosen = default_representative_index(cleaned)
-        cleaned = [
-            {**item, "is_representative": index == chosen} for index, item in enumerate(cleaned)
-        ]
     return cleaned
 
 
-def _title_rank(item: Mapping) -> int:
-    title = re.sub(r"\s+", "", item.get("title") or "")
+def _value(item: object, key: str):
+    if isinstance(item, Mapping):
+        return item.get(key)
+    return getattr(item, key, None)
+
+
+def _title_rank(item: object) -> int:
+    title = re.sub(r"\s+", "", _value(item, "title") or "")
     if "대표원장" in title:
         return 0
     if "원장" in title and "부원장" not in title:
@@ -53,23 +54,28 @@ def _title_rank(item: Mapping) -> int:
     return 2
 
 
-def default_representative_index(items: Sequence[Mapping]) -> int:
+def default_representative_index(items: Sequence[object]) -> int:
     """대표 표시가 없을 때의 대표 — 직함(대표원장, 그다음 부원장이 아닌 원장) > 표시 순번 > 입력 순서."""
     return min(
         range(len(items)),
         key=lambda index: (
             _title_rank(items[index]),
-            items[index].get("display_order") or 0,
+            _value(items[index], "display_order") or 0,
             index,
         ),
     )
 
 
-def _representatives(physicians: Sequence[Mapping]) -> list[Mapping]:
-    return sorted(
-        (item for item in physicians if item.get("is_representative")),
-        key=lambda item: (item.get("display_order") or 0),
+def effective_representatives(physicians: Sequence[object]) -> list:
+    """표시에 쓰는 대표 의료진. 대표 표시가 있으면 그 행들(표시 순번 순), 없으면 직함·순번으로
+    고른 한 명이다. 저장된 대표 표시는 바꾸지 않는다 — dict와 ORM 행 모두 받는다."""
+    flagged = sorted(
+        (item for item in physicians if _value(item, "is_representative")),
+        key=lambda item: _value(item, "display_order") or 0,
     )
+    if flagged or not physicians:
+        return flagged
+    return [physicians[default_representative_index(physicians)]]
 
 
 def _career_block(physician: Mapping) -> str:
@@ -87,7 +93,7 @@ def derive_director_fields(physicians: Sequence[Mapping]) -> dict[str, object]:
     다른 결정이고, 원장 이름은 필수 항목이라 조용히 비우면 공개가 막힌다.
     `director_philosophy`는 의료진 행에 없는 값이므로 건드리지 않는다.
     """
-    representatives = _representatives(physicians)
+    representatives = effective_representatives(physicians)
     if not representatives:
         return {}
 
@@ -112,6 +118,8 @@ def derive_director_fields(physicians: Sequence[Mapping]) -> dict[str, object]:
 __all__ = (
     "DIRECTOR_NAME_MAX_LENGTH",
     "PhysicianNameRequired",
+    "default_representative_index",
     "derive_director_fields",
+    "effective_representatives",
     "normalized_physicians",
 )

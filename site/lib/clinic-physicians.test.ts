@@ -164,17 +164,19 @@ test('the card count picks the layout: solo, two-column, three-column', () => {
   assert.equal(clinicPhysicianLayout(12), 'grid')
 })
 
-test('a title equal to the eyebrow is printed once, not twice', () => {
-  // `협진 협진` 가드와 같은 실패 모드 — 라벨 두 곳이 같은 문자열을 받으면 중복된다.
-  const representative = physician({ isRepresentative: true, title: '대표원장' })
-  assert.equal(physicianEyebrow(representative), '대표원장')
-  assert.equal(physicianRoleLabel(representative), null)
+test('every physician shows their own title above the name; no title shows nothing', () => {
+  // 2026-10-14 노원탑365의원: 이름 위 라벨이 대표에게만 `대표원장`으로 고정돼 있어, 직함이 빈
+  // 대표원장에게도 `대표원장`이 붙고 부원장의 직함은 이름 위에 보이지 않았다.
+  assert.equal(physicianEyebrow(physician({ isRepresentative: true, title: '대표원장' })), '대표원장')
+  assert.equal(physicianEyebrow(physician({ title: '부원장' })), '부원장')
+  assert.equal(physicianEyebrow(physician({ isRepresentative: true, title: null })), null)
+  assert.equal(physicianEyebrow(physician({ isRepresentative: true, title: '  ' })), null)
 
-  // 서로 다른 값이면 둘 다 남는다.
-  const withTitle = physician({ isRepresentative: true, title: '대장항문외과 전문의' })
-  assert.equal(physicianRoleLabel(withTitle), '대장항문외과 전문의')
+  // 직함은 이름 위에 한 번만 — 이름 아래에 다시 적지 않는다.
+  assert.equal(physicianRoleLabel(physician({ isRepresentative: true, title: '대표원장' })), null)
+  assert.equal(physicianRoleLabel(physician({ title: '부원장' })), null)
 
-  // 직함이 없으면 승인된 전문의 자격에서 역할을 가져온다.
+  // 직함이 없으면 승인된 전문의 자격에서 역할을 가져온다(`대표원장`은 자격이 아니다).
   const fromCredentials = physician({
     credentials: { board_certifications: ['대표원장', '외과 전문의'] },
   })

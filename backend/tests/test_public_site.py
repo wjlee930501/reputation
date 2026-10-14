@@ -1280,3 +1280,37 @@ def test_director_photo_fallback_never_uses_another_physicians_linked_photo():
     assert with_legacy["physicians"][1]["photo_url"] == (
         "/api/v1/public/hospitals/test-hospital/assets/associate-id"
     )
+
+
+def test_director_photo_without_any_representative_flag_uses_the_fallback_representative():
+    """대표 표시가 없어도 공개 대표 사진은 직함·순번으로 고른 대표의 사진이다(저장값 불변)."""
+    director = _doctor_photo_asset()
+    director.id = "director-id"
+    associate = _doctor_photo_asset()
+    associate.id = "associate-id"
+    hospital = _hospital_with_photo(None)
+    hospital.physicians = [
+        _physician(
+            id="a",
+            name="공성규",
+            title="부원장",
+            display_order=0,
+            is_representative=False,
+            photo_source_id="associate-id",
+        ),
+        _physician(
+            id="b",
+            name="조태환",
+            title="원장",
+            display_order=1,
+            is_representative=False,
+            photo_source_id="director-id",
+        ),
+    ]
+
+    serialized = _serialize_hospital(hospital, [associate, director])
+
+    assert serialized["director_photo_url"] == (
+        "/api/v1/public/hospitals/test-hospital/assets/director-id"
+    )
+    assert [item["is_representative"] for item in serialized["physicians"]] == [False, False]

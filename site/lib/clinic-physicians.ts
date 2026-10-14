@@ -104,24 +104,22 @@ export function clinicPhysicianLayout(count: number): ClinicPhysicianLayout {
   return 'grid'
 }
 
-/** 카드 상단 eyebrow. 대표원장은 카드마다 한 번만 적는다. */
+/**
+ * 이름 위 라벨 — 운영자가 적은 그 사람의 직함(대표원장·부원장…)을 모든 의료진에게 그대로
+ * 쓴다. 직함이 비면 아무것도 적지 않는다. 대표 표시는 대표 사진·순서만 정하고 라벨 문구를
+ * 만들지 않는다 — 직함이 빈 대표에게 `대표원장`을 지어 붙이던 문제(2026-10-14 노원탑365의원).
+ */
 export function physicianEyebrow(physician: ClinicPhysician): string | null {
-  return physician.isRepresentative ? '대표원장' : null
+  return physician.title?.trim() || null
 }
 
 /**
- * 카드의 단일 역할 라벨.
- *
- * 직함이 eyebrow와 같은 문자열이면 `대표원장 대표원장`이 된다 — 기존 `협진 협진`
- * 가드와 같은 이유로 한 번만 남긴다. 직함이 없으면 승인된 전문의 자격에서 역할을
- * 가져오되, 그것도 eyebrow와 같으면 비운다.
+ * 이름 아래 역할 라벨. 직함은 이미 이름 위에 있으므로, 직함이 없을 때만 승인된 전문의
+ * 자격에서 역할을 가져온다(`대표원장` 같은 직함 문자열은 자격에서 고르지 않는다).
  */
 export function physicianRoleLabel(physician: ClinicPhysician): string | null {
-  const eyebrow = physicianEyebrow(physician)
-  const fromCredentials = selectDoctorRole(physician.credentials?.board_certifications ?? [])
-  const role = physician.title || fromCredentials
-  if (!role) return null
-  return role === eyebrow ? null : role
+  if (physicianEyebrow(physician)) return null
+  return selectDoctorRole(physician.credentials?.board_certifications ?? [])
 }
 
 /**
