@@ -333,10 +333,69 @@ def _lead_measurement_recovered(db: Session, incident: Incident, _now: datetime)
     if gone is not None or diagnosis is None:
         return gone
     # 폴러나 다른 경로가 그 진단의 측정을 리포트 가능한 상태로 끝냈다. 여전히 FAILED인 활성
-    # 진단은 사람이 복구를 다시 걸어야 할 수 있으므로 나이와 무관하게 열어 둔다.
+    # 진단의 리드 상태·나이 근거는 `_lead_measurement_settled`(W9)가 더한다.
     if diagnosis.execution_status in REPORTABLE_EXECUTION_STATUSES:
         return "lead_measurement_succeeded"
     return None
+
+
+# Full-Automatic W9(설계 §3.4): 리드 진단 실패는 사람을 기다리는 일이 아니다. 리드를 사람이 맡았거나
+# (상태 ≠ NEW) 이 일수가 지나면 조용히 닫는다 — 리드 행의 `execution_status`가 사실로 남는다.
+LEAD_DIAGNOSIS_INCIDENT_MAX_AGE = timedelta(days=14)
+# 레거시 `BACKGROUND_TASK_FAILED`(더 이상 열리지 않는 종류)는 같은 작업이 이 기간 다시 실패하지 않으면 닫는다.
+LEGACY_TASK_FAILURE_QUIET_PERIOD = timedelta(days=7)
+# 열림 알림이 나갔더라도 '해결' 알림을 넣지 않고 닫는 종류 — 오래된 비조치 사고의 위생 정리다.
+SILENT_RESOLUTION_TYPES = frozenset(
+    {
+        "BACKGROUND_TASK_FAILED",
+        "LEAD_DIAGNOSIS_FAILED",
+        "LEAD_DIAGNOSIS_RETRIES_EXHAUSTED",
+        "RECOVER_LEAD_MEASUREMENT",
+    }
+)
+
+
+def _lead_measurement_settled(db: Session, incident: Incident, now: datetime) -> str | None:
+    """측정 복구 근거에 더해, 리드를 사람이 맡았거나 14일이 지난 리드 진단 실패를 닫는다."""
+
+    evidence = _lead_measurement_recovered(db, incident, now)
+    if evidence is not None:
+        return evidence
+    diagnosis, _gone = _lead_diagnosis_gone(db, incident)
+    if diagnosis is not None:
+        lead = db.get(SalesLead, diagnosis.lead_id)
+        if lead is None or lead.purged_at is not None:
+            return "lead_purged"
+        if (lead.status or "NEW") != "NEW":
+            return "lead_followed_up"
+    first_seen = incident.first_seen_at
+    if first_seen is not None and first_seen.tzinfo is None:
+        first_seen = first_seen.replace(tzinfo=UTC)
+    if first_seen is not None and first_seen < now - LEAD_DIAGNOSIS_INCIDENT_MAX_AGE:
+        return "lead_diagnosis_incident_aged"
+    return None
+
+
+def _legacy_task_failure_quiet(db: Session, incident: Incident, now: datetime) -> str | None:
+    """같은 작업(source_id)의 실패가 7일 동안 다시 관측되지 않았다."""
+
+    cutoff = now - LEGACY_TASK_FAILURE_QUIET_PERIOD
+    last_seen = incident.last_seen_at
+    if last_seen is not None and last_seen.tzinfo is None:
+        last_seen = last_seen.replace(tzinfo=UTC)
+    if last_seen is None or last_seen >= cutoff:
+        return None
+    recurred = db.scalar(
+        select(Incident.id)
+        .where(
+            Incident.id != incident.id,
+            Incident.incident_type.in_(("BACKGROUND_TASK_FAILED", "OPERATION_TERMINAL_FAILED")),
+            Incident.source_id == incident.source_id,
+            Incident.last_seen_at >= cutoff,
+        )
+        .limit(1)
+    )
+    return None if recurred is not None else "no_recurrence_7d"
 
 
 def _lead_report_failure_anchor(db: Session, incident: Incident) -> datetime:
@@ -736,11 +795,13 @@ RESOLVERS: dict[str, Resolver] = {
     "V0_REPORT_FAILED": _v0_report_created,
     "CONTENT_GENERATION_FAILED": _content_published,
     "NOTIFICATION_DELIVERY_UNKNOWN": _redirected_delivery,
-    "RECOVER_LEAD_MEASUREMENT": _lead_measurement_recovered,
+    "RECOVER_LEAD_MEASUREMENT": _lead_measurement_settled,
     "RECOVER_LEAD_REPORT": _lead_report_recovered,
     # Phase 1-2: 닫는 코드가 없던 종류
-    "LEAD_DIAGNOSIS_FAILED": _lead_measurement_recovered,
-    "LEAD_DIAGNOSIS_RETRIES_EXHAUSTED": _lead_measurement_recovered,
+    "LEAD_DIAGNOSIS_FAILED": _lead_measurement_settled,
+    "LEAD_DIAGNOSIS_RETRIES_EXHAUSTED": _lead_measurement_settled,
+    # Full-Automatic W9: 닫는 근거가 없던 레거시 작업 실패.
+    "BACKGROUND_TASK_FAILED": _legacy_task_failure_quiet,
     "LEAD_REPORT_BLOCKED": partial(_lead_report_recovered, source_types=("LEAD_REPORT",)),
     "LEAD_DELIVERY_ABANDONED": _lead_delivery_settled,
     "ESSENCE_MUST_USE_EXCLUDED": _must_use_version_replaced,
@@ -777,7 +838,7 @@ _RETRYING_RESOLVABLE = tuple(sorted(SWEEP_OWNED_INCIDENT_TYPES & set(RESOLVERS))
 
 
 def _finish_recovered(
-    db: Session, recovered: Incident, action: str, **detail: str | bool
+    db: Session, recovered: Incident, action: str, *, announce: bool = True, **detail: str | bool
 ) -> Incident:
     """RECOVERED가 된 사고를 시스템 확인으로 닫는다. 나간 열림 알림이 있으면 복구 알림을 넣는다.
 
@@ -785,7 +846,7 @@ def _finish_recovered(
     성공 어느 쪽으로 닫든 같은 규칙으로 지킨다. 감사의 `slack_suppressed`는 복구 알림을 넣지 않았는가다.
     """
 
-    notified = open_notice_exists_sync(db, recovered.id)
+    notified = announce and open_notice_exists_sync(db, recovered.id)
     if notified:
         enqueue_notification_sync(
             db,
@@ -861,7 +922,13 @@ def close_resolved_backlog_incidents(
         )
         if recovered is None:
             continue
-        _finish_recovered(db, recovered, "incident_resolved_by_later_evidence", evidence=reason)
+        _finish_recovered(
+            db,
+            recovered,
+            "incident_resolved_by_later_evidence",
+            announce=incident.incident_type not in SILENT_RESOLUTION_TYPES,
+            evidence=reason,
+        )
         closed += 1
     return closed
 

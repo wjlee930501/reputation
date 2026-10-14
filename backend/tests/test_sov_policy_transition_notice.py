@@ -384,7 +384,8 @@ def test_gate_still_blocks_and_records_each_week_without_slack(
     ]
     for incident in incidents:
         assert incident.state == "OPEN"
-        assert incident.severity == "HIGH"
+        # 조용한 종류는 언제나 LOW다(Full-Automatic W9).
+        assert incident.severity == "LOW"
         assert incident.incident_type == "WEEKLY_SOV_MEASUREMENT_FAILED"
         assert incident.safe_error_code == DRIFT_CODE
         assert incident.safe_error_message == EXISTING_SAFE_MESSAGE

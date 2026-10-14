@@ -4765,6 +4765,16 @@ def reconcile_essence_snapshots(self) -> dict[str, int]:
     from app.workers.profile_autofill_tasks import run_onboarding_sweeps
 
     onboarding = run_onboarding_sweeps()
+    # Full-Automatic W10: 멈춘 임박 슬롯을 다음 계단으로 민다 — RedBeat 변경 없음. 실패가 이 틱의
+    # 다른 회수 작업을 되돌리지 않는다.
+    stall: dict[str, int] = {}
+    try:
+        from app.workers.content_stall_detector import run_stall_detector
+
+        with SyncSessionLocal() as db:
+            stall = run_stall_detector(db).as_dict()
+    except Exception:
+        logger.exception("content stall detector failed")
     return {
         "queued": queued,
         "profile_facts_synced": profile_facts_synced,
@@ -4773,6 +4783,7 @@ def reconcile_essence_snapshots(self) -> dict[str, int]:
         "source_runs_created": len(created_source_runs),
         "source_runs_resumed": resumed_source_runs,
         **onboarding,
+        **stall,
     }
 
 
