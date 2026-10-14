@@ -42,13 +42,16 @@ GENERATION_BUDGET_KEY = "budget"
 GENERATION_BUDGET_VERSION = 2
 WRITER_RESULT_LIMIT = 6
 REVIEWER_RESULT_LIMIT = 6
-TOPIC_LIMIT = 2
-TOPIC_SWAP_LIMIT = 1
+# 주제 교체는 슬롯당 최대 두 번이다 — Critical 원인(교정 계단을 다 쓴 사실·안전 차단)만 두 번째를
+# 쓸 수 있다(2026-10-14 O5, `topic_swap_fallback.topic_swap_limit`). 주제는 처음 것을 합쳐 셋이다.
+# 상한을 올리기만 하므로 옛 기록(주제 ≤ 2)은 그대로 유효하다(`_validate_versioned_budget`).
+TOPIC_LIMIT = 3
+TOPIC_SWAP_LIMIT = 2
 SEMANTIC_TRANSPORT_LIMIT = 3
 TEXT_HTTP_ATTEMPT_LIMIT = 36
 IMAGE_HTTP_ATTEMPT_LIMIT = 12
 # 주제 교체는 새 주제에 작가·검수·본문 전송 예산을 처음부터 준다. 슬롯 평생 상한은
-# 주제 수(TOPIC_LIMIT)만큼이다 — 교체가 평생 한 번뿐이므로 이 곱이 실제 최대 지출이다.
+# 주제 수(TOPIC_LIMIT)만큼이다 — 교체가 평생 TOPIC_SWAP_LIMIT번뿐이므로 이 곱이 실제 최대 지출이다.
 # 이미지 전송은 주제가 아니라 슬롯의 것이라 평생 IMAGE_HTTP_ATTEMPT_LIMIT 그대로다.
 LIFETIME_WRITER_RESULT_LIMIT = TOPIC_LIMIT * WRITER_RESULT_LIMIT
 LIFETIME_REVIEWER_RESULT_LIMIT = TOPIC_LIMIT * REVIEWER_RESULT_LIMIT
@@ -639,7 +642,7 @@ def transport_attempt_started(
 def record_topic_swap(
     attempt: dict[str, Any], *, from_topic_id: str | None, to_topic_id: str
 ) -> dict[str, Any]:
-    """Record the sole lifetime topic swap; the new topic gets a fresh per-topic budget.
+    """Record one lifetime topic swap (at most TOPIC_SWAP_LIMIT); the new topic gets a fresh budget.
 
     평생 계수(writer_results 등)는 그대로 두고 — 지출 사실은 지우지 않는다 — 교체 시점의
     획득 위치와 계수를 `prior_topic_spend`로 남긴다. `reserve_acquisition`은 그 위치 뒤의

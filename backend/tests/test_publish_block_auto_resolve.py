@@ -778,13 +778,40 @@ def test_exhausted_uncertain_emergency_buys_no_rereview_and_reaches_operator(
     assert item.essence_check_summary[mc.AUTO_CORRECTION_KEY]["swap_requested_at"]
 
 
-def test_swapped_topic_that_fails_correction_again_goes_to_operator(worker, monkeypatch):
-    """교체 상한(기본 1)을 이미 쓴 슬롯은 교정이 소진되면 곧바로 사람의 일이다."""
+def test_once_swapped_topic_that_fails_correction_again_requests_the_second_swap(
+    worker, monkeypatch
+):
+    """W6(O5): Critical 원인은 교체를 두 번까지 쓴다 — 첫 교체 뒤 다시 교정이 소진되면 두 번째 교체."""
 
     philosophy, calls = worker
     body = _body(NEUTRAL_A, WRONG_TRAINING)
     finding = _finding("HARD", "MEDICAL_SAFETY", "수련기관이 프로필과 다릅니다.", WRONG_TRAINING)
     item = _blocked_item(philosophy, body, finding, history=[{"to_target_id": "x"}])
+    item.essence_check_summary[mc.AUTO_CORRECTION_KEY] = {"passes": 2, "rereviews": 2}
+    calls["item"] = item
+    _install(monkeypatch, calls, propose=_no_provider, review=_no_provider)
+
+    state, code, _message = tasks._generate_single_content_item(
+        _DB(), item, _hospital(id=item.hospital_id)
+    )
+
+    attempt = tasks._stored_generation_attempt(item)
+    assert (state, code) == (tasks.GenerationItemState.FAILED, "CONTENT_AI_HARD_FINDING")
+    assert attempt["retry_class"] == GenerationRetryClass.SAMPLE_RECOVERABLE.value
+    assert attempt[AUTO_CORRECTION_EXHAUSTED_KEY] is True
+    assert topic_swap_fallback.exhausted_body_sample_reason(item) == "CONTENT_AI_HARD_FINDING"
+    assert calls["llm"] == 0 and calls["reviews"] == []
+
+
+def test_twice_swapped_topic_that_fails_correction_again_goes_to_operator(worker, monkeypatch):
+    """교체 두 번(Critical 상한)을 다 쓴 슬롯은 교정이 소진되면 곧바로 사람의 일이다."""
+
+    philosophy, calls = worker
+    body = _body(NEUTRAL_A, WRONG_TRAINING)
+    finding = _finding("HARD", "MEDICAL_SAFETY", "수련기관이 프로필과 다릅니다.", WRONG_TRAINING)
+    item = _blocked_item(
+        philosophy, body, finding, history=[{"to_target_id": "x"}, {"to_target_id": "y"}]
+    )
     item.essence_check_summary[mc.AUTO_CORRECTION_KEY] = {"passes": 2, "rereviews": 2}
     calls["item"] = item
     _install(monkeypatch, calls, propose=_no_provider, review=_no_provider)
@@ -862,7 +889,7 @@ def test_cost_cap_defaults_are_settings_with_env_names():
     fields = type(settings).model_fields
     assert fields["CONTENT_AUTO_CORRECTION_MAX_PASSES"].default == 2
     assert fields["CONTENT_AUTO_CORRECTION_MAX_REREVIEWS"].default == 2
-    assert fields["CONTENT_AUTO_TOPIC_SWAP_MAX"].default == 1
+    assert fields["CONTENT_AUTO_TOPIC_SWAP_MAX"].default == 2
 
 
 # ── 3. 검수 우회 불가 ────────────────────────────────────────────────────────
@@ -1842,7 +1869,7 @@ def test_cost_cap_settings_of_both_prs_coexist():
         settings.CONTENT_AUTO_CORRECTION_MAX_PASSES,
         settings.CONTENT_AUTO_CORRECTION_MAX_REREVIEWS,
         settings.CONTENT_AUTO_TOPIC_SWAP_MAX,
-    ) == (2, 2, 1)
+    ) == (2, 2, 2)
 
 
 # ── 분량 하한: 교정이 글을 1,800자 아래로 줄이면 거절한다 ─────────────────────────

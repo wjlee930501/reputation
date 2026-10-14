@@ -973,7 +973,8 @@ def _escalate_exhausted_correction(
         summary[AUTO_CORRECTION_KEY] = exhausted_state
         item.essence_check_summary = summary
         db.commit()
-    if topic_swap_budget_left(item) and not swap_requested:
+    # Critical 원인(교정 상한을 다 쓴 사실·안전 차단)이라 교체를 두 번까지 쓴다(O5, W6).
+    if topic_swap_budget_left(item, critical=True) and not swap_requested:
         deadline = next_recovery_deadline(
             {
                 "reason": code,
