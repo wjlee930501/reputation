@@ -85,6 +85,7 @@ _TEXT_LIMITS: dict[str, int] = {
     "naver_place_url": 500,
     "naver_place_id": 100,
 }
+_NAVER_IDENTITY_FIELDS = frozenset({"naver_place_id", "naver_place_url"})
 _URL_FIELDS = frozenset({"website_url", "blog_url", "kakao_channel_url", "naver_place_url"})
 _LIST_FIELDS = frozenset({"region", "specialties", "keywords", "competitors"})
 _DIRECTOR_FIELDS = ("director_name", "director_career", "director_philosophy")
@@ -309,28 +310,41 @@ def _current_identity(hospital: Any) -> dict[str, Any]:
     )
 
 
-def identity_changed_since_collection(summary: Mapping[str, Any], hospital: Any) -> bool:
-    """수집 뒤 병원의 네이버 신원 입력이 바뀌었는가. 바뀌었으면 그 초안의 네이버 값은 다른 병원 것일 수 있다.
+def _has_naver_values(summary: Mapping[str, Any]) -> bool:
+    draft = summary.get("draft") if isinstance(summary.get("draft"), Mapping) else {}
+    field_meta = summary.get("field_meta") if isinstance(summary.get("field_meta"), Mapping) else {}
+    if any(not provenance.is_empty_value(draft.get(key)) for key in ("naver_place_id", "naver_place_url")):
+        return True
+    for key, meta in field_meta.items():
+        if key in draft and isinstance(meta, Mapping):
+            if meta.get("source") == "naver":
+                return True
+            if any(
+                isinstance(item, Mapping) and item.get("source") == "naver"
+                for item in meta.get("descriptions") or []
+            ):
+                return True
+    return False
 
-    - place id: 지금 저장 id가 수집 때 쓴 id와도, 수집이 찾은 id(초안 자신이 채웠을 수 있다)와도 다르면 변경.
-    - 병원명: 정규화 비교.
-    - 지역: 수집 때 지역이 있었을 때만(검색 신원 확인의 근거였다). 비어 있던 지역은 적용이 채운다.
-    신원 기록이 없는 옛 초안은 검사하지 않는다(그 초안은 `summary_naver_verified`가 따로 막는다).
+
+def identity_changed_since_collection(summary: Mapping[str, Any], hospital: Any) -> bool:
+    """수집 뒤 병원의 네이버 신원 입력이 바뀌었는가(fail-closed). 바뀌었으면 그 초안의 네이버 값은 다른
+    병원 것일 수 있다.
+
+    병원명·저장 place id·지역 중 **어느 하나라도** 수집 때와 다르면 바뀐 것이다 — 빈 값이 채워진 것도,
+    누가 채웠는지(출처)와도 무관하다. 신원 기록이 없는 초안은 네이버 값이 하나라도 있으면 바뀐 것으로 본다
+    (확인할 수 없으므로 네이버 값을 적용하지 않고 다시 수집한다).
     """
 
     recorded = summary.get("collection_identity")
     if not isinstance(recorded, Mapping):
-        return False
+        return _has_naver_values(summary)
     current = _current_identity(hospital)
-    draft = summary.get("draft") if isinstance(summary.get("draft"), Mapping) else {}
-    found = str(draft.get("naver_place_id") or summary.get("naver_place_id") or "").strip() or None
-    used = recorded.get("naver_place_id") or None
-    if current["naver_place_id"] != used and current["naver_place_id"] != found:
-        return True
-    if recorded.get("name") and recorded.get("name") != current["name"]:
-        return True
-    recorded_regions = recorded.get("regions") or []
-    return bool(recorded_regions) and list(recorded_regions) != current["regions"]
+    return (
+        (recorded.get("name") or "") != current["name"]
+        or (recorded.get("naver_place_id") or None) != current["naver_place_id"]
+        or list(recorded.get("regions") or []) != current["regions"]
+    )
 
 
 def recollect_key_for(hospital: Any) -> str:
@@ -387,6 +401,9 @@ def plan_autofill(
         verified = meta.get("verified")
         if verified is None or plan.identity_changed:
             verified = (verified is not False) and (source != "naver" or naver_verified)
+        if plan.identity_changed and field_name in _NAVER_IDENTITY_FIELDS:
+            # 신원이 바뀌었으면 플레이스 주소·id는 출처 표시와 무관하게 네이버 신원 자체다.
+            verified = False
         if not verified:
             plan.skipped_unverified_fields.append(field_name)
             continue

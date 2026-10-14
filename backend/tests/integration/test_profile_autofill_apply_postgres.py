@@ -53,6 +53,10 @@ def _summary(draft=None):
         "draft": draft,
         "field_meta": {key: {"source": "naver", "verified": True} for key in draft},
         "naver_identity": "VERIFIED_SEARCH",
+        # `_hospital()` 기본값(이름·place id 없음·지역 없음)으로 모은 초안.
+        "collection_identity": apply_mod.collection_identity(
+            name="자동적용의원", naver_place_id=None, regions=[]
+        ),
     }
 
 
@@ -235,7 +239,12 @@ async def test_a_later_patch_wins_and_an_earlier_patch_is_never_overwritten(pg_a
     stored = await _reload(db, hospital.id)
     assert stored.phone == "02-123-4567"
     assert stored.profile_field_provenance["phone"]["origin"] == "OPERATOR"
-    again = await apply_mod.apply_autofill_draft(db, hospital.id, _summary({"phone": "02-000-0000"}))
+    # 다음 수집은 첫 적용이 채운 신원(지역·place id)으로 모았다.
+    later = _summary({"phone": "02-000-0000"})
+    later["collection_identity"] = apply_mod.collection_identity(
+        name=stored.name, naver_place_id=stored.naver_place_id, regions=stored.region
+    )
+    again = await apply_mod.apply_autofill_draft(db, hospital.id, later)
     stored = await _reload(db, hospital.id)
     assert stored.phone == "02-123-4567"
     assert again.skipped_operator_fields == ["phone"]

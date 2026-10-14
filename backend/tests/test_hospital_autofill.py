@@ -38,10 +38,10 @@ async def test_scrape_naver_place_success(monkeypatch):
     async def fake_jina(url: str):
         if "list?query" in url:
             return ("[a](https://m.place.naver.com/hospital/1595672233)", None)
-        return ("=== 홈 ===\n장편한외과의원\n수원시 팔달구 · 031-8067-8114", None)
+        return ("=== 홈 ===\n장편한외과의원\n경기 수원시 팔달구 · 031-8067-8114", None)
 
     monkeypatch.setattr(naver_place, "fetch_via_jina", fake_jina)
-    res = await naver_place.scrape_naver_place("장편한외과의원", regions=["수원시 팔달구"])
+    res = await naver_place.scrape_naver_place("장편한외과의원", regions=["경기 수원시 팔달구"])
     assert res.place_id == "1595672233"
     assert res.markdown
     assert res.reason is None
@@ -813,3 +813,38 @@ async def test_a_busan_phone_never_reaches_a_seoul_hospital_through_collect_sele
     plan = plan_autofill(hospital, summary, has_physicians=False)
     assert "phone" not in plan.updates
     assert "phone" in plan.skipped_unverified_fields
+
+
+@pytest.mark.parametrize(
+    ("regions", "address"),
+    [
+        (["서울", "중구"], "부산 중구 중앙대로 1"),
+        (["부산", "중구"], "서울 중구 세종대로 1"),
+        (["인천", "동구"], "부산 동구 중앙대로 1"),
+        (["부산 동구"], "인천 동구 송림로 1"),
+        (["울산", "남구"], "광주 남구 봉선로 1"),
+        (["광주광역시 남구"], "울산광역시 남구 삼산로 1"),
+    ],
+)
+def test_same_named_districts_in_another_province_never_verify(regions, address):
+    markdown = f"Title: 다온의원 : 네이버\n주소 {address}"
+    assert not naver_place.place_matches_hospital(markdown, "다온의원", regions)
+
+
+def test_search_verification_needs_the_province_and_the_district_when_given():
+    markdown = "Title: 다온의원 : 네이버\n주소 서울특별시 중구 세종대로 1"
+    assert naver_place.place_matches_hospital(markdown, "다온의원", ["서울", "중구"])
+    assert naver_place.place_matches_hospital(markdown, "다온의원", ["서울특별시 중구"])
+    assert naver_place.place_matches_hospital(markdown, "다온의원", ["서울"])
+    assert not naver_place.place_matches_hospital(markdown, "다온의원", ["서울", "성동구"])
+    # 시·도 없는 지역(구·동만)은 검색으로 확인하지 않는다.
+    assert not naver_place.place_matches_hospital(markdown, "다온의원", ["중구"])
+    # 주소가 시·도로 시작하지 않으면 확인하지 않는다.
+    assert not naver_place.place_matches_hospital(
+        "Title: 다온의원 : 네이버\n주소 중구 세종대로 1", "다온의원", ["서울", "중구"]
+    )
+    # 시·도가 여럿인데 어느 쪽인지 모르는 구가 있으면 확인하지 않는다.
+    assert not naver_place.place_matches_hospital(markdown, "다온의원", ["서울", "부산", "중구"])
+    assert naver_place.place_matches_hospital(
+        "Title: 다온의원 : 네이버\n주소 경상남도 창원시 성산구 1", "다온의원", ["경남 창원시"]
+    )

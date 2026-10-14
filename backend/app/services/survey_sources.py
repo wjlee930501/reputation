@@ -21,21 +21,22 @@ from app.models.essence import SourceType
 
 MASK = "[가림]"
 
-# 구분자: 하이픈·유니코드 대시(‐‑‒–—―−－)·점·공백 여러 칸. 문서·PDF 추출은 대시를 en dash로, 칸을 여러
-# 공백으로 바꾸기 일쑤다. 본문 자체는 정규화하지 않는다(NFKC는 한글 호환 자모 등 원문 표기를 바꾼다) —
-# 전각 숫자·기호(０-９＋－＠)만 반각으로 바꾼 뒤(길이 보존) 정규식이 나머지 표기를 받는다.
-_FULLWIDTH = str.maketrans("０１２３４５６７８９＋－＠", "0123456789+-@")
-_DASHES = "\\-\u2010\u2011\u2012\u2013\u2014\u2015\u2212\uff0d"
-_SEP = f"[{_DASHES}.\\s]*"
-# 휴대전화: 010-1234-5678, 01012345678, 010 1234 5678, 010–1234–5678, +82 10-1234-5678. 지역번호(02·031…)는
-# 병원 대표번호라 가리지 않는다.
+# 맞추기 전에 전각 ASCII(U+FF01–U+FF5E)를 반각으로, 전각 공백(U+3000)을 공백으로 바꾼다(길이 보존). 본문 전체에
+# NFKC는 걸지 않는다 — 한글 호환 자모 등 원문 표기까지 바꾼다.
+_FULLWIDTH = {code: code - 0xFEE0 for code in range(0xFF01, 0xFF5F)} | {0x3000: 0x20}
+# 숫자 사이 구분자: 하이픈·유니코드 대시·점·괄호·공백 여러 칸. 문서·PDF 추출은 대시를 en dash로, 칸을
+# 여러 공백으로 바꾸기 일쑤라 **모든 숫자 사이**에 허용하고 식별자 전체를 가린다(넓게 가린다 — fail-closed).
+_DASHES = "\\-\u2010\u2011\u2012\u2013\u2014\u2015\u2212"
+_S = f"[{_DASHES}.()\\s]*"
+# 휴대전화: 01x + 7~8자리, 국제번호 +82(0)1x. 지역번호(02·031…)는 병원 대표번호라 가리지 않는다.
 _MOBILE_RE = re.compile(
-    rf"(?<!\d)(?:(?:[+＋]?82{_SEP})[(]?0?1[016789]|01[016789])[)]?{_SEP}\d{{3,4}}{_SEP}\d{{4}}(?!\d)"
+    rf"(?<!\d)\(?(?:\+?{_S}8{_S}2{_S}(?:0{_S})?|0{_S})1{_S}[016789](?:{_S}\d){{7,8}}(?!\d)"
 )
 _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+")
-# 주민등록번호: 생년월일 6자리 + 성별 1~4로 시작하는 7자리(구분자는 대시류·공백).
+# 주민등록번호: 생년월일 6자리(월 01–12·일 01–31) + 성별 1~4로 시작하는 7자리, 모든 숫자 사이 구분자 허용.
 _RRN_RE = re.compile(
-    rf"(?<!\d)\d{{2}}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])[{_DASHES}\s]*[1-4]\d{{6}}(?!\d)"
+    rf"(?<![\d+])\d{_S}\d{_S}(?:0{_S}[1-9]|1{_S}[0-2]){_S}(?:0{_S}[1-9]|[12]{_S}\d|3{_S}[01])"
+    rf"{_S}[1-4](?:{_S}\d){{6}}(?!\d)"
 )
 
 SURVEY_DEFAULT_TITLE = "원장 인터뷰 설문"
@@ -53,9 +54,11 @@ def mask_personal_info(text: str | None) -> str | None:
 
     if not text:
         return text
+    # 주민번호를 먼저 — "80 01 01-1…"의 뒷부분이 휴대전화(01x)로 먼저 잘려 앞자리가 남지 않게. 국제번호
+    # (+82)는 주민번호 시작으로 보지 않아 휴대전화 정규식이 '+'까지 가린다.
     masked = _RRN_RE.sub(MASK, text.translate(_FULLWIDTH))
-    masked = _EMAIL_RE.sub(MASK, masked)
-    return _MOBILE_RE.sub(MASK, masked)
+    masked = _MOBILE_RE.sub(MASK, masked)
+    return _EMAIL_RE.sub(MASK, masked)
 
 
 def mask_interview_text(source_type: SourceType | str | None, text: str | None) -> str | None:

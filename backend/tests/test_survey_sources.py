@@ -170,3 +170,27 @@ def test_spacing_dash_and_fullwidth_variants_are_masked() -> None:
         assert mask_personal_info(f"연락 {raw} 끝") == "연락 [가림] 끝", raw
     kept = "대표 02-123-4567, 진료 09:00-18:00, 2024-10-14"
     assert mask_personal_info(kept) == kept
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "０１０．１２３４．５６７８",
+        "（０１０）１２３４－５６７８",
+        "０１０　１２３４　５６７８",
+        "(010)1234-5678",
+        "010.1234.5678",
+        "010 - 1234 - 5678",
+        "+82 10-1234-5678",
+        "+82 (0)10 1234 5678",
+        "+82-10-1234-5678",
+        "800101-1 234567",
+        "80 01 01-1 234 567",
+        "800101.1234567",
+        "８００１０１－１２３４５６７",
+    ],
+)
+def test_every_spacing_dot_paren_and_fullwidth_form_is_masked_whole(raw) -> None:
+    from app.services.survey_sources import mask_personal_info
+
+    assert mask_personal_info(f"연락 {raw} 끝") == "연락 [가림] 끝"

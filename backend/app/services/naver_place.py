@@ -245,18 +245,46 @@ def _province_key(token: str) -> str | None:
     return stem if stem in _PROVINCES else None
 
 
-def _admin_keys(token: str) -> set[str]:
-    """행정 토큰 하나의 비교 키. 시·도는 짧은 이름, 시·군·구는 이름 그대로와 단위 뺀 이름."""
+def _local_keys(token: str) -> set[str]:
+    """시·군·구·읍·면·동 토큰의 비교 키 — 이름 그대로와(두 글자 이상이면) 단위를 뺀 이름."""
 
-    province = _province_key(token)
-    if province is not None:
-        return {f"province:{province}"}
     compact = _compact(token)
     keys = {compact}
     stem = re.sub(r"(?:시|군|구)$", "", compact)
     if len(stem) >= 2:
         keys.add(stem)
     return keys
+
+
+def _hospital_region_scope(regions: Sequence[str]) -> dict[str, set[str]] | None:
+    """병원 지역 태그 → {시·도: 시군구·동 키}. 시·도를 알 수 없으면 None(검색으로 확인할 수 없다).
+
+    시·도가 없는 태그("중구")는 병원의 시·도가 하나뿐일 때만 그 시·도에 붙는다. 시·도가 여럿인데 어느
+    쪽인지 모르는 태그가 있으면 확인하지 않는다(fail-closed).
+    """
+
+    pairs: list[tuple[str | None, set[str]]] = []
+    for region in regions:
+        words = [word for word in str(region).split() if _compact(word)]
+        if not words:
+            continue
+        province = _province_key(words[0])
+        locals_ = words[1:] if province is not None else words
+        keys: set[str] = set()
+        for word in locals_:
+            keys |= {_compact(word)}
+        pairs.append((province, keys))
+    provinces = {province for province, _ in pairs if province is not None}
+    if not provinces:
+        return None
+    scope: dict[str, set[str]] = {province: set() for province in provinces}
+    for province, keys in pairs:
+        if province is None:
+            if len(provinces) != 1:
+                return None
+            province = next(iter(provinces))
+        scope[province] |= keys
+    return scope
 
 
 def address_admin_tokens(address: str) -> list[str]:
@@ -277,16 +305,12 @@ def address_admin_tokens(address: str) -> list[str]:
     return tokens
 
 
-def _region_matches_address(words: Sequence[str], admin_keys: set[str]) -> bool:
-    return all(_admin_keys(word) & admin_keys for word in words)
-
-
 def place_matches_hospital(markdown: str, name: str, regions: Sequence[str] = ()) -> bool:
     """검색으로 찾은 플레이스가 이 병원인지 — 상호가 정규화 동등이고 지역이 **주소**와 맞는가.
 
     상세 페이지에서 따로 읽은 상호가 병원명과 (공백·기호를 무시하고) 같아야 한다. 지점명은 병원 행의
-    이름에 있을 때만 맞는다("다온의원 세종점" ≠ "다온의원"). 지역은 따로 읽은 주소와 대조한다. 병원
-    행에 지역이 없거나 주소를 읽지 못하면 확인할 수 없으므로 거짓이다 — 저장된 place id가 없는 검색
+    이름에 있을 때만 맞는다("다온의원 세종점" ≠ "다온의원"). 지역은 따로 읽은 주소의 행정 토큰과 대조한다.
+    병원 행 지역에 시·도가 없거나 주소를 읽지 못하면 확인할 수 없으므로 거짓이다 — 저장된 place id가 없는 검색
     결과는 그때 UNVERIFIED로 남아 자동 적용되지 않는다.
     """
 
@@ -297,19 +321,23 @@ def place_matches_hospital(markdown: str, name: str, regions: Sequence[str] = ()
     if not address:
         return False
     # 지역은 주소의 행정 토큰과만 정규화 동등으로 맞춘다 — 도로명·건물명의 부분 문자열은 증거가 아니다.
-    admin_keys: set[str] = set()
-    for token in address_admin_tokens(address):
-        admin_keys |= _admin_keys(token)
-    if not admin_keys:
+    # 지역 확인(fail-closed): 주소 첫 행정 토큰의 시·도가 병원 지역의 시·도와 같아야 하고, 병원 지역에
+    # 시군구·동이 있으면 그중 하나가 주소의 시군구·동과도 같아야 한다. 같은 이름의 구(중구·동구·남구…)는
+    # 시·도가 맞을 때만 증거다. 병원 지역에 시·도가 없으면 검색으로는 확인하지 않는다(저장 id만 믿는다).
+    scope = _hospital_region_scope(regions)
+    tokens = address_admin_tokens(address)
+    if scope is None or not tokens:
         return False
-    # 지역 태그는 낱말마다 본다 — "서울 성동구"는 "서울특별시 성동구" 주소와 맞아야 한다.
-    region_words = [
-        [word for word in str(region).split() if _compact(word)] for region in regions
-    ]
-    region_words = [words for words in region_words if words]
-    if not region_words:
+    province = _province_key(tokens[0])
+    if province is None or province not in scope:
         return False
-    return any(_region_matches_address(words, admin_keys) for words in region_words)
+    required = scope[province]
+    if not required:
+        return True
+    address_keys: set[str] = set()
+    for token in tokens[1:]:
+        address_keys |= _local_keys(token)
+    return any(_local_keys(word) & address_keys for word in required)
 
 
 async def scrape_naver_place(
