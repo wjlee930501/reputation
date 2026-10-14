@@ -9,6 +9,7 @@ from app.services.content_ai_review import (
     ContentAiFindingKind,
     ContentAiFindingSeverity,
     ContentAiReviewStatus,
+    ContentAiReviewUnavailableReason,
 )
 
 
@@ -724,3 +725,149 @@ def test_correction_context_is_carried_only_when_given() -> None:
     assert data["candidate_sha256"] == plain["candidate_sha256"]
     assert "correction_context" in content_ai_review._SYSTEM_PROMPT
     assert "판정을 바꿀 근거가 없으면 다시 지적하지 마세요" in content_ai_review._SYSTEM_PROMPT
+
+
+# ── W7(2026-10-14 O4): 검수가 연속 두 번 장애면 다른 공급사의 대체 검수 모델로 한 번 받는다 ──────
+
+_FALLBACK = "openai/fictional-fallback"
+_CONFIDENT_PASS = json.dumps(
+    {"decision": "PASS", "confidence": 0.95, "findings": [], "summary": "적합"}
+)
+
+
+async def test_two_unavailable_rounds_then_fallback_pass_is_a_real_bound_verdict(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(content_ai_review.settings, "CONTENT_AI_REVIEW_FALLBACK_MODEL", _FALLBACK)
+    harness = _install_reviewer(
+        monkeypatch,
+        [RuntimeError("provider down"), RuntimeError("provider down"), _CONFIDENT_PASS],
+    )
+    content = {"title": "안내", "body": "환자마다 다릅니다."}
+
+    result = await _review(content=content)
+
+    primary = content_ai_review.settings.CLAUDE_MODEL_REVIEW
+    assert [call["model"] for call in harness.calls] == [primary, primary, _FALLBACK]
+    assert result.status == ContentAiReviewStatus.PASS
+    payload = result.payload()
+    # 판정 모델과 장애 모델이 기록에 남고, PASS는 이 후보 hash에 묶인다.
+    assert payload["model"] == _FALLBACK
+    assert payload["fallback_from_model"] == primary
+    assert payload["review_rounds"] == 3
+    assert payload["candidate_sha256"] == content_ai_review.candidate_sha256(content)
+    restored = content_ai_review.review_from_payload(payload)
+    assert (restored.model, restored.fallback_from_model) == (_FALLBACK, primary)
+    # 비용 카테고리는 그대로 content이고 호출마다 계량된다.
+    assert harness.reservations == ["content", "content", "content"]
+    assert harness.settled == [1, 1, 1]
+
+
+async def test_fallback_hard_finding_blocks_like_any_verdict(monkeypatch) -> None:
+    monkeypatch.setattr(content_ai_review.settings, "CONTENT_AI_REVIEW_FALLBACK_MODEL", _FALLBACK)
+    _install_reviewer(
+        monkeypatch,
+        [
+            RuntimeError("provider down"),
+            RuntimeError("provider down"),
+            json.dumps(
+                {
+                    "decision": "REVISE",
+                    "confidence": 0.95,
+                    "findings": [
+                        {
+                            "severity": "HARD",
+                            "kind": "MEDICAL_SAFETY",
+                            "quote": "환자마다 다릅니다.",
+                            "message": "위험한 안내",
+                        }
+                    ],
+                    "summary": "안전 문제",
+                }
+            ),
+        ],
+    )
+
+    result = await _review()
+
+    assert result.status == ContentAiReviewStatus.REVISE
+    assert result.payload()["blocking"] is True
+    assert result.model == _FALLBACK
+    assert result.blocking_findings[0].severity == ContentAiFindingSeverity.HARD
+
+
+async def test_second_primary_round_that_succeeds_skips_the_fallback(monkeypatch) -> None:
+    monkeypatch.setattr(content_ai_review.settings, "CONTENT_AI_REVIEW_FALLBACK_MODEL", _FALLBACK)
+    harness = _install_reviewer(monkeypatch, [RuntimeError("provider down"), _CONFIDENT_PASS])
+
+    result = await _review()
+
+    assert len(harness.calls) == 2
+    assert result.status == ContentAiReviewStatus.PASS
+    assert "fallback_from_model" not in result.payload()
+
+
+async def test_fallback_also_unavailable_stays_unavailable_for_d37(monkeypatch) -> None:
+    monkeypatch.setattr(content_ai_review.settings, "CONTENT_AI_REVIEW_FALLBACK_MODEL", _FALLBACK)
+    harness = _install_reviewer(
+        monkeypatch,
+        [RuntimeError("down"), RuntimeError("down"), RuntimeError("down")],
+    )
+
+    result = await _review()
+
+    assert len(harness.calls) == 3
+    assert result.status == ContentAiReviewStatus.UNAVAILABLE
+    assert result.unavailable_reason == ContentAiReviewUnavailableReason.PROVIDER_ERROR
+    assert result.provider_attempted is True
+    assert result.payload()["model"] == _FALLBACK
+    assert result.payload()["fallback_from_model"] == content_ai_review.settings.CLAUDE_MODEL_REVIEW
+
+
+async def test_fallback_disabled_or_cost_blocked_keeps_two_primary_rounds(monkeypatch) -> None:
+    monkeypatch.setattr(content_ai_review.settings, "CONTENT_AI_REVIEW_FALLBACK_MODEL", "")
+    harness = _install_reviewer(monkeypatch, [RuntimeError("down"), RuntimeError("down")])
+    result = await _review()
+    assert len(harness.calls) == 2
+    assert result.status == ContentAiReviewStatus.UNAVAILABLE
+    assert "fallback_from_model" not in result.payload()
+
+    monkeypatch.setattr(content_ai_review.settings, "CONTENT_AI_REVIEW_FALLBACK_MODEL", _FALLBACK)
+    harness = _install_reviewer(
+        monkeypatch,
+        [RuntimeError("down"), RuntimeError("down")],
+        reserve_results=[True, True, False],
+    )
+    result = await _review()
+    assert len(harness.calls) == 2
+    assert result.status == ContentAiReviewStatus.UNAVAILABLE
+    assert "fallback_from_model" not in result.payload()
+
+
+async def test_transport_cap_on_the_fallback_round_keeps_the_unavailable_record(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(content_ai_review.settings, "CONTENT_AI_REVIEW_FALLBACK_MODEL", _FALLBACK)
+    harness = _install_reviewer(monkeypatch, [RuntimeError("down"), RuntimeError("down")])
+    seen: list[int] = []
+
+    def observer() -> None:
+        seen.append(1)
+        if len(seen) > 2:
+            raise RuntimeError("ACQUISITION_TRANSPORT_EXHAUSTED")
+
+    result = await _review(transport_observer=observer)
+
+    assert len(harness.calls) == 2
+    assert result.status == ContentAiReviewStatus.UNAVAILABLE
+    # 쓰지 못한 세 번째 예약은 소비 0으로 돌려준다.
+    assert harness.settled == [1, 1, 0]
+
+
+def test_fallback_model_default_is_a_non_anthropic_openrouter_slug() -> None:
+    default = type(content_ai_review.settings).model_fields[
+        "CONTENT_AI_REVIEW_FALLBACK_MODEL"
+    ].default
+    vendor, _, model = default.partition("/")
+    assert vendor and model and vendor != "anthropic"
+    assert default == type(content_ai_review.settings).model_fields["OPENAI_MODEL_QUERY"].default

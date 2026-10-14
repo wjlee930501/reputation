@@ -84,7 +84,8 @@ _TEMPLATE_PREFIXES = (
 #: 자동 판을 만든 정리 정책의 판. 이 값이 바뀌면 옛 정책으로 만든 자동 판은 다음 정기 조정에서
 #: 다시 만들어지고(T7), 그 전에도 소비 단계(`must_use_verbatim`·공개 소개)가 현재 규칙으로 다시 거른다.
 #: 2026-10-14.4: 설문 안내문·질문·조각 문장을 원문 문장으로 고르지 않는다(`is_not_doctor_statement`).
-AUTOMATIC_ESSENCE_POLICY_VERSION = "2026-10-14.4"
+#: 2026-10-14.5: 원장 목소리 노트(진료 철학·환자 약속·핵심 메시지)만, 약·검사 설명 문장 제외.
+AUTOMATIC_ESSENCE_POLICY_VERSION = "2026-10-14.5"
 
 # 원장의 답이 아니라 설문지가 원장에게 하는 말(안내·요청·질문)의 표지. 원장 자신의 문장에는 원장을
 # 부르는 말·답변 요청이 없다. 2026-10-14 신기한속 v2가 "모든 질문은 실제 원장님의 말투로, 풍부하게
@@ -105,6 +106,9 @@ _LEADING_CLAUSE_TAILS = ("며", "하고", "되고", "이고", "지만", "는데"
 # 서술어로 끝나는 완결 문장의 끝(마침표·따옴표를 뗀 뒤).
 _SENTENCE_FINAL = re.compile(r"(?:다|요|죠)$")
 _MIN_DOCTOR_STATEMENT_CHARS = 12
+# 약·검사 설명(약 계열·처방 권유·괄호 속 영문 약명/검사명) — 원장의 말이 아니라 설명 자료다
+# (2026-10-14 세종다온 v6: "트립탄(Triptan) 계열 …", "… 처방하기 좋습니다", "PWV (Pulse Wave …").
+_DRUG_OR_EXAM_DESCRIPTION = re.compile(r"계열|처방하|복용이 편리|[(（]\s*[A-Za-z]")
 _QUOTE_TAIL = "\"'“”‘’「」『』)]）"
 
 
@@ -120,6 +124,8 @@ def is_not_doctor_statement(sentence: str) -> bool:
         return True
     folded = re.sub(r"\s+", " ", text)
     if any(marker in folded for marker in _INSTRUCTION_MARKERS):
+        return True
+    if _DRUG_OR_EXAM_DESCRIPTION.search(folded):
         return True
     body = folded.rstrip(".!。！…~ ").rstrip(_QUOTE_TAIL).rstrip(".!。！…~ ")
     if folded.endswith(("?", "？")) or _QUESTION_ENDING.search(body):

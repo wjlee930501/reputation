@@ -1,6 +1,6 @@
 import type { CSSProperties } from 'react'
 
-import { resolveAssetUrl, type Hospital } from './hospital-payload.ts'
+import { resolveAssetUrl, type Hospital, type HospitalPhysician } from './hospital-payload.ts'
 
 export const DEFAULT_CLINIC_PRIMARY = '#17365D'
 
@@ -202,11 +202,93 @@ export function selectVerifiedDoctorImage(photos: Hospital['photos']): string | 
   return resolveAssetUrl(doctorPhoto?.url ?? null)
 }
 
-/** Select only an explicit doctor identity asset; never infer one from specialty or tenant slug. */
-export function selectClinicDirectorImage(
-  hospital: Pick<Hospital, 'slug' | 'director_photo_url' | 'photos'>,
+type RepresentativeCandidate = Pick<HospitalPhysician, 'is_representative' | 'title' | 'display_order'>
+
+const REPRESENTATIVE_TITLE = /대표\s*원장/
+const ASSOCIATE_TITLE = /부\s*원장/
+const DIRECTOR_TITLE = /원장/
+
+function representativeRank(physician: RepresentativeCandidate): number {
+  if (physician.is_representative) return 0
+  const title = physician.title ?? ''
+  if (REPRESENTATIVE_TITLE.test(title)) return 1
+  if (DIRECTOR_TITLE.test(title) && !ASSOCIATE_TITLE.test(title)) return 2
+  return 3
+}
+
+/**
+ * 병원을 대표하는 의료진 한 명 — 대표 표시 > 직함(대표원장, 그다음 부원장이 아닌 원장) >
+ * 표시 순번. 같은 순위에서만 순번을 보므로 "목록의 첫 행"이 대표를 정하지 않는다.
+ */
+export function selectRepresentativePhysician<T extends RepresentativeCandidate>(
+  physicians: readonly T[],
+): T | null {
+  let best: T | null = null
+  for (const physician of physicians) {
+    if (
+      best === null ||
+      representativeRank(physician) < representativeRank(best) ||
+      (representativeRank(physician) === representativeRank(best) &&
+        (physician.display_order ?? 0) < (best.display_order ?? 0))
+    ) {
+      best = physician
+    }
+  }
+  return best
+}
+
+/**
+ * 어느 의료진에게도 연결되지 않은 검증된 원장 사진. 다른 의료진에게 연결된 사진은 그
+ * 사람의 얼굴이므로 대표 자리에 쓰지 않는다 — 사진 목록은 최근 갱신 순이라 나중에 올린
+ * 부원장 사진이 맨 앞에 온다.
+ */
+export function selectUnlinkedVerifiedDoctorImage(
+  photos: Hospital['photos'],
+  physicians: readonly Pick<HospitalPhysician, 'photo_url'>[],
 ): string | null {
-  return selectVerifiedDoctorImage(hospital.photos)
+  const linked = new Set(
+    physicians.map((physician) => physician.photo_url).filter((url): url is string => Boolean(url)),
+  )
+  for (const photo of photos) {
+    if (!isVerifiedDoctorAsset(photo)) continue
+    const url = resolveAssetUrl(photo.url)
+    if (url && !linked.has(url)) return url
+  }
+  return null
+}
+
+/**
+ * 병원 대표 이미지(OG·구조화 데이터)에 쓰는 대표원장 사진. 검증된 원장 사진만 쓰고, 고르는
+ * 순서는 대표 의료진에게 연결된 사진 > 백엔드가 고른 `director_photo_url` > 누구에게도
+ * 연결되지 않은 사진이다. 진료과·slug로 사진을 추정하지 않는다.
+ */
+export function selectClinicDirectorImage(
+  hospital: Pick<Hospital, 'slug' | 'director_photo_url' | 'photos'> & {
+    physicians?: HospitalPhysician[] | null
+  },
+): string | null {
+  const verified = new Set(
+    hospital.photos
+      .filter(isVerifiedDoctorAsset)
+      .map((photo) => resolveAssetUrl(photo.url))
+      .filter((url): url is string => Boolean(url)),
+  )
+  if (verified.size === 0) return null
+
+  const physicians = (hospital.physicians ?? []).filter((physician) => physician.name?.trim())
+  const representative = selectRepresentativePhysician(physicians)
+  if (representative?.photo_url && verified.has(representative.photo_url)) {
+    return representative.photo_url
+  }
+
+  const others = physicians.filter((physician) => physician !== representative)
+  const otherPhotos = new Set(others.map((physician) => physician.photo_url).filter(Boolean))
+  const director = resolveAssetUrl(hospital.director_photo_url)
+  if (director && verified.has(director) && !otherPhotos.has(director)) return director
+
+  // 대표가 여럿이면 연결 없는 사진이 누구의 얼굴인지 단정할 수 없다.
+  if (physicians.filter((physician) => physician.is_representative).length > 1) return null
+  return selectUnlinkedVerifiedDoctorImage(hospital.photos, others)
 }
 
 export function absoluteClinicImageUrl(imageUrl: string | null, base: string): string | null {

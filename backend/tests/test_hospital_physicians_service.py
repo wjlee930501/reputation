@@ -5,6 +5,7 @@ import pytest
 from app.services.hospital_physicians import (
     PhysicianNameRequired,
     derive_director_fields,
+    effective_representatives,
     normalized_physicians,
 )
 
@@ -22,13 +23,14 @@ def _physician(**overrides):
     return base
 
 
-def test_blank_names_are_dropped_and_the_first_row_becomes_representative():
+def test_blank_names_are_dropped_and_no_representative_is_silently_assigned():
+    """운영자가 대표를 모두 해제하고 저장하면 그대로 저장한다(2026-10-14 노원탑365의원)."""
     result = normalized_physicians(
         [_physician(name="  "), _physician(name="김성열"), _physician(name="전상훈")]
     )
 
     assert [item["name"] for item in result] == ["김성열", "전상훈"]
-    assert [item["is_representative"] for item in result] == [True, False]
+    assert [item["is_representative"] for item in result] == [False, False]
 
 
 def test_explicit_representative_is_preserved():
@@ -143,3 +145,35 @@ def test_joined_name_is_truncated_to_the_column_length():
     ]
 
     assert len(derive_director_fields(physicians)["director_name"]) == 100
+
+
+def test_without_a_flag_the_title_picks_the_representative_not_the_first_row():
+    rows = [
+        _physician(name="박선영", title="부원장", display_order=0),
+        _physician(name="이원장", title="원장", display_order=1),
+        _physician(name="장현경", title="대표 원장", display_order=2),
+    ]
+
+    assert [item["name"] for item in effective_representatives(rows)] == ["장현경"]
+    assert derive_director_fields(rows)["director_name"] == "장현경"
+    # 저장값은 바뀌지 않는다.
+    assert [item["is_representative"] for item in rows] == [False, False, False]
+
+
+def test_without_a_flag_or_director_title_the_lowest_display_order_wins():
+    rows = [
+        _physician(name="공성규", title="부원장", display_order=1),
+        _physician(name="조태환", title="", display_order=0),
+    ]
+
+    assert [item["name"] for item in effective_representatives(rows)] == ["조태환"]
+
+
+def test_flagged_representatives_win_over_titles():
+    rows = [
+        _physician(name="장현경", title="대표원장", display_order=0),
+        _physician(name="박선영", title="과장", display_order=1, is_representative=True),
+    ]
+
+    assert [item["name"] for item in effective_representatives(rows)] == ["박선영"]
+    assert effective_representatives([]) == []

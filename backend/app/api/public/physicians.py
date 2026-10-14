@@ -12,6 +12,7 @@ from collections.abc import Sequence
 
 from app.api.public.assets import public_asset_url
 from app.models.essence import HospitalSourceAsset, SourceType
+from app.services.hospital_physicians import effective_representatives
 from app.services.photo_assets import effective_photo_metadata
 
 
@@ -73,9 +74,11 @@ def serialize_public_physicians(
 
 
 def representative_photo_url(serialized_physicians: Sequence[dict]) -> str | None:
-    """대표 의료진에 연결된 유효한 사진. 없으면 None — 호출부가 기존 선택으로 물러난다."""
-    for physician in serialized_physicians:
-        if physician["is_representative"] and physician["photo_url"]:
+    """대표 의료진에 연결된 유효한 사진. 없으면 None — 호출부가 기존 선택으로 물러난다.
+
+    대표 표시가 없으면 직함·순번으로 고른 대표를 쓴다(`effective_representatives`)."""
+    for physician in effective_representatives(serialized_physicians):
+        if physician["photo_url"]:
             return physician["photo_url"]
     return None
 

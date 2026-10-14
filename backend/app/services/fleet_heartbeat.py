@@ -14,6 +14,7 @@ from app.models.monthly_control import MonthlyDeliveryEvent
 from app.models.operations import Incident, IncidentState, OperationRun
 from app.models.report import MonthlyReport
 from app.models.sov import SovRecord
+from app.services.autonomy_slo import collect_hospital_slo, slo_summary_lines
 from app.services.contract_delivery_coverage import (
     FleetContractCoverage,
     collect_contract_delivery_coverage,
@@ -61,6 +62,10 @@ class FleetFacts:
     developer_work: int = 0
     # D39: 지난달 원장 보고서가 전달 가능한데 10일이 지나도 사람 전달 기록이 없는 병원 수.
     undelivered_ready_reports: int = 0
+    # W10: 일일 SLO를 놓친 병원마다 한 줄(`autonomy_slo.slo_summary_lines`). 정상 병원은 줄이 없다.
+    slo_lines: tuple[str, ...] = ()
+    # W10: 오늘(KST) 정체 감지기가 자동으로 한 행동 수.
+    stall_actions_today: int = 0
 
 
 _FAILED_STATES = ("FAILED", "PARTIAL")
@@ -454,6 +459,27 @@ def collect_fleet_facts(db, *, now):
         tuple(sorted(action_groups, key=lambda item: (-item.count, item.hospital_name, item.incident_type))),
         len(developer_keys),
         count_undelivered_ready_reports(db, now=now),
+        tuple(slo_summary_lines(collect_hospital_slo(db, now=now))),
+        count_stall_actions_today(db, now=now),
+    )
+
+
+def count_stall_actions_today(db, *, now) -> int:
+    """오늘(KST) 정체 감지기가 남긴 행동 기록 수(`content_stall_detector`)."""
+    from app.workers.content_stall_detector import STALL_OPERATION_TYPE
+
+    local = now.astimezone(KST)
+    start = local.replace(hour=0, minute=0, second=0, microsecond=0)
+    return int(
+        db.scalar(
+            select(func.count())
+            .select_from(OperationRun)
+            .where(
+                OperationRun.operation_type == STALL_OPERATION_TYPE,
+                OperationRun.requested_at >= start,
+            )
+        )
+        or 0
     )
 
 
@@ -561,6 +587,11 @@ def build_fleet_heartbeat(report: WatchdogReport, facts: FleetFacts, *, now, adm
     developer_total = facts.developer_work + unresolved_failed
     if developer_total:
         state_lines.append(f"개발 확인 {developer_total}건 — 개발 담당이 확인합니다")
+    if facts.slo_lines:
+        state_lines.append("발행·보고서 약속을 놓친 병원 — 자동 복구 계단이 처리합니다")
+        state_lines.extend(facts.slo_lines)
+    if facts.stall_actions_today:
+        state_lines.append(f"정체 감지기 자동 조치 오늘 {facts.stall_actions_today}건")
     details = "\n".join(state_lines)
     todo = "\n".join(actions)
     url = admin_base_url.rstrip("/") + "/operations"

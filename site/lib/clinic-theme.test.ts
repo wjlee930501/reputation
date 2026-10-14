@@ -8,7 +8,9 @@ import {
   contrastRatio,
   selectClinicDirectorImage,
   selectClinicHeroImage,
+  selectRepresentativePhysician,
 } from './clinic-theme.ts'
+import type { HospitalPhysician } from './hospital-payload.ts'
 
 test('clinic theme accepts valid hospital colors and rejects malformed values', () => {
   const branded = buildClinicThemeStyle({
@@ -280,4 +282,107 @@ test('the hero prefers the exterior, then the arrival interior, then treatment r
   // 시술실만 있으면 그것이라도 쓴다 — 첫 화면을 비워 두지 않는다.
   assert.match(pick([photo('room', 'PHOTO_TREATMENT_ROOM', '시술실')]) ?? '', /room\.jpg$/)
   assert.equal(pick([]), null)
+})
+
+function doctorPhoto(id: string, title: string) {
+  return {
+    id,
+    source_type: 'PHOTO_DOCTOR' as const,
+    title,
+    url: `/api/v1/public/hospitals/clinic/assets/${id}`,
+    asset_kind: 'VERIFIED_REAL_PERSON' as const,
+    approved_usage: ['DOCTOR_IDENTITY'],
+  }
+}
+
+function physician(
+  overrides: Partial<HospitalPhysician> & Pick<HospitalPhysician, 'id' | 'name'>,
+): HospitalPhysician {
+  return {
+    title: '원장',
+    specialties: [],
+    career: null,
+    credentials: null,
+    photo_url: null,
+    is_representative: false,
+    display_order: 0,
+    ...overrides,
+  }
+}
+
+const ASSET = (id: string) => `http://localhost:8000/api/v1/public/hospitals/clinic/assets/${id}`
+
+test('the representative photo is the representative physician’s, not the newest doctor photo', () => {
+  // 2026-10-14 강심장내과의원: 사진 목록은 최근 갱신 순이라 나중에 올린 두 번째 원장 사진이
+  // 맨 앞에 왔고, OG·구조화 데이터의 대표 사진이 대표원장이 아닌 그 사진이 됐다.
+  const photos = [doctorPhoto('associate', '박선영 원장'), doctorPhoto('director', '장현경 원장')]
+  assert.equal(
+    selectClinicDirectorImage({
+      slug: 'clinic',
+      director_photo_url: '/api/v1/public/hospitals/clinic/assets/director',
+      photos,
+      physicians: [
+        physician({ id: 'a', name: '장현경', is_representative: true, photo_url: ASSET('director') }),
+        physician({ id: 'b', name: '박선영', display_order: 1, photo_url: ASSET('associate') }),
+      ],
+    }),
+    ASSET('director'),
+  )
+})
+
+test('without a representative flag the 대표원장 title wins over list order', () => {
+  const photos = [doctorPhoto('associate', '부원장'), doctorPhoto('director', '대표원장')]
+  assert.equal(
+    selectClinicDirectorImage({
+      slug: 'clinic',
+      director_photo_url: null,
+      photos,
+      physicians: [
+        physician({ id: 'a', name: '박선영', title: '부원장', photo_url: ASSET('associate') }),
+        physician({ id: 'b', name: '장현경', title: '대표원장', display_order: 1, photo_url: ASSET('director') }),
+      ],
+    }),
+    ASSET('director'),
+  )
+})
+
+test('another physician’s linked photo never becomes the representative photo', () => {
+  // 대표에게 연결된 사진이 없으면 연결 없는 사진만 쓴다 — 부원장 얼굴로 대신하지 않는다.
+  const physicians = [
+    physician({ id: 'a', name: '장현경', is_representative: true }),
+    physician({ id: 'b', name: '박선영', display_order: 1, photo_url: ASSET('associate') }),
+  ]
+  assert.equal(
+    selectClinicDirectorImage({
+      slug: 'clinic',
+      director_photo_url: '/api/v1/public/hospitals/clinic/assets/associate',
+      photos: [doctorPhoto('associate', '박선영 원장')],
+      physicians,
+    }),
+    null,
+  )
+  assert.equal(
+    selectClinicDirectorImage({
+      slug: 'clinic',
+      director_photo_url: null,
+      photos: [doctorPhoto('associate', '박선영 원장'), doctorPhoto('legacy', '원장 사진')],
+      physicians,
+    }),
+    ASSET('legacy'),
+  )
+})
+
+test('representative selection: flag, then 대표원장, then 원장 (not 부원장), then order', () => {
+  const rows = [
+    physician({ id: 'vice', name: 'A', title: '부원장', display_order: 0 }),
+    physician({ id: 'head', name: 'B', title: '원장', display_order: 2 }),
+    physician({ id: 'chief', name: 'C', title: '대표원장', display_order: 3 }),
+  ]
+  assert.equal(selectRepresentativePhysician(rows)?.id, 'chief')
+  assert.equal(selectRepresentativePhysician(rows.slice(0, 2))?.id, 'head')
+  assert.equal(
+    selectRepresentativePhysician([...rows, physician({ id: 'flag', name: 'D', title: '과장', display_order: 9, is_representative: true })])?.id,
+    'flag',
+  )
+  assert.equal(selectRepresentativePhysician([]), null)
 })

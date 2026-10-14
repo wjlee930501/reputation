@@ -101,7 +101,7 @@ export async function GET(_req: Request, { params: paramsPromise }: Props) {
       for (const physician of physicians) {
         const name = llmsTextValue(physician.name)
         if (!name) continue
-        const title = llmsTextValue(physician.title || (physician.isRepresentative ? '대표원장' : '원장'))
+        const title = llmsTextValue(physician.title || '원장')
         const specialties = physician.specialties
           .map((value) => llmsTextValue(value))
           .filter(Boolean)

@@ -48,14 +48,15 @@ async def test_real_redis_receipt_boundary_duplicate_and_zero_kill_switch(monkey
     monkeypatch.setattr(cost_guard.settings, "COST_GUARD_MONTHLY_CONTENT_CALLS", 100)
     try:
         await client.delete(daily_key, monthly_key, receipt_key, cost_guard.KILL_SWITCH_KEY)
+        # 일 상한 100은 일정 경로 예약(150)보다 작아 일정 외 lane은 0건이다 — 영수증 경계만 본다.
         first = await cost_guard.reserve(
             "content", count=5, reservation_id=reservation_id, reserved_at=before,
-            redis_client=client,
+            lane=cost_guard.LANE_SCHEDULE, redis_client=client,
         )
         duplicate = await cost_guard.reserve(
             "content", count=5, reservation_id=reservation_id,
             reserved_at=datetime(2026, 9, 1, 0, 1, tzinfo=cost_guard._KST),
-            redis_client=client,
+            lane=cost_guard.LANE_SCHEDULE, redis_client=client,
         )
         assert first.receipt == duplicate.receipt
         assert int(await client.get(daily_key)) == 5

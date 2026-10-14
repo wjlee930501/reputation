@@ -1957,13 +1957,12 @@ def _best_support(text: str, linked: list[Any]) -> tuple[Any | None, float]:
     return best, best_ratio
 
 
+# 필수 문구는 원장의 목소리 노트(진료 철학·환자 약속·핵심 메시지)에서만 고른다. 검사·시술·약 설명
+# (TREATMENT_SIGNAL 등)은 모든 글에 원문 그대로 들어가므로 고르지 않는다(2026-10-14 신기한속 v3).
 _MUST_USE_SURVEY_NOTE_ORDER = (
     EvidenceNoteType.DOCTOR_PHILOSOPHY.value,
     EvidenceNoteType.PATIENT_PROMISE.value,
-    EvidenceNoteType.TONE_SIGNAL.value,
     EvidenceNoteType.KEY_MESSAGE.value,
-    EvidenceNoteType.TREATMENT_SIGNAL.value,
-    EvidenceNoteType.LOCAL_CONTEXT.value,
 )
 
 

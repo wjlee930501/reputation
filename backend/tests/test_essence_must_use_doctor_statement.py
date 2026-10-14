@@ -177,4 +177,67 @@ def test_consumption_drops_stored_instruction_sentences() -> None:
 def test_policy_version_was_bumped_for_the_rebuild() -> None:
     """옛 정책(2026-10-14.3)으로 만든 자동 판은 다음 정기 조정에서 다시 만들어진다."""
 
-    assert AUTOMATIC_ESSENCE_POLICY_VERSION != "2026-10-14.3"
+    assert AUTOMATIC_ESSENCE_POLICY_VERSION not in {"2026-10-14.3", "2026-10-14.4"}
+
+
+SEJONG_V6_DRUG_EXAM = [
+    "저혈당 위험이 적고 복용이 편리하여 노인 환자나 외래에서 부담 없이 처방하기 좋습니다.",
+    "트립탄(Triptan) 계열 (Sumatriptan, Zolmitriptan 등): 편두통 발작 시 혈관을 수축시켜 통증을 조절합니다.",
+    "PWV (Pulse Wave Velocity, 맥파전달속도- 심장에서 박출된 맥파가 대동맥을 타고 말초(발목 등)로 전달되는 속도를 측정합니다.",
+]
+SINGIHAN_V3_EXAM = [
+    "유방촬영술에서 종괴성 병변이 의심되는 경우 종괴의 유무를 확인하고 종괴의 특성을 정확하게 평가하기 위하여 시행됩니다.",
+    "갑상선은 목의 중간에서 약간 아래부분에 위치한 장기로써 염증이나 종양의 유무를 확인하기위해 검사합니다.",
+]
+SINGIHAN_V3_KEEP = "빠른 내시경이 아니라 바른 내시경 검사를 지향하며, 매주 회의를 통해 진료 과정을 점검합니다."
+
+
+@pytest.mark.parametrize("sentence", SEJONG_V6_DRUG_EXAM)
+def test_drug_and_exam_descriptions_are_not_doctor_statements(sentence: str) -> None:
+    assert is_not_doctor_statement(sentence) is True
+
+
+def test_exam_descriptions_in_treatment_notes_are_never_must_use() -> None:
+    """신기한속 v3 재현: 홈페이지의 검사 설명(TREATMENT_SIGNAL)은 고르지 않고 진료 철학 노트만 쓴다."""
+
+    homepage = _source(SourceType.HOMEPAGE, " ".join(SINGIHAN_V3_EXAM))
+    exam_notes = [_note(homepage, text, EvidenceNoteType.TREATMENT_SIGNAL) for text in SINGIHAN_V3_EXAM]
+    internal = _source(SourceType.INTERNAL_NOTE, SINGIHAN_V3_KEEP)
+    philosophy = _note(internal, SINGIHAN_V3_KEEP, EvidenceNoteType.DOCTOR_PHILOSOPHY)
+
+    pruned, report = prune_automatic_candidate(
+        _payload(must_use_messages=SINGIHAN_V3_EXAM + [SINGIHAN_V3_KEEP]),
+        exam_notes + [philosophy],
+        [homepage, internal],
+    )
+
+    assert pruned["must_use_messages"] == [SINGIHAN_V3_KEEP]
+    assert report.must_use["mode"] == MUST_USE_MODE_SOURCE
+
+
+@pytest.mark.parametrize(
+    "note_type",
+    [EvidenceNoteType.TREATMENT_SIGNAL, EvidenceNoteType.TONE_SIGNAL, EvidenceNoteType.LOCAL_CONTEXT],
+)
+def test_only_doctor_voice_note_kinds_feed_must_use(note_type) -> None:
+    sentence = "저는 환자분이 이해하실 때까지 몇 번이고 설명드립니다."
+    survey = _source(SourceType.INTERVIEW, sentence)
+
+    pruned, report = prune_automatic_candidate(
+        _payload(must_use_messages=[sentence]), [_note(survey, sentence, note_type)], [survey]
+    )
+
+    assert pruned["must_use_messages"] == []
+    assert report.must_use["mode"] == MUST_USE_MODE_NONE
+
+
+def test_survey_drug_key_messages_are_dropped_and_empty_is_allowed() -> None:
+    """세종다온 v6 재현: 설문 KEY_MESSAGE의 약·검사 설명뿐이면 필수 문구는 비운다."""
+
+    survey = _source(SourceType.INTERVIEW, " ".join(SEJONG_V6_DRUG_EXAM))
+    notes = [_note(survey, text, EvidenceNoteType.KEY_MESSAGE) for text in SEJONG_V6_DRUG_EXAM]
+
+    pruned, report = prune_automatic_candidate(_payload(), notes, [survey])
+
+    assert pruned["must_use_messages"] == []
+    assert report.must_use["mode"] == MUST_USE_MODE_NONE
