@@ -1,6 +1,6 @@
 import { selectDoctorRole } from './clinic-design.ts'
 import type { DirectorCredentials, Hospital, HospitalPhysician } from './hospital-payload.ts'
-import { selectVerifiedDoctorImage } from './clinic-theme.ts'
+import { selectUnlinkedVerifiedDoctorImage, selectVerifiedDoctorImage } from './clinic-theme.ts'
 
 /**
  * 화면·구조화 데이터·llms.txt가 함께 쓰는 의료진 한 명.
@@ -60,8 +60,14 @@ export function resolveClinicPhysicians(hospital: PhysicianSource): ClinicPhysic
     // 종전처럼 검증된 원장 사진을 그 사람에게 붙여 배포 직후 초상이 사라지지 않게 한다.
     // 대표가 여럿이면 어느 사람의 사진인지 단정할 수 없으므로 연결된 사진만 쓴다.
     const representatives = listed.filter((physician) => physician.is_representative)
+    // 다른 의료진에게 연결된 사진은 그 사람의 얼굴이므로 대표에게 붙이지 않는다.
     const legacyPhoto =
-      representatives.length === 1 ? selectVerifiedDoctorImage(hospital.photos ?? []) : null
+      representatives.length === 1
+        ? selectUnlinkedVerifiedDoctorImage(
+            hospital.photos ?? [],
+            listed.filter((physician) => !physician.is_representative),
+          )
+        : null
     return listed.map((physician) => ({
       id: physician.id,
       name: physician.name.trim(),
@@ -98,24 +104,22 @@ export function clinicPhysicianLayout(count: number): ClinicPhysicianLayout {
   return 'grid'
 }
 
-/** 카드 상단 eyebrow. 대표원장은 카드마다 한 번만 적는다. */
+/**
+ * 이름 위 라벨 — 운영자가 적은 그 사람의 직함(대표원장·부원장…)을 모든 의료진에게 그대로
+ * 쓴다. 직함이 비면 아무것도 적지 않는다. 대표 표시는 대표 사진·순서만 정하고 라벨 문구를
+ * 만들지 않는다 — 직함이 빈 대표에게 `대표원장`을 지어 붙이던 문제(2026-10-14 노원탑365의원).
+ */
 export function physicianEyebrow(physician: ClinicPhysician): string | null {
-  return physician.isRepresentative ? '대표원장' : null
+  return physician.title?.trim() || null
 }
 
 /**
- * 카드의 단일 역할 라벨.
- *
- * 직함이 eyebrow와 같은 문자열이면 `대표원장 대표원장`이 된다 — 기존 `협진 협진`
- * 가드와 같은 이유로 한 번만 남긴다. 직함이 없으면 승인된 전문의 자격에서 역할을
- * 가져오되, 그것도 eyebrow와 같으면 비운다.
+ * 이름 아래 역할 라벨. 직함은 이미 이름 위에 있으므로, 직함이 없을 때만 승인된 전문의
+ * 자격에서 역할을 가져온다(`대표원장` 같은 직함 문자열은 자격에서 고르지 않는다).
  */
 export function physicianRoleLabel(physician: ClinicPhysician): string | null {
-  const eyebrow = physicianEyebrow(physician)
-  const fromCredentials = selectDoctorRole(physician.credentials?.board_certifications ?? [])
-  const role = physician.title || fromCredentials
-  if (!role) return null
-  return role === eyebrow ? null : role
+  if (physicianEyebrow(physician)) return null
+  return selectDoctorRole(physician.credentials?.board_certifications ?? [])
 }
 
 /**
