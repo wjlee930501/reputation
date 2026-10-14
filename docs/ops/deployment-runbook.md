@@ -12,6 +12,7 @@ main `5b13b02c`(PR #258 + #256; api `00253-nnp`, worker `00243-h45`, beat `00238
 - **롤백**: 트래픽만 되돌리면 옛 코드가 참고자료 0개 의료 글·검수 장애 선발행 글을 공개 표면에서 다시 숨긴다(롤백 전 q16c를 다시 뜬다).
   카탈로그 판이 `2026-10-13.1`로 돌아가 종착 슬롯 재평가가 반복된다. 특수 롤백 이미지는 없다.
 - 후속으로 main `d5f8e333`(PR #259)을 14:41~14:51에 Backend만 배포했다(api `00254-qv8`·worker `00244-mhh`·beat `00239-9jc`, 롤백 좌표 `.omo/rollback-mufix/backend`).
+  이어 main `94d8851d`(PR #265)을 16:05~16:12에 Backend만 배포했다(api `00259-2bc`·worker `00249-gwt`·beat `00244-n9r`, 롤백 좌표 `.omo/rollback-mufix2/backend`).
 - readiness 18/18, 병원 헬스 11/11. 상세는 [배포 기록](../releases/2026-10-14-p4b-gates-production.md).
 
 ## 이전 운영 배포 — 2026-10-14 Phase 4-A 온보딩 자율화
