@@ -56,7 +56,8 @@ def _stranded_content_stmt(today: date):
             ContentItem.status.in_(RECOVERABLE_STATUSES),
             ContentItem.first_published_at.is_(None),
             ContentItem.published_at.is_(None),
-            ContentItem.human_edited_at.is_(None),
+            # 사람이 고친 미발행 글도 옮긴다(2026-10-14 누락 방지 2). 종전에는 7일 창이 지나면
+            # 어떤 루프도 집지 않았다. 옮기는 것은 날짜뿐이고 본문·편집 표시는 그대로다.
             _nightly_generation_claim_filter(_nightly_generation_claim_cutoff()),
             or_(
                 # 7일 catch-up 창 안의 슬롯은 옮기지 않는다. 날짜는 시도 지문이 아니므로

@@ -212,7 +212,10 @@ from app.services.essence_sources import (
     required_text_source_predicate,
     start_source_processing_best_effort,
 )
-from app.services.finding_criticality import review_has_critical_finding
+from app.services.finding_criticality import (
+    review_has_critical_finding,
+    review_lacks_tier_verdict,
+)
 from app.services.hospital_activation import (
     AUTO_ACTIVATE_ACTOR,
     activate_hospital_sync,
@@ -611,6 +614,10 @@ from app.workers.nightly_generation_batch import (
     write_back_generated_image,
     write_back_published_image_certificate,
 )
+from app.workers.publish_revision_incident import (
+    RevisionNotCreated,
+    record_revision_not_created,
+)
 from app.workers.topic_swap_fallback import (
     TOPIC_SWAPPED_REASON,
     swap_exhausted_topics,
@@ -769,6 +776,31 @@ def _stored_review_has_uncertain_finding(item: ContentItem) -> bool:
         and str(finding.get("severity") or "").upper() == "UNCERTAIN"
         for finding in findings
     )
+
+
+# 등급 판정이 없는 옛 저장 검수(v3 이전)를 v3 검수로 한 번 다시 산 본문 hash(누락 방지 3).
+LEGACY_TIER_REREVIEW_KEY = "legacy_tier_rereview"
+
+
+def legacy_tier_rereview_due(item: ContentItem) -> bool:
+    """등급(`critical`) 없는 옛 차단 검수를 v3 검수로 한 번 다시 살 때인가(2026-10-14 누락 방지 3).
+
+    옛 저장 지적은 등급이 없어 Critical로 읽히고(`classify_finding`), 그래서 결정적 삭제도 교정도
+    맡지 않은 채 하루 표본 예산의 재검수만 며칠씩 기다렸다. 본문 hash당 한 번, 표본 예산 밖에서 v3
+    검수를 사서 새 검수자의 `critical` 판정이 계단을 정하게 한다. 같은 본문으로는 다시 사지 않는다.
+    """
+
+    if not settings.CONTENT_FINDING_TIERS_ENABLED or not getattr(item, "body", None):
+        return False
+    review = _stored_ai_review(item)
+    if not review.get("blocking") or not review_lacks_tier_verdict(review):
+        return False
+    if _stored_auto_correction_state(item).get("exhausted"):
+        # 교정 상한을 다 쓴 주제는 재검수를 더 사지 않는다 — 교체·사람의 계단이 맡는다.
+        return False
+    summary = getattr(item, "essence_check_summary", None)
+    done = summary.get(LEGACY_TIER_REREVIEW_KEY) if isinstance(summary, dict) else None
+    return done != candidate_sha256(item)
 
 
 def _stored_model_declared_hard(item: ContentItem) -> bool:
@@ -7258,7 +7290,13 @@ def _generate_single_content_item(
             not stored_attempt.get("reason")
             or retry_is_due(stored_attempt, scheduled_date=getattr(item, "scheduled_date", None))
         )
-        if sample_rereview_due or stored_assessment.code in {
+        # 등급 없는 옛 차단 검수는 표본 예산과 무관하게 본문 hash당 한 번 v3로 다시 산다(누락 방지 3).
+        legacy_tier_rereview = (
+            stored_assessment.code == "CONTENT_AI_HARD_FINDING"
+            and not review_only
+            and legacy_tier_rereview_due(item)
+        )
+        if legacy_tier_rereview or sample_rereview_due or stored_assessment.code in {
             "CONTENT_AI_REVIEW_STALE",
             "CONTENT_AI_REVIEW_UNAVAILABLE",
             "CONTENT_AI_REVIEW_CONFIG_ERROR",
@@ -7316,10 +7354,17 @@ def _generate_single_content_item(
                 else {}
             )
             store_ai_review(summary, refreshed_review.payload())
+            if legacy_tier_rereview:
+                # 이 본문으로는 다시 사지 않는다 — 새 검수의 등급이 다음 계단을 정한다.
+                summary[LEGACY_TIER_REREVIEW_KEY] = candidate_sha256(item)
             item.essence_check_summary = summary
             db.commit()
             stored_assessment = assess_content_publication(item, philosophy)
-            if stored_assessment.code == "CONTENT_AI_HARD_FINDING":
+            if legacy_tier_rereview and not sample_rereview_due:
+                # 표본 예산 밖의 한 번이다 — 시도 계수를 올리지 않는다. 풀렸으면 기록을 지운다.
+                if stored_assessment.code != "CONTENT_AI_HARD_FINDING":
+                    _clear_generation_attempt(db, item)
+            elif stored_assessment.code == "CONTENT_AI_HARD_FINDING":
                 # 재검수해도 막힌다. 표본 예산을 한 번 쓴 것으로 계수해 하루 한도와
                 # 3일 소진이 적용되게 한다(모델이 HARD로 단정했다면 곧바로 종착이다).
                 _remember_generation_attempt(
@@ -8491,8 +8536,22 @@ def _auto_publish_one(
             ).one()
             db.refresh(item, attribute_names=["active_revision_id"])
             if item.active_revision_id is None or revision_write.created_count != 1:
+                # 되돌리면 행이 만료된다 — 기록할 사실을 먼저 읽는다.
+                revision_fact = RevisionNotCreated(
+                    content_id=item.id,
+                    hospital_id=hospital.id,
+                    hospital_name=hospital.name,
+                    scheduled_date=item.scheduled_date,
+                    title=item.title,
+                    actor=AUTO_PUBLISH_ACTOR,
+                    created_count=getattr(revision_write, "created_count", None),
+                    active_revision_set=item.active_revision_id is not None,
+                )
                 db.rollback()
                 _log_auto_publish_skip("approved_revision_not_created", content_id, item=item)
+                # 종전에는 로그 한 줄뿐이라 매시간 조용히 반복됐다. 새 트랜잭션에서 발행 보류 감사
+                # (감시의 보류 집계가 읽는다)와 글당 개발 사고 하나를 남긴다.
+                record_revision_not_created(revision_fact, run_async=_run_async)
                 return None
         write_audit_log_sync(
             db,

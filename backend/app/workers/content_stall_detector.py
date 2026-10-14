@@ -332,6 +332,11 @@ def run_stall_detector(db: Session, *, now: datetime | None = None) -> StallRepo
             ):
                 report.count(RUNG_LEGACY)
             continue
+        if tasks.legacy_tier_rereview_due(item):
+            # 등급 없는 옛 차단 검수 — 교체·당기기보다 먼저 v3 재검수 한 번을 사러 보낸다(누락 방지 3).
+            # 생성 경로가 표본 예산 밖에서 본문 hash당 한 번만 산다(`tasks.legacy_tier_rereview_due`).
+            dispatch_ids.append(item.id)
+            continue
         if exhausted_body_sample_reason(item) is not None:
             if _claim_action(db, item, RUNG_SWAP, now=observed):
                 swap_needed = True

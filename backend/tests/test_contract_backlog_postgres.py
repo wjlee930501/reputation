@@ -92,10 +92,8 @@ def test_explicitly_disabled_schedules_are_not_silently_restarted(db):
     assert selected(db, hospital) == []
 
 
-@pytest.mark.parametrize(
-    "field", ["generation_claim_token", "human_edited_at", "first_published_at", "published_at"]
-)
-def test_backlog_does_not_move_claimed_human_or_previous_publication_rows(db, field):
+@pytest.mark.parametrize("field", ["generation_claim_token", "first_published_at", "published_at"])
+def test_backlog_does_not_move_claimed_or_previous_publication_rows(db, field):
     hospital, old, item = seed(db)
     old.is_active = True
     setattr(
@@ -107,6 +105,18 @@ def test_backlog_does_not_move_claimed_human_or_previous_publication_rows(db, fi
         item.generation_claimed_at = datetime.now(UTC)
     db.flush()
     assert selected(db, hospital) == []
+
+
+def test_human_edited_unpublished_row_past_the_window_is_moved_not_stranded(db):
+    """누락 방지 2(2026-10-14): 사람이 고친 미발행 글도 7일 창 밖이면 날짜만 옮긴다."""
+
+    hospital, old, item = seed(db)
+    old.is_active = True
+    item.title = "사람이 고친 글"
+    item.body = "사람이 고친 본문"
+    item.human_edited_at = datetime(2026, 9, 1, tzinfo=UTC)
+    db.flush()
+    assert selected(db, hospital) == [item]
 
 
 @pytest.mark.parametrize("status", [HospitalStatus.PAUSED, HospitalStatus.PENDING_DOMAIN])

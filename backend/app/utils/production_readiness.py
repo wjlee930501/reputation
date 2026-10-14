@@ -52,6 +52,7 @@ EXPECTED_BEAT_SCHEDULES = {
     "refresh-reused-content-images",
     "post-publish-ai-review",
     "morning-content-auto-publish",
+    "content-auto-publish-after-sweeps",
     "project-milestone-events",
     "purge-expired-leads",
     "reconcile-autonomous-workflows",

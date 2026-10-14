@@ -241,3 +241,16 @@ def test_gap_summary_runs_after_the_day_eight_finalize():
     assert schedule.day_of_month == set(range(1, 9))
     assert schedule.hour == {9}
     assert REDBEAT_SCHEDULE_VERSION >= "2026-10-12.1"
+
+
+def test_publisher_runs_again_after_each_daytime_sweep_and_at_2330():
+    """누락 방지 4(2026-10-14): 12·18·22시 스윕과 같은 분의 발행기가 놓친 오늘 글을 :30에 다시 본다."""
+
+    main = celery_app.conf.beat_schedule["morning-content-auto-publish"]
+    after = celery_app.conf.beat_schedule["content-auto-publish-after-sweeps"]
+    assert after["task"] == main["task"] == "app.workers.tasks.morning_content_auto_publish"
+    assert after["schedule"].hour == {12, 18, 22, 23}
+    assert after["schedule"].minute == {30}
+    assert main["schedule"].minute == {0}
+    assert after["options"]["headers"] == main["options"]["headers"]
+    assert REDBEAT_SCHEDULE_VERSION >= "2026-10-14.1"

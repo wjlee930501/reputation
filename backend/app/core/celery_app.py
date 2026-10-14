@@ -32,7 +32,7 @@ from app.workers.worker_liveness import touch_heartbeat
 # Redis에 저장된 정적 스케줄과 배포 이미지의 선언을 맞출 때 사용하는 명시적 버전.
 # beat_schedule을 추가/삭제/시간 변경할 때 반드시 올린다. 배포 스크립트의
 # reconcile-redbeat Job이 이 버전을 기록하고, --check 모드가 드리프트를 차단한다.
-REDBEAT_SCHEDULE_VERSION = "2026-10-12.1"
+REDBEAT_SCHEDULE_VERSION = "2026-10-14.1"
 
 # Worker logs share the API's structured format + request_id filter (OBS-1/OBS-2).
 configure_logging(level=settings.LOG_LEVEL, json_logs=settings.LOG_JSON)
@@ -407,6 +407,15 @@ celery_app.conf.update(
             # complete the SAME due slots hourly, including the last calendar day.
             # No provider calls or publication gate bypass are added here.
             "schedule": crontab(hour="8-23", minute=0),
+            "options": {"headers": build_dispatch_headers("morning-content-auto-publish")},
+        },
+        # 12:30 · 18:30 · 22:30 · 23:30 — 같은 발행기를 복구 스윕(12·18·22시 정각) 뒤에 한 번 더
+        # 돌린다(2026-10-14 누락 방지 4). 정각에는 발행기와 스윕이 같은 분에 돌아 스윕이 고치는 행을
+        # 발행기가 건너뛰고(row_locked_or_missing), 22시 스윕이 고친 오늘 글은 23시 발행기를 놓칠 수
+        # 있었다. 23:30은 오늘 글의 마지막 발행 기회다. 공급자 호출·게이트 우회는 없다.
+        "content-auto-publish-after-sweeps": {
+            "task": "app.workers.tasks.morning_content_auto_publish",
+            "schedule": crontab(hour="12,18,22,23", minute=30),
             "options": {"headers": build_dispatch_headers("morning-content-auto-publish")},
         },
         # 매주 월요일 09:15 — 직전 주에 남은 결정적 생성/발행 검수 차단을

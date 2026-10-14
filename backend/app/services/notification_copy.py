@@ -115,6 +115,11 @@ _CATALOG = {
         "개발 담당자는 Redis 연결을 확인해 주세요. 그동안 자동 AI 호출은 상한 확인 없이 계속됩니다.",
         "운영센터 비용 보기",
     ),
+    "AUTO_PUBLISH_REVISION_NOT_CREATED": ActionCopy(
+        "발행 승인 판 생성 실패",
+        "개발 담당자는 승인 판 SQL이 이 글을 받아 주지 않는 조건을 확인해 주세요. 발행기는 매시간 다시 시도합니다.",
+        "콘텐츠 보기",
+    ),
     "PROVIDER_USAGE_SPOOL_TRUNCATED": ActionCopy(
         "AI 사용량 기록 일부 유실",
         "개발 담당자는 DB 저장 실패 원인을 확인해 주세요. 버려진 사용량 기록은 되살릴 수 없습니다.",

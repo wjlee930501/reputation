@@ -188,7 +188,8 @@ def test_exhausted_body_sample_is_a_candidate():
         # 승인 자료가 틀렸다는 종착 — 주제를 바꿔도 해결되지 않는다.
         {"essence_check_summary": _attempt(retry_class=GenerationRetryClass.INPUT_CHANGE_REQUIRED)},
         # 이미 한 번 바꿨다.
-        {"topic_swap_history": [{"to_target_id": "x"}]},
+        # 누락 방지 5(2026-10-14): 원인과 무관하게 교체 두 번 — 두 번을 다 쓴 슬롯은 후보가 아니다.
+        {"topic_swap_history": [{"to_target_id": "x"}, {"to_target_id": "y"}]},
     ],
 )
 def test_non_candidates_are_never_swapped(overrides):
@@ -274,9 +275,12 @@ def test_exhausted_writer_budget_after_the_last_swap_is_left_to_the_operator_pat
     )
     attempt = record_topic_swap(attempt, from_topic_id="topic-a", to_topic_id="topic-b")
     attempt = _bought_writers(attempt, topic="topic-b", count=WRITER_RESULT_LIMIT)
+    # 누락 방지 5(2026-10-14): 원인과 무관하게 교체는 두 번이다 — 두 번째 교체 뒤의 소진이다.
+    attempt = record_topic_swap(attempt, from_topic_id="topic-b", to_topic_id="topic-c")
+    attempt = _bought_writers(attempt, topic="topic-c", count=WRITER_RESULT_LIMIT)
     item = _item(
         essence_check_summary=_budget_exhausted_summary(attempt),
-        topic_swap_history=[{"to_target_id": "topic-b"}],
+        topic_swap_history=[{"to_target_id": "topic-b"}, {"to_target_id": "topic-c"}],
     )
 
     # Then: 다시 교체하지 않는다 — 기존 사다리가 OPERATOR_REQUIRED로 넘긴다.
@@ -1161,10 +1165,13 @@ def test_the_same_day_grant_is_one_writer_session_only(monkeypatch):
 
 
 def test_a_second_same_day_swap_pass_grants_nothing(chosen_target, recorded_attempts):
-    """교체는 슬롯 평생 한 번이다 — 같은 날 다시 소진돼 보여도 두 번째 당일 1회는 없다."""
+    """교체는 슬롯 평생 두 번이다(누락 방지 5) — 다 쓴 뒤 같은 날 다시 소진돼 보여도 더는 없다."""
 
     item = _item(
-        topic_swap_history=[{"to_target_id": "new", "incident_recovered": True}],
+        topic_swap_history=[
+            {"to_target_id": "first", "incident_recovered": True},
+            {"to_target_id": "new", "incident_recovered": True},
+        ],
         essence_check_summary=_attempt(),  # 새 주제도 소진된 것처럼 보이는 기록
     )
     db = _FakeDB([item])

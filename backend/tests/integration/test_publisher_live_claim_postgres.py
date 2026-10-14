@@ -225,10 +225,10 @@ def test_live_claimed_rows_are_left_alone_until_the_last_run_reports_the_empty_s
     assert control.status is ContentStatus.PUBLISHED  # 대조군 — 같은 판정의 claim 없는 글
 
     # ── 23시(예정일의 마지막 발행기) — 워커가 22:10에 다시 잡았다 ──
-    _claim(db, claimed, _kst(TODAY, 22, 10))
+    _claim(db, claimed, _kst(TODAY, 22, 40))
     before = {item.id: _stored(db, item) for item in claimed}
 
-    _publisher_run(db, monkeypatch, _kst(TODAY, 23))
+    _publisher_run(db, monkeypatch, _kst(TODAY, 23, 30))
 
     assert [(call["item_id"], call["code"]) for call in incidents] == [
         (slot.id, "CONTENT_NOT_GENERATED")
@@ -264,7 +264,7 @@ def test_an_unclaimed_empty_slot_gets_the_same_line_and_no_duplicate_the_next_da
     slot = _empty_slot(db, hospital, schedule, sequence_no=1)
     db.commit()
 
-    _publisher_run(db, monkeypatch, _kst(TODAY, 23))
+    _publisher_run(db, monkeypatch, _kst(TODAY, 23, 30))
     assert [(call["item_id"], call["code"]) for call in incidents] == [
         (slot.id, "CONTENT_NOT_GENERATED")
     ]
@@ -301,10 +301,10 @@ def test_every_live_claimed_shape_is_byte_identical_after_the_last_run_with_real
     db = real_incidents
     hospital, rows = _three_shapes(db, monkeypatch)
     slot, settled, unsettled = rows
-    _claim(db, rows, _kst(TODAY, 22, 10))
+    _claim(db, rows, _kst(TODAY, 22, 40))
     before = {row.id: _row_json(db, row) for row in rows}
 
-    fetcher = _publisher_run(db, monkeypatch, _kst(TODAY, 23))
+    fetcher = _publisher_run(db, monkeypatch, _kst(TODAY, 23, 30))
 
     assert {row.id: _row_json(db, row) for row in rows} == before  # row_to_json 바이트 그대로
     assert fetcher.calls == [DEAD_URL]  # 미확정 참고자료는 종전 23시처럼 잠금 전에 GET한다

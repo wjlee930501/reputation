@@ -81,8 +81,10 @@ REFERENCE_SITE_UNREACHABLE_CAUSE = (
     "참고 자료 기관 사이트에 접속하지 못해 주소를 확인하지 못했습니다 — 발행을 미루고 "
     "다음 발행 시간대에 자동으로 다시 확인합니다."
 )
-# 발행기는 08~23시 매시 돈다(`celery_app` beat). 이 시각 실행이 예정일의 마지막 기회다.
+# 발행기는 08~23시 정각과 12:30·18:30·22:30·23:30에 돈다(`celery_app` beat). 23:30 실행이 예정일의
+# 마지막 기회다(2026-10-14 누락 방지 4 — 그 전에는 23:00이었다).
 REFERENCE_OUTAGE_LAST_PUBLISHER_HOUR = 23
+REFERENCE_OUTAGE_LAST_PUBLISHER_MINUTE = 30
 
 
 # 참고자료를 고칠 수 있는 상태(발행 전). 공개·보존된 글의 참고자료는 자동 경로가 바꾸지 않는다.
@@ -494,11 +496,13 @@ def unverified_reference_details(item: object, *, now: datetime | None = None) -
 
 
 def reference_outage_alert_due(scheduled_date: object, now_kst: Any) -> bool:
-    """기관 사이트 장애로 미룬 글을 알릴 때인가 — 예정일의 마지막 발행기(23시)부터."""
+    """기관 사이트 장애로 미룬 글을 알릴 때인가 — 예정일의 마지막 발행기(23:30)부터."""
 
     if scheduled_date is None:
         return False
     today = now_kst.date()
     return scheduled_date < today or (
-        scheduled_date == today and now_kst.hour >= REFERENCE_OUTAGE_LAST_PUBLISHER_HOUR
+        scheduled_date == today
+        and (now_kst.hour, now_kst.minute)
+        >= (REFERENCE_OUTAGE_LAST_PUBLISHER_HOUR, REFERENCE_OUTAGE_LAST_PUBLISHER_MINUTE)
     )

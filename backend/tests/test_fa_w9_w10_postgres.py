@@ -456,8 +456,10 @@ def test_writer_exhausted_slot_without_swap_budget_is_left_to_the_ladder(env, mo
         created_hours_ago=30,
     )
     row = env.db.get(ContentItem, item.id)
+    # 누락 방지 5(2026-10-14): Critical이 아닌 원인도 교체 두 번 — 두 번을 다 쓴 슬롯이다.
     row.topic_swap_history = [
-        {"from_target_id": None, "swapped_at": (now - timedelta(days=2)).isoformat()}
+        {"from_target_id": None, "swapped_at": (now - timedelta(days=3)).isoformat()},
+        {"from_target_id": None, "swapped_at": (now - timedelta(days=2)).isoformat()},
     ]
     env.db.commit()
     monkeypatch.setattr(
@@ -523,3 +525,141 @@ def test_writer_exhausted_swap_without_a_candidate_topic_changes_nothing(env) ->
     assert content_stall_detector._swap_writer_exhausted(env.db, item.id, now=now) is False
     env.db.expire_all()
     assert not env.db.get(ContentItem, item.id).topic_swap_history
+
+
+# ── 2026-10-14 누락 방지 1·3 ────────────────────────────────────────────────────
+
+
+def _legacy_blocked_review(body_sha: str) -> dict:
+    return {
+        "status": "REVISE",
+        "blocking": True,
+        "schema_version": "content-review-v2",
+        "candidate_sha256": body_sha,
+        "findings": [
+            {
+                "kind": "HOSPITAL_FACT",
+                "severity": "UNCERTAIN",
+                "target": "CANDIDATE_TEXT",
+                "quote": "근거 없는 병원 문장입니다.",
+                "message": "근거가 없습니다.",
+            }
+        ],
+    }
+
+
+def test_stall_detector_sends_a_legacy_unrated_block_to_one_v3_rereview(env, monkeypatch) -> None:
+    """누락 방지 3: 등급 없는 옛 차단 검수는 교체·당기기보다 먼저 생성(재검수)으로 보낸다."""
+
+    from app.core.config import settings
+    from app.workers import tasks
+
+    monkeypatch.setattr(settings, "CONTENT_FINDING_TIERS_ENABLED", True)
+    now = datetime.now(UTC)
+    hospital = _hospital(env, active=True)
+    yesterday = now.astimezone(KST).date() - timedelta(days=1)
+    attempt = {
+        "reason": "CONTENT_AI_HARD_FINDING",
+        "retry_class": "SAMPLE_RECOVERABLE",
+        "observed_at": (now - timedelta(hours=8)).isoformat(),
+        "next_retry_at": (now + timedelta(hours=10)).isoformat(),
+        "exhausted_days": 1,
+    }
+    item = _slot(env, hospital, scheduled=yesterday, attempt=attempt, created_hours_ago=30)
+    item.title = "골다공증 안내"
+    item.body = "## 본문\n근거 없는 병원 문장입니다."
+    env.db.commit()
+    sha = tasks.candidate_sha256(item)
+    item.essence_check_summary = {
+        GENERATION_ATTEMPT_KEY: attempt,
+        "ai_review": _legacy_blocked_review(sha),
+    }
+    env.db.commit()
+
+    assert tasks.legacy_tier_rereview_due(item) is True
+    dispatched: list[uuid.UUID] = []
+    monkeypatch.setattr(
+        content_stall_detector,
+        "_dispatch",
+        lambda db, tasks_, recorder_cls, ids, *rest: dispatched.extend(ids) or len(ids),
+    )
+    monkeypatch.setattr(
+        content_stall_detector,
+        "find_stalled_items",
+        lambda db, *, now: [db.get(ContentItem, item.id)],
+    )
+    report = content_stall_detector.run_stall_detector(env.db, now=now)
+    assert dispatched == [item.id]
+    assert "PULL_RETRY" not in report.actions and "TOPIC_SWAP" not in report.actions
+
+    # 같은 본문으로 한 번 산 뒤에는 다시 사지 않는다(본문 hash당 한 번).
+    item.essence_check_summary = {
+        **item.essence_check_summary,
+        tasks.LEGACY_TIER_REREVIEW_KEY: sha,
+    }
+    env.db.commit()
+    assert tasks.legacy_tier_rereview_due(item) is False
+
+
+def test_revision_not_created_leaves_an_audit_and_one_developer_incident(env, monkeypatch) -> None:
+    """누락 방지 1: 판 미생성 건너뛰기는 발행 보류 감사와 글당 개발 사고 하나를 남기고, 발행되면 닫힌다."""
+
+    from sqlalchemy.orm import sessionmaker
+
+    from app.services.incident_types import IncidentAudience, incident_audience
+    from app.services.post_publish_review_policy import AUTO_PUBLISH_BLOCKED_ACTION
+    from app.workers import publish_revision_incident as revision
+
+    url = require_db_url(_URL_ENV)
+    sync_engine = env.db.get_bind()
+    monkeypatch.setattr(revision, "SyncSessionLocal", sessionmaker(sync_engine))
+    async_engine = create_async_engine(
+        url.replace("postgresql://", "postgresql+asyncpg://", 1), poolclass=NullPool
+    )
+    sessions = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
+    monkeypatch.setattr(revision, "get_async_sessionmaker", lambda: sessions)
+
+    hospital = _hospital(env, active=True)
+    today = datetime.now(KST).date()
+    item = _slot(env, hospital, scheduled=today, attempt={}, created_hours_ago=30)
+    fact = revision.RevisionNotCreated(
+        content_id=item.id,
+        hospital_id=hospital.id,
+        hospital_name=hospital.name,
+        scheduled_date=today,
+        title="글",
+        actor="SYSTEM_AUTO_PUBLISH",
+        created_count=0,
+        active_revision_set=False,
+    )
+    try:
+        revision.record_revision_not_created(fact, run_async=asyncio.run)
+        revision.record_revision_not_created(fact, run_async=asyncio.run)
+    finally:
+        asyncio.run(async_engine.dispose())
+
+    audits = env.db.scalars(
+        select(AdminAuditLog).where(
+            AdminAuditLog.action == AUTO_PUBLISH_BLOCKED_ACTION,
+            AdminAuditLog.target_id == str(item.id),
+        )
+    ).all()
+    assert len(audits) == 2
+    assert {audit.detail["code"] for audit in audits} == {"APPROVED_REVISION_NOT_CREATED"}
+    incidents = env.db.scalars(select(Incident).where(Incident.hospital_id == hospital.id)).all()
+    assert len(incidents) == 1
+    incident = incidents[0]
+    assert incident.incident_type == "AUTO_PUBLISH_REVISION_NOT_CREATED"
+    assert incident.state == IncidentState.OPEN.value
+    assert incident_audience(incident.incident_type) is IncidentAudience.DEVELOPER
+    outbox = env.db.scalars(
+        select(NotificationOutbox).where(NotificationOutbox.hospital_id == hospital.id)
+    ).all()
+    assert len(outbox) == 1  # 처음 열 때만 알린다
+
+    resolver = incident_backlog.RESOLVERS["AUTO_PUBLISH_REVISION_NOT_CREATED"]
+    now = datetime.now(UTC)
+    assert resolver(env.db, incident, now) is None
+    item.status = ContentStatus.PUBLISHED
+    env.db.commit()
+    assert resolver(env.db, incident, now) == "content_published"
