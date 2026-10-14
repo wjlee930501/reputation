@@ -26,7 +26,11 @@ import pytest
 
 from app.workers import tasks
 from app.workers.generation_attempt_state import GENERATION_ATTEMPT_KEY
-from app.workers.generation_retry_policy import GenerationRetryClass, recovery_is_abandoned
+from app.workers.generation_retry_policy import (
+    SAMPLE_BODY_DAILY_BUDGET,
+    GenerationRetryClass,
+    recovery_is_abandoned,
+)
 from app.workers.topic_swap_fallback import TOPIC_SWAPPED_REASON
 from tests.test_topic_swap_fallback import (
     _RECORD_ATTEMPT,
@@ -103,7 +107,8 @@ def _write_and_fail(monkeypatch, item, philosophy, error, *, swap: bool) -> tupl
     _fail_writer_with(monkeypatch, writer_calls, error)
     if swap:
         _freeze(monkeypatch, _SWAPPED_AT)
-        _RECORD_ATTEMPT(_FakeDB([]), item, now=_SWAPPED_AT)
+        # 옛 주제가 오늘 하루 예산(2세션)을 다 쓰고 교체됐다 — 임박 슬롯의 마지막 1세션이 남는다.
+        _RECORD_ATTEMPT(_FakeDB([]), item, now=_SWAPPED_AT, spent_today=SAMPLE_BODY_DAILY_BUDGET)
         assert item.essence_check_summary[GENERATION_ATTEMPT_KEY]["reason"] == TOPIC_SWAPPED_REASON
     assert _claims_at(monkeypatch, item, _kst(2026, 9, 16, 7, 0, 3)) is True
     state, _code, _message = _generate_once(monkeypatch, item, _WRITTEN_AT)
@@ -458,8 +463,11 @@ def _legacy_slot(monkeypatch, record: dict):
     [
         # 환경 예산 4회를 다 썼다 — 키가 없으니 "집을 스윕이 없다"는 결정도 없다.
         pytest.param({**_LEGACY_ENV, "provider_attempt_count": 4}, id="environment_exhausted"),
-        # 오늘의 본문 표본 예산 2회를 다 썼다.
-        pytest.param({**_LEGACY_SAMPLE, "provider_attempt_count": 2}, id="sample_spent_today"),
+        # 오늘의 본문 표본 예산을 다 썼다(예정일 당일이라 임박 예산 2+1회).
+        pytest.param(
+            {**_LEGACY_SAMPLE, "provider_attempt_count": SAMPLE_BODY_DAILY_BUDGET + 1},
+            id="sample_spent_today",
+        ),
     ],
 )
 def test_a_legacy_record_without_a_schedule_that_is_not_due_is_overwritten(monkeypatch, record):

@@ -343,7 +343,9 @@ def operator_retry_writes_now(item, now: datetime) -> bool:
 
     if item is None:
         return False
-    return operator_retry_releases(item) or retry_is_due(_stored_generation_attempt(item), now)
+    return operator_retry_releases(item) or retry_is_due(
+        _stored_generation_attempt(item), now, scheduled_date=getattr(item, "scheduled_date", None)
+    )
 
 
 def announced_recovery_time(item, now: datetime) -> datetime | None:
@@ -352,7 +354,7 @@ def announced_recovery_time(item, now: datetime) -> datetime | None:
     저장된 다음 시도 시각이 이미 지났으면 그 시각은 약속이 아니다 — 그 스윕은 이 슬롯을 집지
     않았다. 그때는 저장 때와 같은 규칙(`next_recovery_deadline`: 스윕마다 다른 창·표본 예산·수리
     예산, `tasks._remember_generation_attempt`와 같은 인자)으로 지금부터 다시 구한다. 다음 정시
-    스윕이 아니다 — 23:00 야간 배치는 내일·모레 글만 본다. 구한 시각이 생성 스윕이 이 슬롯을 집는
+    스윕이 아니다 — 23:00 야간 배치는 내일부터 lookahead 끝까지의 글만 본다. 구한 시각이 생성 스윕이 이 슬롯을 집는
     시각이 아니면(22:30 백로그 복구의 판정 시각) 원고 생성 시도가 아니므로, 어떤 스윕도 집지 않을
     때와 같이 `None`이다. 그때 문구는 시각을 말하지 않는다(`recovery_time_unannounced`).
 

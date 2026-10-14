@@ -68,6 +68,19 @@ class GenerationBudgetExceeded(RuntimeError):
     """Raised before provider I/O when a slot lifetime ceiling is exhausted."""
 
 
+# 한 획득(작가 호출 하나)의 전송 상한(`SEMANTIC_TRANSPORT_LIMIT`)에 닿은 표시. 슬롯·주제 예산의
+# 소진이 아니다 — 한 작가 호출 안의 거절·재작성 회차와 전송 재시도가 그 호출의 몫을 다 쓴 것이다.
+ACQUISITION_TRANSPORT_EXHAUSTED = "ACQUISITION_TRANSPORT_EXHAUSTED"
+
+
+def is_acquisition_transport_exhausted(error: BaseException) -> bool:
+    """한 작가 호출의 전송 상한에 닿은 예외인가(슬롯 예산 소진과 구분한다)."""
+
+    return isinstance(error, GenerationBudgetExceeded) and str(error) == (
+        ACQUISITION_TRANSPORT_EXHAUSTED
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class GenerationBudgetSnapshot:
     version: int
@@ -610,7 +623,7 @@ def transport_attempt_started(
     entry = entries[index]
     recorded = _nonnegative_int(entry.get("transport_attempts")) or 0
     if recorded >= SEMANTIC_TRANSPORT_LIMIT:
-        raise GenerationBudgetExceeded("ACQUISITION_TRANSPORT_EXHAUSTED")
+        raise GenerationBudgetExceeded(ACQUISITION_TRANSPORT_EXHAUSTED)
     kind = str(entry.get("kind") or "")
     reserved_key = "image_http_reserved" if kind == "IMAGE" else "text_http_reserved"
     spent_key = "image_http_attempts" if kind == "IMAGE" else "text_http_attempts"
