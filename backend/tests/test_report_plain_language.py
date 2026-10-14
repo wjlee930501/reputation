@@ -102,6 +102,10 @@ SCENARIOS = {
                         attribution=None, citations={"measured_cell_count": 0, "cited_items": []}),
     "initial": dict(sov_pct=40.0, prev_sov_pct=None, comparison_reason="NO_PRIOR_MANIFEST",
                     report_kind="INITIAL", attribution=_attribution(prior=False)),
+    # D38: 그 달 고정 측정이 없던 첫 달 — '기준 설정' 보고서. 숫자를 지어내지 않고 0으로도 쓰지 않는다.
+    "baseline": dict(sov_pct=None, prev_sov_pct=None, comparison_reason="NO_PRIOR_MANIFEST",
+                     report_kind="SETUP", sov_coverage=None, attribution=None,
+                     citations={"measured_cell_count": 0, "cited_items": []}, v0_baseline=None),
 }
 
 
@@ -109,7 +113,17 @@ def _view(name: str):
     values = {"citations": CITATIONS, "platforms": ["chatgpt", "gemini"],
               "v0_baseline": {"of_hundred": 20, "current_of_hundred": 40, "sentence": "참고"},
               **SCENARIOS[name]}
+    if name == "baseline":
+        values["sov_coverage"] = _baseline_coverage()
     return monthly_view(**values)
+
+
+def _baseline_coverage():
+    from app.services.monthly_sov import build_monthly_sov
+
+    payload = build_monthly_sov((), ()).to_payload()
+    payload["report_kind"] = "SETUP"
+    return payload
 
 
 def _html(view) -> str:

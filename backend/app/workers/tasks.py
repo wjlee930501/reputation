@@ -235,6 +235,12 @@ from app.services.measurement_manifest_policy import (
     ManifestPolicyVersionTransition,
 )
 from app.services.measurement_manifest_policy import (
+    legacy_cells_final_adequacy as _legacy_cells_final_adequacy,  # noqa: F401 -- stable legacy worker import
+)
+from app.services.measurement_manifest_policy import (
+    legacy_manifest_is_final as _legacy_manifest_is_final,
+)
+from app.services.measurement_manifest_policy import (
     manifest_cell_slots_resolved as _manifest_cell_slots_resolved,  # noqa: F401 -- stable legacy worker import
 )
 from app.services.measurement_manifest_policy import (
@@ -334,6 +340,7 @@ from app.services.monthly_publication_facts import (
     observed_contract_publications as _observed_contract_publications,  # noqa: F401 -- stable legacy worker import
 )
 from app.services.monthly_report_delivery import (
+    BASELINE_REPORT_KIND,
     coverage_is_final,
     monthly_doctor_artifact_is_valid,
     monthly_report_delivery_gate,
@@ -11848,6 +11855,27 @@ def _mark_monthly_measurement_incomplete(
     db.commit()
 
 
+def _monthly_manifest_absent_after_deadline(
+    db, hospital_id: uuid.UUID, year: int, month: int, observed_at: datetime
+) -> bool:
+    """복구 마감이 지났는데 그 달 매니페스트가 아예 없다 — 기다려도 측정은 생기지 않는다.
+
+    매니페스트는 24일~말일 창에서만 생긴다. D38: 이 달은 '기준 설정' 보고서로 만든다.
+    """
+    if not _monthly_sov_deadline_reached(observed_at, year, month):
+        return False
+    return (
+        db.execute(
+            select(MonthlyMeasurementManifest.id).where(
+                MonthlyMeasurementManifest.hospital_id == hospital_id,
+                MonthlyMeasurementManifest.period_year == year,
+                MonthlyMeasurementManifest.period_month == month,
+            )
+        ).first()
+        is None
+    )
+
+
 def _hospital_requires_monthly_sov_success(db, hospital, period) -> bool:
     """판정은 `services/monthly_sov_cohort`가 정본이다 — 공백 알림이 같은 규칙을 쓴다."""
     return hospital_requires_monthly_sov_success(
@@ -12133,7 +12161,21 @@ def _build_monthly_report_for_hospital(
     prev_start = now.shift(months=-1).floor("month").datetime
     prev_end = now.floor("month").datetime
     prior_manifest = _prior_monthly_manifest(db, h.id, now)
-    current_loaded = load_monthly_sov_manifest(db, manifest) if manifest is not None else None
+    # 마감이 지난 미완료 옛 매니페스트는 셀 단위 최종 판정으로 센다(LIMITED/UNAVAILABLE로 닫힌다).
+    current_loaded = (
+        load_monthly_sov_manifest(
+            db,
+            manifest,
+            legacy_final=_legacy_manifest_is_final(
+                manifest,
+                deadline_reached=_monthly_sov_deadline_reached(
+                    actual_now, now.year, now.month
+                ),
+            ),
+        )
+        if manifest is not None
+        else None
+    )
     prior_loaded = (
         load_monthly_sov_manifest(db, prior_manifest) if prior_manifest is not None else None
     )
@@ -12340,6 +12382,13 @@ def _build_monthly_report_for_hospital(
         monthly_sov.to_payload(),
         current_loaded.cells if current_loaded is not None else (),
     )
+    if manifest is None:
+        # D38: 그 달 고정 측정이 없던 첫 달 — 측정 숫자 없이 '기준 설정' 보고서로 전달한다.
+        # 측정한 AI 서비스가 없으므로 서비스별 집계 행도 없다(빈 목록은 합계 검증을 깨뜨린다).
+        monthly_sov_payload["report_kind"] = BASELINE_REPORT_KIND
+        baseline_adequacy = monthly_sov_payload.get("observation_adequacy")
+        if isinstance(baseline_adequacy, dict) and not baseline_adequacy.get("platforms"):
+            baseline_adequacy.pop("platforms", None)
 
     # "서비스 시작 시점(V0) 대비" 참고선. 질문 세트가 충분히 겹치지 않으면 None이라
     # 원장 페이지에 아무 말도 하지 않는다 — 다른 질문으로 잰 두 수치를 나란히
@@ -12378,7 +12427,7 @@ def _build_monthly_report_for_hospital(
     # 원장 뷰를 AE PDF보다 **먼저** 만든다. 토킹 포인트는 이 뷰가 바인딩한 숫자에서
     # 나오고, 내부 PDF와 Admin이 그 같은 문장을 읽어야 한 자리에서 두 말이 안 된다.
     doctor_view = build_doctor_report_view(
-        report_kind="MONTHLY",
+        report_kind="SETUP" if manifest is None else "MONTHLY",
         protocol_label=str(((manifest.platform_provenance or {}).get("measurement_protocol") or {}).get("policy_version") or "기록 없음") if manifest is not None else None,
         hospital=h,
         sov_pct=sov_pct,
@@ -12524,8 +12573,9 @@ def _build_monthly_report_for_hospital(
         essence_summary=essence_summary,
     )
     if manifest is None:
+        # 측정이 없던 달이라 품질은 BLOCKED 그대로 두고, 전달 여부는 '기준 설정' 게이트가 정한다.
         report.quality = "BLOCKED"
-        report.delivery_blockers = ["MANIFEST_MISSING", "DOCTOR_ARTIFACT_UNVALIDATED"]
+        report.delivery_blockers = ["DOCTOR_ARTIFACT_UNVALIDATED"]
     else:
         apply_manifest_to_report(report, manifest)
     if content_operations.delivery_blockers:
@@ -12842,7 +12892,11 @@ def run_monthly_reports(self):
         measurement_pending: list[Hospital] = []
         for hospital in eligible_hospitals:
             if _hospital_requires_monthly_sov_success(db, hospital, period):
-                if not _monthly_sov_measurement_succeeded(db, hospital.id, period_key):
+                if not _monthly_sov_measurement_succeeded(
+                    db, hospital.id, period_key
+                ) and not _monthly_manifest_absent_after_deadline(
+                    db, hospital.id, period.year, period.month, observed_at
+                ):
                     blocked.append(hospital.name)
                     measurement_pending.append(hospital)
                     continue
@@ -13057,6 +13111,9 @@ def generate_monthly_report_for_hospital(
         ) and not (
             _monthly_sov_measurement_succeeded(
                 db, hospital.id, f"{period.year:04d}-{period.month:02d}"
+            )
+            or _monthly_manifest_absent_after_deadline(
+                db, hospital.id, period.year, period.month, now.datetime
             )
         ):
             _mark_monthly_report_measurement_incomplete(

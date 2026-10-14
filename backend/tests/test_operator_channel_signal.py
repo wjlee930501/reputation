@@ -18,6 +18,7 @@ from test_geo_autonomy_hardening import NOW, AsyncDB, heartbeat, seed
 from test_geo_autonomy_hardening import db as db  # noqa: F401 - 같은 SQLite 픽스처를 쓴다
 
 from app.api.admin.operations_center_incident_queries import count_operator_incidents
+from app.models.monthly_control import HospitalServiceInterval
 from app.models.operations import Incident, NotificationOutbox, OperationRun
 from app.models.report import MonthlyReport
 from app.models.sov import SovRecord
@@ -32,7 +33,7 @@ from app.workers.generation_incident_control import PUBLISH_MORNING_BATCH
 
 @pytest.fixture(autouse=True)
 def _tables(db):  # noqa: F811
-    for model in (Incident, MonthlyReport, SovRecord):
+    for model in (Incident, MonthlyReport, SovRecord, HospitalServiceInterval):
         model.__table__.create(db.get_bind(), checkfirst=True)
 
 
@@ -195,7 +196,7 @@ def test_manual_error_is_once_per_hospital_and_period() -> None:
     assert other_period[0].dedupe_key not in keys
 
 
-def test_day_seven_is_still_automatic_and_day_eight_closes_with_one_error() -> None:
+def test_day_seven_is_still_automatic_and_day_eight_belongs_to_the_safety_net() -> None:
     open_auto = [
         gaps.MonthlyReportGap("A의원", "MISSING", recoverable=True),
         gaps.MonthlyReportGap("B의원", "COVERAGE_INCOMPLETE", recoverable=True),
@@ -206,12 +207,8 @@ def test_day_seven_is_still_automatic_and_day_eight_closes_with_one_error() -> N
 
     # 7일 밤 23:59:59까지 복구가 돌고 8일 00:15가 최종화한다 — 7일은 아직 사람의 일이 아니다.
     assert [intent.notification_type for intent in day_seven] == ["MONTHLY_REPORT_GAP_AUTO"]
-    assert [intent.notification_type for intent in day_eight] == ["MONTHLY_REPORT_GAP_SUMMARY"]
-    [closing] = day_eight
-    assert closing.message.fallback_text.startswith(ERROR_LABEL)
-    assert "자동 복구 종료" in closing.message.fallback_text
-    assert _AUTO_PROMISE not in closing.message.fallback_text
-    assert closing.dedupe_key.endswith(":closed")
+    # 8일 09:00 뒤 남은 공백은 월간 보고서 안전망이 다시 만든다. '조치 필요'를 먼저 보내지 않는다(I3).
+    assert day_eight == []
 
 
 # ── E. 막힌 글: 새로 막힌 글만 ─────────────────────────────────────────────

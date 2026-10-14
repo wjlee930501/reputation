@@ -5,6 +5,7 @@ import uuid
 from datetime import datetime, timezone
 
 import pytest
+from monthly_artifact_test_support import isolate_reconciler
 from sqlalchemy import create_engine, delete, select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -52,6 +53,7 @@ def test_scalar_list_and_nonnumeric_metadata_open_once_without_crashing(
             return False
 
     monkeypatch.setattr(monthly_artifact_reconciliation, "SyncSessionLocal", SessionContext)
+    repairs = isolate_reconciler(monkeypatch, monthly_artifact_reconciliation)
     metadata_values: list[object] = [
         "손상된 문자열",
         ["손상된", "목록"],
@@ -141,9 +143,17 @@ def test_scalar_list_and_nonnumeric_metadata_open_once_without_crashing(
             )
         )
 
-        assert first == {"status": "completed", "opened_count": 3, "recovered_count": 0}
+        assert first == {
+            "status": "completed",
+            "opened_count": 3,
+            "recovered_count": 0,
+            "repair_dispatched_count": 3,
+            "safety_net": {"status": "skipped"},
+        }
+        # 손상된 PDF는 사람을 기다리지 않고 다시 만든다 — 사고는 재생성 창 동안 RETRYING이다.
+        assert len(repairs) == 3 and all(prefer for *_rest, prefer in repairs)
         assert len(incidents) == 3
-        assert all(incident.state == "OPEN" for incident in incidents)
+        assert all(incident.state == "RETRYING" for incident in incidents)
         assert all(
             incident.safe_error_code == "DOCTOR_PDF_ARTIFACT_INVALID"
             for incident in incidents
@@ -152,7 +162,13 @@ def test_scalar_list_and_nonnumeric_metadata_open_once_without_crashing(
         assert all(notice.notification_type == "INCIDENT_OPEN" for notice in notices)
 
         replay = monthly_artifact_reconciliation.reconcile_monthly_artifact_incidents.run()
-        assert replay == {"status": "completed", "opened_count": 0, "recovered_count": 0}
+        assert replay == {
+            "status": "completed",
+            "opened_count": 0,
+            "recovered_count": 0,
+            "repair_dispatched_count": 0,
+            "safety_net": {"status": "skipped"},
+        }
         session.expire_all()
         assert len(
             list(

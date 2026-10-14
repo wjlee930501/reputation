@@ -137,3 +137,14 @@ def test_full_automatic_impact_query_lists_newly_publishable_and_visible_posts()
     assert "'PROVIDER_ERROR', 'INVALID_RESPONSE'" in deferred
     assert "c.status = 'PUBLISHED'" in published
     assert ops_sql_report.parse_args(["--only=q16"]).only == ["q16"]
+
+
+def test_monthly_report_guarantee_queries_are_registered_reads() -> None:
+    """W8(2026-10-14): 지난달 보고서의 전달 게이트 입력, W8 사고, 안전망 재생성 실행."""
+
+    statements = ops_sql_report.QUERIES["q15"]
+    assert len(statements) == 3
+    assert all(sql.strip().upper().startswith("SELECT") for sql in statements)
+    assert "customer_ready" not in statements[0]  # 생성 시점 스냅샷은 읽지 않는다.
+    assert "MONTHLY_REPORT_SAFETY_NET_FAILED" in statements[1]
+    assert "report-repair:" in statements[2]

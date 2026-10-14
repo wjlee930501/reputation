@@ -52,13 +52,17 @@ def _gate(monkeypatch, gate):
     monkeypatch.setattr(notifications, "monthly_report_delivery_gate", lambda *_args: gate)
 
 
-def test_no_manifest_for_the_period_is_manifest_missing_even_with_a_final_report(monkeypatch):
+def test_no_manifest_month_is_judged_by_the_same_gate_not_marked_undeliverable(monkeypatch):
+    """D38: 매니페스트가 없는 달은 '기준 설정' 보고서로 전달한다 — 전달 불가로 가르지 않는다."""
+    assert notifications.classify_monthly_report_gap(None, None, None) == "MISSING"
+    _gate(monkeypatch, DeliveryGate(True, None, None))
+    assert notifications.classify_monthly_report_gap(SimpleNamespace(), None, None) is None
+    # '기준 설정' 이전에 만든 옛 판(전달 게이트 미통과)은 8일부터 안전망이 다시 만든다.
     _gate(monkeypatch, DeliveryGate(False, "coverage_incomplete", "x"))
-    report = SimpleNamespace(manifest_id=None)
-
-    assert notifications.classify_monthly_report_gap(report, None, None) == "MANIFEST_MISSING"
-    # 보고서가 아직 없어도 매니페스트가 없으면 자동 경로가 없다.
-    assert notifications.classify_monthly_report_gap(None, None, None) == "MANIFEST_MISSING"
+    assert (
+        notifications.classify_monthly_report_gap(SimpleNamespace(), None, None)
+        == "COVERAGE_INCOMPLETE"
+    )
 
 
 def test_gate_decides_the_remaining_states(monkeypatch):
@@ -81,27 +85,8 @@ def test_gate_decides_the_remaining_states(monkeypatch):
         assert notifications.classify_monthly_report_gap(SimpleNamespace(), manifest, None) is None
 
 
-def test_manifest_missing_is_one_honest_notice_per_hospital_and_never_promises_rebuild():
-    gap = notifications.MonthlyReportGap("가의원", "MANIFEST_MISSING")
-
-    intents = notifications.monthly_report_gap_intents(period_key="2026-09", gaps=[gap], day=1)
-
-    [intent] = intents
-    assert intent.notification_type == "MONTHLY_REPORT_GAP_SUMMARY"
-    assert ":manifest_missing:" in intent.dedupe_key
-    text = intent.message.fallback_text
-    assert "전달 불가" in text
-    assert "다음 달부터 자동" in intent.message.payload_json()
-    assert "리포트 다시 만들기" not in intent.message.payload_json()
-    assert "자동 재측정·마감을 진행합니다" not in text
-    # 날짜가 바뀌어도 같은 병원·같은 달이면 같은 키다. 8일 판정에서도 '자동 복구 종료'에 섞지 않는다.
-    for day in (5, 8):
-        again = notifications.monthly_report_gap_intents(period_key="2026-09", gaps=[gap], day=day)
-        assert [item.dedupe_key for item in again] == [intent.dedupe_key]
-
-
-def test_manifest_missing_is_never_marked_recoverable(monkeypatch):
-    """로더가 매니페스트 없는 달을 자동 복구 대상(AUTO)으로 세지 않는다."""
+def test_manifest_missing_month_with_an_old_report_is_recoverable(monkeypatch):
+    """매니페스트 없는 달의 옛 판은 8일부터 안전망이 '기준 설정'으로 다시 만든다 — 자동 복구(AUTO)다."""
 
     hospital = SimpleNamespace(id="h1", name="코호트밖의원")
     period = SimpleNamespace(year=2026, month=9)
@@ -131,10 +116,13 @@ def test_manifest_missing_is_never_marked_recoverable(monkeypatch):
     monkeypatch.setattr(notifications, "prior_month_to_close", lambda _now: period)
     monkeypatch.setattr(notifications, "eligible_hospital_ids", lambda *_a: ["h1"])
     monkeypatch.setattr(
-        notifications, "hospital_requires_monthly_sov_success", lambda *_a: True
+        notifications, "hospital_requires_monthly_sov_success", lambda *_a: False
     )
+    _gate(monkeypatch, DeliveryGate(False, "coverage_incomplete", "x"))
 
     period_key, found = notifications.load_monthly_report_gaps(_DB(), datetime(2026, 10, 2, tzinfo=UTC))
 
     assert period_key == "2026-09"
-    assert found == [notifications.MonthlyReportGap("코호트밖의원", "MANIFEST_MISSING")]
+    assert found == [
+        notifications.MonthlyReportGap("코호트밖의원", "COVERAGE_INCOMPLETE", recoverable=True)
+    ]
