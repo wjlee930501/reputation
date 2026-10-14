@@ -54,7 +54,7 @@ from app.core.database import SyncSessionLocal
 from app.models.content import ContentItem, ContentStatus
 from app.models.hospital import Hospital
 from app.schemas.content import PendingContentCandidate
-from app.services import indexnow
+from app.services import cost_guard, indexnow
 from app.services import published_correction as pc
 from app.services.audit_log import write_audit_log_sync
 from app.services.content_ai_review import (
@@ -1374,7 +1374,7 @@ def review_post_publish_samples() -> dict[str, int]:
         if key:
             _bump(counts, key)
 
-    with SyncSessionLocal() as db:
+    with SyncSessionLocal() as db, cost_guard.cost_lane(cost_guard.LANE_POST_PUBLISH):
         # 0) 배포 전부터 남은 Critical 공개 글을 요약 한 통으로 알리고(글마다 쏟아내지 않는다), 미전달
         # 알림 의도를 가장 오래된 것부터 보낸다(사고 기록 실패 뒤 재시도·종결).
         try:

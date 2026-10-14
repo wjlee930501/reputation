@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime, timezone
 
 import pytest
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.models.essence import HospitalSourceAsset, SourceStatus, SourceType
@@ -275,3 +275,124 @@ def test_live_source_claim_fences_duplicate_redelivery_even_with_same_token(pg_e
             if hospital is not None:
                 cleanup.delete(hospital)
             cleanup.commit()
+
+
+def _seed_extracted_source(pg_engine, *, status, metadata, with_note=True, processed=True):
+    from app.models.essence import HospitalSourceEvidenceNote
+
+    hospital_id = uuid.uuid4()
+    source_id = uuid.uuid4()
+    title, raw_text = "네이버 블로그 글", "같은 원문 본문입니다. 진료 시간은 평일 9시부터입니다."
+    content_hash = compute_source_content_hash(title, None, raw_text, None)
+    with Session(pg_engine) as seed:
+        seed.add(Hospital(id=hospital_id, name="W2 unchanged", slug=f"w2-{uuid.uuid4().hex}"))
+        seed.flush()
+        seed.add(
+            HospitalSourceAsset(
+                id=source_id,
+                hospital_id=hospital_id,
+                source_type=SourceType.NAVER_BLOG,
+                title=title,
+                raw_text=raw_text,
+                source_metadata=metadata(content_hash),
+                content_hash=content_hash,
+                status=status,
+                processed_at=datetime.now(timezone.utc) if processed else None,
+            )
+        )
+        seed.flush()
+        if with_note:
+            seed.add(
+                HospitalSourceEvidenceNote(
+                    hospital_id=hospital_id,
+                    source_asset_id=source_id,
+                    note_type="KEY_MESSAGE",
+                    claim="진료 시간은 평일 9시부터",
+                    source_excerpt="진료 시간은 평일 9시부터입니다.",
+                    confidence=0.9,
+                    note_metadata={},
+                )
+            )
+        seed.commit()
+    return hospital_id, source_id
+
+
+def _cleanup_hospital(pg_engine, hospital_id) -> None:
+    with Session(pg_engine) as cleanup:
+        hospital = cleanup.get(Hospital, hospital_id)
+        if hospital is not None:
+            cleanup.delete(hospital)
+        cleanup.commit()
+
+
+@pytest.mark.parametrize(
+    ("status", "metadata"),
+    [
+        # 옛 PROCESSED 행: 추출 뒤 수집 시각만 바뀌었다(입력 hash 불일치, 본문 hash 같음).
+        (SourceStatus.PROCESSED, lambda h: {"crawled_at": "2026-10-13T03:00:00+00:00"}),
+        # 같은 본문을 다시 수집해 PENDING이 된 행(추출 표지가 같은 본문을 가리킨다).
+        (
+            SourceStatus.PENDING,
+            lambda h: {"crawled_at": "2026-10-13T03:00:00+00:00", "extraction_content_hash": h},
+        ),
+    ],
+)
+def test_unchanged_source_content_keeps_notes_without_provider_call(
+    pg_engine, status, metadata
+) -> None:
+    from app.models.essence import HospitalSourceEvidenceNote
+
+    hospital_id, source_id = _seed_extracted_source(pg_engine, status=status, metadata=metadata)
+    try:
+        claimed, claim_status, input_hash = tasks._claim_source_processing(
+            source_id, claim_token="weekly-sync"
+        )
+        assert claimed is None
+        assert claim_status == tasks.SOURCE_EVIDENCE_UNCHANGED
+        with Session(pg_engine) as verify:
+            source = verify.get(HospitalSourceAsset, source_id)
+            assert source.status == SourceStatus.PROCESSED
+            assert source.source_metadata["extraction_input_hash"] == input_hash
+            assert source.source_metadata["extraction_content_hash"] == source.content_hash
+            notes = verify.scalars(
+                select(HospitalSourceEvidenceNote).where(
+                    HospitalSourceEvidenceNote.source_asset_id == source_id
+                )
+            ).all()
+            assert len(notes) == 1
+        # 다시 와도 이미 현재 판이다.
+        _claimed, again, _hash = tasks._claim_source_processing(source_id, claim_token="again")
+        assert again == SourceStatus.PROCESSED.value
+    finally:
+        _cleanup_hospital(pg_engine, hospital_id)
+
+
+@pytest.mark.parametrize(
+    ("status", "metadata", "with_note", "processed"),
+    [
+        # 본문이 바뀌었다(추출 표지가 옛 본문을 가리킨다).
+        (SourceStatus.PENDING, lambda h: {"extraction_content_hash": "old"}, True, True),
+        # PATCH가 노트를 지우고 처리 시각을 비웠다.
+        (SourceStatus.PENDING, lambda h: {"extraction_content_hash": h}, False, False),
+        # 처리 판이 올랐다.
+        (
+            SourceStatus.PROCESSED,
+            lambda h: {"extraction_content_hash": h, "extraction_processing_version": 1},
+            True,
+            True,
+        ),
+    ],
+)
+def test_changed_or_cleared_source_is_extracted_again(
+    pg_engine, status, metadata, with_note, processed
+) -> None:
+    hospital_id, source_id = _seed_extracted_source(
+        pg_engine, status=status, metadata=metadata, with_note=with_note, processed=processed
+    )
+    try:
+        claimed, claim_status, _input_hash = tasks._claim_source_processing(
+            source_id, claim_token="changed"
+        )
+        assert claimed is not None and claim_status == "CLAIMED"
+    finally:
+        _cleanup_hospital(pg_engine, hospital_id)

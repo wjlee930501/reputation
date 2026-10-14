@@ -350,8 +350,20 @@ def build_report() -> dict[str, Any]:
             "slack_webhook_valid": slack_webhooks,
             # 2차 경로(운영 경보 메일) 설정 — 참고 사실이며 준비 판정을 막지 않는다.
             "ops_alert_email_configured": bool(settings.OPS_ALERT_EMAIL.strip()),
+            # content 비용 lane(W1) 사용량 — 참고 사실이며 준비 판정을 막지 않는다.
+            "cost_lanes": _cost_lane_facts(),
         },
     }
+
+
+def _cost_lane_facts() -> dict[str, Any]:
+    """content 비용 lane 사용량 — 참고 사실이다. 읽기 실패가 준비 점검 자체를 깨지 않는다."""
+    from app.services.cost_guard import content_lane_usage_sync  # noqa: PLC0415
+
+    try:
+        return content_lane_usage_sync()
+    except Exception as exc:  # noqa: BLE001 - 참고 사실의 실패는 준비 판정과 무관하다.
+        return {"availability": "UNAVAILABLE", "error_type": type(exc).__name__}
 
 
 def _inquiry_sms_facts() -> dict[str, Any]:

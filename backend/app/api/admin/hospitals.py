@@ -1165,7 +1165,8 @@ async def autofill_hospital_profile(
     # 자동 채우기의 Claude 구조화 추출도 유료 호출이다 — content 예산을 예약해
     # 킬스위치/상한을 존중한다(종전에는 record_provider_call만 있어 관측만 되고
     # 차단되지 않았다).
-    decision = await cost_guard.check_and_increment("content")
+    with cost_guard.cost_lane(cost_guard.LANE_EVIDENCE, hospital_id=h.id):
+        decision = await cost_guard.check_and_increment("content")
     if not decision.allowed:
         raise HTTPException(
             status_code=429,

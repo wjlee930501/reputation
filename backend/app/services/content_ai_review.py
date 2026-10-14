@@ -1250,7 +1250,9 @@ async def review_generated_content(
 
     first_model = model or settings.CLAUDE_MODEL_REVIEW
 
-    decision = cost_decision or await cost_guard.reserve("content")
+    decision = cost_decision or await cost_guard.reserve(
+        "content", hospital_id=getattr(hospital, "id", None)
+    )
     if not decision.allowed:
         return _unavailable_review(
             content=content,
@@ -1340,7 +1342,9 @@ async def review_generated_content(
     escalated_model = settings.CLAUDE_MODEL_REVIEW
     if not escalated_model:
         return first
-    escalation_decision = await cost_guard.reserve("content")
+    escalation_decision = await cost_guard.reserve(
+        "content", hospital_id=getattr(hospital, "id", None)
+    )
     if not escalation_decision.allowed:
         # 예산이 막으면 첫 판정을 그대로 유지한다(차단은 풀리지 않는다).
         return first
