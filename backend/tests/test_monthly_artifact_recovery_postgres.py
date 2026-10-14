@@ -6,7 +6,13 @@ from types import SimpleNamespace
 
 import arrow
 import pytest
-from monthly_artifact_test_support import apply_complete, complete_cells, monthly_sov, published
+from monthly_artifact_test_support import (
+    apply_complete,
+    complete_cells,
+    isolate_reconciler,
+    monthly_sov,
+    published,
+)
 from sqlalchemy import create_engine, delete, select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -62,11 +68,12 @@ def test_failed_v1_then_valid_v2_recovers_once(monkeypatch: pytest.MonkeyPatch) 
             return False
 
     monkeypatch.setattr(monthly_artifact_reconciliation, "SyncSessionLocal", SessionContext)
+    isolate_reconciler(monkeypatch, monthly_artifact_reconciliation)
     frozen_cells = complete_cells()
     monkeypatch.setattr(
         tasks,
         "load_monthly_sov_manifest",
-        lambda *_args: SimpleNamespace(
+        lambda *_args, **_kwargs: SimpleNamespace(
             cells=frozen_cells, selected_records=(), scored_records=()
         ),
     )
@@ -200,13 +207,20 @@ def test_failed_v1_then_valid_v2_recovers_once(monkeypatch: pytest.MonkeyPatch) 
         assert reports[0].doctor_pdf_path is None
         assert reports[1].doctor_pdf_path == f"gs://qa-private/monthly/{reports[1].id}.pdf"
         assert artifact is not None and artifact.sha256 == reports[1].id.hex * 2
-        assert incident is not None and incident.state == "OPEN"
+        # 원장 PDF 실패는 재생성 창 동안 스윕 소유(RETRYING)다 — 열림 알림은 기한까지 보류된다.
+        assert incident is not None and incident.state == "RETRYING"
         assert [item.notification_type for item in outboxes] == ["INCIDENT_OPEN"]
         assert second_run is not None and second_run.state == OperationRunState.SUCCEEDED
         assert second_run.result_summary["stage"] == "ARTIFACT_VALIDATED"
 
         reconciled = monthly_artifact_reconciliation.reconcile_monthly_artifact_incidents.run()
-        assert reconciled == {"status": "completed", "opened_count": 0, "recovered_count": 1}
+        assert reconciled == {
+            "status": "completed",
+            "opened_count": 0,
+            "recovered_count": 1,
+            "repair_dispatched_count": 0,
+            "safety_net": {"status": "skipped"},
+        }
         session.expire_all()
         incident = session.scalar(select(Incident).where(Incident.hospital_id == hospital_id))
         assert incident is not None and incident.state == "RECOVERED"
@@ -220,7 +234,13 @@ def test_failed_v1_then_valid_v2_recovers_once(monkeypatch: pytest.MonkeyPatch) 
             )
         ) == 2
         replayed = monthly_artifact_reconciliation.reconcile_monthly_artifact_incidents.run()
-        assert replayed == {"status": "completed", "opened_count": 0, "recovered_count": 0}
+        assert replayed == {
+            "status": "completed",
+            "opened_count": 0,
+            "recovered_count": 0,
+            "repair_dispatched_count": 0,
+            "safety_net": {"status": "skipped"},
+        }
         session.expire_all()
         notices = list(
             session.scalars(

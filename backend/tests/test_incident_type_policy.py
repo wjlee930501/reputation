@@ -145,7 +145,12 @@ def test_every_sweep_owned_type_has_a_way_to_close():
 
     # 명시적 복구 경로: 슬롯 재조정 성공(`monthly_slot_incident_control.recover_monthly_slot_failure`).
     # 옛 Essence 자동 검수 사고 셋은 Phase 4(D33)부터 근거(적용 중인 판)로 닫힌다.
-    explicit_recovery = {"MONTHLY_SLOT_GENERATION_FAILED"}
+    # 원장 PDF 검증 실패는 1분 월간 PDF 대조가 유효한 PDF를 확인하면 닫는다
+    # (`monthly_artifact_recovery_control.recover_monthly_artifact_failure_batch`).
+    explicit_recovery = {
+        "MONTHLY_SLOT_GENERATION_FAILED",
+        "MONTHLY_DOCTOR_PDF_BLOCKED",
+    }
     assert SWEEP_OWNED_INCIDENT_TYPES - set(RESOLVERS) <= explicit_recovery
 
 

@@ -52,11 +52,12 @@ from app.services.monthly_report_delivery import (
     monthly_report_delivery_blockers,
     monthly_report_delivery_gate,
     monthly_report_delivery_warnings,
+    report_is_baseline_setup,
     safe_local_report_path,
 )
 from app.services.report_artifact_validation import (
     parse_doctor_artifact_metadata,
-    validate_persisted_doctor_artifact,
+    validate_persisted_report_artifact,
 )
 from app.services.report_file_integrity import ReportFileUnavailable, read_verified_report
 from app.services.report_review_evidence import build_report_review_evidence
@@ -149,7 +150,8 @@ def _report_delivery_warnings(r: MonthlyReport) -> list[str]:
     they never gate mark-sent.
     """
     sov_summary = r.sov_summary if isinstance(r.sov_summary, dict) else {}
-    adequacy = sov_summary.get("observation_adequacy")
+    # '기준 설정' 보고서는 측정이 없던 달이라 측정 결손 경고를 붙이지 않는다(D38).
+    adequacy = None if report_is_baseline_setup(r) else sov_summary.get("observation_adequacy")
     warnings: list[str] = []
     if isinstance(adequacy, dict) and adequacy.get("status") == "LIMITED":
         warnings.append(
@@ -167,23 +169,7 @@ def _artifact_state(
 ) -> ReportArtifactState:
     if artifact is None:
         return ReportArtifactState.MISSING
-    if report.report_type == "V0":
-        metadata = artifact.validation_metadata if isinstance(artifact.validation_metadata, dict) else {}
-        valid = (
-            artifact.report_id == report.id
-            and artifact.audience == "DOCTOR"
-            and artifact.path == report.doctor_pdf_path == report.pdf_path
-            and artifact.validated is True
-            and metadata.get("validation_version") == "v0-pdf-v1"
-            and metadata.get("validation_source") == "SYSTEM"
-            and metadata.get("sha256") == artifact.sha256
-            and metadata.get("byte_size") == artifact.byte_size
-            and len(artifact.sha256) == 64
-            and all(character in "0123456789abcdef" for character in artifact.sha256)
-            and artifact.byte_size > 0
-        )
-        return ReportArtifactState.VALID if valid else ReportArtifactState.INVALID
-    result = validate_persisted_doctor_artifact(report, artifact)
+    result = validate_persisted_report_artifact(report, artifact)
     return ReportArtifactState(result.state)
 
 

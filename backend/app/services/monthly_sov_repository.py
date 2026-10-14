@@ -1,5 +1,5 @@
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from sqlalchemy import select
@@ -13,6 +13,7 @@ from app.models.monthly_control import (
 from app.models.sov import QueryMatrix
 from app.services import sov_engine
 from app.services.monthly_sov_types import (
+    LEGACY_FINAL_LINEAGE,
     CellAttempt,
     CellState,
     ManifestCellInput,
@@ -142,7 +143,15 @@ def _intent_snapshot(
     return _intent(live_intent), "LEGACY_LIVE"
 
 
-def load_monthly_sov_manifest(session, manifest: MonthlyMeasurementManifest) -> LoadedMonthlySov:
+def load_monthly_sov_manifest(
+    session, manifest: MonthlyMeasurementManifest, *, legacy_final: bool = False
+) -> LoadedMonthlySov:
+    """`legacy_final`이면 slot 기록 없는 옛 셀을 확인된 답 수 그대로 최종 표본으로 센다.
+
+    측정 마감이 지난 미완료 옛 매니페스트(`legacy_manifest_is_final`)에만 쓴다. 성공 셀은 확인된
+    답 수가 곧 계획이고, 실패 셀은 표본 하나가 답을 얻지 못한 것으로 센다 — 없는 반복을 지어내지
+    않고 실패를 0으로 숨기지도 않는다.
+    """
     rows = session.execute(
         select(MonthlyMeasurementCell, QueryMatrix.query_intent)
         .outerjoin(QueryMatrix, MonthlyMeasurementCell.query_matrix_id == QueryMatrix.id)
@@ -192,6 +201,13 @@ def load_monthly_sov_manifest(session, manifest: MonthlyMeasurementManifest) -> 
         query_intent, intent_source = _intent_snapshot(
             manifest, cell.query_key, str(live_intent or "LOCAL")
         )
+        legacy_counts = None
+        if legacy_final and not observation_slots and planned_repeats == 0:
+            # 셀 하나 = 표본 하나. 언급 여부와 무관한 규칙(가장 이른 확정 답)으로 한 건만 남긴다 —
+            # 성공 시도를 모두 세면 반복이 많았던 셀이 비율을 끌어올린다(언급 5답 셀 + 미언급 1답
+            # 셀이 83%가 된다). 같은 한 건이 점수·대표 사례·서비스별 집계에 똑같이 쓰인다.
+            attempts = _legacy_final_attempt(cell.state, attempts)
+            legacy_counts = _legacy_final_counts(attempts)
         metric_cell = ManifestCellInput(
             query_key=cell.query_key,
             query_text=cell.query_text,
@@ -226,6 +242,8 @@ def load_monthly_sov_manifest(session, manifest: MonthlyMeasurementManifest) -> 
             ),
             slot_lineage="SLOTTED" if planned_repeats else "LEGACY_UNKNOWN",
         )
+        if legacy_counts is not None:
+            metric_cell = replace(metric_cell, **legacy_counts)
         cells.append(metric_cell)
         for record in canonical_records:
             if record.id in records_by_id:
@@ -243,3 +261,38 @@ def load_monthly_sov_manifest(session, manifest: MonthlyMeasurementManifest) -> 
         selected_records=tuple(records_by_id[record_id] for record_id in selected_ids),
         scored_records=tuple(records_by_id[record_id] for record_id in scored_ids),
     )
+
+
+def _legacy_final_attempt(
+    state: object, attempts: tuple[CellAttempt, ...]
+) -> tuple[CellAttempt, ...]:
+    """옛 셀의 표본 한 건 — 가장 이른 확정 답(측정 시각, 같으면 기록 id). 성공 셀이 아니면 없다."""
+    if _state(state) != "SUCCESS":
+        return ()
+    confirmed = [attempt for attempt in attempts if attempt.succeeded]
+    if not confirmed:
+        return ()
+    earliest = min(
+        confirmed,
+        key=lambda attempt: (
+            attempt.measured_at is None,
+            attempt.measured_at.timestamp() if attempt.measured_at is not None else 0.0,
+            attempt.record_id.int,
+        ),
+    )
+    return (earliest,)
+
+
+def _legacy_final_counts(attempts: tuple[CellAttempt, ...]) -> dict[str, object]:
+    confirmed = len(attempts)
+    missing = 1 - confirmed
+    return {
+        "planned_repeat_count": 1,
+        "received_answer_count": confirmed,
+        "confirmed_slot_count": confirmed,
+        "ambiguous_slot_count": 0,
+        "answer_failed_slot_count": missing,
+        "judgment_failed_slot_count": 0,
+        "pending_slot_count": missing,
+        "slot_lineage": LEGACY_FINAL_LINEAGE,
+    }

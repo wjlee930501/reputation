@@ -50,6 +50,8 @@ from app.models.operations import (
 from app.models.report import MonthlyReport
 from app.services.dependency_incident_helpers import open_notice_exists_sync
 from app.services.incident_types import DEFAULT_RETRYING_DEADLINE, SWEEP_OWNED_INCIDENT_TYPES
+from app.services.monthly_period import monthly_final_judgment_at
+from app.services.monthly_report_readiness import load_period_report_state
 from app.services.notification_messages import build_recovered_incident_notification
 from app.services.notification_store import enqueue_notification_sync
 from app.services.notification_transport import CHANNEL_UNAVAILABLE_CODE, safe_error_message
@@ -92,7 +94,54 @@ def _same_period_measurement(
             ),
         ).limit(1)
     )
-    return "same_period_measurement_succeeded" if succeeded is not None else None
+    if succeeded is not None:
+        return "same_period_measurement_succeeded"
+    if incident.incident_type == "MONTHLY_SOV_MEASUREMENT_FAILED":
+        return _monthly_period_finalized(db, incident, _now)
+    return None
+
+
+def _monthly_period_finalized(db: Session, incident: Incident, now: datetime) -> str | None:
+    """최종 판정 시각(다음 달 8일 09:00 KST)이 지났고 그 달 월간 보고서가 있으면 측정 단계는 끝났다.
+
+    마감으로 LIMITED/UNAVAILABLE이 된 달에는 새 RUN_SOV 성공이 없어, 같은 기간 측정 성공만 보던
+    근거로는 사고가 영원히 열려 있었다(2026-09 신기한·장앤김, 7.6일). 측정 결손은 보고서 품질이
+    말하고, 보고서의 전달 가능성은 월간 보고서 안전망(`monthly_report_safety_net`)이 소유한다.
+    """
+    period = _measurement_period(incident)
+    try:
+        year_text, month_text = str(period or "").split("-", 1)
+        year, month = int(year_text), int(month_text)
+    except ValueError:
+        return None
+    if not 1 <= month <= 12 or now < monthly_final_judgment_at(year, month):
+        return None
+    quality = db.scalar(
+        select(MonthlyReport.quality)
+        .where(
+            MonthlyReport.hospital_id == incident.hospital_id,
+            MonthlyReport.period_year == year,
+            MonthlyReport.period_month == month,
+            MonthlyReport.report_type == "MONTHLY",
+        )
+        .order_by(MonthlyReport.version.desc())
+        .limit(1)
+    )
+    return f"finalized_as_{str(quality).lower()}" if quality else None
+
+
+def _period_report_deliverable(db: Session, incident: Incident, _now: datetime) -> str | None:
+    """월간 보고서 안전망 사고 — 그 병원·월의 최신 월간 보고서가 전달 게이트를 통과하면 닫는다."""
+    if incident.hospital_id is None:
+        return None
+    period = _measurement_period(incident)
+    try:
+        year_text, month_text = str(period or "").split("-", 1)
+        year, month = int(year_text), int(month_text)
+    except ValueError:
+        return None
+    state = load_period_report_state(db, incident.hospital_id, year, month)
+    return "monthly_report_deliverable" if state.gate.ready else None
 
 
 def _iso_week_end(label: str) -> date | None:
@@ -654,6 +703,7 @@ RESOLVERS: dict[str, Resolver] = {
     "MONTHLY_SOV_COHORT_GAP": _monthly_cohort_enrolled,
     "WEEKLY_SOV_MEASUREMENT_FAILED": _same_period_measurement,
     "MONTHLY_SOV_MEASUREMENT_FAILED": _same_period_measurement,
+    "MONTHLY_REPORT_SAFETY_NET_FAILED": _period_report_deliverable,
     "SOV_HIGH_PRIORITY_CAP_EXCEEDED": _weekly_capacity,
     "COST_GUARD_LIMIT_REACHED": _budget_period,
     "COST_GUARD_FAIL_OPEN": _cost_guard_judging_again,

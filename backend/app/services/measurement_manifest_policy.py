@@ -11,6 +11,7 @@ from app.services.measurement_slots import (
     slot_is_terminal,
     summarize_observation_slots,
 )
+from app.services.monthly_sov_types import LEGACY_FINAL_LINEAGE
 
 
 def sov_spec_identity(spec: Mapping[str, object]) -> tuple[str, str, str]:
@@ -50,12 +51,54 @@ def manifest_cell_slots_resolved(cell: MonthlyMeasurementCell, repeat_count: int
     )
 
 
+def legacy_cells_final_adequacy(
+    manifest: MonthlyMeasurementManifest,
+) -> ObservationAdequacy | None:
+    """측정 마감이 지난 옛(slot 계약 없는) 매니페스트를 셀 하나 = 표본 하나로 최종 판정한다.
+
+    옛 매니페스트는 실패 셀이 하나라도 있으면 `legacy_complete`가 영원히 거짓이라, 마감 뒤에도
+    LIMITED/UNAVAILABLE로 닫히지 않았다 — 월간 측정 사고가 열린 채 남고 그 달 보고서가 전달
+    게이트를 통과하지 못했다(2026-09 신기한·장앤김). 마감 뒤에는 확인된 셀만 확정 표본으로 센다.
+    전 셀이 성공한 옛 달은 종전 판정(`legacy_complete`)을 그대로 쓰도록 None을 돌려준다.
+    """
+    planned = [
+        cell for cell in (getattr(manifest, "cells", ()) or ()) if cell.state != "EXCLUDED"
+    ]
+    if not planned or all(cell.state == "SUCCESS" for cell in planned):
+        return None
+    confirmed = sum(cell.state == "SUCCESS" for cell in planned)
+    failed = len(planned) - confirmed
+    return ObservationAdequacy(
+        planned_slots=len(planned),
+        received_answers=confirmed,
+        confirmed_slots=confirmed,
+        ambiguous_slots=0,
+        answer_failed_slots=failed,
+        judgment_failed_slots=0,
+        pending_slots=failed,
+        status="LIMITED" if confirmed else "UNAVAILABLE",
+        lineage=LEGACY_FINAL_LINEAGE,
+    )
+
+
+def legacy_manifest_is_final(
+    manifest: MonthlyMeasurementManifest | None, *, deadline_reached: bool
+) -> bool:
+    """마감이 지난 미완료 옛 매니페스트인가 — 보고서가 셀 단위 최종 판정으로 숫자를 세는 조건."""
+    return bool(
+        manifest is not None
+        and deadline_reached
+        and manifest_slot_repeat_count(manifest) is None
+        and legacy_cells_final_adequacy(manifest) is not None
+    )
+
+
 def manifest_observation_adequacy(
     manifest: MonthlyMeasurementManifest, *, deadline_reached: bool
 ) -> ObservationAdequacy | None:
     repeat_count = manifest_slot_repeat_count(manifest)
     if repeat_count is None:
-        return None
+        return legacy_cells_final_adequacy(manifest) if deadline_reached else None
     planned_cells = [
         cell for cell in (getattr(manifest, "cells", ()) or ()) if cell.state != "EXCLUDED"
     ]

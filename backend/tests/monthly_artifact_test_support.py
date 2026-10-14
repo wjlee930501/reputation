@@ -161,3 +161,26 @@ def published(report_id: uuid.UUID, *, page_count: int = 1) -> PublishedDoctorPd
         byte_size=byte_size,
         metadata=metadata,
     )
+
+
+def isolate_reconciler(monkeypatch, module) -> list[tuple[uuid.UUID, int, int, bool]]:
+    """Keep reconciler tests deterministic: no wall-clock safety net, no broker publish.
+
+    The fake repair dispatcher records each hospital-period once ("dispatched") and then
+    answers "waiting", mirroring the six-hour spacing of the real budget.
+    """
+    from app.workers.monthly_report_safety_net import RepairDecision
+
+    calls: list[tuple[uuid.UUID, int, int, bool]] = []
+
+    def fake_dispatch(_db, hospital, year, month, *, prefer_template, now=None):
+        del now
+        key = (hospital.id, year, month, prefer_template)
+        if key in calls:
+            return RepairDecision("waiting")
+        calls.append(key)
+        return RepairDecision("dispatched", uuid.uuid4(), prefer_template)
+
+    monkeypatch.setattr(module, "_safety_net_due", lambda _now: False)
+    monkeypatch.setattr(module, "dispatch_report_repair", fake_dispatch)
+    return calls

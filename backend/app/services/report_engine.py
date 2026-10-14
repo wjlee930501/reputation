@@ -1218,17 +1218,32 @@ def _director_copy(
         early_publication_count=early_publication_count,
         late_recovery_count=late_recovery_count,
     )
+    baseline = view.get("report_kind") == "SETUP"
     return {
         "tiles": [tile, *view["tiles"][1:]],
-        "coverage_text": _director_coverage_text(
-            coverage, names=names, has_coverage=bool(coverage), records=records
+        "coverage_text": (
+            f"측정 범위: 이번 달은 정기 측정 전입니다. 다음 달 첫 측정에서 {names}에 정한 질문을 "
+            "물어 기준점을 만들겠습니다."
+            if baseline
+            else _director_coverage_text(
+                coverage, names=names, has_coverage=bool(coverage), records=records
+            )
         ),
-        "footnotes": _director_footnotes(
-            coverage,
-            names=names,
-            first_measured_questions=first_measured_questions,
-            non_comparable_questions=non_comparable_questions,
-            has_v0_baseline=bool(view["v0_baseline"]),
+        "footnotes": (
+            _medical_safe_lines(
+                [
+                    "다음 달 첫 측정으로 기준점을 만들고, 그다음 달부터 같은 질문으로 변화를 비교해 보여 드립니다.",
+                    _DIRECTOR_CAVEAT,
+                ]
+            )
+            if baseline
+            else _director_footnotes(
+                coverage,
+                names=names,
+                first_measured_questions=first_measured_questions,
+                non_comparable_questions=non_comparable_questions,
+                has_v0_baseline=bool(view["v0_baseline"]),
+            )
         ),
         "evidence": evidence,
         "appendix_rows": rows,
@@ -1275,6 +1290,9 @@ def build_doctor_report_view(
     숫자는 전부 코드 바인딩이다 — 시장 1위 리포팅 툴의 현재 1순위 불만이 AI 요약의
     숫자 환각이라, 이 함수는 LLM을 쓰지 않는다.
     """
+    if report_kind == "SETUP":
+        # '기준 설정' 달은 정기 측정이 없다 — 지난달 질문만으로 질문표·언급 칸을 채우지 않는다(D38).
+        attribution = None
     this_count = _as_hundred(sov_pct)
     prev_count = _as_hundred(prev_sov_pct)
     measured = this_count is not None
@@ -1292,7 +1310,9 @@ def build_doctor_report_view(
         if this_count is None or prev_count is None or not comparison_is_valid
         else this_count - prev_count
     )
-    if not measured:
+    if report_kind == "SETUP":
+        delta_sentence = "이번 달은 정기 측정 전입니다. 다음 달 첫 측정으로 기준점을 만들겠습니다"
+    elif not measured:
         delta_sentence = "이번 달은 측정이 충분히 이뤄지지 않았습니다"
     elif comparison_reason == "NO_PRIOR_MANIFEST" or (
         prev_count is None and comparison_reason is None
@@ -1699,7 +1719,8 @@ def build_doctor_report_view(
             kind=report_kind, coverage=sov_coverage, attribution=attribution, citations=citations,
             works=published_work_evidence(hospital, published_contents, citations),
             current=sov_pct, previous=prev_sov_pct, comparison_reason=comparison_reason,
-            shortfall=shortfall if report_kind == "MONTHLY" else 0, protocol_label=protocol_label,
+            shortfall=shortfall if report_kind in ("MONTHLY", "SETUP") else 0,
+            protocol_label=protocol_label,
             reference_previous=reference_prev_sov_pct,
         )
         view.update(
