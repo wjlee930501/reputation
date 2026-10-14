@@ -58,6 +58,8 @@ from app.workers.generation_run_control import (
 )
 from app.workers.nightly_generation_batch import generation_claim_is_active
 from app.workers.noncritical_renewal import (
+    critical_swap_reason,
+    next_renewal_deadline,
     operator_release_renewal_wait,
     renewal_owns_blocker,
     stored_renewal_deadline,
@@ -200,6 +202,29 @@ def operator_decides_references(code: str, item) -> bool:
     )
 
 
+def topic_swap_owns_blocker(code: str, item) -> bool:
+    """비-Critical 차단을 다음 스윕의 주제 교체가 소유하는가 — 교체가 남은 동안은 사람의 일이 아니다.
+
+    작가 예산을 다 쓴 비-Critical 슬롯(생성 예산 소진·표본 3일 소진·수리 소진)은 다음 스윕의 교체 pass가
+    같은 슬롯·예정일로 다른 질문을 쓴다(`topic_swap_fallback.exhausted_body_sample_reason`). 그 사이 사고는
+    RETRYING(기한 = 교체할 첫 스윕)이고, 교체 계단을 다 쓴 뒤에만 종전대로 갱신 대기 또는 사람의 일이다.
+    Critical 교체 요청(교정 상한 소진)은 종전대로 사람에게 보인다. 교체가 닫는 사고는 시도 기록의 원인과
+    같은 코드의 사고뿐이라(`_superseded_incident`) 원인이 같을 때만 소유한다.
+    """
+
+    if item is None:
+        return False
+    if getattr(item, "first_published_at", None) or getattr(item, "human_edited_at", None):
+        return False
+    attempt = _stored_generation_attempt(item)
+    if attempt.get("reason") != code or critical_swap_reason(attempt):
+        return False
+    # 교체 pass가 이 모듈을 import하므로 판정 함수는 호출 시점에 읽는다(순환 import).
+    from app.workers.topic_swap_fallback import exhausted_body_sample_reason
+
+    return exhausted_body_sample_reason(item) is not None
+
+
 def scheduled_recovery_owns_blocker(code: str, item) -> bool:
     """Return whether a sweep still owns this cause, so it is not operator work.
 
@@ -212,6 +237,9 @@ def scheduled_recovery_owns_blocker(code: str, item) -> bool:
         return False
     if renewal_owns_blocker(code, item):
         # 비-Critical 일일 갱신이 다음 날 새 예산으로 다시 쓴다 — 사람의 일이 아니다.
+        return True
+    if topic_swap_owns_blocker(code, item):
+        # 다음 스윕의 주제 교체가 다시 쓴다 — 교체 계단이 남은 비-Critical 슬롯은 사람의 일이 아니다.
         return True
     if code in _AUTOMATIC_BODY_REPAIR_CODES and not _stored_input_change(attempt, code):
         # 수리 예산이 저장된 분류보다 앞선다. 예산이 남아 있으면 아직 시스템의 일이다.
@@ -275,6 +303,11 @@ def scheduled_recovery_deadline(item, code: str) -> datetime | None:
         return None
     if renewal_owns_blocker(code, item):
         return stored_renewal_deadline(item)
+    if topic_swap_owns_blocker(code, item):
+        # 교체 pass는 생성 스윕마다 로더 앞에서 돈다 — 이 예정일을 담는 첫 스윕이 교체 시각이다.
+        return next_renewal_deadline(
+            getattr(item, "scheduled_date", None), datetime.now(UTC), opened_today=False
+        )
     attempt = _stored_generation_attempt(item)
     if attempt.get("reason") == code:
         return _stored_retry_deadline(attempt)
@@ -449,6 +482,9 @@ def generation_block_is_terminal(code: str, item) -> bool:
         return True
     if renewal_owns_blocker(code, item):
         # 일일 갱신이 소유한 비-Critical 차단은 종착이 아니다(`scheduled_recovery_owns_blocker`와 같다).
+        return False
+    if topic_swap_owns_blocker(code, item):
+        # 교체를 기다리는 비-Critical 차단도 종착이 아니다(같은 이유).
         return False
     if code in _AUTOMATIC_BODY_REPAIR_CODES and not _stored_input_change(attempt, code):
         # 수리 예산이 남아 있으면 종착이 아니다 — `scheduled_recovery_owns_blocker`와

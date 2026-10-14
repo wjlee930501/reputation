@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from app.api.admin.operations_center_serializers import requires_operator_action
+from app.core.config import settings
 from app.models.operations import Incident, IncidentSeverity, IncidentState
 from app.workers import (
     generation_incident_control,
@@ -29,6 +30,15 @@ _SLOT = date(2026, 9, 16)  # D
 
 def _kst(year, month, day, hour=0, minute=0, second=0) -> datetime:
     return datetime(year, month, day, hour, minute, second, tzinfo=KST)
+
+
+def _frozen_class(moment: datetime):
+    class _Frozen(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return moment.astimezone(tz) if tz is not None else moment.replace(tzinfo=None)
+
+    return _Frozen
 
 
 def _freeze(monkeypatch, moment: datetime) -> None:
@@ -542,8 +552,12 @@ async def test_a_repair_blocker_is_system_work_while_a_session_remains(monkeypat
 
 @pytest.mark.asyncio
 async def test_a_repair_blocker_becomes_operator_work_when_its_budget_is_gone(monkeypatch):
+    # 자동 소유자가 하나도 남지 않은 경우다 — 주제 교체 두 번을 다 썼고 일일 갱신이 꺼져 있다.
+    # 교체가 남았으면 교체 pass가 소유한다(`test_a_spent_repair_blocker_with_swaps_left_is_retrying`).
+    monkeypatch.setattr(settings, "CONTENT_NONCRITICAL_DAILY_RENEWAL_SESSIONS", 0)
     db = _CommitOnlyDB()
     item = _slot_item()
+    item.topic_swap_history = [{}, {}]
     item.essence_check_summary = {
         "automatic_body_repair": {
             "period": "2026-09-16",
@@ -563,6 +577,27 @@ async def test_a_repair_blocker_becomes_operator_work_when_its_budget_is_gone(mo
     assert (incident.state, incident.sla_due_at) == ("OPEN", None)
 
 
+@pytest.mark.asyncio
+async def test_a_spent_repair_blocker_with_swaps_left_is_retrying(monkeypatch):
+    """수리 예산을 다 써도 주제 교체가 남았으면 다음 스윕의 교체 pass가 소유한다 — 사람의 일이 아니다."""
+
+    db = _CommitOnlyDB()
+    item = _slot_item()
+    item.essence_check_summary = {
+        "automatic_body_repair": {"period": "2026-09-16", "count": 2, "exhausted_days": 3}
+    }
+    _freeze(monkeypatch, _kst(2026, 9, 16, 7, 45))
+    monkeypatch.setattr(generation_incident_control, "datetime", _frozen_class(_kst(2026, 9, 16, 7, 45)))
+    tasks._record_gate_blocker_decision(
+        db, item, SimpleNamespace(id="p1"), "MISSING_REFERENCES"
+    )
+
+    incident = await _open_incident(monkeypatch, item, "MISSING_REFERENCES")
+
+    assert incident.state == "RETRYING"
+    assert incident.sla_due_at == _kst(2026, 9, 16, 12, 0).astimezone(UTC)
+
+
 @pytest.mark.parametrize(
     "repair_state, expected_state",
     [
@@ -576,10 +611,13 @@ async def test_the_worker_record_and_the_gate_record_agree(
 ):
     """워커가 남긴 기록과 게이트가 남긴 기록이 같은 결론을 준다."""
 
+    # 수리 예산이 끝난 쪽은 자동 소유자가 없는 경우다(교체 두 번 소진·일일 갱신 꺼짐).
+    monkeypatch.setattr(settings, "CONTENT_NONCRITICAL_DAILY_RENEWAL_SESSIONS", 0)
     db = _CommitOnlyDB()
     states = []
     for count_attempt in (True, False):
         item = _slot_item()
+        item.topic_swap_history = [{}, {}]
         if repair_state is not None:
             item.essence_check_summary = {"automatic_body_repair": dict(repair_state)}
         _freeze(monkeypatch, _kst(2026, 9, 16, 7, 45))

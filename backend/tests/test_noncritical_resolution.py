@@ -168,16 +168,85 @@ def test_emergency_guidance_must_survive_any_deletion() -> None:
 
     assert mc.emergency_guidance_lost(before, {"body": "본원은 원칙을 지킵니다."})
     assert not mc.emergency_guidance_lost(before, {"body": "응급 시에는 119에 연락하세요."})
+    assert mc.emergency_guidance_lost(
+        {"body": "Call an ambulance. 본원은 원칙을 지킵니다."}, {"body": "본원은 원칙을 지킵니다."}
+    )
 
 
-def test_dosage_mismatch_is_critical_and_never_resolved_here() -> None:
-    """투약량(5mg vs 승인 자료 20mL)은 종류가 병원 사실이어도 Critical이다 — 이 계단이 맡지 않는다."""
+def test_dosage_mismatch_is_left_alone_when_the_reviewer_says_critical() -> None:
+    """투약량(5mg vs 승인 자료 20mL)을 검수 모델이 Critical로 판정하면 이 계단이 맡지 않는다."""
+
+    sentence = "증상이 있으면 하루 5mg을 복용합니다."
+    content = _content(sentence)
+    review = _review(
+        content,
+        _finding(
+            "HARD", "HOSPITAL_FACT", "투약량이 승인 자료(20mL)와 다릅니다", sentence, critical=True
+        ),
+    )
+
+    assert mc.plan_noncritical_fixes(content, review) is None
+
+
+def test_non_critical_dosage_sentence_is_deleted_not_rewritten() -> None:
+    """2026-10-15 대표 결정: 삭제가 지키는 것은 응급 안내와 필수 문구 문장뿐이다. 검수 모델이 비-Critical로
+    판정한 문장은 의료 낱말이 있어도 지운다 — 숫자를 바꿔 넣지 않으므로 새 주장이 생기지 않는다."""
 
     sentence = "증상이 있으면 하루 5mg을 복용합니다."
     content = _content(sentence)
     review = _review(
         content, _finding("HARD", "HOSPITAL_FACT", "투약량이 승인 자료(20mL)와 다릅니다", sentence)
     )
+
+    fix = mc.plan_noncritical_fixes(content, review)
+
+    assert fix is not None
+    corrected = mc.apply_corrections(content, fix.plan, fix.decisions)
+    assert sentence not in corrected["body"]
+    assert "20mL" not in corrected["body"]
+
+
+# 578acbf2(마포성모탑정형외과 10/16)의 비-Critical HARD 두 문장. 종전 삭제 가드는 넓은 의료 어휘
+# (마취통증의학과의 '통증'·'진단')에 걸려 지우지 못했고, 같은 슬롯이 작가 예산을 다 써 멈췄다.
+CLINIC_SPECIALTY_SENTENCE = (
+    "진료과목은 정형외과, 마취통증의학과, 신경외과, 재활의학과이고, 마포역 일대에서도 방문하는 분이 많은 위치입니다."
+)
+EXAM_REFERRAL_SENTENCE = (
+    "이는 본원에서 직접 시행한다는 뜻이 아니라 일반적인 진단 방법에 대한 설명이며, 필요하다고 판단되면 "
+    "검사가 가능한 기관을 안내해 연계하는 방식으로 진행합니다."
+)
+
+
+def test_ordinary_noncritical_hospital_fact_sentences_are_deletable() -> None:
+    content = _content(CLINIC_SPECIALTY_SENTENCE, EXAM_REFERRAL_SENTENCE)
+    review = _review(
+        content,
+        _finding("HARD", "HOSPITAL_FACT", "'방문하는 분이 많은'은 근거가 없습니다", CLINIC_SPECIALTY_SENTENCE),
+        _finding("HARD", "HOSPITAL_FACT", "검사 연계 절차는 병원 프로필에 없습니다", EXAM_REFERRAL_SENTENCE),
+    )
+
+    fix = mc.plan_noncritical_fixes(content, review)
+
+    assert fix is not None
+    assert len(fix.plan.targets) == 2
+    corrected = mc.apply_corrections(content, fix.plan, fix.decisions)
+    assert CLINIC_SPECIALTY_SENTENCE not in corrected["body"]
+    assert EXAM_REFERRAL_SENTENCE not in corrected["body"]
+
+
+@pytest.mark.parametrize(
+    "sentence",
+    [
+        "본원은 손목 진료를 하며, 가슴이 답답하면 119에 연락하세요.",
+        "본원은 손목 진료를 하며, 의식이 흐려지면 응급실로 가셔야 합니다.",
+        "본원은 손목 진료를 하며, 저림이 갑자기 심해지면 즉시 내원하세요.",
+        "본원은 손목 진료를 하며, 쓰러지면 구급차를 부르세요.",
+        "Our clinic treats wrists; call an Ambulance for sudden weakness.",
+    ],
+)
+def test_sentence_with_emergency_guidance_is_still_protected(sentence) -> None:
+    content = _content(sentence)
+    review = _review(content, _finding("HARD", "HOSPITAL_FACT", "근거 없는 병원 사실", sentence))
 
     assert mc.plan_noncritical_fixes(content, review) is None
 
@@ -205,7 +274,11 @@ def test_uncertain_medical_sentence_is_critical_and_left_to_the_existing_ladder(
 
     sentence = "이 통증은 대부분 2주 안에 저절로 낫습니다."
     content = _content(sentence)
-    review = _review(content, _finding("UNCERTAIN", "MEDICAL_SAFETY", "근거가 불분명합니다", sentence))
+    # 등급은 검수 모델이 정한다 — 의료 안전 지적을 Critical로 판정한 경우다(삭제 가드는 응급 안내만 본다).
+    review = _review(
+        content,
+        _finding("UNCERTAIN", "MEDICAL_SAFETY", "근거가 불분명합니다", sentence, critical=True),
+    )
 
     assert mc.plan_noncritical_fixes(content, review) is None
 
@@ -216,7 +289,7 @@ def test_uncertain_medical_sentence_is_critical_and_left_to_the_existing_ladder(
         # Critical(의료 안전 HARD)이 하나라도 있으면 이 계단이 맡지 않는다.
         [
             _finding("HARD", "HOSPITAL_FACT", "진료 철학", PHILOSOPHY_SENTENCE),
-            _finding("HARD", "MEDICAL_SAFETY", "위험한 오정보", RECOVERY_SENTENCE),
+            _finding("HARD", "MEDICAL_SAFETY", "위험한 오정보", RECOVERY_SENTENCE, critical=True),
         ],
         # 응급 안내 누락은 Critical이다.
         [_finding("UNCERTAIN", "MEDICAL_SAFETY", EMERGENCY_MESSAGE)],

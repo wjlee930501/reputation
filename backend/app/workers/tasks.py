@@ -622,6 +622,7 @@ from app.workers.noncritical_renewal import (
     DAILY_RENEWAL_KEY,
     DAILY_RENEWAL_REASON,
     RENEWAL_EXCLUDED_KEY,
+    critical_swap_reason,
     in_renewal_mode,
     operator_release_renewal_wait,
     record_is_renewable,
@@ -6103,6 +6104,38 @@ def _generation_left_references_to_operator(error: BaseException, item: ContentI
     return bool(title) and references_left_to_operator(item, title=title)
 
 
+def _bodied_budget_exhaustion_is_recorded(code: str, item: ContentItem) -> bool:
+    """본문이 있는 슬롯의 생성 예산 소진을 시도 기록으로 남기는가.
+
+    갱신 구간이 열린 슬롯은 종전대로 언제나 남긴다. 그 밖에는 저장 본문이 Critical 판정을 받지 않았고
+    시도 기록이 Critical 교체 요청(교정 상한 소진)이 아닐 때만 남긴다 — 그 기록은 Critical 계단(교체 →
+    사람)이 소유하므로 예산 소진 원인으로 덮지 않는다.
+    """
+
+    if code != GENERATION_BUDGET_EXHAUSTED_CODE:
+        return False
+    if in_renewal_mode(item):
+        return True
+    return not _stored_model_declared_hard(item) and not critical_swap_reason(
+        _stored_generation_attempt(item)
+    )
+
+
+def _philosophy_for_failure_record(db, hospital_id) -> HospitalContentPhilosophy | None:
+    """실패 기록용 운영 기준. 읽지 못해도 진행 중인 실패 처리(실행·사고 기록)를 막지 않는다."""
+
+    try:
+        return _generation_philosophy_sync(db, hospital_id)
+    except Exception as exc:  # noqa: BROAD_EXCEPT_OK -- 실패 기록 경로의 보조 조회다
+        logger.warning(
+            "Philosophy lookup for a failure record failed (hospital %s): %s",
+            hospital_id,
+            type(exc).__name__,
+        )
+        _rollback_quietly(db, hospital_id)
+        return None
+
+
 def _run_generation_item(
     db,
     recorder,
@@ -6536,9 +6569,14 @@ def _run_generation_item(
             # 그 주제의 공신력 있는 문서는 생기지 않는다 — 표본 사다리·주제 교체가 아니라
             # 곧바로 사람의 결정(OPERATOR_REQUIRED, 기한 없는 OPEN)이다.
             code, message = "MISSING_REFERENCES", REFERENCES_OPERATOR_DECIDES_CAUSE
-        if unwritten or (code == GENERATION_BUDGET_EXHAUSTED_CODE and in_renewal_mode(item)):
-            # 본문이 있는 갱신 슬롯이 구간 상한에 막힌 경우도 기록한다 — 남기지 않으면 지금 기한의 갱신
-            # 시작 기록이 그대로라 다음 스윕이 다시 집는다(공회전).
+        if unwritten or _bodied_budget_exhaustion_is_recorded(code, item):
+            # 본문이 있는 슬롯이 생성 예산에 막힌 경우도 기록한다 — 남기지 않으면 저장 본문의 옛 원인
+            # (지금 기한의 갱신 시작·표본 차단)이 그대로라 다음 스윕이 같은 실패로 다시 집고, 주제 교체
+            # 계단(`topic_swap_fallback`, 원인 = 생성 예산 소진)은 영영 그 슬롯을 보지 못한다(공회전).
+            if philosophy is None and not unwritten:
+                # 본문이 있는 경로는 운영 기준을 읽기 전에 저장 본문 수리로 넘어간다 — 시도 지문이
+                # 운영 기준 없이 계산되면 다음 판정이 입력이 바뀐 것으로 읽는다.
+                philosophy = _philosophy_for_failure_record(db, hospital.id)
             _remember_generation_attempt(
                 db, item, philosophy, code, message=message, operator_decides=operator_decides
             )
