@@ -483,7 +483,7 @@ def generation_block_digest_due(
     # immediately; deterministic rejection/gate codes wait for the weekly rollup.
     if code in _IMMEDIATE_GENERATION_NOTIFICATION_CODES | WEEKLY_REJECTED_GENERATION_CODES:
         return False
-    # The auto-review task owns snapshot-keyed ESCALATED notifications.
+    # Essence는 승인 없이 자동 적용된다(Phase 4 D33) — 판이 없는 건 잠깐의 준비 상태라 알리지 않는다.
     if code == "MISSING_APPROVED_ESSENCE":
         return False
     if code == "ESSENCE_NOT_ALIGNED" and not remediation_exhausted:
@@ -710,9 +710,8 @@ def _generation_operator_copy(
             "운영 센터에서 게이트 문구와 승인된 병원 정보를 확인하세요."
         ),
         "MISSING_APPROVED_ESSENCE": (
-            "시스템이 새 자료 처리와 최신 전체 자료 기반 운영 기준 검토·승인을 자동으로 "
-            "이어갑니다. 발행 지연이 계속되는 병원만 운영 센터에서 원자료 수집 오류를 "
-            "확인하세요."
+            "시스템이 병원 정보와 자료로 운영 기준을 자동으로 만들어 바로 적용합니다. "
+            "적용되면 다음 예약 배치가 이 글을 다시 시도합니다. 기다리면 됩니다."
         ),
         "COST_BLOCKED": (
             "운영 센터 하단의 “비용·자동 작업 안전장치”를 펼치세요. 전체 중지 상태면 “중지 해제”를 "
@@ -832,7 +831,7 @@ def _generation_safe_cause(code: str) -> str:
         "GENERATION_REJECTED": (
             "가격·지역·검색 구조 자동 검수 게이트가 재작성 후에도 통과되지 않았습니다."
         ),
-        "MISSING_APPROVED_ESSENCE": "승인된 콘텐츠 운영 기준이 없어 자동 생성을 시작하지 않았습니다.",
+        "MISSING_APPROVED_ESSENCE": "적용 중인 콘텐츠 운영 기준이 아직 없어 자동 생성을 다음 배치로 미뤘습니다.",
         "COST_BLOCKED": "오늘 설정된 사용 한도에 도달해 자동 생성을 시작하지 않았습니다.",
         "IMAGE_GENERATION_FAILED": "본문은 준비됐지만 대표 이미지를 만들지 못했습니다.",
         "GENERATION_LEASE_ACTIVE": "같은 콘텐츠의 다른 생성 작업이 아직 진행 중입니다.",
@@ -1202,8 +1201,8 @@ async def open_generation_incident(
             notification_code = code
         item = swapped_item
         if notification_code == "MISSING_APPROVED_ESSENCE":
-            # This incident records system work. Human action is represented by
-            # the separate snapshot-keyed ESCALATED incident, including its SLA.
+            # This incident records system work only. Essence is synthesized and
+            # applied automatically (Phase 4 D33), so no human SLA is attached.
             retrying = await mark_retrying(
                 db,
                 incident.id,

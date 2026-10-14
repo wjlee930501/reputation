@@ -22,8 +22,8 @@ STALE_BRIEF_2CM = (
 LEAD = "대장 선종은 정기 검진으로 찾을 수 있는 병변입니다."
 
 
-def hard_finding(quote: str, message: str) -> dict:
-    return {"severity": "HARD", "kind": "MEDICAL_SAFETY", "quote": quote, "message": message}
+def hard_finding(quote: str, message: str, *, kind: str = "MEDICAL_SAFETY") -> dict:
+    return {"severity": "HARD", "kind": kind, "quote": quote, "message": message}
 
 
 def verdict(*findings: dict) -> dict:
@@ -36,12 +36,16 @@ def verdict(*findings: dict) -> dict:
 
 
 def approved_and_stale_verdict() -> dict:
-    """승인본 1cm 문장과 옛 가이드 2cm 문장을 각각 원문 그대로 인용한 HARD 두 건."""
+    """승인본 1cm 문장(문체 지적)과 옛 가이드 2cm 문장(의료 지적)을 각각 원문 그대로 인용한 HARD 두 건.
+
+    Phase 4(D33)부터 필수 문구 면제는 문체·비의료 지적에만 적용된다 — 승인본 문장 지적은 STYLE이다.
+    """
 
     return verdict(
         hard_finding(
             APPROVED_1CM,
             "필수 문구와 같은 문장이지만 가능성 표현도 완화가 필요합니다.",
+            kind="STYLE",
         ),
         hard_finding(
             STALE_BRIEF_2CM,

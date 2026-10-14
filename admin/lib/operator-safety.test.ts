@@ -6,30 +6,8 @@ import {
   buildPlatformVariants,
   canRunMeasurement,
   canSubmitSchedule,
-  persistThenApprove,
   reportDeliveryBlockers,
 } from './operator-safety.ts'
-
-test('persistThenApprove saves visible fields before approval', async () => {
-  const calls: string[] = []
-  await persistThenApprove(
-    async () => { calls.push('save') },
-    async () => { calls.push('approve') },
-  )
-  assert.deepEqual(calls, ['save', 'approve'])
-})
-
-test('persistThenApprove does not approve when saving fails', async () => {
-  let approved = false
-  await assert.rejects(
-    persistThenApprove(
-      async () => { throw new Error('save failed') },
-      async () => { approved = true },
-    ),
-    /save failed/,
-  )
-  assert.equal(approved, false)
-})
 
 test('buildPlatformVariants creates every question for every selected platform', () => {
   assert.deepEqual(

@@ -458,6 +458,26 @@ def _must_use_version_replaced(db: Session, incident: Incident, _now: datetime) 
     return None if status == PhilosophyStatus.APPROVED else "approved_version_replaced"
 
 
+def _essence_applied(db: Session, incident: Incident, _now: datetime) -> str | None:
+    """그 병원에 적용 중인 운영 기준(APPROVED 판)이 있다 — 옛 자동 검수 보류·실패 사고의 근거.
+
+    Phase 4(D33)부터 Essence는 승인 단계 없이 자동 적용되므로 이 사고들은 더 열리지 않는다.
+    종류가 조용함으로 등록돼 있어 닫아도 복구 알림이 나가지 않는다.
+    """
+
+    if incident.hospital_id is None:
+        return None
+    applied = db.scalar(
+        select(HospitalContentPhilosophy.id)
+        .where(
+            HospitalContentPhilosophy.hospital_id == incident.hospital_id,
+            HospitalContentPhilosophy.status == PhilosophyStatus.APPROVED,
+        )
+        .limit(1)
+    )
+    return "essence_applied" if applied is not None else None
+
+
 def _naver_post_stored(db: Session, incident: Incident, _now: datetime) -> str | None:
     """그 병원의 더 나중 수집 실행이 같은 글을 저장했거나 이미 저장된 중복으로 건너뛰었다."""
 
@@ -698,6 +718,10 @@ RESOLVERS: dict[str, Resolver] = {
     "LEAD_REPORT_BLOCKED": partial(_lead_report_recovered, source_types=("LEAD_REPORT",)),
     "LEAD_DELIVERY_ABANDONED": _lead_delivery_settled,
     "ESSENCE_MUST_USE_EXCLUDED": _must_use_version_replaced,
+    # Phase 4(D33): 옛 Essence 자동 검수 사고 — 적용 중인 판이 생기면 조용히 닫는다.
+    "ESSENCE_AUTO_REVIEW_ESCALATED": _essence_applied,
+    "ESSENCE_AUTO_REVIEW_FAILED": _essence_applied,
+    "ESSENCE_AUTO_REVIEW_COST_BLOCKED": _essence_applied,
     "NAVER_SOURCE_FETCH_FAILED": _naver_post_stored,
     "BROKER_UNAVAILABLE": _broker_accepted_later,
     "SITE_BUILD_DISPATCH_FAILED": _site_build_dispatch_superseded,
@@ -807,8 +831,8 @@ def default_retry_deadlines(
     """기한 없이 남은 RETRYING에 마지막 변경 + 24시간 기한을 단다(배포 전 행·옛 호출자).
 
     기한 없는 RETRYING은 `requires_operator_action`이 영원히 사람의 일로 보지 않는 '주인 없는
-    복구 중'이다. MISSING_APPROVED_ESSENCE 생성 보류는 사람의 일을 별도 ESCALATED 사고가
-    가지므로 제외한다(같은 원인을 두 번 세지 않는다).
+    복구 중'이다. MISSING_APPROVED_ESSENCE 생성 보류는 제외한다 — Essence는 승인 없이 자동으로
+    적용되고(Phase 4 D33) 생성 경로가 그 자리에서 합성을 요청하므로 사람의 일이 아니다.
     """
 
     rows = list(

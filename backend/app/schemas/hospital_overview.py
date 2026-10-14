@@ -44,7 +44,7 @@ class ExceptionCard(BaseModel):
     `allowed_actions`는 그중 실행 가능한 코드만 담은 하위 호환 요약이다.
     """
 
-    kind: Literal["incident", "escalated_draft"]
+    kind: Literal["incident"]
     id: str
     title: str
     evidence: str | None

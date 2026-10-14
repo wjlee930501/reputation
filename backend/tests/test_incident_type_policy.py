@@ -143,13 +143,12 @@ def test_every_sweep_owned_type_has_a_way_to_close():
 
     from app.workers.incident_backlog import RESOLVERS
 
-    # 명시적 복구 경로: 슬롯 재조정 성공(`monthly_slot_incident_control.recover_monthly_slot_failure`),
-    # 운영 기준 승인(`ops_incident_alerts.recover_ops_incidents_for_hospital`, tasks의 Essence 처리).
+    # 명시적 복구 경로: 슬롯 재조정 성공(`monthly_slot_incident_control.recover_monthly_slot_failure`).
+    # 옛 Essence 자동 검수 사고 셋은 Phase 4(D33)부터 근거(적용 중인 판)로 닫힌다.
     # 원장 PDF 검증 실패는 1분 월간 PDF 대조가 유효한 PDF를 확인하면 닫는다
     # (`monthly_artifact_recovery_control.recover_monthly_artifact_failure_batch`).
     explicit_recovery = {
         "MONTHLY_SLOT_GENERATION_FAILED",
-        "ESSENCE_AUTO_REVIEW_ESCALATED",
         "MONTHLY_DOCTOR_PDF_BLOCKED",
     }
     assert SWEEP_OWNED_INCIDENT_TYPES - set(RESOLVERS) <= explicit_recovery
@@ -187,3 +186,22 @@ def test_people_owned_kinds_stay_with_the_operator():
     ):
         assert incident_audience(incident_type) is IncidentAudience.OPERATOR
         assert incident_is_quiet(incident_type) is False
+
+
+@pytest.mark.parametrize(
+    "incident_type",
+    [
+        "ESSENCE_AUTO_REVIEW_ESCALATED",
+        "ESSENCE_AUTO_REVIEW_FAILED",
+        "ESSENCE_AUTO_REVIEW_COST_BLOCKED",
+        "ESSENCE_MUST_USE_EXCLUDED",
+    ],
+)
+def test_retired_essence_incidents_are_quiet_and_never_operator_work(incident_type):
+    """Phase 4(D33): Essence는 승인 없이 자동 적용된다 — 남은 행도 Slack·할 일이 아니다."""
+
+    assert incident_is_quiet(incident_type) is True
+    assert incident_type in QUIET_INCIDENT_TYPES
+    late = datetime(2026, 10, 26, tzinfo=UTC)
+    assert is_operator_todo(incident_type, "OPEN", None, late) is False
+    assert is_operator_todo(incident_type, "RETRYING", late - timedelta(days=1), late) is False

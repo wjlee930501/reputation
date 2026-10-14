@@ -75,7 +75,7 @@ const CONDITION_LABELS: Record<string, string> = {
   site_built: '공개 페이지 준비',
   schedule: '발행 요일 설정',
   sources: '근거 자료 처리 {count}건',
-  essence_review: '콘텐츠 운영 기준 자동 검수',
+  essence_review: '콘텐츠 운영 기준 자동 생성',
   // 자료가 하나도 없으면 자동 검수는 기다리기만 한다 — 사람이 채워야 다음이 있다.
   sources_required: '공식 채널·근거 자료 등록',
   // 공개 서비스 중이 아닌 병원은 자동 발행이 돌지 않는다.

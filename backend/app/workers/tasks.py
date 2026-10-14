@@ -169,13 +169,11 @@ from app.services.domain_health_control import (
 from app.services.domain_health_probe import check_custom_domain_https as _check_custom_domain_https
 from app.services.domain_live_status import LiveDomainCheck, apply_live_domain_check
 from app.services.essence_auto_review import (
-    AUTO_ESSENCE_ACTOR,
-    EssenceAiReview,
     EssenceRefreshStatus,
+    EssenceSynthesisDeferred,
     essence_refresh_needed,
     refresh_essence_snapshot,
     release_essence_refresh_claim,
-    review_essence_candidate,
 )
 from app.services.essence_engine import (
     ESSENCE_STATUS_ALIGNED as ESSENCE_STATUS_ALIGNED,
@@ -191,7 +189,7 @@ from app.services.essence_engine import (
     screen_content_against_philosophy,
     source_processing_coverage,
     source_processing_ranges,
-    synthesize_philosophy,
+    synthesize_philosophy_with_mode,
     validate_source_excerpt,
 )
 from app.services.essence_engine import (
@@ -385,7 +383,6 @@ from app.services.ops_incident_alerts import (
     extend_retrying_deadline,
     open_ops_incident,
     recover_ops_incident,
-    recover_ops_incidents_for_hospital,
 )
 from app.services.post_publish_review_policy import (
     AUTO_PUBLISH_BLOCKED_ACTION,
@@ -4149,54 +4146,28 @@ def process_source_asset_task(
         }
 
 
-class _EssenceReviewCostBlocked(RuntimeError):
-    pass
-
-
 def _cost_guarded_essence_synthesis(
     hospital: Hospital,
     sources: list[HospitalSourceAsset],
     notes: list[HospitalSourceEvidenceNote],
     operator_note: str | None = None,
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], str]:
     # 운영 기준 합성은 야간 생성과 다른 예산을 쓴다 — 온보딩 폭주가 계약 병원의 글을
     # 굶기지 않게 한다. 공급자 HTTP attempt 원장(`provider_usage`)은 아직 'content'로
     # 남아 있다 — 원장의 카테고리 CHECK 제약을 바꾸는 마이그레이션이 따로 필요하다.
+    # 보류는 실패가 아니다: 판이 없으면 결정적 폴백 판을, 있으면 기존 판을 둔다(D33).
     decision = _run_async(cost_guard.check_and_increment("essence"))
     if not decision.allowed:
-        raise _EssenceReviewCostBlocked(decision.reason or "Essence synthesis cost blocked")
+        raise EssenceSynthesisDeferred(decision.reason or "Essence synthesis cost blocked")
 
     async def _call():
         async with metered_llm_calls(hospital.id):
             return await asyncio.to_thread(
-                synthesize_philosophy,
+                synthesize_philosophy_with_mode,
                 hospital,
                 sources,
                 notes,
-                operator_note=operator_note,
-            )
-
-    return _run_async(_call())
-
-
-def _cost_guarded_essence_review(
-    hospital: Hospital,
-    previous: HospitalContentPhilosophy | None,
-    candidate: dict[str, Any],
-    notes: list[HospitalSourceEvidenceNote],
-) -> EssenceAiReview:
-    decision = _run_async(cost_guard.check_and_increment("essence"))
-    if not decision.allowed:
-        raise _EssenceReviewCostBlocked(decision.reason or "Essence review cost blocked")
-
-    async def _call():
-        async with metered_llm_calls(hospital.id):
-            return await asyncio.to_thread(
-                review_essence_candidate,
-                hospital,
-                previous,
-                candidate,
-                notes,
+                operator_note,
             )
 
     return _run_async(_call())
@@ -4257,41 +4228,27 @@ def _ensure_initial_schedules(*, limit: int = 200) -> int:
     )
 
 
-# 다음 자동 재검수는 15분 재조정(`reconcile-essence-snapshots`)이 집는다. 기한을 재검수 시각에 딱
-# 맞추면 재조정이 집기 전(최대 15분)에 보류된 열림 알림이 먼저 나간다 — 주기 + 여유만큼 늦춘다.
-ESSENCE_ESCALATION_RETRY_MARGIN = timedelta(minutes=30)
-
-
-def _essence_escalation_retry_until(result, now: datetime) -> datetime | None:
-    """Essence 보류 사고의 스윕 소유 기한. 예산이 끝났으면 None(곧바로 사람의 일).
-
-    다음 시도 시각이 이미 지났거나 '지금 바로' 표식(`automatic_recovery_due_at`의 datetime.min — 옛
-    초안·마지막 시도 시각 없음)이면 지금 재검수 대상이다. 즉시 OPEN으로 열지 않고 지금 + 여유로 둔다.
-    """
-
-    if result.automatic_recovery_exhausted:
-        return None
-    return max(result.next_automatic_attempt_at, now) + ESSENCE_ESCALATION_RETRY_MARGIN
-
-
 @celery_app.task(
     name="app.workers.tasks.auto_review_essence_snapshot",
     bind=True,
     max_retries=2,
-    # Two complete remediation passes can each spend up to ~332 seconds on
-    # synthesis + primary review + adjudication. Leave enough margin to persist
-    # the final approval/escalation and recovery marker after provider timeouts.
-    soft_time_limit=780,
-    time_limit=840,
+    # 합성 한 번(공급자 90초) + 결정적 정리 + 판 교체·재판정 커밋. AI 검수는 없다(D33).
+    soft_time_limit=420,
+    time_limit=480,
 )
 def auto_review_essence_snapshot(self, hospital_id: str) -> dict[str, object]:
-    """Build and independently review an initial BaseEssence."""
+    """승인 단계 없이 자동 운영 요약(Essence)을 합성·정리해 곧바로 적용한다(D33).
+
+    태스크 이름·디스패치 목적(`auto-review-essence-snapshot`)은 봉투·readiness 등록을 바꾸지 않으려고
+    그대로 둔다. 이 경로는 사고·Slack을 만들지 않는다 — 공급자 실패는 결정적 폴백으로 끝나고, 폴백까지
+    실패하면(DB 등) Celery 재시도 뒤 일반 백그라운드 실패 경로를 탄다.
+    """
 
     require_dispatch(self, "auto-review-essence-snapshot", hospital_id)
     hospital_uuid = uuid.UUID(hospital_id)
     hospital_name = "병원"
-    initial_schedule: str | None = None
     hospital_slug: str | None = None
+    initial_schedule: str | None = None
     refresh_claim_token = (
         f"{str(self.request.id or uuid.uuid4())}:retry:{int(self.request.retries or 0)}"
     )
@@ -4305,164 +4262,45 @@ def auto_review_essence_snapshot(self, hospital_id: str) -> dict[str, object]:
                 db,
                 hospital_uuid,
                 synthesizer=_cost_guarded_essence_synthesis,
-                reviewer=_cost_guarded_essence_review,
                 claim_token=refresh_claim_token,
             )
-    except _EssenceReviewCostBlocked as exc:
-        with SyncSessionLocal() as db:
-            release_essence_refresh_claim(
-                db,
-                hospital_id=hospital_uuid,
-                claim_token=refresh_claim_token,
-                error_code="COST_BLOCKED",
-                error_message=str(exc),
-            )
-        _run_async(
-            open_ops_incident(
-                pipeline="essence_auto_review",
-                object_type="hospital",
-                object_id=hospital_id,
-                incident_type="ESSENCE_AUTO_REVIEW_COST_BLOCKED",
-                safe_error_code="COST_BLOCKED",
-                problem="AI 운영 기준 자동 검수가 비용 가드로 보류되었습니다.",
-                customer_impact="초기 운영 기준 검수가 끝날 때까지 콘텐츠 생성과 발행이 중지됩니다.",
-                next_action="비용 가드가 해제되면 정기 복구가 자동으로 다시 시도합니다.",
-                source_type="ESSENCE_AUTO_REVIEW",
-                hospital_name=hospital_name,
-                hospital_id=hospital_uuid,
-                admin_path=f"/hospitals/{hospital_id}",
-                fingerprint=IncidentFingerprint.COST_BLOCKED,
-                actor=AUTO_ESSENCE_ACTOR,
-            )
-        )
-        return {"status": "COST_BLOCKED", "hospital_id": hospital_id, "reason": str(exc)}
     except Exception as exc:
         with SyncSessionLocal() as db:
             release_essence_refresh_claim(
                 db,
                 hospital_id=hospital_uuid,
                 claim_token=refresh_claim_token,
-                error_code="ESSENCE_PROVIDER_UNAVAILABLE",
+                error_code="ESSENCE_REFRESH_FAILED",
                 error_message=str(exc),
             )
         if self.request.retries < self.max_retries:
             raise self.retry(exc=exc, countdown=60 * (self.request.retries + 1))
-        _run_async(
-            open_ops_incident(
-                pipeline="essence_auto_review",
-                object_type="hospital",
-                object_id=hospital_id,
-                incident_type="ESSENCE_AUTO_REVIEW_FAILED",
-                safe_error_code="ESSENCE_AUTO_REVIEW_FAILED",
-                problem="AI 운영 기준 자동 검수를 완료하지 못했습니다.",
-                customer_impact="초기 운영 기준 검수가 끝날 때까지 콘텐츠 생성과 발행이 중지됩니다.",
-                next_action="운영센터에서 자동 생성된 초안과 근거 자료를 확인해 주세요.",
-                source_type="ESSENCE_AUTO_REVIEW",
-                hospital_name=hospital_name,
-                hospital_id=hospital_uuid,
-                admin_path=f"/hospitals/{hospital_id}",
-                fingerprint=IncidentFingerprint.VALIDATION_FAILED,
-                actor=AUTO_ESSENCE_ACTOR,
-            )
-        )
         raise
 
-    if result.status in {
-        EssenceRefreshStatus.UP_TO_DATE,
-        EssenceRefreshStatus.AUTO_APPROVED,
-        EssenceRefreshStatus.ESCALATED,
-    }:
-        for fingerprint in (
-            IncidentFingerprint.COST_BLOCKED,
-            IncidentFingerprint.VALIDATION_FAILED,
-        ):
-            _run_async(
-                recover_ops_incident(
-                    pipeline="essence_auto_review",
-                    object_type="hospital",
-                    object_id=hospital_id,
-                    fingerprint=fingerprint,
-                    hospital_name=hospital_name,
-                    actor=AUTO_ESSENCE_ACTOR,
-                )
-            )
-
-    if result.requires_operator and result.previous_philosophy_id is None:
-        snapshot = result.snapshot_hash or "unknown"
-        # 예산이 남은 보류는 처음부터 RETRYING+다음 자동 재검수 시각으로 연다 — 시도마다 새로
-        # 열지 않고 같은 병원·snapshot 한 건을 만진다. 열림 알림은 발송기가 그 시각까지 보류하고,
-        # 그 안에 승인되면 보내지 않는다. 소진되면 OPEN이며 그때 사람의 일이 된다.
-        retry_until = _essence_escalation_retry_until(result, datetime.now(timezone.utc))
-        _run_async(
-            open_ops_incident(
-                pipeline="essence_auto_review",
-                object_type="essence_snapshot",
-                object_id=f"{hospital_id}:{snapshot}",
-                incident_type="ESSENCE_AUTO_REVIEW_ESCALATED",
-                safe_error_code="ESSENCE_AUTO_REVIEW_ESCALATED",
-                problem=(
-                    result.findings[0]
-                    if result.findings
-                    else "AI 근거 검수가 자동 승인을 보류했습니다."
-                ),
-                customer_impact="승인 운영 기준이 없어 콘텐츠 생성과 발행이 중지되며 초안은 검토 대기 상태로 보관됩니다.",
-                next_action="운영센터에서 새 운영 기준 초안의 근거와 충돌 항목만 확인해 주세요.",
-                source_type="ESSENCE_AUTO_REVIEW",
-                hospital_name=hospital_name,
-                hospital_id=hospital_uuid,
-                admin_path=f"/hospitals/{hospital_id}",
-                fingerprint=IncidentFingerprint.VALIDATION_FAILED,
-                actor=AUTO_ESSENCE_ACTOR,
-                retry_until=retry_until,
-                severity=(
-                    IncidentSeverity.MEDIUM if retry_until is not None else IncidentSeverity.HIGH
-                ),
-            )
-        )
-    elif result.status in {
-        EssenceRefreshStatus.ESCALATED,
-        EssenceRefreshStatus.AUTO_APPROVED,
-        EssenceRefreshStatus.UP_TO_DATE,
-    }:
-        _run_async(
-            recover_ops_incidents_for_hospital(
-                hospital_id=hospital_uuid,
-                pipeline="essence_auto_review",
-                incident_type="ESSENCE_AUTO_REVIEW_ESCALATED",
-                hospital_name=hospital_name,
-                actor=AUTO_ESSENCE_ACTOR,
-                reason="current Essence snapshot is approved for generation",
-                notify=False,
-            )
-        )
-        if result.status == EssenceRefreshStatus.AUTO_APPROVED and result.should_revalidate_site:
+    if result.status == EssenceRefreshStatus.APPLIED:
+        if result.should_revalidate_site:
             _run_async(
                 trigger_hospital_site_revalidate_safe(
                     hospital_slug or "",
                     hospital_name=hospital_name,
                 )
             )
-        if result.status == EssenceRefreshStatus.AUTO_APPROVED:
-            # 승인은 이미 커밋됐다. 첫 일정은 별도 세션의 부수효과라 실패해도 승인을
-            # 되돌리지 않고, 15분 조정이 다시 시도한다.
-            initial_schedule = _ensure_initial_schedule_safe(
-                hospital_uuid, trigger="essence_auto_approval"
-            )
+        # 판은 이미 커밋됐다. 첫 일정은 별도 세션의 부수효과라 실패해도 판을 되돌리지 않고,
+        # 15분 조정이 다시 시도한다.
+        initial_schedule = _ensure_initial_schedule_safe(
+            hospital_uuid, trigger="essence_auto_approval"
+        )
 
     return {
         "status": result.status.value,
         "hospital_id": hospital_id,
+        "trigger": result.trigger,
         "initial_schedule": initial_schedule,
         "snapshot_hash": result.snapshot_hash,
         "philosophy_id": str(result.philosophy_id) if result.philosophy_id else None,
-        "findings": list(result.findings),
-        "synthesis_attempts": result.synthesis_attempts,
-        "automatic_recovery_cycle": result.automatic_recovery_cycle,
-        "next_automatic_attempt_at": (
-            result.next_automatic_attempt_at.isoformat()
-            if result.next_automatic_attempt_at
-            else None
-        ),
+        "fallback": result.fallback,
+        "reason": result.reason,
+        "dropped": result.dropped_count,
     }
 
 
@@ -4718,6 +4556,27 @@ def _create_runs_for_orphan_pending_sources(*, limit: int = 200) -> list[uuid.UU
         return created_ids
 
 
+def _sync_profile_facts_sources(hospital_ids: list[uuid.UUID]) -> int:
+    """병원마다 PROFILE_FACTS 자료를 병원 행과 맞춘다. 한 병원의 실패가 나머지를 막지 않는다."""
+
+    from app.services.profile_facts_source import sync_profile_facts_source
+
+    changed = 0
+    for hospital_id in hospital_ids:
+        try:
+            with SyncSessionLocal() as db:
+                acquire_hospital_advisory_lock_sync(db, hospital_id)
+                result = sync_profile_facts_source(db, db.get(Hospital, hospital_id))
+                if result.status in {"CREATED", "UPDATED", "CLEARED"}:
+                    db.commit()
+                    changed += 1
+                else:
+                    db.rollback()
+        except Exception:
+            logger.exception("profile facts source sync failed for hospital %s", hospital_id)
+    return changed
+
+
 @celery_app.task(
     name="app.workers.tasks.reconcile_essence_snapshots",
     bind=True,
@@ -4737,6 +4596,10 @@ def reconcile_essence_snapshots(self) -> dict[str, int]:
             .scalars()
             .all()
         )
+    # Phase 4(D33): 병원 정보(자동) 자료를 병원 행과 맞춘다 — 저장 훅이 놓친 병원(기능 이전 병원,
+    # 직접 수정)의 회수 경로다. 내용이 같으면 쓰지 않는다.
+    profile_facts_synced = _sync_profile_facts_sources(candidate_ids)
+    with SyncSessionLocal() as db:
         hospital_ids = [
             hospital_id for hospital_id in candidate_ids if essence_refresh_needed(db, hospital_id)
         ]
@@ -4756,6 +4619,7 @@ def reconcile_essence_snapshots(self) -> dict[str, int]:
     onboarding = run_onboarding_sweeps()
     return {
         "queued": queued,
+        "profile_facts_synced": profile_facts_synced,
         "initial_schedules_created": initial_schedules_created,
         "source_fetches_redispatched": redispatched_fetches,
         "source_runs_created": len(created_source_runs),
@@ -6016,6 +5880,8 @@ def _run_generation_item(
                 **({_GENERATION_ATTEMPT_KEY: stored_attempt} if stored_attempt else {}),
             }
             _remember_generation_attempt(db, item, philosophy, "MISSING_APPROVED_ESSENCE")
+            # 자동 요약은 승인을 기다리지 않는다(D33) — 판이 없으면 그 자리에서 합성을 요청한다.
+            _request_essence_refresh(hospital.id)
             logger.warning(
                 "Skipping content generation without approved clinic writing standard: %s",
                 hospital.name,
@@ -7179,6 +7045,7 @@ def _generate_single_content_item(
             "checked_at": datetime.now(timezone.utc).isoformat(),
         }
         _remember_generation_attempt(db, item, philosophy, "MISSING_APPROVED_ESSENCE")
+        _request_essence_refresh(hospital.id)
         return (
             GenerationItemState.SKIPPED,
             "MISSING_APPROVED_ESSENCE",
@@ -7591,6 +7458,33 @@ def _persist_publication_readiness(
         assessment.code or "GENERATION_FAILED",
         assessment.message or "자동 발행 준비 검사를 통과하지 못했습니다.",
     )
+
+
+# 같은 프로세스에서 같은 병원의 즉석 합성 요청은 이 간격에 한 번만 보낸다(배치가 글마다 부른다).
+# 중복 실행은 claim이 막지만 큐를 채우지 않게 한다.
+_ESSENCE_REFRESH_REQUEST_INTERVAL_SECONDS = 15 * 60
+_essence_refresh_requested_at: dict[str, float] = {}
+
+
+def _request_essence_refresh(hospital_id) -> bool:
+    """판이 없어 생성을 건너뛴 병원의 자동 요약을 바로 디스패치한다(종착이 아니라 재시도)."""
+
+    key = str(hospital_id)
+    now = monotonic()
+    last = _essence_refresh_requested_at.get(key)
+    if last is not None and now - last < _ESSENCE_REFRESH_REQUEST_INTERVAL_SECONDS:
+        return False
+    try:
+        auto_review_essence_snapshot.apply_async(
+            args=[key],
+            queue="content",
+            headers=build_dispatch_headers("auto-review-essence-snapshot", key),
+        )
+    except Exception:
+        logger.exception("essence refresh dispatch failed for hospital %s", key)
+        return False
+    _essence_refresh_requested_at[key] = now
+    return True
 
 
 def _heal_missing_essence_for_digest(hospital_id, healed_hospitals: set) -> None:

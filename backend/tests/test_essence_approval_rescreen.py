@@ -1,10 +1,12 @@
+"""새 판으로 기존 글을 다시 판정한다 — 미해결 독립 검수는 판 교체로 지워지지 않는다."""
+
 import uuid
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
-from app.api.admin.essence import _rescreen_content_items
 from app.models.essence import PhilosophyStatus
 from app.services.content_ai_review import candidate_review_coverage, candidate_sha256
+from app.services.content_publication import apply_essence_revalidation
 from app.services.essence_readiness import resolve_essence_readiness
 
 
@@ -49,9 +51,9 @@ def test_new_philosophy_rescreens_and_relinks_existing_content():
         essence_check_summary={},
     )
 
-    counts = _rescreen_content_items([safe, unsafe], philosophy)
+    statuses = [apply_essence_revalidation(item, philosophy) for item in (safe, unsafe)]
 
-    assert counts == {"total": 2, "aligned": 1, "needs_review": 1}
+    assert statuses == ["ALIGNED", "NEEDS_ESSENCE_REVIEW"]
     assert safe.content_philosophy_id == new_id
     assert safe.essence_status == "ALIGNED"
     assert unsafe.content_philosophy_id == new_id
@@ -104,9 +106,7 @@ def test_essence_approval_cannot_erase_unresolved_independent_review() -> None:
         }
     }
 
-    counts = _rescreen_content_items([item], current)
-
-    assert counts == {"total": 1, "aligned": 0, "needs_review": 1}
+    assert apply_essence_revalidation(item, current) == "NEEDS_ESSENCE_REVIEW"
     assert item.essence_status == "NEEDS_ESSENCE_REVIEW"
     assert item.essence_check_summary["ai_review"]["status"] == "REVISE"
     assert item.essence_check_summary["blocking"] is True

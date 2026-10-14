@@ -16,7 +16,6 @@ from app.models.essence import (
 from app.models.hospital import Hospital
 from app.models.operations import OperationRun
 from app.services.essence_auto_review import (
-    EssenceAiReview,
     EssenceRefreshStatus,
     refresh_essence_snapshot,
 )
@@ -83,23 +82,12 @@ def test_slow_provider_holds_no_hospital_lock_and_stale_result_is_discarded(pg_e
             "source_snapshot_hash": compute_sources_snapshot_hash(sources),
         }
 
-    def review(_hospital, _previous, _payload, notes):
-        return EssenceAiReview(
-            decision="APPROVE",
-            confidence=0.99,
-            findings=(),
-            reviewed_evidence_note_ids=tuple(str(note.id) for note in notes),
-            summary="reviewed",
-            model="test",
-        )
-
     def run_refresh():
         with Session(pg_engine, expire_on_commit=False) as db:
             return refresh_essence_snapshot(
                 db,
                 hospital_id,
                 synthesizer=synthesize,
-                reviewer=review,
                 claim_token="slow-provider-attempt",
             )
 
@@ -114,8 +102,7 @@ def test_slow_provider_holds_no_hospital_lock_and_stale_result_is_discarded(pg_e
                     synthesizer=lambda *_args, **_kwargs: (_ for _ in ()).throw(
                         AssertionError("a live lease must fence duplicate provider work")
                     ),
-                    reviewer=review,
-                    claim_token="slow-provider-attempt",
+                        claim_token="slow-provider-attempt",
                 )
             assert duplicate_result.status == EssenceRefreshStatus.SNAPSHOT_CHANGED
             with Session(pg_engine, expire_on_commit=False) as concurrent:

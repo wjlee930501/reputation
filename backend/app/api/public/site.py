@@ -35,6 +35,7 @@ from app.services.content_visibility import (
     approved_public_view,
     assess_public_visibility,
 )
+from app.services.essence_claims import AUTOMATIC_ESSENCE_POLICY_VERSION, is_medical_claim
 from app.services.essence_engine import ESSENCE_STATUS_ALIGNED
 from app.services.essence_readiness import (
     get_public_approved_philosophy_id,
@@ -430,6 +431,22 @@ def _vetted_public_about(philosophy: HospitalContentPhilosophy | None) -> str | 
     if status_value != PhilosophyStatus.APPROVED.value:
         return None
 
+    metadata = getattr(philosophy, "synthesis_metadata", None) or {}
+    if metadata.get("mode") == "AUTOMATIC":
+        # 승인 단계 없는 자동 판(D33)은 모델이 쓴 문장을 공개하지 않는다 — 근거 노트에 글자 그대로
+        # 있고 의료 주장 어휘가 없는 문장(적용 때 고른 `public_about`)만 쓰고, 없으면 생략한다.
+        if metadata.get("policy_version") != AUTOMATIC_ESSENCE_POLICY_VERSION:
+            # 옛 정리 정책으로 고른 문장은 쓰지 않는다 — 다음 정기 조정이 판을 다시 만든다.
+            return None
+        sentences = [
+            text
+            for text in (str(item).strip() for item in metadata.get("public_about") or [])
+            if text
+            and not check_forbidden(text)
+            and not looks_like_error_page_text(text)
+            and not is_medical_claim(text)
+        ]
+        return " ".join(sentences) if sentences else None
     sentences: list[str] = []
     for raw in (philosophy.positioning_statement, philosophy.patient_promise):
         text = (raw or "").strip()

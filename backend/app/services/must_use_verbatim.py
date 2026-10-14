@@ -35,6 +35,11 @@ from functools import lru_cache
 from typing import Any
 
 from app.models.essence import PhilosophyStatus
+from app.services.essence_claims import (
+    automatic_version_verbatim_texts,
+    is_medical_claim,
+    normalize_sentence,
+)
 from app.utils.medical_filter import check_forbidden
 
 _ZERO_WIDTH = "\u200b\u200c\u200d\u2060\ufeff"
@@ -69,6 +74,8 @@ CANDIDATE_TEXT_FIELDS = (
 # 필수 문구를 요구·면제 대상에서 뺀 사유. 운영자 기록·로그의 기계 키다.
 EXCLUDED_FORBIDDEN_EXPRESSION = "FORBIDDEN_EXPRESSION"
 EXCLUDED_NOT_TEXT = "NOT_TEXT"
+#: 자동 판(D33)의 문구가 현재 정책의 원문·의료 주장 검사를 통과하지 못했다.
+EXCLUDED_AUTOMATIC_POLICY = "AUTOMATIC_POLICY"
 
 
 @lru_cache(maxsize=4096)
@@ -216,6 +223,7 @@ def must_use_requirement(philosophy: object | None) -> MustUseRequirement:
     seen: set[str] = set()
     required: list[str] = []
     excluded: list[ExcludedMustUseMessage] = []
+    verbatim_texts = automatic_version_verbatim_texts(approved)
     for index, candidate in enumerate(getattr(approved, "must_use_messages", None) or []):
         if not isinstance(candidate, str):
             excluded.append(ExcludedMustUseMessage(index=index, reason=EXCLUDED_NOT_TEXT))
@@ -225,6 +233,15 @@ def must_use_requirement(philosophy: object | None) -> MustUseRequirement:
         if not key or key in seen:
             continue
         seen.add(key)
+        if verbatim_texts is not None and (
+            normalize_sentence(message) not in verbatim_texts or is_medical_claim(message)
+        ):
+            # 자동 판(D33)은 소비할 때도 현재 규칙으로 다시 거른다 — 현재 정책으로 원문 대조를
+            # 마친 문구이고 의료 주장 어휘가 없어야 한다. 옛 정책 판은 다음 정기 조정이 다시 만든다.
+            excluded.append(
+                ExcludedMustUseMessage(index=index, reason=EXCLUDED_AUTOMATIC_POLICY)
+            )
+            continue
         violations = check_forbidden(message)
         if violations:
             excluded.append(

@@ -265,7 +265,8 @@ async def mark_retrying(
     """OPEN→RETRYING. 기한 없는 RETRYING은 주인 없는 '복구 중'이므로 기본 기한(24시간)을 단다.
 
     미래 기한이 이미 있으면 그대로 둔다. 호출자는 돌려받은 행에 더 정확한 기한을 덮어쓸 수 있고,
-    사람의 일을 다른 사고가 가진 경우(MISSING_APPROVED_ESSENCE)는 None으로 지울 수 있다.
+    시스템이 끝까지 소유하는 경우(MISSING_APPROVED_ESSENCE — Essence 자동 적용, D33)는 None으로
+    지울 수 있다.
     """
 
     changed_at = now or datetime.now(UTC)

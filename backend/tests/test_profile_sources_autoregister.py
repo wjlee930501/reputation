@@ -416,3 +416,30 @@ def test_registration_error_message_is_safe_and_typed():
 )
 def test_url_normalization_only_folds_what_points_at_the_same_page(url, expected):
     assert essence_sources_service.normalize_source_url(url) == expected
+
+
+# ── Phase 4(D33): 서술 값이 바뀐 저장은 자동 운영 요약을 부른다 ─────────────────
+
+
+async def test_narrative_profile_change_asks_the_automatic_essence_to_resync(worker):
+    """원장 철학을 고친 저장은 병원 정보(자동) 자료를 맞추는 자동 요약 태스크를 커밋 뒤 부른다."""
+
+    hospital = _hospital()
+    db = FakeDB(hospital)
+
+    await _patch(db, hospital, director_philosophy="검사 결과를 화면으로 함께 보며 설명합니다.")
+
+    assert worker["dispatch"] == [
+        ("app.workers.tasks.auto_review_essence_snapshot", [str(hospital.id)]),
+    ]
+
+
+async def test_channel_only_change_does_not_touch_the_essence(worker):
+    hospital = _hospital()
+    db = FakeDB(hospital)
+
+    await _patch(db, hospital, website_url="https://clinic.example.com")
+
+    assert [name for name, _args in worker["dispatch"]] == [
+        "app.workers.tasks.fetch_channel_source"
+    ]

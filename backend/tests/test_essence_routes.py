@@ -1,4 +1,5 @@
-"""H-04: 수동 초안 생성 경로는 없고, 보관·재검수 요청 경로는 있다.
+"""H-04: 수동 초안 생성 경로는 없다. 보관 경로는 있고, 승인·재검수·판 수정 경로는 410으로 남는다
+(Phase 4 D33 — 옛 화면이 부르면 '자동 적용으로 바뀌었다'는 안내를 받는다).
 
 FastAPI 0.139의 `app.routes`는 지연 포함된 `_IncludedRouter` 래퍼라 경로가 보이지
 않는다. 실제로 노출되는 계약은 OpenAPI 스펙이므로 그쪽을 읽는다.
@@ -34,8 +35,8 @@ def test_archive_and_re_review_routes_exist():
     ) in paths
 
 
-def test_the_approve_route_is_still_reachable():
-    """보관·재검수 경로 이름이 승인 경로와 같은 접두사·파라미터를 쓰는지 함께 고정한다."""
+def test_the_retired_approve_route_still_answers_with_410():
+    """경로는 남아 410으로 답한다 — 옛 화면이 404 대신 안내 문구를 받는다."""
     assert (
         "POST",
         "/api/v1/admin/hospitals/{hospital_id}/essence/philosophy/{philosophy_id}/approve",

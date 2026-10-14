@@ -41,7 +41,6 @@ EVENT_LABELS: Final[dict[str, NotificationLabel]] = {
     # ERROR, 전달 준비 완료·전달 기록처럼 읽고 다음 일을 잡으면 되는 항목은 REPORT다.
     # "전달 준비 완료"가 오류로 읽히면 채널의 Error가 신호를 잃는다.
     "MILESTONE_SUMMARY": NotificationLabel.ERROR,
-    "MISSING_APPROVED_ESSENCE_DIGEST": NotificationLabel.ERROR,
     "GENERATION_BLOCKED_DIGEST": NotificationLabel.ERROR,
     "CONTENT_BATCH_BLOCKED": NotificationLabel.ERROR,
     # 사람이 고칠 최종 차단만 ERROR다. 자동 복구가 아직 맡은 공백은 아래 REPORT로 간다.
