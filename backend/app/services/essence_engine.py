@@ -43,6 +43,7 @@ from app.services import llm_structured_output, openrouter
 from app.services.essence_claims import (
     claim_is_supported,
     is_medical_claim,
+    is_not_doctor_statement,
     is_verbatim_in,
     normalize_sentence,
     split_sentences,
@@ -1811,6 +1812,7 @@ def _must_use_shape_ok(text: str) -> bool:
     return (
         len(text) >= _MIN_MUST_USE_CHARS
         and not text.endswith("?")
+        and not is_not_doctor_statement(text)
         and not _PROFILE_FACT_LINE.match(text)
         and not _PROFILE_FACT_LABEL_FORM.match(text)
     )

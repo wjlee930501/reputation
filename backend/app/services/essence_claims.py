@@ -83,7 +83,54 @@ _TEMPLATE_PREFIXES = (
 
 #: 자동 판을 만든 정리 정책의 판. 이 값이 바뀌면 옛 정책으로 만든 자동 판은 다음 정기 조정에서
 #: 다시 만들어지고(T7), 그 전에도 소비 단계(`must_use_verbatim`·공개 소개)가 현재 규칙으로 다시 거른다.
-AUTOMATIC_ESSENCE_POLICY_VERSION = "2026-10-14.3"
+#: 2026-10-14.4: 설문 안내문·질문·조각 문장을 원문 문장으로 고르지 않는다(`is_not_doctor_statement`).
+AUTOMATIC_ESSENCE_POLICY_VERSION = "2026-10-14.4"
+
+# 원장의 답이 아니라 설문지가 원장에게 하는 말(안내·요청·질문)의 표지. 원장 자신의 문장에는 원장을
+# 부르는 말·답변 요청이 없다. 2026-10-14 신기한속 v2가 "모든 질문은 실제 원장님의 말투로, 풍부하게
+# 답변 부탁드립니다."를 필수 문구로 골랐다.
+_INSTRUCTION_MARKERS = (
+    "부탁드립니다", "부탁드려요", "부탁합니다", "답변", "응답", "질문", "문항", "설문",
+    "작성해", "작성 해", "기재", "적어 주", "적어주", "기입", "체크해", "선택해 주", "선택해주",
+    "입력해 주", "입력해주", "원장님의", "원장님께", "원장님은", "원장님이", "원장님에",
+    "원장님을", "원장님,", "말투로", "내부 인력", "최대한 자세히",
+)
+_QUESTION_ENDING = re.compile(r"(?:까요|나요|습니까|인가요|는지요|을까|할까|될까)$")
+# 문장 앞머리가 접속사·연결 어미(앞 문장의 뒷부분)이면 조각이다("중요하며, 음주, …").
+_LEADING_CONNECTIVES = frozenset(
+    {"그리고", "또한", "또", "및", "그래서", "하지만", "그러나", "그런데", "따라서", "그러므로", "그러면",
+     "게다가", "즉", "혹은", "또는"}
+)
+_LEADING_CLAUSE_TAILS = ("며", "하고", "되고", "이고", "지만", "는데", "으며", "하여", "이라", "라서")
+# 서술어로 끝나는 완결 문장의 끝(마침표·따옴표를 뗀 뒤).
+_SENTENCE_FINAL = re.compile(r"(?:다|요|죠)$")
+_MIN_DOCTOR_STATEMENT_CHARS = 12
+_QUOTE_TAIL = "\"'“”‘’「」『』)]）"
+
+
+def is_not_doctor_statement(sentence: str) -> bool:
+    """필수 문구·공개 소개로 옮길 수 없는 문장인가 — 설문 안내·요청, 질문, 조각.
+
+    원장의 답(설문 답변·홈페이지 문장)만 원문 그대로 옮긴다. 원장을 부르거나 답을 요청하는 문장,
+    질문, 접속사·연결 어미로 시작하거나 서술어로 끝나지 않는 조각, 12자 미만 문장은 고르지 않는다.
+    """
+
+    text = normalize_sentence(sentence)
+    if len(text) < _MIN_DOCTOR_STATEMENT_CHARS:
+        return True
+    folded = re.sub(r"\s+", " ", text)
+    if any(marker in folded for marker in _INSTRUCTION_MARKERS):
+        return True
+    body = folded.rstrip(".!。！…~ ").rstrip(_QUOTE_TAIL).rstrip(".!。！…~ ")
+    if folded.endswith(("?", "？")) or _QUESTION_ENDING.search(body):
+        return True
+    first = re.split(r"[\s,，]+", body, maxsplit=1)[0].strip(_QUOTE_TAIL)
+    if first in _LEADING_CONNECTIVES or (
+        len(first) >= 2 and first.endswith(_LEADING_CLAUSE_TAILS)
+    ):
+        return True
+    return not _SENTENCE_FINAL.search(body)
+
 #: 원문 문장만 담은 자동 판의 필수 문구 방식(`essence_engine`의 MUST_USE_MODE_*와 같은 값).
 VERBATIM_MUST_USE_MODES = frozenset({"SURVEY_VERBATIM", "SOURCE_VERBATIM"})
 
@@ -278,13 +325,16 @@ def automatic_version_verbatim_texts(philosophy: object) -> set[str] | None:
     return {
         normalize_sentence(item.get("text"))
         for item in must_use.get("items") or []
-        if isinstance(item, dict) and item.get("text")
+        if isinstance(item, dict)
+        and item.get("text")
+        and not is_not_doctor_statement(str(item.get("text")))
     }
 
 
 __all__ = (
     "AUTOMATIC_ESSENCE_POLICY_VERSION",
     "automatic_version_verbatim_texts",
+    "is_not_doctor_statement",
     "CLAIM_SUPPORT_RATIO",
     "GENERAL_SUPPORT_RATIO",
     "claim_is_supported",
