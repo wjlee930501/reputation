@@ -1,4 +1,4 @@
-"""본문 표본 실패의 마지막 폴백 계단 — 슬롯의 주제를 바꿔 다시 쓴다(기본 한 번).
+"""본문 표본 실패의 마지막 폴백 계단 — 슬롯의 주제를 바꿔 다시 쓴다(한 번, Critical 원인은 두 번).
 
 이미지에는 "인증 이미지 빌려 쓰기" 폴백이 있는데 본문에는 없었다. 그래서 같은 주제로
 3일 예산을 다 쓴 슬롯은 `OPERATOR_REQUIRED`에서 멈췄다. LLM 출력은 확률적이지만 어떤
@@ -9,8 +9,9 @@
 
 1. **공개 이력·사람 편집이 있는 글은 손대지 않는다.** `first_published_at IS NULL`과
    `human_edited_at IS NULL`이 그 경계다.
-2. **교체 횟수에 상한이 있다.** `topic_swap_history` 길이가 `CONTENT_AUTO_TOPIC_SWAP_MAX`
-   (기본 1) 미만인 행만 후보이므로, 새 주제가 같은 코드로 다시 소진되면 그때는 사람의 일이다.
+2. **교체 횟수에 상한이 있다.** `topic_swap_history` 길이가 원인별 상한(`topic_swap_limit` —
+   Critical 원인은 `CONTENT_AUTO_TOPIC_SWAP_MAX` 기본 2, 그 밖은 1) 미만인 행만 후보이므로, 상한을
+   다 쓴 뒤 새 주제가 다시 소진되면 그때는 사람의 일이다.
    지적 문장 최소 교정을 상한까지 거친 사실·안전 차단도 같은 계단을 탄다
    (`AUTO_CORRECTION_EXHAUSTED_KEY`).
 3. **인시던트 epoch가 바뀐다.** 옛 주제의 인시던트는 `RECOVERED`로 닫고, 새 주제의
@@ -50,6 +51,7 @@ from app.services.specialty_compatibility import target_conflicts_with_hospital
 from app.services.sync_async_bridge import SyncAsyncBridge
 from app.workers.generation_attempt_state import (
     GENERATION_ATTEMPT_KEY,
+    TOPIC_SWAP_LIMIT,
     GenerationBudgetExceeded,
     GenerationBudgetUnknown,
     budget_generation_attempt,
@@ -205,23 +207,41 @@ def _exhausted_body_sample_filter():
     return or_(*clauses)
 
 
-def topic_swap_limit() -> int:
-    """같은 슬롯의 자동 주제 교체 상한(`CONTENT_AUTO_TOPIC_SWAP_MAX`, 기본 1)."""
+def topic_swap_limit(*, critical: bool = True) -> int:
+    """같은 슬롯의 자동 주제 교체 상한.
 
-    return max(0, int(settings.CONTENT_AUTO_TOPIC_SWAP_MAX))
+    Critical 원인(교정 계단을 다 쓴 사실·안전 차단, `critical_swap_reason`)은
+    `CONTENT_AUTO_TOPIC_SWAP_MAX`(기본 2)까지, 그 밖의 원인은 min(1, 그 값)까지다(2026-10-14 O5).
+    예산 기록이 받아 주는 상한(`TOPIC_SWAP_LIMIT`)을 넘지 않는다. 인자 없이 부르면 슬롯 상한(Critical)이다.
+    """
+
+    configured = max(0, min(int(settings.CONTENT_AUTO_TOPIC_SWAP_MAX), TOPIC_SWAP_LIMIT))
+    return configured if critical else min(1, configured)
 
 
-def topic_swap_budget_left(item: ContentItem) -> bool:
-    """이 슬롯이 자동 주제 교체를 한 번 더 쓸 수 있는가 — 교체 상한의 단일 판정."""
+def critical_swap_reason(attempt: dict[str, Any]) -> bool:
+    """이 시도 기록이 Critical 원인의 교체 요청인가 — 최소 교정 상한을 다 쓴 사실·안전 차단."""
 
+    return attempt.get("reason") == "CONTENT_AI_HARD_FINDING" and bool(
+        attempt.get(AUTO_CORRECTION_EXHAUSTED_KEY)
+    )
+
+
+def topic_swap_budget_left(item: ContentItem, *, critical: bool = False) -> bool:
+    """이 슬롯이 자동 주제 교체를 한 번 더 쓸 수 있는가 — 교체 상한의 단일 판정.
+
+    `critical`은 지금 교체를 요청하는 원인이 Critical인가다(`critical_swap_reason`).
+    """
+
+    limit = topic_swap_limit(critical=critical)
     history = getattr(item, "topic_swap_history", None)
-    if (len(history) if isinstance(history, list) else 0) >= topic_swap_limit():
+    if (len(history) if isinstance(history, list) else 0) >= limit:
         return False
     try:
         budget = read_generation_budget(budget_generation_attempt(item))
     except GenerationBudgetUnknown:
         return False
-    return budget.topic_swaps < 1 and len(budget.topics) < 2
+    return budget.topic_swaps < limit and len(budget.topics) < limit + 1
 
 
 def _candidate_stmt(
@@ -234,7 +254,8 @@ def _candidate_stmt(
         ContentItem.status.in_(GENERATION_WRITE_BACK_STATUSES),
         ContentItem.first_published_at.is_(None),
         ContentItem.human_edited_at.is_(None),
-        _history_length(ContentItem.topic_swap_history) < topic_swap_limit(),
+        # 슬롯 상한(Critical 원인)으로 거른다 — 원인별 상한은 파이썬 술어가 본다.
+        _history_length(ContentItem.topic_swap_history) < topic_swap_limit(critical=True),
         _inactive_claim_filter(expiry),
         _exhausted_body_sample_filter(),
     ]
@@ -295,11 +316,11 @@ def exhausted_body_sample_reason(item: ContentItem) -> str | None:
     참고자료 보류는 `CONTENT_TOPIC_SWAP_OPERATOR_DECIDES`가 켜졌을 때만 후보다.
     """
 
-    if not topic_swap_budget_left(item):
-        # 교체 상한(기본 한 번)을 다 썼다. 후보 SQL과 같은 규칙을 파이썬에도 둔 방어선이며,
-        # 그 뒤의 소진은 사람의 일이다.
-        return None
     attempt = read_generation_attempt(item)
+    if not topic_swap_budget_left(item, critical=critical_swap_reason(attempt)):
+        # 교체 상한(Critical 원인 두 번, 그 밖 한 번)을 다 썼다. 후보 SQL과 같은 규칙을 파이썬에도
+        # 둔 방어선이며, 그 뒤의 소진은 사람의 일이다.
+        return None
     reason = str(attempt.get("reason") or "")
     if attempt.get(OPERATOR_DECIDES_KEY):
         # 진료비·병원 선택 글의 참고자료 보류는 사람이 정한다. 대표가 켠 경우에만 교체한다.
@@ -461,7 +482,15 @@ def _swap_target(db, item: ContentItem, reason: str) -> tuple[Any, str]:
     """교체할 측정 질문과 결과 라벨. 맞는 질문이 없으면 `(None, 마지막 거절 라벨)`."""
 
     hospital = getattr(item, "hospital", None)
+    # 두 번째 교체가 처음 주제로 돌아가지 않도록 이 슬롯이 거친 주제를 모두 뺀다.
     excluded: set = {item.query_target_id}
+    for entry in item.topic_swap_history or []:
+        previous = entry.get("from_target_id") if isinstance(entry, dict) else None
+        if previous:
+            try:
+                excluded.add(uuid.UUID(str(previous)))
+            except ValueError:
+                continue
     label = "no_candidate_target"
     for _attempt in range(TOPIC_SWAP_CANDIDATE_LIMIT):
         target = _choose_target(
@@ -632,7 +661,7 @@ def _record_topic_swapped_attempt(
       남아 있는데도 하루를 통째로 버린다(2026-10-14 abe0b28e: 01:00 교체 → 10/15 01:00).
     - 임박 슬롯(예정일이 오늘·내일이거나 지난 슬롯, `slot_is_urgent`)은 옛 주제가 오늘 예산을
       다 썼어도 오늘 계수를 하루 예산 − 1로 묶어 같은 스윕에서 한 번은 쓴다. 그 1회가 실패하면
-      정상 예산 규칙이 오늘 예산을 소진으로 읽고(다음은 내일), 교체가 슬롯 평생 한 번이라
+      정상 예산 규칙이 오늘 예산을 소진으로 읽고(다음은 내일), 교체마다 한 번뿐이라
       이 1회도 다시 생기지 않는다.
     - 그 밖(사흘 뒤 슬롯이 오늘 예산을 다 쓴 경우)은 내일의 첫 적격 스윕이다.
 
