@@ -185,6 +185,7 @@ def test_finding_target_field_is_part_of_the_stored_payload() -> None:
         "target": "MUST_USE_MESSAGE",
         "quote": MUST_USE,
         "original_severity": "HARD",
+        "critical": None,  # v3: 판정이 없으면 null(= Critical), 키는 언제나 있다
     }
     plain = ContentAiFinding(
         ContentAiFindingSeverity.HARD, ContentAiFindingKind.HOSPITAL_FACT, "사실 지적"
