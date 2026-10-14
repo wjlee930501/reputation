@@ -9,7 +9,9 @@ from typing import Literal
 from app.services.monthly_sov_payload import MonthlySovPayload
 from app.services.report_attribution import CitationSummaryPayload, ContentAttributionPayload
 
-ReportKind = Literal["LEGACY", "MONTHLY", "INITIAL"]
+# SETUP(D38): 그 달 고정 측정이 없던 첫 달의 '기준 설정' 보고서. 숫자를 지어내지 않고, 0이라고도
+# 쓰지 않으며, 다음 달부터 같은 질문으로 비교한다고 말한다.
+ReportKind = Literal["LEGACY", "MONTHLY", "INITIAL", "SETUP"]
 
 
 # 원장용 문장의 플랫폼 이름은 랜딩과 같은 제품명을 쓴다(API 이름이 아니다).
@@ -221,6 +223,61 @@ def _plan_story(priorities):
     return f"다음 달에는 아래 {count} 가지를 먼저 챙기고, 같은 질문으로 다시 물어 결과를 보고드리겠습니다."
 
 
+BASELINE_TITLE = "기준 설정 보고서"
+BASELINE_CURRENT_LABEL = "기준 설정"
+_BASELINE_CONCLUSION = (
+    "이번 달은 앞으로 매달 AI에게 물어볼 질문과 방식을 정한 기준 설정의 달입니다. "
+    "다음 달부터 같은 질문으로 물어 결과를 보고드리겠습니다."
+)
+_BASELINE_NOTE = "이번 달은 기준을 세운 달이라 지난달과 견줄 숫자가 아직 없습니다."
+_BASELINE_PRIORITIES = (
+    "다음 달부터 정한 질문을 ChatGPT·Gemini에 같은 방식으로 물어, 우리 병원이 언급되는 비율을 처음으로 보고드리겠습니다.",
+    "그동안 환자 질문에 바로 답하는 진료 안내 글을 일정에 맞춰 올리겠습니다.",
+)
+
+
+def _baseline_narrative(
+    *, works: tuple[PublishedWork, ...], shortfall: int, protocol_label: str | None
+) -> MonthlyNarrative:
+    """D38 '기준 설정' 보고서. 측정 칸은 숫자 대신 '기준 설정'이라 쓰고 0으로 채우지 않는다."""
+    ordered = tuple(sorted(works, key=lambda work: -(work.cited_cells or 0)))
+    return MonthlyNarrative(
+        title=BASELINE_TITLE,
+        conclusion=_BASELINE_CONCLUSION,
+        current=None,
+        previous=None,
+        comparison_note=_BASELINE_NOTE,
+        denominator=(
+            "다음 달부터 같은 질문을 ChatGPT·Gemini에 정해진 횟수만큼 물어 언급 비율을 계산합니다. "
+            "환자 수가 아닌 AI 답변 횟수 기준입니다."
+        ),
+        priorities=_BASELINE_PRIORITIES,
+        works=ordered,
+        platform_details=(),
+        methods=(
+            f"측정 방식 버전: {protocol_label or '다음 달 정기 측정부터 기록합니다'}",
+            "이번 달은 정기 측정의 기준을 정했고, 다음 달부터 같은 질문을 같은 방식으로 물어 결과를 셉니다.",
+        ),
+        citation_scope=(
+            "우리 병원 글이 AI 답변의 출처로 쓰였는지는 다음 달 정기 측정부터 함께 확인합니다."
+        ),
+        citation_details=(),
+        fulfillment_note=(
+            f"남은 {shortfall}편도 검수가 끝나는 대로 올려 드리겠습니다."
+            if shortfall
+            else "다음 달에도 계획한 글을 일정에 맞춰 올리겠습니다."
+        ),
+        previous_label="비교 없음",
+        current_label=BASELINE_CURRENT_LABEL,
+        result_story=(
+            "이번 달에는 앞으로 매달 물어볼 질문과 방식을 정했습니다. "
+            "다음 달 보고서부터 언급 비율을 숫자로 보여 드리겠습니다."
+        ),
+        work_story=_work_story(ordered),
+        plan_story=_plan_story(_BASELINE_PRIORITIES),
+    )
+
+
 def build_monthly_narrative(
     *,
     kind: ReportKind,
@@ -235,6 +292,8 @@ def build_monthly_narrative(
     protocol_label: str | None = None,
     reference_previous: float | None = None,
 ) -> MonthlyNarrative:
+    if kind == "SETUP":
+        return _baseline_narrative(works=works, shortfall=shortfall, protocol_label=protocol_label)
     data = coverage or {}
     comparison = data.get("comparison") or {}
     comparable = (
@@ -374,15 +433,21 @@ def build_monthly_narrative(
             f"{name} 답변 모델: {', '.join(row.get('answer_models', [])) or '기록 없음'}"
         )
     adequate = data.get("observation_adequacy") or {}
+    status_label = {
+        "COMPLETE": "모두 확인",
+        "LIMITED": "일부만 확인",
+        "UNAVAILABLE": "확인한 답 없음",
+    }.get(adequate.get("status"), "확인 필요")
     if adequate.get("lineage") == "SLOTTED":
-        status_label = {
-            "COMPLETE": "모두 확인",
-            "LIMITED": "일부만 확인",
-            "UNAVAILABLE": "확인한 답 없음",
-        }.get(adequate.get("status"), "확인 필요")
         methods.append(
             f"같은 질문 반복 확인: 계획 {adequate.get('planned_slots', '기록 없음')}번 / "
             f"답 확인 {adequate.get('confirmed_slots', '기록 없음')}번 · {status_label}"
+        )
+    elif adequate.get("lineage") == "LEGACY_FINAL":
+        methods.append(
+            f"답 확인: 계획 {adequate.get('planned_slots', '기록 없음')}번 / "
+            f"답 확인 {adequate.get('confirmed_slots', '기록 없음')}번 · {status_label} "
+            "(반복 기록이 없던 측정이라 질문마다 확인된 답만 셌습니다)"
         )
     elif adequate:
         methods.append(

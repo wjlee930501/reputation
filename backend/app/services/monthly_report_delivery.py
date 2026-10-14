@@ -194,6 +194,12 @@ def monthly_report_delivery_warnings(report: MonthlyReport) -> list[str]:
     warnings: list[str] = []
     sov_summary = report.sov_summary if isinstance(report.sov_summary, dict) else {}
     adequacy = sov_summary.get("observation_adequacy")
+    if report_is_baseline_setup(report):
+        warnings.append(
+            "그 달 고정 측정이 없던 첫 달이라 '기준 설정' 보고서입니다. 언급 비율 없이 콘텐츠 실적을 "
+            "담았고, 다음 달부터 같은 질문으로 측정해 이번 달을 기준으로 비교합니다."
+        )
+        adequacy = None
     if isinstance(adequacy, Mapping) and adequacy.get("status") == "LIMITED":
         warnings.append(
             "일부 반복 측정이 모호하거나 실패해 확정된 표본만으로 제한된 결과를 제공합니다."
@@ -314,12 +320,30 @@ def coverage_is_final(report: MonthlyReport) -> bool:
     return False
 
 
+# D38: 그 달 고정 측정(매니페스트)이 없던 첫 달은 '기준 설정' 보고서로 전달한다. 표시는 서버가 만든
+# sov_summary의 report_kind 한 곳이 정본이고, 매니페스트가 없는 월간 판에만 인정한다.
+BASELINE_REPORT_KIND = "SETUP"
+
+
+def report_is_baseline_setup(report: MonthlyReport) -> bool:
+    summary = getattr(report, "sov_summary", None)
+    return bool(
+        isinstance(summary, dict)
+        and summary.get("report_kind") == BASELINE_REPORT_KIND
+        and getattr(report, "report_type", "MONTHLY") == "MONTHLY"
+        and getattr(report, "manifest_id", None) is None
+    )
+
+
 def monthly_report_delivery_gate(
     report: MonthlyReport,
     manifest: MonthlyMeasurementManifest | None,
     artifact: MonthlyReportArtifact | None,
 ) -> DeliveryGate:
     """Decide readiness from the same persisted facts in every server process."""
+    if report_is_baseline_setup(report) and manifest is None:
+        # 측정이 없던 달이라 커버리지·매니페스트 관문이 없다. 원장 PDF와 내용 차단은 그대로 본다.
+        return _artifact_and_content_gate(report, artifact)
     if not coverage_is_final(report) or manifest is None:
         return DeliveryGate(
             False,
@@ -343,6 +367,12 @@ def monthly_report_delivery_gate(
             "manifest_open",
             "이번 달 필수 측정 집계가 아직 끝나지 않았습니다.",
         )
+    return _artifact_and_content_gate(report, artifact)
+
+
+def _artifact_and_content_gate(
+    report: MonthlyReport, artifact: MonthlyReportArtifact | None
+) -> DeliveryGate:
     if artifact is None:
         return DeliveryGate(
             False,

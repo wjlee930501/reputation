@@ -1,4 +1,4 @@
-"""공백 로더는 그 달 매니페스트가 없으면 MANIFEST_MISSING으로 가른다(Phase 1-7a)."""
+"""매니페스트가 없는 달도 '전달 불가'가 아니다 — 보고서가 없으면 자동으로 만들 미생성이다(D38)."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ def _hospital(db: Session, name: str) -> Hospital:
     return hospital
 
 
-def test_loader_separates_manifest_missing_from_a_missing_report(pg_conn, monkeypatch):
+def test_manifest_missing_month_is_an_automatic_missing_report_not_undeliverable(pg_conn, monkeypatch):
     db = Session(bind=pg_conn, join_transaction_mode="create_savepoint")
     no_manifest = _hospital(db, "가코호트밖의원")
     with_manifest = _hospital(db, "나코호트의원")
@@ -48,7 +48,7 @@ def test_loader_separates_manifest_missing_from_a_missing_report(pg_conn, monkey
 
     assert period_key == "2026-09"
     assert sorted(gaps, key=lambda gap: gap.hospital_name) == [
-        notifications.MonthlyReportGap("가코호트밖의원", "MANIFEST_MISSING"),
+        notifications.MonthlyReportGap("가코호트밖의원", "MISSING", recoverable=True),
         notifications.MonthlyReportGap("나코호트의원", "MISSING", recoverable=True),
     ]
     db.close()

@@ -145,7 +145,13 @@ def test_every_sweep_owned_type_has_a_way_to_close():
 
     # 명시적 복구 경로: 슬롯 재조정 성공(`monthly_slot_incident_control.recover_monthly_slot_failure`),
     # 운영 기준 승인(`ops_incident_alerts.recover_ops_incidents_for_hospital`, tasks의 Essence 처리).
-    explicit_recovery = {"MONTHLY_SLOT_GENERATION_FAILED", "ESSENCE_AUTO_REVIEW_ESCALATED"}
+    # 원장 PDF 검증 실패는 1분 월간 PDF 대조가 유효한 PDF를 확인하면 닫는다
+    # (`monthly_artifact_recovery_control.recover_monthly_artifact_failure_batch`).
+    explicit_recovery = {
+        "MONTHLY_SLOT_GENERATION_FAILED",
+        "ESSENCE_AUTO_REVIEW_ESCALATED",
+        "MONTHLY_DOCTOR_PDF_BLOCKED",
+    }
     assert SWEEP_OWNED_INCIDENT_TYPES - set(RESOLVERS) <= explicit_recovery
 
 
