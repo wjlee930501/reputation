@@ -528,3 +528,64 @@ def test_uncertain_alone_does_not_buy_a_removal_rewrite() -> None:
         "UNCERTAIN", "HOSPITAL_FACT", "승인 자료에 없는 진료 철학입니다.", "내 가족처럼 진료합니다."
     )
     assert hard_removal_findings(_blocked(uncertain)) == []
+
+
+# ── 대표 결정: 필수 문구 원문 지적은 Critical만 막는다 ─────────────────────────
+
+
+async def test_hospital_fact_finding_on_verbatim_must_use_sentence_is_recorded_not_blocking(
+    monkeypatch,
+) -> None:
+    """마케터·원장이 준 병원 사실 문장은 HARD 사실 지적이어도 발행을 멈추지 않는다."""
+
+    sentence = APPROVED_MUST_USE[3]
+    candidate = _candidate(f"{_PARAGRAPH_LEAD} {sentence}")
+    review = await _review(
+        monkeypatch,
+        candidate=candidate,
+        must_use=APPROVED_MUST_USE,
+        verdict=_verdict(
+            _finding(
+                quote=sentence,
+                kind="HOSPITAL_FACT",
+                severity="HARD",
+                message="숙련도 차이 주장은 승인 자료에서 확인되지 않습니다.",
+            )
+        ),
+    )
+
+    assert review.status == ContentAiReviewStatus.PASS
+    [recorded] = review.payload()["findings"]
+    assert recorded["kind"] == "HOSPITAL_FACT"
+    assert recorded["severity"] == "SOFT"
+    assert recorded["original_severity"] == "HARD"
+    assert recorded["target"] == "MUST_USE_MESSAGE"
+    assert public_candidate_review_safe(_stored_item(candidate, review)) is True
+
+
+@pytest.mark.parametrize(
+    ("kind", "message"),
+    [
+        ("MEDICAL_SAFETY", "검진 주기 안내는 의료 안전 확인이 필요합니다."),
+        ("HOSPITAL_FACT", "부작용 설명 없이 검사를 권해 합병증 위험이 빠졌습니다."),
+        ("STYLE", "응급 상황이면 119에 먼저 연락하라는 안내가 필요합니다."),
+    ],
+)
+async def test_critical_finding_on_verbatim_must_use_sentence_still_blocks(
+    monkeypatch, kind: str, message: str
+) -> None:
+    """MEDICAL_SAFETY와, 의료·안전 낱말(응급·119·부작용·합병증 …)이 든 HARD 지적은 막는다."""
+
+    sentence = APPROVED_MUST_USE[1]
+    candidate = _candidate(f"{_PARAGRAPH_LEAD} {sentence}")
+    review = await _review(
+        monkeypatch,
+        candidate=candidate,
+        must_use=APPROVED_MUST_USE,
+        verdict=_verdict(_finding(quote=sentence, kind=kind, severity="HARD", message=message)),
+    )
+
+    _assert_blocks(candidate, review)
+    [recorded] = review.payload()["findings"]
+    assert recorded["severity"] == "HARD"
+    assert recorded["target"] == "CANDIDATE_TEXT"

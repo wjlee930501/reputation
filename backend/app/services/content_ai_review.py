@@ -546,8 +546,31 @@ def _parse_finding(value: object) -> ContentAiFinding | None:
     return ContentAiFinding(severity, kind, message, quote=quote)
 
 
-#: 필수 문구 원문 지적을 기록용으로 내릴 수 있는 종류 — 문체·참고자료 같은 비의료 지적뿐이다.
-_MUST_USE_EXEMPT_KINDS = frozenset({ContentAiFindingKind.STYLE, ContentAiFindingKind.REFERENCE})
+#: 필수 문구 원문 지적을 기록용으로 내릴 수 있는 종류. 마케터·원장이 준 병원 사실 문장이 발행을
+#: 멈추지 않게 HOSPITAL_FACT도 포함한다. MEDICAL_SAFETY(Critical)는 절대 내리지 않는다.
+_MUST_USE_EXEMPT_KINDS = frozenset(
+    {
+        ContentAiFindingKind.STYLE,
+        ContentAiFindingKind.REFERENCE,
+        ContentAiFindingKind.HOSPITAL_FACT,
+    }
+)
+#: 이 낱말이 지적 문구나 인용 문장에 든 HARD 지적은 종류와 무관하게 Critical로 보고 막는다.
+_MUST_USE_CRITICAL_TERMS = (
+    "응급", "119", "용량", "금기", "부작용", "합병증", "완치", "치료 효과", "치료효과",
+)
+
+
+def _must_use_exemption_allowed(finding: ContentAiFinding) -> bool:
+    """필수 문구 원문 지적을 기록용으로 내려도 되는가 — Critical만 막는다(대표 결정)."""
+
+    if finding.kind not in _MUST_USE_EXEMPT_KINDS:
+        return False
+    if finding.severity == ContentAiFindingSeverity.HARD:
+        text = f"{finding.message or ''} {finding.quote or ''}"
+        if any(term in text for term in _MUST_USE_CRITICAL_TERMS):
+            return False
+    return True
 
 
 def _record_must_use_findings(
@@ -556,13 +579,14 @@ def _record_must_use_findings(
     must_use_messages: list[str],
     reviewed_content: dict[str, Any] | object | None,
 ) -> list[ContentAiFinding]:
-    """승인된 필수 문구를 원문 그대로 쓴 문장에 대한 **문체·비의료** 차단 지적만 기록용 SOFT로 내린다.
+    """승인된 필수 문구를 원문 그대로 쓴 문장에 대한 비-Critical 차단 지적을 기록용 SOFT로 내린다.
 
     판정은 지적의 인용문과 필수 문구 원문의 정규화 문자열 완전 일치뿐이다
     (`must_use_verbatim.matched_must_use_message`). 인용문이 없거나, 일부만 겹치거나,
-    말을 덧붙인 문장은 그대로 차단한다. 의료 안전(MEDICAL_SAFETY)·병원 사실(HOSPITAL_FACT)
-    지적은 필수 문구여도 절대 내리지 않는다 — 운영 기준이 승인 없이 자동 적용되므로(D33)
-    필수 문구라는 이유만으로 의료·사실 판단을 덮으면 근거 없는 주장이 공개될 수 있다.
+    말을 덧붙인 문장은 그대로 차단한다. Critical만 막는다(대표 결정): 의료 안전(MEDICAL_SAFETY)
+    지적과, 지적 문구나 인용 문장에 응급·119·용량·금기·부작용·합병증·완치·치료 효과가 든 HARD
+    지적은 필수 문구여도 내리지 않는다. 문체·참고자료·병원 사실 지적은 기록용으로 내린다 —
+    마케터·원장이 준 병원 사실 문장이 발행을 멈추지 않게 한다.
     """
 
     if not must_use_messages or reviewed_content is None:
@@ -572,7 +596,7 @@ def _record_must_use_findings(
     for finding in findings:
         if (
             finding.blocks_publication
-            and finding.kind in _MUST_USE_EXEMPT_KINDS
+            and _must_use_exemption_allowed(finding)
             and matched_must_use_message(
             quote=finding.quote,
             finding_message=finding.message,
