@@ -7,6 +7,7 @@ HTTP 오류로 바꾸는 책임은 호출하는 API 계층이 가진다 — 여�
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 
 #: `hospitals.director_name` 컬럼 길이. 공동원장을 이어 붙여도 저장이 깨지지 않게 자른다.
@@ -22,8 +23,8 @@ class PhysicianNameRequired(ValueError):
 def normalized_physicians(items: Sequence[Mapping]) -> list[dict]:
     """저장할 의료진 목록을 정규화한다 — 원본을 바꾸지 않고 새 dict를 만든다.
 
-    이름이 빈 행은 화면의 빈 입력 칸이므로 버린다. 대표 표시가 하나도 없으면 첫 행을
-    대표로 삼는다 — 대표가 없으면 병원 단위 `director_*`를 파생할 수 없다.
+    이름이 빈 행은 화면의 빈 입력 칸이므로 버린다. 대표 표시가 하나도 없으면 직함·순번으로
+    한 명을 대표로 삼는다 — 대표가 없으면 병원 단위 `director_*`를 파생할 수 없다.
     """
     cleaned: list[dict] = []
     for item in items:
@@ -36,10 +37,32 @@ def normalized_physicians(items: Sequence[Mapping]) -> list[dict]:
         raise PhysicianNameRequired("의료진 이름을 한 명 이상 입력해 주세요.")
 
     if cleaned and not any(item.get("is_representative") for item in cleaned):
+        chosen = default_representative_index(cleaned)
         cleaned = [
-            {**item, "is_representative": index == 0} for index, item in enumerate(cleaned)
+            {**item, "is_representative": index == chosen} for index, item in enumerate(cleaned)
         ]
     return cleaned
+
+
+def _title_rank(item: Mapping) -> int:
+    title = re.sub(r"\s+", "", item.get("title") or "")
+    if "대표원장" in title:
+        return 0
+    if "원장" in title and "부원장" not in title:
+        return 1
+    return 2
+
+
+def default_representative_index(items: Sequence[Mapping]) -> int:
+    """대표 표시가 없을 때의 대표 — 직함(대표원장, 그다음 부원장이 아닌 원장) > 표시 순번 > 입력 순서."""
+    return min(
+        range(len(items)),
+        key=lambda index: (
+            _title_rank(items[index]),
+            items[index].get("display_order") or 0,
+            index,
+        ),
+    )
 
 
 def _representatives(physicians: Sequence[Mapping]) -> list[Mapping]:

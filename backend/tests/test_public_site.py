@@ -1248,3 +1248,35 @@ def test_automatic_essence_about_uses_only_verbatim_clean_source_sentences():
     # 옛 승인본(사람·AI 검수 승인)은 종전 그대로다.
     philosophy.synthesis_metadata = {}
     assert "모델이 쓴 포지셔닝" in _vetted_public_about(philosophy)
+
+
+def test_director_photo_fallback_never_uses_another_physicians_linked_photo():
+    """2026-10-14 강심장내과의원: 사진은 최근 갱신 순이라 나중에 올린 두 번째 원장 사진이
+    맨 앞에 온다. 대표에게 연결이 없을 때 그 사람의 사진을 대표 사진으로 쓰지 않는다."""
+    associate = _doctor_photo_asset()
+    associate.id = "associate-id"
+    legacy = _doctor_photo_asset()
+    legacy.id = "legacy-id"
+    hospital = _hospital_with_photo(None)
+    hospital.physicians = [
+        _physician(id="director", photo_source_id=None),
+        _physician(
+            id="associate",
+            name="박선영",
+            title="원장",
+            display_order=1,
+            is_representative=False,
+            photo_source_id="associate-id",
+        ),
+    ]
+
+    only_associate = _serialize_hospital(hospital, [associate])
+    with_legacy = _serialize_hospital(hospital, [associate, legacy])
+
+    assert only_associate["director_photo_url"] is None
+    assert with_legacy["director_photo_url"] == (
+        "/api/v1/public/hospitals/test-hospital/assets/legacy-id"
+    )
+    assert with_legacy["physicians"][1]["photo_url"] == (
+        "/api/v1/public/hospitals/test-hospital/assets/associate-id"
+    )

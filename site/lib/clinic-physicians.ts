@@ -1,6 +1,6 @@
 import { selectDoctorRole } from './clinic-design.ts'
 import type { DirectorCredentials, Hospital, HospitalPhysician } from './hospital-payload.ts'
-import { selectVerifiedDoctorImage } from './clinic-theme.ts'
+import { selectUnlinkedVerifiedDoctorImage, selectVerifiedDoctorImage } from './clinic-theme.ts'
 
 /**
  * 화면·구조화 데이터·llms.txt가 함께 쓰는 의료진 한 명.
@@ -60,8 +60,14 @@ export function resolveClinicPhysicians(hospital: PhysicianSource): ClinicPhysic
     // 종전처럼 검증된 원장 사진을 그 사람에게 붙여 배포 직후 초상이 사라지지 않게 한다.
     // 대표가 여럿이면 어느 사람의 사진인지 단정할 수 없으므로 연결된 사진만 쓴다.
     const representatives = listed.filter((physician) => physician.is_representative)
+    // 다른 의료진에게 연결된 사진은 그 사람의 얼굴이므로 대표에게 붙이지 않는다.
     const legacyPhoto =
-      representatives.length === 1 ? selectVerifiedDoctorImage(hospital.photos ?? []) : null
+      representatives.length === 1
+        ? selectUnlinkedVerifiedDoctorImage(
+            hospital.photos ?? [],
+            listed.filter((physician) => !physician.is_representative),
+          )
+        : null
     return listed.map((physician) => ({
       id: physician.id,
       name: physician.name.trim(),

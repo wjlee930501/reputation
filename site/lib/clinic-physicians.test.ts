@@ -98,6 +98,21 @@ test('a sole representative without a linked photo keeps the verified portrait',
   assert.equal(resolved[1].photoUrl, null)
 })
 
+test('a sole representative without a link never borrows another physician’s photo', () => {
+  const associatePhoto = { ...VERIFIED_DOCTOR_PHOTO, id: 'associate', url: '/api/v1/public/clinic/assets/associate' }
+  const resolved = resolveClinicPhysicians({
+    ...EMPTY_HOSPITAL,
+    photos: [associatePhoto],
+    physicians: [
+      row({ id: 'a', name: '장현경', is_representative: true }),
+      row({ id: 'b', name: '박선영', photo_url: 'http://localhost:8000/api/v1/public/clinic/assets/associate' }),
+    ],
+  })
+
+  assert.equal(resolved[0].photoUrl, null)
+  assert.equal(resolved[1].photoUrl, 'http://localhost:8000/api/v1/public/clinic/assets/associate')
+})
+
 test('several representatives without linked photos get no portrait — never a guess', () => {
   const resolved = resolveClinicPhysicians({
     ...EMPTY_HOSPITAL,

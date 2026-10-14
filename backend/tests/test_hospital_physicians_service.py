@@ -143,3 +143,26 @@ def test_joined_name_is_truncated_to_the_column_length():
     ]
 
     assert len(derive_director_fields(physicians)["director_name"]) == 100
+
+
+def test_without_a_flag_the_title_picks_the_representative_not_the_first_row():
+    result = normalized_physicians(
+        [
+            _physician(name="박선영", title="부원장", display_order=0),
+            _physician(name="이원장", title="원장", display_order=1),
+            _physician(name="장현경", title="대표 원장", display_order=2),
+        ]
+    )
+
+    assert [item["is_representative"] for item in result] == [False, False, True]
+
+
+def test_without_a_flag_or_director_title_the_lowest_display_order_wins():
+    result = normalized_physicians(
+        [
+            _physician(name="박선영", title="부원장", display_order=1),
+            _physician(name="김과장", title="과장", display_order=0),
+        ]
+    )
+
+    assert [item["is_representative"] for item in result] == [False, True]
