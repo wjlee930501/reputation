@@ -1647,8 +1647,8 @@ def _patch_nightly_task_shell(monkeypatch, db, items, cycle_date, *, dispatch_in
     )
 
 
-def test_twenty_three_batch_covers_tomorrow_and_the_day_after(monkeypatch):
-    """한 밤이 통째로 실패해도 같은 슬롯이 두 번째 밤의 기회를 갖는다."""
+def test_twenty_three_batch_covers_the_three_day_lead_time(monkeypatch):
+    """리드 타임 D-3: 한 밤이 통째로 실패해도 같은 슬롯이 세 밤의 기회를 갖는다."""
     db = _NightlyTaskDB()
     loaded_windows = []
     observed = datetime(2026, 8, 19, 23, 0)
@@ -1674,8 +1674,8 @@ def test_twenty_three_batch_covers_tomorrow_and_the_day_after(monkeypatch):
 
     tasks.nightly_content_generation.run()
 
-    assert loaded_windows == [(date(2026, 8, 20), date(2026, 8, 21))]
-    assert tasks.settings.NIGHTLY_GENERATION_LOOKAHEAD_DAYS == 2
+    assert loaded_windows == [(date(2026, 8, 20), date(2026, 8, 22))]
+    assert tasks.settings.NIGHTLY_GENERATION_LOOKAHEAD_DAYS == 3
 
 
 def test_recovery_sweep_reaches_the_future_dates_backlog_recovery_parks_slots_on(
@@ -3615,8 +3615,8 @@ def test_weekly_manifest_reconnect_cannot_widen_selected_cap():
     assert [spec["query_id"] for spec in pending] == ["q-0", "q-1", "q-2"]
 
 
-def test_nightly_generation_orders_carried_over_items_first():
-    """전월 이월(carried_over_from) 슬롯이 cap 안에서 가장 먼저 생성돼야 한다."""
+def test_nightly_generation_orders_by_scheduled_date_then_carried_over():
+    """예정일이 이른(지난·임박) 슬롯이 상한 안에서 먼저, 같은 날 안에서는 이월 슬롯이 먼저다."""
     stmt = tasks._nightly_generation_stmt(date(2026, 7, 1), date(2026, 7, 2))
     sql = str(stmt.compile(compile_kwargs={"literal_binds": True}))
 
@@ -3625,13 +3625,13 @@ def test_nightly_generation_orders_carried_over_items_first():
     # keyset 페이징이 이어붙일 수 있게 단방향 표현을 쓴다.
     assert "carried_over_from IS NULL" in order_clause
     assert "content_items.id" in order_clause.split("LIMIT", 1)[0]
-    # 이월 우선 정렬이 발행 예정일 정렬보다 앞선다.
-    assert order_clause.index("carried_over_from") < order_clause.index("scheduled_date")
+    # 예정일 정렬이 이월 우선 정렬보다 앞선다 — 사흘 뒤 이월 슬롯이 오늘 슬롯을 굶기지 않는다.
+    assert order_clause.index("scheduled_date") < order_clause.index("carried_over_from")
 
 
 def test_nightly_generation_keyset_page_continues_after_the_last_row():
     """refill 페이지는 같은 정렬 키로 이어붙는다 — 타입이 붙은 바인드로 비교한다."""
-    after = (False, date(2026, 7, 1), 4, uuid.uuid4())
+    after = (date(2026, 7, 1), False, 4, uuid.uuid4())
     stmt = tasks._nightly_generation_stmt(
         date(2026, 7, 1), date(2026, 7, 8), after=after
     )
@@ -5708,7 +5708,8 @@ def test_repair_session_releases_the_attempt_without_resetting_the_sample_ladder
     philosophy = SimpleNamespace(id=uuid.uuid4())
     item = SimpleNamespace(
         id=uuid.uuid4(), hospital_id=uuid.uuid4(), body="stored body",
-        content_philosophy_id=philosophy.id, scheduled_date=date.today(),
+        # 임박이 아닌 슬롯(하루 2세션) — 임박 슬롯의 추가 세션은 별도 테스트가 본다.
+        content_philosophy_id=philosophy.id, scheduled_date=date.today() + timedelta(days=10),
         content_type=SimpleNamespace(value="FAQ"), query_target_id=None,
         essence_check_summary={"ai_review": {"findings": [{
             "severity": "UNCERTAIN", "kind": "MEDICAL_SAFETY", "message": "확신이 부족합니다.",
@@ -6648,6 +6649,29 @@ def test_claimed_batch_interleaves_hospitals_round_robin():
     ]
     # 병원 안의 우선순위(이월 → 예정일 → 순번)는 그대로다.
     assert [item.id for item in interleaved if item.hospital_id == busy] == [0, 1, 2, 3, 4]
+
+
+def test_round_robin_never_puts_a_later_date_ahead_of_an_earlier_one():
+    """사흘 뒤 슬롯이 많은 병원도 다른 병원의 지난·내일 슬롯보다 앞서지 못한다."""
+
+    distant, urgent = uuid.uuid4(), uuid.uuid4()
+    overdue, tomorrow, three_days = date(2026, 9, 15), date(2026, 9, 17), date(2026, 9, 19)
+    # 로더 정렬(예정일 → 이월 → 순번) 그대로의 입력.
+    ordered = [
+        SimpleNamespace(id="u-overdue", hospital_id=urgent, scheduled_date=overdue),
+        SimpleNamespace(id="u-tomorrow", hospital_id=urgent, scheduled_date=tomorrow),
+        SimpleNamespace(id="d-tomorrow", hospital_id=distant, scheduled_date=tomorrow),
+        *(
+            SimpleNamespace(id=f"d-far-{index}", hospital_id=distant, scheduled_date=three_days)
+            for index in range(3)
+        ),
+    ]
+
+    interleaved = nightly_generation_batch.interleave_by_hospital(ordered)
+
+    assert [item.id for item in interleaved][:3] == ["u-overdue", "u-tomorrow", "d-tomorrow"]
+    dates = [item.scheduled_date for item in interleaved]
+    assert dates == sorted(dates)
 
 
 def test_dispatcher_warns_when_the_claim_cannot_finish_before_the_morning(monkeypatch, caplog):

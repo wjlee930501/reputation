@@ -13,12 +13,12 @@ KST = ZoneInfo("Asia/Seoul")
 OVERNIGHT_RECOVERY_HOURS = (1, 4, 7)
 DAYTIME_RECOVERY_HOURS = (12, 18, 22)
 RECOVERY_SWEEP_HOURS = (*OVERNIGHT_RECOVERY_HOURS, *DAYTIME_RECOVERY_HOURS, 23)
-# 23:00 야간 배치가 보는 창은 `[내일, 모레]`, 01·04·07 복구 스윕이 보는 창은
-# `[오늘-7일, 모레]`(뒤로는 발행 catch-up과 같은 7일, 앞으로는 야간 배치와 같은
+# 23:00 야간 배치가 보는 창은 `[내일, 오늘+lookahead]`, 복구 스윕이 보는 창은
+# `[오늘-7일, 오늘+lookahead]`(뒤로는 발행 catch-up과 같은 7일, 앞으로는 야간 배치와 같은
 # lookahead)다. 두 창을 모르면 기한이 "다음 스윕 시각"이 되어 그 스윕이 실제로는 집지
-# 않는 슬롯까지 재시도 중이라고 말하게 된다.
+# 않는 슬롯까지 재시도 중이라고 말하게 된다. lookahead는 생성 리드 타임(D-3)이며
+# `NIGHTLY_GENERATION_LOOKAHEAD_DAYS` 하나가 정한다(`generation_lookahead_days`).
 NIGHTLY_SWEEP_HOUR = 23
-NIGHTLY_SWEEP_LOOKAHEAD_DAYS = 2
 # `post_publish_review_policy.AUTO_PUBLISH_CATCHUP_DAYS`와 같은 값이어야 한다.
 # 이 모듈은 모델을 import하지 않는 잎이라 상수만 복제하고 테스트로 묶어 둔다.
 RECOVERY_SWEEP_CATCHUP_DAYS = 7
@@ -63,6 +63,11 @@ REVIEW_UNAVAILABLE_BACKOFF_MAX = timedelta(hours=24)
 SAMPLE_BODY_DAILY_BUDGET = 2
 SAMPLE_IMAGE_DAILY_BUDGET = 4
 SAMPLE_EXHAUSTED_DAY_LIMIT = 3
+# 임박 슬롯(예정일이 오늘·내일이거나 이미 지난 슬롯)의 본문 표본 예산은 KST 하루 한 세션 더 받는다.
+# 발행까지 남은 스윕이 적어 하루 2세션으로는 같은 날 회복할 기회가 없다. 주제당·평생 상한
+# (`generation_attempt_state`의 작가 6·검수 6·전송 36)은 그대로라 지출 끝은 바뀌지 않는다.
+SAMPLE_BODY_URGENT_EXTRA = 1
+URGENT_SLOT_LEAD_DAYS = 1
 # 저장된 본문을 작가가 고칠 수 있는 코드(_AUTOMATIC_BODY_REPAIR_CODES)의 하루 세션 예산.
 # 재시도 클래스와 분리해 계수한다 — 무조건 시도 기록을 지우면 결정적으로 고칠 수 없는
 # 글이 하루 4회 유료 재생성을 영원히 반복한다.
@@ -285,14 +290,39 @@ def has_model_declared_hard_finding(review: object) -> bool:
     )
 
 
-def sample_daily_budget(reason: object) -> int:
-    """Image candidates are cheap and bounded; writer sessions are not."""
+def generation_lookahead_days() -> int:
+    """생성 스윕이 앞으로 내다보는 일수(리드 타임). 야간 배치·복구 스윕·기한 계산이 같은 값을 쓴다."""
 
-    return (
-        SAMPLE_IMAGE_DAILY_BUDGET
-        if str(reason or "") in SAMPLE_IMAGE_CODES
-        else SAMPLE_BODY_DAILY_BUDGET
-    )
+    return max(int(settings.NIGHTLY_GENERATION_LOOKAHEAD_DAYS), 1)
+
+
+def slot_is_urgent(scheduled_date: date | None, observed: datetime | None = None) -> bool:
+    """예정일이 오늘(KST)+1일 이내이거나 이미 지났는가. 예정일을 모르면 임박이 아니다."""
+
+    if scheduled_date is None:
+        return False
+    today = (observed or datetime.now(UTC)).astimezone(KST).date()
+    return scheduled_date <= today + timedelta(days=URGENT_SLOT_LEAD_DAYS)
+
+
+def sample_daily_budget(
+    reason: object,
+    *,
+    scheduled_date: date | None = None,
+    observed: datetime | None = None,
+) -> int:
+    """한 슬롯이 KST 하루에 살 수 있는 표본 시도 수. 판정의 정본은 이 함수 하나다.
+
+    이미지 후보는 싸고 유한하다. 작가 세션은 비싸므로 하루 2회이고, 임박 슬롯
+    (`slot_is_urgent`)만 한 세션 더 받는다. 임박 여부는 KST 하루 안에서 바뀌지 않으므로 같은
+    날의 계수·소진 판정이 서로 어긋나지 않는다.
+    """
+
+    if str(reason or "") in SAMPLE_IMAGE_CODES:
+        return SAMPLE_IMAGE_DAILY_BUDGET
+    if slot_is_urgent(scheduled_date, observed):
+        return SAMPLE_BODY_DAILY_BUDGET + SAMPLE_BODY_URGENT_EXTRA
+    return SAMPLE_BODY_DAILY_BUDGET
 
 
 def retry_class_for(
@@ -321,7 +351,9 @@ def next_recovery_sweep(now: datetime | None = None) -> datetime:
     ).astimezone(UTC)
 
 
-def _sample_budget_is_spent(attempt: dict, observed: datetime) -> bool:
+def _sample_budget_is_spent(
+    attempt: dict, observed: datetime, scheduled_date: date | None = None
+) -> bool:
     """Whether today's KST sample budget for this slot is already spent."""
 
     if stored_attempt_period(attempt) != environment_attempt_period(observed):
@@ -330,21 +362,24 @@ def _sample_budget_is_spent(attempt: dict, observed: datetime) -> bool:
         count = int(attempt.get("provider_attempt_count", attempt.get("attempt_count")) or 0)
     except (TypeError, ValueError):
         return True
-    return count >= sample_daily_budget(attempt.get("reason"))
+    return count >= sample_daily_budget(
+        attempt.get("reason"), scheduled_date=scheduled_date, observed=observed
+    )
 
 
 def _sweep_window(candidate: datetime) -> tuple[date, date]:
     """Return the scheduled-date window one sweep at ``candidate`` actually claims."""
 
     day = candidate.date()
+    lookahead = generation_lookahead_days()
     if candidate.hour == NIGHTLY_SWEEP_HOUR:
-        return day + timedelta(days=1), day + timedelta(days=NIGHTLY_SWEEP_LOOKAHEAD_DAYS)
+        return day + timedelta(days=1), day + timedelta(days=lookahead)
     # 복구 스윕의 앞쪽 끝은 야간 배치와 같다. 22:30 백로그 복구가 오래된 슬롯을 **미래**
     # 날짜로 옮기므로, 앞쪽을 `오늘`에서 끊으면 방금 구조한 바로 그 슬롯을 복구 스윕이
     # 다시 집지 못한다.
     return (
         day - timedelta(days=RECOVERY_SWEEP_CATCHUP_DAYS),
-        day + timedelta(days=NIGHTLY_SWEEP_LOOKAHEAD_DAYS),
+        day + timedelta(days=lookahead),
     )
 
 
@@ -432,7 +467,10 @@ def repair_recovery_remains(
 
 
 def _earliest_eligible_date(
-    attempt: dict, observed: datetime, repair_state: Mapping | None = None
+    attempt: dict,
+    observed: datetime,
+    repair_state: Mapping | None = None,
+    scheduled_date: date | None = None,
 ) -> date | None:
     """Return the first KST date whose budget can still buy one attempt.
 
@@ -460,7 +498,7 @@ def _earliest_eligible_date(
             return None
         if exhausted_days >= SAMPLE_EXHAUSTED_DAY_LIMIT:
             return None
-        if _sample_budget_is_spent(attempt, observed):
+        if _sample_budget_is_spent(attempt, observed, scheduled_date):
             return today + timedelta(days=1)
         return today
     if retry_class != GenerationRetryClass.ENVIRONMENT_RECOVERABLE.value:
@@ -510,7 +548,7 @@ def next_recovery_deadline(
     if scheduled_date is None:
         return None
     observed = (now or datetime.now(UTC)).astimezone(KST)
-    earliest_date = _earliest_eligible_date(attempt, observed, repair_state)
+    earliest_date = _earliest_eligible_date(attempt, observed, repair_state, scheduled_date)
     if earliest_date is None:
         return None
     not_before = review_unavailable_not_before(attempt)
@@ -538,12 +576,17 @@ def next_recovery_deadline(
 
 
 def sample_budget_spent(
-    previous: Mapping | None, reason: str, observed: datetime
+    previous: Mapping | None,
+    reason: str,
+    observed: datetime,
+    *,
+    scheduled_date: date | None = None,
 ) -> tuple[int, int]:
     """Return the (daily count, exhausted days) after spending one sample attempt.
 
     같은 지문 안에서만 누적한다. 날이 바뀌면 하루 예산은 초기화되고, 그날의 예산을
-    막 소진한 순간에만 `exhausted_days`가 1 오른다(하루에 두 번 오르지 않는다).
+    막 소진한 순간에만 `exhausted_days`가 1 오른다(하루에 두 번 오르지 않는다). 그날의
+    예산은 `sample_daily_budget`이 정한다(임박 슬롯은 한 세션 더).
     """
 
     stored = dict(previous or {})
@@ -558,7 +601,7 @@ def sample_budget_spent(
     except (TypeError, ValueError):
         exhausted_days = 0
     count += 1
-    if count == sample_daily_budget(reason):
+    if count == sample_daily_budget(reason, scheduled_date=scheduled_date, observed=observed):
         exhausted_days += 1
     return count, exhausted_days
 
@@ -621,7 +664,9 @@ def spend_repair_session(
     }
 
 
-def _sample_retry_is_due(attempt: dict, observed: datetime) -> bool:
+def _sample_retry_is_due(
+    attempt: dict, observed: datetime, scheduled_date: date | None = None
+) -> bool:
     try:
         exhausted_days = int(attempt.get("exhausted_days") or 0)
     except (TypeError, ValueError):
@@ -633,7 +678,7 @@ def _sample_retry_is_due(attempt: dict, observed: datetime) -> bool:
         # 새 KST 일에는 예산이 초기화된다. 다만 저장된 다음 시도 시각은 그대로 지킨다 —
         # 날이 바뀌었다는 이유로 앞당기면 그 시각을 약속한 인시던트 기한과 어긋난다.
         return _due_time_reached(attempt, observed)
-    if _sample_budget_is_spent(attempt, observed):
+    if _sample_budget_is_spent(attempt, observed, scheduled_date):
         return False
     return _due_time_reached(attempt, observed)
 
@@ -666,11 +711,19 @@ def _sweep_window_was_abandoned(attempt: Mapping) -> bool:
     return "next_retry_at" in attempt and attempt.get("next_retry_at") is None
 
 
-def retry_is_due(attempt: dict, now: datetime | None = None) -> bool:
+def retry_is_due(
+    attempt: dict,
+    now: datetime | None = None,
+    *,
+    scheduled_date: date | None = None,
+) -> bool:
+    """저장된 기록의 다음 시도가 지금 됐는가. ``scheduled_date``는 표본 하루 예산의 임박 판정에만 쓴다
+    (모르면 기본 예산 — 더 적게 산다)."""
+
     observed = now or datetime.now(UTC)
     retry_class = attempt.get("retry_class")
     if retry_class == GenerationRetryClass.SAMPLE_RECOVERABLE.value:
-        return _sample_retry_is_due(attempt, observed)
+        return _sample_retry_is_due(attempt, observed, scheduled_date)
     if retry_class != GenerationRetryClass.ENVIRONMENT_RECOVERABLE.value:
         return False
     if environment_window_closed(attempt, observed):

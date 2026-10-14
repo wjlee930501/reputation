@@ -31,7 +31,7 @@ from app.workers.generation_attempt_state import (
     reserve_acquisition,
 )
 from app.workers.generation_incident_control import generation_incident_dedupe_key
-from app.workers.generation_retry_policy import GenerationRetryClass
+from app.workers.generation_retry_policy import SAMPLE_BODY_DAILY_BUDGET, GenerationRetryClass
 
 # autouse fixture가 모듈 함수를 교체하므로 원본을 미리 잡아 둔다.
 _RECOVER_INCIDENT = topic_swap_fallback._recover_incident_async
@@ -142,7 +142,7 @@ def recorded_attempts(monkeypatch):
 
     calls: list[uuid.UUID] = []
 
-    def _record(db, item, *, now):
+    def _record(db, item, *, now, spent_today=None):
         calls.append(item.id)
 
     monkeypatch.setattr(topic_swap_fallback, "_record_topic_swapped_attempt", _record)
@@ -625,8 +625,13 @@ def _kst(year, month, day, hour=0, minute=0, second=0) -> datetime:
     return datetime(year, month, day, hour, minute, second, tzinfo=KST)
 
 
-def _recorded_attempt(monkeypatch, *, scheduled_date=SLOT, now=NOW) -> dict:
-    """`_record_topic_swapped_attempt`가 정본 경로에 넘기는 시도 기록을 잡는다."""
+def _recorded_attempt(
+    monkeypatch, *, scheduled_date=SLOT, now=NOW, spent_today=SAMPLE_BODY_DAILY_BUDGET
+) -> dict:
+    """`_record_topic_swapped_attempt`가 정본 경로에 넘기는 시도 기록을 잡는다.
+
+    기본값은 옛 주제가 오늘 하루 예산(2세션)을 다 쓴 교체다.
+    """
 
     captured: dict = {}
 
@@ -642,17 +647,19 @@ def _recorded_attempt(monkeypatch, *, scheduled_date=SLOT, now=NOW) -> dict:
             _remember_generation_attempt=_remember,
         ),
     )
-    _RECORD_ATTEMPT(_FakeDB([]), _item(scheduled_date=scheduled_date), now=now)
+    _RECORD_ATTEMPT(
+        _FakeDB([]), _item(scheduled_date=scheduled_date), now=now, spent_today=spent_today
+    )
     return captured
 
 
 @pytest.mark.parametrize(
     "scheduled_date",
-    [SLOT + timedelta(days=1), SLOT - timedelta(days=1)],
-    ids=["before_the_scheduled_day", "after_the_scheduled_day"],
+    [SLOT - timedelta(days=1), SLOT, SLOT + timedelta(days=1)],
+    ids=["overdue", "scheduled_day", "tomorrow"],
 )
-def test_the_swap_leaves_todays_writer_budget_spent(monkeypatch, scheduled_date):
-    """예정일이 아닌 날의 교체는 소진된 하루 예산을 되살리지 않는다 — 다음 시도는 내일이다."""
+def test_an_urgent_swap_writes_the_new_topic_in_the_same_sweep(monkeypatch, scheduled_date):
+    """지난·당일·내일 슬롯은 옛 주제가 오늘 예산을 다 썼어도 같은 스윕에서 새 주제를 한 번 쓴다."""
 
     attempt = _recorded_attempt(monkeypatch, scheduled_date=scheduled_date)
 
@@ -660,12 +667,69 @@ def test_the_swap_leaves_todays_writer_budget_spent(monkeypatch, scheduled_date)
     assert attempt["count_attempt"] is False  # 예산을 쓴 결정이 아니다
     assert attempt["retry_class"] == GenerationRetryClass.SAMPLE_RECOVERABLE.value
     assert attempt["attempt_period"] == "2026-09-16"  # KST 오늘
-    assert attempt["provider_attempt_count"] == generation_retry_policy.SAMPLE_BODY_DAILY_BUDGET
+    urgent_budget = SAMPLE_BODY_DAILY_BUDGET + generation_retry_policy.SAMPLE_BODY_URGENT_EXTRA
+    # 오늘 계수는 임박 하루 예산 − 1 — 같은 스윕이 한 번 쓰고, 실패하면 내일이다.
+    assert attempt["provider_attempt_count"] == urgent_budget - 1
     assert attempt["exhausted_days"] == 0  # 소진 일수는 새 주제에서 다시 센다
-    # 내일 01시 복구 스윕이 이 슬롯을 보는 첫 시각이다(오늘 23시 배치의 창에는 없다).
+    assert datetime.fromisoformat(attempt["next_retry_at"]) == NOW
+
+
+def test_a_distant_swap_after_spending_today_waits_for_tomorrow(monkeypatch):
+    """사흘 뒤 슬롯이 오늘 예산을 다 쓴 교체는 소진된 하루 예산을 되살리지 않는다."""
+
+    attempt = _recorded_attempt(monkeypatch, scheduled_date=SLOT + timedelta(days=3))
+
+    assert attempt["provider_attempt_count"] == SAMPLE_BODY_DAILY_BUDGET
+    # 내일 01시 복구 스윕이 이 슬롯을 보는 첫 시각이다.
     assert datetime.fromisoformat(attempt["next_retry_at"]) == datetime(
         2026, 9, 17, 1, 0, tzinfo=KST
     )
+
+
+def test_a_swap_on_a_fresh_day_retries_the_same_day(monkeypatch):
+    """abe0b28e: 01:00에 교체됐는데 다음 시도가 다음 날 01:00이었다 — 오늘 예산은 아직 그대로다.
+
+    옛 주제의 소진 기록이 어제 것이면 오늘 쓴 세션은 0이다. 예정일이 멀어도 같은 스윕이 쓴다.
+    """
+
+    swapped_at = _kst(2026, 9, 16, 1, 0, 2)
+    attempt = _recorded_attempt(
+        monkeypatch,
+        scheduled_date=SLOT + timedelta(days=3),
+        now=swapped_at,
+        spent_today=0,
+    )
+
+    assert attempt["provider_attempt_count"] == 0
+    assert datetime.fromisoformat(attempt["next_retry_at"]) == swapped_at
+
+
+def test_todays_spend_is_read_from_both_sample_and_repair_counters():
+    """오늘 쓴 작가 세션은 표본 계수와 본문 수리 계수 중 큰 값이다. 어제 기록은 0이다."""
+
+    today = "2026-09-16"
+    item = _item(
+        essence_check_summary={
+            GENERATION_ATTEMPT_KEY: {
+                "reason": "GENERATION_REJECTED",
+                "attempt_period": today,
+                "provider_attempt_count": 1,
+            },
+            generation_retry_policy.BODY_REPAIR_STATE_KEY: {"period": today, "count": 2},
+        }
+    )
+    assert topic_swap_fallback.writer_sessions_spent_today(item, NOW) == 2
+
+    yesterday = _item(
+        essence_check_summary={
+            GENERATION_ATTEMPT_KEY: {
+                "reason": "GENERATION_REJECTED",
+                "attempt_period": "2026-09-15",
+                "provider_attempt_count": 2,
+            }
+        }
+    )
+    assert topic_swap_fallback.writer_sessions_spent_today(yesterday, NOW) == 0
 
 
 def test_a_slot_without_a_scheduled_date_gets_no_same_day_grant(monkeypatch):
@@ -673,7 +737,7 @@ def test_a_slot_without_a_scheduled_date_gets_no_same_day_grant(monkeypatch):
 
     attempt = _recorded_attempt(monkeypatch, scheduled_date=None)
 
-    assert attempt["provider_attempt_count"] == generation_retry_policy.SAMPLE_BODY_DAILY_BUDGET
+    assert attempt["provider_attempt_count"] == SAMPLE_BODY_DAILY_BUDGET
     assert attempt["next_retry_at"] is None
 
 
@@ -692,15 +756,15 @@ def _freeze(monkeypatch, moment: datetime) -> None:
 
 
 def test_the_loader_skips_the_swapped_slot_today_and_takes_it_tomorrow(monkeypatch):
-    """D-1 04시 소진 → 07시 교체 → 그날은 로더가 집지 않고, 다음 날(D) 01시에 집는다."""
+    """D-3 04시 소진 → 07시 교체 → 그날은 로더가 집지 않고, 다음 날(D-2) 01시에 집는다."""
 
     from app.workers import tasks
 
     monkeypatch.setattr(tasks, "_generation_philosophy_sync", lambda db, hospital_id: None)
-    item = _item(scheduled_date=SLOT + timedelta(days=1))
+    item = _item(scheduled_date=SLOT + timedelta(days=3))
     swapped_at = _kst(2026, 9, 16, 7, 0)
     _freeze(monkeypatch, swapped_at)
-    _RECORD_ATTEMPT(_FakeDB([]), item, now=swapped_at)
+    _RECORD_ATTEMPT(_FakeDB([]), item, now=swapped_at, spent_today=SAMPLE_BODY_DAILY_BUDGET)
 
     # 같은 날 남은 스윕(23시)에서도 로더의 술어가 이 슬롯을 거른다.
     _freeze(monkeypatch, _kst(2026, 9, 16, 23, 0))
@@ -952,10 +1016,11 @@ def test_a_same_day_swap_is_generated_by_the_same_sweep_and_published_at_eight(m
     writer_calls = _patch_generation(monkeypatch, philosophy, item, fail=False)
 
     _freeze(monkeypatch, _SWAPPED_AT)
-    _RECORD_ATTEMPT(_FakeDB([]), item, now=_SWAPPED_AT)
+    # 옛 주제가 오늘 하루 예산(2세션)을 다 쓰고 교체됐다.
+    _RECORD_ATTEMPT(_FakeDB([]), item, now=_SWAPPED_AT, spent_today=SAMPLE_BODY_DAILY_BUDGET)
     attempt = item.essence_check_summary[GENERATION_ATTEMPT_KEY]
-    # 오늘 예산은 한 회만 남고, 기한은 지금이다(다음 스윕이 아니라 이 스윕).
-    assert attempt["provider_attempt_count"] == generation_retry_policy.SAMPLE_BODY_DAILY_BUDGET - 1
+    # 임박 슬롯의 오늘 예산(2+1)은 한 회만 남고, 기한은 지금이다(다음 스윕이 아니라 이 스윕).
+    assert attempt["provider_attempt_count"] == SAMPLE_BODY_DAILY_BUDGET
     assert datetime.fromisoformat(attempt["next_retry_at"]) == _SWAPPED_AT
 
     # 교체 pass 바로 뒤의 같은 07:00 스윕 로더가 집는다.
@@ -992,14 +1057,16 @@ def test_the_same_day_grant_is_one_writer_session_only(monkeypatch):
     writer_calls = _patch_generation(monkeypatch, philosophy, item, fail=True)
 
     _freeze(monkeypatch, _SWAPPED_AT)
-    _RECORD_ATTEMPT(_FakeDB([]), item, now=_SWAPPED_AT)
+    _RECORD_ATTEMPT(_FakeDB([]), item, now=_SWAPPED_AT, spent_today=SAMPLE_BODY_DAILY_BUDGET)
     assert _claims_at(monkeypatch, item, _kst(2026, 9, 16, 7, 0, 3)) is True
     _generate_once(monkeypatch, item, _kst(2026, 9, 16, 7, 0, 4))
     assert writer_calls == [item.id]
 
     attempt = item.essence_check_summary[GENERATION_ATTEMPT_KEY]
     assert attempt["reason"] == "GENERATION_REJECTED"
-    assert attempt["provider_attempt_count"] == generation_retry_policy.SAMPLE_BODY_DAILY_BUDGET
+    assert attempt["provider_attempt_count"] == (
+        SAMPLE_BODY_DAILY_BUDGET + generation_retry_policy.SAMPLE_BODY_URGENT_EXTRA
+    )
     for moment in (
         _kst(2026, 9, 16, 7, 0, 30),
         _kst(2026, 9, 16, 12, 0),
@@ -1094,10 +1161,10 @@ def _run_morning_gates(monkeypatch, item, philosophy, gate_day: date) -> tuple[l
 @pytest.mark.parametrize(
     ("swapped_at", "next_sweep"),
     [
-        # 예정일 다음 날 07:00의 교체(스윕 창은 오늘-7부터다) — 오늘 예산은 소진, 내일 01시.
-        (_kst(2026, 9, 17, 7, 0, 2), _kst(2026, 9, 18, 1, 0)),
+        # 예정일 다음 날 07:00의 교체(지난 슬롯) — 같은 스윕이 닿지 못해도 그날 12시에 쓴다.
+        (_kst(2026, 9, 17, 7, 0, 2), _kst(2026, 9, 17, 12, 0)),
         # 예정일 당일 교체인데 같은 스윕 로더가 닿지 못했다(상한·잘림) — 당일 1회가 남아 있다.
-        (_SWAPPED_AT, _kst(2026, 9, 17, 1, 0)),
+        (_SWAPPED_AT, _kst(2026, 9, 16, 12, 0)),
     ],
     ids=["past_due_swap", "same_day_swap_not_reached"],
 )
@@ -1118,7 +1185,7 @@ def test_the_morning_gates_keep_the_swap_record_so_a_sweep_writes_the_new_topic(
     writer_calls = _patch_generation(monkeypatch, philosophy, item, fail=False)
 
     _freeze(monkeypatch, swapped_at)
-    _RECORD_ATTEMPT(_FakeDB([]), item, now=swapped_at)
+    _RECORD_ATTEMPT(_FakeDB([]), item, now=swapped_at, spent_today=SAMPLE_BODY_DAILY_BUDGET)
     swapped = dict(item.essence_check_summary[GENERATION_ATTEMPT_KEY])
     assert swapped["reason"] == topic_swap_fallback.TOPIC_SWAPPED_REASON
     assert swapped["next_retry_at"] is not None
@@ -1135,7 +1202,9 @@ def test_the_morning_gates_keep_the_swap_record_so_a_sweep_writes_the_new_topic(
 
     # 로더와 워커가 같은 기록을 읽고 다음 적격 스윕에서 새 주제를 한 번 쓴다.
     _freeze(monkeypatch, next_sweep)
-    assert tasks.retry_is_due(item.essence_check_summary[GENERATION_ATTEMPT_KEY]) is True
+    assert tasks.retry_is_due(
+        item.essence_check_summary[GENERATION_ATTEMPT_KEY], scheduled_date=item.scheduled_date
+    ) is True
     assert tasks._generation_attempt_is_unchanged(item, philosophy) is False
     assert _claims_at(monkeypatch, item, next_sweep) is True
     state, code, _message = _generate_once(monkeypatch, item, next_sweep + timedelta(seconds=1))

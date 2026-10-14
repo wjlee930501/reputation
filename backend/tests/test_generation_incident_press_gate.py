@@ -26,7 +26,7 @@ from test_operator_retry_gate_record import (
     _press_retry,
     _slot_with_writer,
     _spend_sample_budget_today,
-    _swap_a_slot_scheduled_tomorrow,
+    _swap_a_slot_scheduled_three_days_out,
 )
 from test_topic_swap_fallback import _kst, _WorkerDB
 
@@ -314,7 +314,7 @@ def _sample_left(monkeypatch):
 
 def _swapped(monkeypatch):
     philosophy, item, writer_calls, _seen = _slot_with_writer(monkeypatch, swapped=True)
-    _swap_a_slot_scheduled_tomorrow(item, philosophy, monkeypatch)
+    _swap_a_slot_scheduled_three_days_out(item, philosophy, monkeypatch)
     return item, writer_calls
 
 

@@ -39,7 +39,7 @@ from app.models.hospital import Hospital
 from app.models.operations import OperationRunState
 from app.workers import tasks
 from app.workers.generation_attempt_state import GENERATION_ATTEMPT_KEY, GENERATION_LADDER_KEYS
-from app.workers.generation_retry_policy import GenerationRetryClass
+from app.workers.generation_retry_policy import SAMPLE_BODY_DAILY_BUDGET, GenerationRetryClass
 from app.workers.nightly_generation_batch import (
     GENERATION_WRITE_BACK_STATUSES,
     generation_claim_is_active,
@@ -394,20 +394,25 @@ def test_dispatch_without_an_operator_run_keeps_a_gate_kept_environment_failure(
 
 
 def _spend_sample_budget_today(item, philosophy, monkeypatch) -> str:
-    """본문 표본 실패 2회로 오늘 예산을 다 쓴다(다음 시도는 내일)."""
+    """본문 표본 실패 3회로 예정일 당일(임박 슬롯, 2+1회)의 오늘 예산을 다 쓴다(다음 시도는 내일)."""
 
-    for hour in (1, 4):
+    for hour in (1, 4, 7):
         _freeze(monkeypatch, _kst(2026, 9, 16, hour, 0, 4))
         tasks._remember_generation_attempt(_WorkerDB(), item, philosophy, "GENERATION_REJECTED")
     return "GENERATION_REJECTED"
 
 
-def _swap_a_slot_scheduled_tomorrow(item, philosophy, monkeypatch) -> str:
-    """예정일 전날의 교체 — 오늘 예산을 소진으로 남기고 다음 시도는 내일 01시다."""
+def _swap_a_slot_scheduled_three_days_out(item, philosophy, monkeypatch) -> str:
+    """사흘 뒤 슬롯의 교체(옛 주제가 오늘 예산을 다 썼다) — 다음 시도는 내일 01시다.
 
-    item.scheduled_date = item.scheduled_date + timedelta(days=1)
+    임박 슬롯(지난·당일·내일)은 같은 스윕이 새 주제를 한 번 쓰므로 억제 대상이 아니다.
+    """
+
+    item.scheduled_date = item.scheduled_date + timedelta(days=3)
     _freeze(monkeypatch, _kst(2026, 9, 16, 7, 0, 2))
-    _RECORD_ATTEMPT(_FakeDB([]), item, now=_kst(2026, 9, 16, 7, 0, 2))
+    _RECORD_ATTEMPT(
+        _FakeDB([]), item, now=_kst(2026, 9, 16, 7, 0, 2), spent_today=SAMPLE_BODY_DAILY_BUDGET
+    )
     return "CONTENT_NOT_GENERATED"
 
 
@@ -416,7 +421,7 @@ def _swap_a_slot_scheduled_tomorrow(item, philosophy, monkeypatch) -> str:
     "record_failure",
     [
         pytest.param(_spend_sample_budget_today, id="GENERATION_REJECTED"),
-        pytest.param(_swap_a_slot_scheduled_tomorrow, id="TOPIC_SWAPPED"),
+        pytest.param(_swap_a_slot_scheduled_three_days_out, id="TOPIC_SWAPPED"),
     ],
 )
 def test_operator_retry_keeps_a_sample_budget_suppression(monkeypatch, record_failure, moment):
@@ -454,8 +459,9 @@ def test_a_legacy_sample_record_the_gate_overwrites_is_retried_by_the_operator(m
             "retry_class": GenerationRetryClass.SAMPLE_RECOVERABLE.value,
             "context": tasks._generation_attempt_context(item, philosophy),
             "attempt_period": "2026-09-16",
-            "provider_attempt_count": 2,
-            "attempt_count": 2,
+            # 예정일 당일(임박) 슬롯의 오늘 예산(2+1회)을 다 썼다.
+            "provider_attempt_count": SAMPLE_BODY_DAILY_BUDGET + 1,
+            "attempt_count": SAMPLE_BODY_DAILY_BUDGET + 1,
             "exhausted_days": 0,
         }
     }

@@ -544,6 +544,7 @@ from app.workers.generation_retry_policy import (
     environment_attempt_period,
     environment_window_closed,
     environment_window_start,
+    generation_lookahead_days,
     has_model_declared_hard_finding,
     next_recovery_deadline,
     repair_session_is_available,
@@ -1253,7 +1254,7 @@ def _generation_attempt_is_unchanged(
         # 검수 장애의 물러서기·한도는 그 후보에 대한 결정이다. 사람이 원고를 고쳤으면 새 후보라
         # 옛 후보의 기한을 기다리지 않고 다음 스윕이 다시 검수한다.
         return False
-    return not retry_is_due(previous)
+    return not retry_is_due(previous, scheduled_date=getattr(item, "scheduled_date", None))
 
 
 def _terminal_attempt_is_unchanged(
@@ -1393,7 +1394,10 @@ def _remember_generation_attempt(
         # 표본 실패는 KST 하루 예산 안에서 세고 날이 바뀌면 초기화된다. 소진된 날이
         # SAMPLE_EXHAUSTED_DAY_LIMIT만큼 쌓여야 사람의 일(OPERATOR_REQUIRED)이 된다.
         provider_attempt_count, exhausted_days = sample_budget_spent(
-            previous if same_context else None, reason, observed_at
+            previous if same_context else None,
+            reason,
+            observed_at,
+            scheduled_date=getattr(item, "scheduled_date", None),
         )
     elif retry_class == GenerationRetryClass.ENVIRONMENT_RECOVERABLE:
         if (
@@ -1576,7 +1580,10 @@ def _record_gate_blocker_decision(db, item: ContentItem, philosophy, code: str) 
             GenerationRetryClass.ENVIRONMENT_RECOVERABLE,
             GenerationRetryClass.SAMPLE_RECOVERABLE,
         )
-        and (retry_is_due(stored) or isinstance(stored.get("next_retry_at"), str))
+        and (
+            retry_is_due(stored, scheduled_date=getattr(item, "scheduled_date", None))
+            or isinstance(stored.get("next_retry_at"), str)
+        )
         and not environment_window_closed(stored)
     ):
         # 스윕이 아직 소유한 실패(PROVIDER_TIMEOUT 등)도 같다. 덮으면 로더가 다시 집지
@@ -5465,11 +5472,11 @@ def build_aeo_site(self, hospital_id: str):
 
 
 def _nightly_generation_window(now_kst) -> tuple[date, date]:
-    """23:00 배치가 생성할 예정일 구간. 기본은 [내일, 모레]다.
+    """23:00 배치가 생성할 예정일 구간. 기본은 [내일, 사흘 뒤]다(리드 타임 D-3).
 
-    하루만 보면 한 밤의 공급자 장애가 그날 아침을 그대로 비운다. 이틀을 보면 같은 슬롯이
-    두 밤의 기회를 갖는다. 가까운 날짜가 먼저 나가는 순서는 조회 정렬(이월 → 예정일 →
-    순번)이 그대로 보장한다.
+    하루만 보면 한 밤의 공급자 장애가 그날 아침을 그대로 비운다. 사흘을 보면 같은 슬롯이
+    세 밤의 기회를 갖는다. 가까운 날짜가 먼저 나가는 순서는 조회 정렬(예정일 → 이월 →
+    순번)과 예정일 단위 라운드로빈(`interleave_by_hospital`)이 보장한다.
     """
 
     return now_kst.shift(days=1).date(), _generation_lookahead_end(now_kst)
@@ -5482,8 +5489,7 @@ def _generation_lookahead_end(now_kst) -> date:
     미래로 옮긴 슬롯을 한쪽만 볼 수 있게 된다.
     """
 
-    lookahead = max(int(settings.NIGHTLY_GENERATION_LOOKAHEAD_DAYS), 1)
-    return now_kst.shift(days=lookahead).date()
+    return now_kst.shift(days=generation_lookahead_days()).date()
 
 
 def _warn_if_generation_capacity_is_short(claimed_count: int, *, now_kst) -> None:
@@ -5690,7 +5696,7 @@ def _dispatch_generation_batch(
     acks_late=True,
 )
 def nightly_content_generation(self):
-    """At 23:00, claim the next two days' missing slots and fan them out."""
+    """At 23:00, claim the lookahead window's missing slots and fan them out."""
     require_dispatch(self, "nightly-content-generation")
     now_kst = arrow.now("Asia/Seoul")
     window_start, window_end = _nightly_generation_window(now_kst)
@@ -7186,7 +7192,8 @@ def _generate_single_content_item(
         )
         stored_attempt = _stored_generation_attempt(item)
         sample_rereview_due = uncertain_only_block and (
-            not stored_attempt.get("reason") or retry_is_due(stored_attempt)
+            not stored_attempt.get("reason")
+            or retry_is_due(stored_attempt, scheduled_date=getattr(item, "scheduled_date", None))
         )
         if sample_rereview_due or stored_assessment.code in {
             "CONTENT_AI_REVIEW_STALE",
