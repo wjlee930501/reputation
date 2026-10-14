@@ -81,9 +81,9 @@ from app.services.post_publish_review_policy import (
 )
 from app.services.v0_claim import latest_active_v0_run, v0_claim_is_alive
 from app.workers.generation_attempt_state import (
-    GENERATION_ATTEMPT_KEY,
     GenerationBudgetExceeded,
     GenerationBudgetUnknown,
+    budget_generation_attempt,
     legacy_budget_is_replaceable,
     read_generation_budget,
     replace_legacy_budget_and_release,
@@ -996,9 +996,8 @@ async def regenerate_content_operation(
             status_code=409,
             detail="Published, cancelled or withheld content cannot be regenerated",
         )
-    summary = item.essence_check_summary if isinstance(item.essence_check_summary, dict) else {}
-    attempt = summary.get(GENERATION_ATTEMPT_KEY)
-    attempt = dict(attempt) if isinstance(attempt, dict) else {}
+    # 한 번도 시도하지 않은 슬롯은 지출 0의 새 예산이다 — 감사된 교체 대상이 아니다.
+    attempt = budget_generation_attempt(item)
     try:
         budget = read_generation_budget(attempt)
     except GenerationBudgetUnknown:

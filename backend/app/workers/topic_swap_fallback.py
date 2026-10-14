@@ -52,6 +52,7 @@ from app.workers.generation_attempt_state import (
     GENERATION_ATTEMPT_KEY,
     GenerationBudgetExceeded,
     GenerationBudgetUnknown,
+    budget_generation_attempt,
     current_topic_writers_exhausted,
     read_generation_attempt,
     read_generation_budget,
@@ -215,7 +216,7 @@ def topic_swap_budget_left(item: ContentItem) -> bool:
     if (len(history) if isinstance(history, list) else 0) >= topic_swap_limit():
         return False
     try:
-        budget = read_generation_budget(read_generation_attempt(item))
+        budget = read_generation_budget(budget_generation_attempt(item))
     except GenerationBudgetUnknown:
         return False
     return budget.topic_swaps < 1 and len(budget.topics) < 2
@@ -381,7 +382,7 @@ def _reset_values(item: ContentItem, target_id: uuid.UUID, history_entry: dict) 
     """
 
     swapped_attempt = record_topic_swap(
-        read_generation_attempt(item),
+        budget_generation_attempt(item),
         from_topic_id=str(item.query_target_id) if item.query_target_id else None,
         to_topic_id=str(target_id),
     )
