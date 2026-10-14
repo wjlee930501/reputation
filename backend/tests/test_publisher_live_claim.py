@@ -268,7 +268,7 @@ def test_last_run_reports_a_live_claimed_empty_slot_like_an_unclaimed_one_withou
             _claim(slot, _kst(22, 20))
         before = _row_bytes(slot)
         db, incidents, _effects = _publisher(monkeypatch, slot)
-        _set_clock(monkeypatch, _kst(23))
+        _set_clock(monkeypatch, _kst(23, 30))
 
         _run_publisher()
 
@@ -311,7 +311,7 @@ def test_last_run_records_the_decision_only_on_the_copy_and_commits_once(monkeyp
     _claim(slot, _kst(22, 20))
     before = _row_bytes(slot)
     db, _effects = _single_publish(monkeypatch, slot, hospital)
-    _set_clock(monkeypatch, _kst(23))
+    _set_clock(monkeypatch, _kst(23, 30))
     philosophy = _approved_philosophy()
     monkeypatch.setattr(tasks, "get_current_approved_philosophy_sync", lambda *_a: philosophy)
 
@@ -336,7 +336,7 @@ def test_last_run_never_publishes_a_live_claimed_publishable_row(monkeypatch):
     _claim(item, _kst(22, 30))
     before = _row_bytes(item)
     db, effects = _single_publish(monkeypatch, item, hospital)
-    _set_clock(monkeypatch, _kst(23))
+    _set_clock(monkeypatch, _kst(23, 30))
 
     payload = tasks._auto_publish_one(item.id, reference_verifier=ReferenceVerifier(PageFetcher()))
 

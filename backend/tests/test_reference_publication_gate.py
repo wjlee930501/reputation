@@ -854,10 +854,12 @@ def _deferred_outcome(hospital_id, scheduled_date):
     [
         (arrow.get(2026, 6, 10, 8, 0, tzinfo="Asia/Seoul"), False),
         (arrow.get(2026, 6, 10, 22, 0, tzinfo="Asia/Seoul"), False),
-        (arrow.get(2026, 6, 10, 23, 0, tzinfo="Asia/Seoul"), True),
+        # 누락 방지 4(2026-10-14): 23:30이 그날의 마지막 발행기다 — 23:00은 아니다.
+        (arrow.get(2026, 6, 10, 23, 0, tzinfo="Asia/Seoul"), False),
+        (arrow.get(2026, 6, 10, 23, 30, tzinfo="Asia/Seoul"), True),
         (arrow.get(2026, 6, 11, 8, 0, tzinfo="Asia/Seoul"), True),
     ],
-    ids=["first-run", "same-day", "last-run-of-the-day", "catch-up-day"],
+    ids=["first-run", "same-day", "eleven-pm", "last-run-of-the-day", "catch-up-day"],
 )
 def test_outage_deferral_is_reported_from_the_last_publisher_run_with_its_real_cause(
     monkeypatch, now_kst, expected
@@ -1007,7 +1009,7 @@ def test_eight_skips_a_live_claimed_slot_even_when_its_references_are_settled(mo
 COST_POST_TITLE = "경산 내과 진료비, 무엇에 따라 달라지나요"
 NO_CATALOG_TITLE = "귀지가 막혔을 때 — 집에서 해도 되는 관리"  # 수기 목록 치유 후보가 없는 의료 글
 LOW_BACK = KDCA_VIEW.format(3796)
-LAST_RUN = arrow.get(2026, 6, 10, 23, 0, tzinfo="Asia/Seoul")
+LAST_RUN = arrow.get(2026, 6, 10, 23, 30, tzinfo="Asia/Seoul")
 NOON = arrow.get(2026, 6, 10, 12, 0, tzinfo="Asia/Seoul")
 DEAD_OUTSIDE = [{"title": "진료비", "url": GUESSED}]  # 리뷰어 S2 — 신선한 통과가 없는 목록 밖 죽은 주소
 

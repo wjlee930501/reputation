@@ -17,6 +17,7 @@ from celery.schedules import crontab
 from app.core.celery_app import celery_app
 from app.services.reference_publication import (
     REFERENCE_OUTAGE_LAST_PUBLISHER_HOUR,
+    REFERENCE_OUTAGE_LAST_PUBLISHER_MINUTE,
     reference_outage_alert_due,
 )
 
@@ -69,11 +70,10 @@ def test_the_last_publisher_hour_is_the_last_beat_run_of_the_day() -> None:
     """상수 = 발행기의 마지막 시(時)이고, 그 시각 이후 실행은 하루 한 번(그날의 마지막)뿐이다."""
 
     times = _daily_run_times()
+    last = (REFERENCE_OUTAGE_LAST_PUBLISHER_HOUR, REFERENCE_OUTAGE_LAST_PUBLISHER_MINUTE)
 
-    assert max(hour for hour, _minute in times) == REFERENCE_OUTAGE_LAST_PUBLISHER_HOUR
-    at_or_after = [
-        (hour, minute) for hour, minute in times if hour >= REFERENCE_OUTAGE_LAST_PUBLISHER_HOUR
-    ]
+    assert times[-1] == last
+    at_or_after = [moment for moment in times if moment >= last]
     assert at_or_after == [times[-1]], (
         f"마지막 발행기 시각 이후 실행이 하나가 아니다: {at_or_after}"
     )

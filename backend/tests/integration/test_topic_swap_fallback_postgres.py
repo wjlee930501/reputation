@@ -526,7 +526,12 @@ def test_expired_claim_is_swapped_but_an_active_one_is_left_alone(pg_conn, pg_se
     [
         {"first_published_at": datetime(2026, 9, 10, tzinfo=UTC)},
         {"human_edited_at": datetime(2026, 9, 10, tzinfo=UTC)},
-        {"topic_swap_history": '[{"reason_code": "GENERATION_REJECTED"}]'},
+        # 누락 방지 5(2026-10-14): 원인과 무관하게 교체는 두 번 — 두 번을 다 쓴 행은 제외다.
+        {
+            "topic_swap_history": (
+                '[{"reason_code": "GENERATION_REJECTED"}, {"reason_code": "GENERATION_REJECTED"}]'
+            )
+        },
         {"status": ContentStatus.PUBLISHED.value},
         {"summary": '{"generation_attempt": {"reason": "GENERATION_REJECTED",'
          ' "retry_class": "SAMPLE_RECOVERABLE"}}'},
