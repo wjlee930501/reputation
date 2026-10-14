@@ -208,7 +208,7 @@ def test_must_use_prefers_verbatim_survey_sentences_up_to_three() -> None:
 
 
 def test_must_use_is_capped_at_three_survey_sentences() -> None:
-    sentences = [f"{word} 저는 환자분과 함께 결정합니다." for word in ("먼저", "그리고", "또", "끝으로", "늘")]
+    sentences = [f"{word} 저는 환자분과 함께 결정합니다." for word in ("먼저", "다음으로", "이어서", "끝으로", "늘")]
     survey = _source(SourceType.INTERVIEW, " ".join(sentences))
     note = _note(survey, " ".join(sentences), EvidenceNoteType.DOCTOR_PHILOSOPHY)
 
