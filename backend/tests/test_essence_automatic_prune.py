@@ -174,7 +174,7 @@ def test_must_use_prefers_verbatim_survey_sentences_up_to_three() -> None:
     )
     homepage = _source(SourceType.HOMEPAGE, "홈페이지 소개")
     survey_note = _note(survey, SURVEY_SENTENCE, EvidenceNoteType.DOCTOR_PHILOSOPHY)
-    second = _note(survey, "검사 결과는 화면으로 함께 봅니다.", EvidenceNoteType.TONE_SIGNAL)
+    second = _note(survey, "검사 결과는 화면으로 함께 봅니다.", EvidenceNoteType.KEY_MESSAGE)
     home_note = _note(homepage, "홈페이지 소개")
     paraphrase = "원장은 충분히 설명합니다"
     payload = _payload(
@@ -439,7 +439,7 @@ def test_a_losing_career_sentence_never_returns_through_must_use_or_fallback() -
     )
     loser = "저는 정형외과 전문의로 20년 동안 진료했습니다."
     survey_note = _note(survey, loser, EvidenceNoteType.DOCTOR_PHILOSOPHY)
-    calm = _note(survey, "진료 전에 충분히 설명합니다.", EvidenceNoteType.TONE_SIGNAL)
+    calm = _note(survey, "진료 전에 충분히 설명합니다.", EvidenceNoteType.KEY_MESSAGE)
     payload = _payload(
         positioning_statement=loser,
         must_use_messages=[loser],
