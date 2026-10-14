@@ -446,9 +446,9 @@ async def _load_escalated_drafts(
 ) -> dict[uuid.UUID, tuple[uuid.UUID, tuple[str, ...]]]:
     """자동 검수가 보류한 DRAFT — 사람이 손대야 풀리는 예외와 그 보류 사유 전부.
 
-    지금 자료 집합의 snapshot으로 만든 초안만 예외로 센다(쓰기 경로의
-    `essence_auto_review._drafts_for_snapshot`와 같은 조건). 자료가 바뀌어 새 판이 자동
-    승인된 뒤에도 옛 초안은 DRAFT로 남으므로, 판을 보지 않으면 그 병원은 영영 "예외 있음"이다.
+    지금 자료 집합의 snapshot으로 만든 초안만 예외로 센다. Phase 4(D33)부터 자동 요약은 보류
+    초안을 만들지 않고 새 판을 적용할 때 남은 초안을 보관하므로, 이 판정은 배포 전에 남은 옛
+    보류 초안에만 걸린다.
 
     자동 재검수 예산이 남은 시스템 초안은 세지 않는다 — 그 병원의 콘텐츠 상태는 예외가
     아니라 "준비 중(essence_review)"이고, 인시던트도 RETRYING으로 남는다.
