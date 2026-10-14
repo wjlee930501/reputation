@@ -102,8 +102,15 @@ def test_hourly_gate_keeps_a_stale_context_record_and_the_sweep_takes_the_slot(
 
 
 def test_stale_context_record_from_real_attempts_is_also_left_for_the_sweep(monkeypatch):
-    """옛 문맥에서 예산을 다 쓴 실패도 문맥이 바뀌면 로더가 한 번 더 집는 종전 계약 그대로다."""
+    """옛 문맥에서 예산을 다 쓴 실패도 문맥이 바뀌면 로더가 한 번 더 집는 종전 계약 그대로다.
 
+    일일 갱신(2026-10-15)을 끈 설정의 계약이다. 켜면 창이 닫힌 환경 장애는 갱신 대기가 되고 갱신 단계가
+    다음 날 새 예산으로 다시 쓴다(`tests/test_noncritical_renewal.py`).
+    """
+
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "CONTENT_NONCRITICAL_DAILY_RENEWAL_SESSIONS", 0)
     philosophy, item = _empty_slot(monkeypatch)
     monkeypatch.setattr(tasks, "GENERATION_GATE_CATALOG_VERSION", _OLD_CATALOG)
     # 하루 4회 예산이 날마다 다시 열리므로 3일 창(9/13~9/15)을 다 써야 기한이 없어진다.
@@ -182,6 +189,11 @@ def test_a_current_context_provider_failure_still_waits_for_its_deadline(monkeyp
 def test_a_current_context_exhausted_failure_stays_excluded(monkeypatch):
     """같은 문맥에서 예산을 다 쓴 실패는 게이트가 종전대로 덮고 로더는 계속 뺀다(회귀)."""
 
+    # 일일 갱신(2026-10-15)을 끈 설정의 종전 계약이다 — 켜면 비-Critical 끝은 갱신 대기다
+    # (`tests/test_noncritical_renewal.py`).
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "CONTENT_NONCRITICAL_DAILY_RENEWAL_SESSIONS", 0)
     philosophy, item = _empty_slot(monkeypatch)
     for day in (13, 14, 15):
         for hour in (1, 4, 7, 12):

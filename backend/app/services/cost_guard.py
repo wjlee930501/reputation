@@ -76,6 +76,7 @@ _CATEGORY_LABELS = {
 # content lane(W1) 판정·증가 조각. 카테고리 판정 뒤, 카테고리 증가 전에 같은 Lua 안에서 돈다.
 # ARGV[$a]=lane 모드('none'|'schedule'|'limited'), $a+1 예약 반영 일 천장(-1 없음), $a+2 월 정지 천장
 # (-1 없음), $a+3 lane 일 상한, $a+4 lane 월 상한(0 없음), $a+5 병원 일 상한(0 없음), $a+6 병원 키 유무.
+# schedule 모드의 병원 키는 비-Critical 일일 갱신 세션의 병원별 상한(`COST_GUARD_CONTENT_RENEWAL_HOSPITAL_DAILY`)이다.
 # KEYS[$k]=lane 일, $k+1 lane 월, $k+2 병원 일 키. lane·병원 상한은 그 기간 첫 예약을 막지 않는다 — 한 번에
 # 상한보다 큰 예약(긴 근거 자료의 구간 수 × 3)이 영원히 막히지 않게 한다. 예약·월 정지선은 그대로 막는다.
 _LANE_CHECK = Template("""
@@ -104,6 +105,16 @@ if lane_mode == 'limited' then
   end
   if blocked ~= '' then return $blocked end
 end
+if lane_mode == 'schedule' and ARGV[$a + 6] == '1' then
+  local renewal_limit = tonumber(ARGV[$a + 5])
+  if renewal_limit > 0 then
+    hosp_daily = tonumber(redis.call('GET', KEYS[$k + 2]) or '0')
+    if hosp_daily > 0 and hosp_daily + count > renewal_limit then
+      local blocked = 'renewal_hospital_daily'
+      return $blocked
+    end
+  end
+end
 """)
 
 _LANE_INCREMENT = Template("""
@@ -112,7 +123,7 @@ if lane_mode ~= 'none' then
   local new_lane_monthly = redis.call('INCRBY', KEYS[$k + 1], count)
   if new_lane_daily == count then redis.call('EXPIRE', KEYS[$k], ARGV[$daily_ttl]) end
   if new_lane_monthly == count then redis.call('EXPIRE', KEYS[$k + 1], ARGV[$monthly_ttl]) end
-  if lane_mode == 'limited' and ARGV[$a + 6] == '1' then
+  if (lane_mode == 'limited' or lane_mode == 'schedule') and ARGV[$a + 6] == '1' then
     local new_hosp = redis.call('INCRBY', KEYS[$k + 2], count)
     if new_hosp == count then redis.call('EXPIRE', KEYS[$k + 2], ARGV[$daily_ttl]) end
   end
@@ -401,10 +412,15 @@ SCHEDULE_LANE_HORIZON_DAYS = 3
 
 @dataclass
 class CostLaneScope:
-    """이 실행 맥락의 content lane과 (알면) 병원. `cost_lane()`이 맥락 변수에 건다."""
+    """이 실행 맥락의 content lane과 (알면) 병원. `cost_lane()`이 맥락 변수에 건다.
+
+    `hospital_daily_cap`은 schedule lane 안의 병원별 하루 상한이다 — 비-Critical 일일 갱신 세션만 건다
+    (`noncritical_renewal`). 0이면 schedule lane은 종전처럼 병원 상한이 없다.
+    """
 
     lane: str
     hospital_id: str | None = None
+    hospital_daily_cap: int = 0
 
 
 _LANE_CONTEXT: ContextVar[CostLaneScope | None] = ContextVar("cost_guard_lane", default=None)
@@ -417,10 +433,20 @@ class cost_lane:  # noqa: N801 — 함수처럼 쓰는 맥락 관리자(`with co
     쓰지 않는다 — 여기서는 맥락만 되돌리고 예외는 그대로 흘려보낸다.
     """
 
-    def __init__(self, lane: str, *, hospital_id: object | None = None) -> None:
+    def __init__(
+        self,
+        lane: str,
+        *,
+        hospital_id: object | None = None,
+        hospital_daily_cap: int = 0,
+    ) -> None:
         if lane not in CONTENT_LANES:
             raise ValueError(f"unknown cost_guard lane: {lane}")
-        self._scope = CostLaneScope(lane, str(hospital_id) if hospital_id else None)
+        self._scope = CostLaneScope(
+            lane,
+            str(hospital_id) if hospital_id else None,
+            max(int(hospital_daily_cap), 0),
+        )
         self._token = None
 
     def __enter__(self) -> CostLaneScope:
@@ -474,6 +500,10 @@ def _hospital_daily_key(hospital_id: str, period: str) -> str:
     return f"cost_guard:content:hosp:{hospital_id}:{period}"
 
 
+def _renewal_hospital_daily_key(hospital_id: str, period: str) -> str:
+    return f"cost_guard:content:hosp_renewal:{hospital_id}:{period}"
+
+
 _NO_LANE_KEY = "cost_guard:content:lane:none"
 
 
@@ -520,6 +550,16 @@ def _lane_plan(
     hospital = str(hospital_id) if hospital_id else (scope.hospital_id if scope else None)
     lane_daily = _lane_daily_key(resolved, daily_period)
     lane_monthly = _lane_monthly_key(resolved, monthly_period)
+    renewal_cap = scope.hospital_daily_cap if scope is not None else 0
+    if resolved == LANE_SCHEDULE and renewal_cap > 0 and hospital:
+        renewal_key = _renewal_hospital_daily_key(hospital, daily_period)
+        return _LanePlan(
+            "schedule",
+            resolved,
+            (lane_daily, lane_monthly, renewal_key),
+            ("schedule", -1, -1, 0, 0, renewal_cap, "1"),
+            (lane_daily, lane_monthly, renewal_key),
+        )
     if resolved == LANE_SCHEDULE:
         return _LanePlan(
             "schedule",
@@ -548,7 +588,14 @@ def _lane_plan(
 
 
 _LANE_BLOCK_SCOPES = frozenset(
-    {"monthly_pause", "schedule_reserve", "lane_daily", "lane_monthly", "hospital_daily"}
+    {
+        "monthly_pause",
+        "schedule_reserve",
+        "lane_daily",
+        "lane_monthly",
+        "hospital_daily",
+        "renewal_hospital_daily",
+    }
 )
 
 
@@ -570,6 +617,11 @@ def _lane_block_reason(scope: str, plan: _LanePlan, *, daily_limit: int, monthly
         return f"{lane_label} 월간 상한({lane_monthly_limit}건)에 도달했습니다."
     if scope == "lane_daily":
         return f"{lane_label} 일일 상한({lane_daily_limit}건)에 도달했습니다."
+    if scope == "renewal_hospital_daily":
+        return (
+            "이 병원의 일일 재시도(늦은 예정 글) 호출이 오늘 상한"
+            f"({settings.COST_GUARD_CONTENT_RENEWAL_HOSPITAL_DAILY}건)에 도달했습니다."
+        )
     return (
         f"이 병원의 일정 외 작업이 오늘 상한"
         f"({settings.COST_GUARD_CONTENT_NON_SCHEDULE_HOSPITAL_DAILY}건)에 도달했습니다."

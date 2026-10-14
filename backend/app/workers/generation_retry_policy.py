@@ -773,7 +773,9 @@ def attempt_is_terminal(attempt: Mapping | None) -> bool:
     풀지 못하는 코드**로만 좁힌다:
 
     - 본문 표본 실패(`SAMPLE_BODY_CODES`)가 `OPERATOR_REQUIRED`까지 소진된 것 — 주제 교체는
-      별도 pass(`topic_swap_fallback`)가 소유한다.
+      별도 pass(`topic_swap_fallback`)가 소유한다. 이 판정은 기록 모양만 본다 — 비-Critical 소진을
+      일일 갱신(`noncritical_renewal.renewal_candidate`)이 소유하는 슬롯은 호출부
+      (`tasks._terminal_attempt_is_unchanged`)가 종착으로 읽지 않는다(2026-10-15).
     - 사람이 정하는 참고자료 보류(`OPERATOR_DECIDES_KEY`).
 
     `MISSING_APPROVED_ESSENCE`는 종착이 아니다 — Essence는 승인 없이 자동으로 만들어져 곧 적용되므로

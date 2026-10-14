@@ -31,6 +31,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.content import ContentItem
+from app.services.content_review_feedback import renewal_feedback  # noqa: F401 — 원장 쪽 re-export
 from app.workers.generation_retry_policy import (
     ENVIRONMENT_ATTEMPT_BUDGET,
     environment_attempt_period,
@@ -58,6 +59,19 @@ LIFETIME_REVIEWER_RESULT_LIMIT = TOPIC_LIMIT * REVIEWER_RESULT_LIMIT
 LIFETIME_TEXT_HTTP_ATTEMPT_LIMIT = TOPIC_LIMIT * TEXT_HTTP_ATTEMPT_LIMIT
 PRIOR_TOPIC_SPEND_KEY = "prior_topic_spend"
 _PRIOR_TOPIC_COUNTERS = ("writer_results", "reviewer_results", "text_http_attempts")
+# 비-Critical 일일 갱신 구간(2026-10-15 누락 방지 5 나머지). 교체·평생 상한을 다 쓴 비-Critical 슬롯은
+# KST 하루에 한 번 작은 새 예산 구간을 받는다(`noncritical_renewal`). 평생 계수는 지우지 않고, 구간이
+# 열린 획득 위치(`acquisition_count`) 뒤의 획득만 그 구간의 지출로 센다 — `prior_topic_spend`와 같은 경계다.
+# 구간이 있으면 주제당·평생 상한 대신 구간 상한만 본다(세션 수 × 정상 세션 한도 — 작가 3·검수 3).
+RENEWAL_KEY = "renewal"
+# 한 세션이 살 수 있는 작가 결과 수 — `tasks.MAX_GENERATIONS_PER_SESSION`과 같은 값(테스트로 묶는다).
+RENEWAL_WRITER_RESULTS_PER_SESSION = 3
+# 검수 결과도 정상 세션과 같다 — 세션의 검수는 작가 후보마다 한 번(문체 보완·HARD 삭제 재작성의 재검수
+# 포함)이라 작가 수와 같다. 상한 때문에 세션 도중 통과 본문·Critical 판정을 버리지 않는다.
+RENEWAL_REVIEWER_RESULTS_PER_SESSION = RENEWAL_WRITER_RESULTS_PER_SESSION
+# 일일 갱신이 바꾼 주제(교체 예산 밖)를 담는 원장 목록. `topics`(TOPIC_LIMIT, Critical 교체 예산)와 따로 센다.
+RENEWAL_TOPICS_KEY = "renewal_topics"
+RENEWAL_FEEDBACK_LIMIT = 5
 
 AcquisitionKind = Literal["WRITER", "REVIEWER", "IMAGE"]
 AcquisitionOutcome = Literal["RESULT", "ERROR", "UNKNOWN"]
@@ -196,6 +210,38 @@ def _valid_reset_record(value: Any) -> bool:
     )
 
 
+def _valid_renewal_segment(segment: Any, raw: dict[str, Any], acquisitions: int) -> bool:
+    """일일 갱신 구간의 모양. 구간이 새 예산을 만드는 유일한 표시라 모양이 틀리면 지출 불명이다."""
+
+    if not isinstance(segment, dict):
+        return False
+    period = segment.get("period")
+    count = _strict_nonnegative_int(segment.get("count"))
+    sessions = _strict_nonnegative_int(segment.get("sessions"))
+    boundary = _strict_nonnegative_int(segment.get("acquisition_count"))
+    topic = segment.get("topic_id")
+    feedback = segment.get("feedback", [])
+    return (
+        isinstance(period, str)
+        and bool(period)
+        and count is not None
+        and count >= 1
+        and sessions is not None
+        and sessions >= 1
+        and boundary is not None
+        and boundary <= acquisitions
+        and (topic is None or (isinstance(topic, str) and bool(topic)))
+        and isinstance(feedback, list)
+        and len(feedback) <= RENEWAL_FEEDBACK_LIMIT
+        and all(isinstance(entry, str) for entry in feedback)
+        and all(
+            _strict_nonnegative_int(segment.get(key)) is not None
+            and segment[key] <= raw[key]
+            for key in _PRIOR_TOPIC_COUNTERS
+        )
+    )
+
+
 def _validate_versioned_budget(raw: dict[str, Any]) -> dict[str, Any]:
     """Reject partial or malformed v2 state before it can mint fresh allowance."""
 
@@ -319,6 +365,17 @@ def _validate_versioned_budget(raw: dict[str, Any]) -> dict[str, Any]:
             )
         ):
             raise GenerationBudgetUnknown("LEGACY_SPEND_UNKNOWN")
+
+    renewal = raw.get(RENEWAL_KEY)
+    if renewal is not None and not _valid_renewal_segment(renewal, raw, len(acquisitions)):
+        raise GenerationBudgetUnknown("LEGACY_SPEND_UNKNOWN")
+    renewal_topics = raw.get(RENEWAL_TOPICS_KEY)
+    if renewal_topics is not None and (
+        not isinstance(renewal_topics, list)
+        or any(not isinstance(topic, str) or not topic for topic in renewal_topics)
+        or len(set(renewal_topics)) != len(renewal_topics)
+    ):
+        raise GenerationBudgetUnknown("LEGACY_SPEND_UNKNOWN")
 
     reset_record = raw.get("reset_record")
     if reset_record is not None and not isinstance(reset_record, dict):
@@ -448,6 +505,12 @@ def _current_topic_usage(budget: dict[str, Any]) -> _TopicUsage:
             text_http_attempts=budget["text_http_attempts"],
             text_http_reserved=budget["text_http_reserved"],
         )
+    return _usage_since(budget, boundary)
+
+
+def _usage_since(budget: dict[str, Any], boundary: int) -> _TopicUsage:
+    """경계(획득 위치) 뒤의 본문 획득만 센 지출 — 주제 교체·일일 갱신 구간이 같은 계산을 쓴다."""
+
     writer = reviewer = active_writers = active_reviewers = attempts = reserved = 0
     for entry in _entries(budget)[boundary:]:
         kind = entry.get("kind")
@@ -475,6 +538,113 @@ def _topic_writers_full(usage: _TopicUsage) -> bool:
     return usage.writer_results + usage.active_writers >= WRITER_RESULT_LIMIT
 
 
+def renewal_limits(sessions: int) -> tuple[int, int, int]:
+    """일일 갱신 구간 하나의 (작가 결과, 검수 결과, 본문 전송) 상한."""
+
+    sessions = max(int(sessions), 1)
+    writers = sessions * RENEWAL_WRITER_RESULTS_PER_SESSION
+    reviewers = sessions * RENEWAL_REVIEWER_RESULTS_PER_SESSION
+    return writers, reviewers, (writers + reviewers) * SEMANTIC_TRANSPORT_LIMIT
+
+
+def _renewal_segment(budget: dict[str, Any]) -> dict[str, Any] | None:
+    segment = budget.get(RENEWAL_KEY)
+    return segment if isinstance(segment, dict) else None
+
+
+def renewal_segment(attempt: dict[str, Any]) -> dict[str, Any] | None:
+    """예산의 일일 갱신 구간 사본. 구간이 없거나 예산을 믿을 수 없으면 ``None``."""
+
+    try:
+        segment = _renewal_segment(_budget_dict(attempt))
+    except GenerationBudgetUnknown:
+        return None
+    return copy.deepcopy(segment) if segment is not None else None
+
+
+def _renewal_writers_full(budget: dict[str, Any], segment: dict[str, Any]) -> bool:
+    usage = _usage_since(budget, int(segment["acquisition_count"]))
+    writers, _reviewers, _text = renewal_limits(int(segment["sessions"]))
+    return usage.writer_results + usage.active_writers >= writers
+
+
+def open_renewal_segment(
+    attempt: dict[str, Any],
+    *,
+    period: str,
+    sessions: int,
+    topic_id: str | None,
+    feedback: list[str] | None = None,
+) -> dict[str, Any]:
+    """KST 하루의 새 일일 갱신 구간을 연다. 같은 날 구간이 이미 있으면 그대로 돌려준다(멱등).
+
+    평생 계수는 그대로 두고 — 지출 사실은 지우지 않는다 — 여는 시점의 획득 위치와 계수를 구간에
+    남긴다. `reserve_acquisition`은 그 위치 뒤의 획득만 이 구간의 지출로 센다.
+    """
+
+    budget = _budget_dict(attempt)
+    previous = _renewal_segment(budget)
+    if previous is not None and str(previous.get("period")) >= period:
+        # 같은 날이거나(멱등) 자정을 넘긴 늦은 pass가 어제 날짜로 여는 경우다 — 날짜는 앞으로만 간다.
+        # ISO 날짜 문자열은 사전순이 곧 날짜순이다.
+        return {**attempt, GENERATION_BUDGET_KEY: budget}
+    snapshot = _snapshot_from_budget(budget)
+    budget[RENEWAL_KEY] = {
+        "period": period,
+        "count": int(previous["count"]) + 1 if previous is not None else 1,
+        "sessions": max(int(sessions), 1),
+        "acquisition_count": len(_entries(budget)),
+        "writer_results": snapshot.writer_results,
+        "reviewer_results": snapshot.reviewer_results,
+        "text_http_attempts": snapshot.text_http_attempts,
+        "topic_id": topic_id or None,
+        "feedback": [str(entry) for entry in (feedback or []) if str(entry).strip()][
+            -RENEWAL_FEEDBACK_LIMIT:
+        ],
+    }
+    _validate_versioned_budget(budget)
+    return {**attempt, GENERATION_BUDGET_KEY: budget}
+
+
+def renewal_segment_spent(attempt: dict[str, Any]) -> bool:
+    """열린 일일 갱신 구간이 정상 세션 하나를 더 살 수 없는가(작가·검수·전송 중 하나라도 모자람).
+
+    구간이 없거나 예산을 믿을 수 없으면 거짓이다 — 그 판정은 호출부의 다른 규칙이 맡는다.
+    """
+
+    try:
+        budget = _budget_dict(attempt)
+    except GenerationBudgetUnknown:
+        return False
+    segment = _renewal_segment(budget)
+    if segment is None:
+        return False
+    usage = _usage_since(budget, int(segment["acquisition_count"]))
+    writers, reviewers, text_limit = renewal_limits(int(segment["sessions"]))
+    session_writers, session_reviewers, session_text = renewal_limits(1)
+    # 정상 세션 하나를 통째로 살 수 없으면 오늘은 끝이다 — 반쪽 세션은 도중에 상한에 걸려 통과 본문을
+    # 버릴 수 있고, 전송만 바닥난 구간을 다시 집으면 아무것도 사지 못한 실행만 반복된다.
+    return (
+        writers - (usage.writer_results + usage.active_writers) < session_writers
+        or reviewers - (usage.reviewer_results + usage.active_reviewers) < session_reviewers
+        or text_limit - (usage.text_http_attempts + usage.text_http_reserved) < session_text
+    )
+
+
+def writer_purchase_blocked(attempt: dict[str, Any]) -> bool:
+    """지금 이 예산으로 작가 결과 하나를 예약할 수 없는가(주제당·평생·구간·전송 상한 중 하나)."""
+
+    try:
+        reserve_acquisition(
+            copy.deepcopy(attempt), acquisition_id="probe:writer-purchase", kind="WRITER"
+        )
+    except GenerationBudgetUnknown:
+        return False
+    except GenerationBudgetExceeded:
+        return True
+    return False
+
+
 def current_topic_writers_exhausted(attempt: dict[str, Any]) -> bool:
     """현재 주제가 작가 결과를 더 살 수 없는가 — `reserve_acquisition`의 주제당 작가 상한.
 
@@ -488,6 +658,10 @@ def current_topic_writers_exhausted(attempt: dict[str, Any]) -> bool:
         budget = _budget_dict(attempt)
     except GenerationBudgetUnknown:
         return False
+    segment = _renewal_segment(budget)
+    if segment is not None:
+        # 일일 갱신 구간에서는 그 구간의 작가 상한이 "더 살 수 없다"의 기준이다.
+        return _renewal_writers_full(budget, segment)
     return _topic_writers_full(_current_topic_usage(budget))
 
 
@@ -509,6 +683,9 @@ def reserve_acquisition(
     if prior is not None:
         return {**attempt, GENERATION_BUDGET_KEY: budget}
     snapshot = _snapshot_from_budget(budget)
+    segment = _renewal_segment(budget)
+    if segment is not None and kind != "IMAGE":
+        return _reserve_in_renewal(attempt, budget, entries, segment, acquisition_id, kind)
     usage = _current_topic_usage(budget)
     # 평생 상한(주제 수 × 주제당 상한)은 추정한 주제 경계가 틀려도 지출을 막는 마지막 방어선이다.
     if kind == "WRITER" and (
@@ -551,6 +728,53 @@ def reserve_acquisition(
     )
     budget["acquisitions"] = entries
     return {**attempt, GENERATION_BUDGET_KEY: budget}
+
+
+def _append_reservation(
+    attempt: dict[str, Any],
+    budget: dict[str, Any],
+    entries: list[Any],
+    acquisition_id: str,
+    kind: AcquisitionKind,
+) -> dict[str, Any]:
+    attempt_key = "image_http_reserved" if kind == "IMAGE" else "text_http_reserved"
+    reserved = _nonnegative_int(budget.get(attempt_key)) or 0
+    budget[attempt_key] = reserved + SEMANTIC_TRANSPORT_LIMIT
+    entries.append(
+        {
+            "id": acquisition_id,
+            "kind": kind,
+            "status": "RESERVED",
+            "transport_reserved": SEMANTIC_TRANSPORT_LIMIT,
+            "reserved_at": datetime.now(UTC).isoformat(),
+        }
+    )
+    budget["acquisitions"] = entries
+    return {**attempt, GENERATION_BUDGET_KEY: budget}
+
+
+def _reserve_in_renewal(
+    attempt: dict[str, Any],
+    budget: dict[str, Any],
+    entries: list[Any],
+    segment: dict[str, Any],
+    acquisition_id: str,
+    kind: AcquisitionKind,
+) -> dict[str, Any]:
+    """일일 갱신 구간 안의 본문 예약. 구간 뒤의 획득만 세고 주제당·평생 상한은 보지 않는다.
+
+    구간은 KST 하루에 한 번만 열리므로(`noncritical_renewal`) 하루 지출의 끝은 이 상한이다.
+    """
+
+    usage = _usage_since(budget, int(segment["acquisition_count"]))
+    writers, reviewers, text_limit = renewal_limits(int(segment["sessions"]))
+    if kind == "WRITER" and usage.writer_results + usage.active_writers >= writers:
+        raise GenerationBudgetExceeded("WRITER_RESULTS_EXHAUSTED")
+    if kind == "REVIEWER" and usage.reviewer_results + usage.active_reviewers >= reviewers:
+        raise GenerationBudgetExceeded("REVIEWER_RESULTS_EXHAUSTED")
+    if usage.text_http_attempts + usage.text_http_reserved + SEMANTIC_TRANSPORT_LIMIT > text_limit:
+        raise GenerationBudgetExceeded("TEXT_HTTP_ATTEMPTS_EXHAUSTED")
+    return _append_reservation(attempt, budget, entries, acquisition_id, kind)
 
 
 def acquisition_completed(
@@ -640,9 +864,15 @@ def transport_attempt_started(
 
 
 def record_topic_swap(
-    attempt: dict[str, Any], *, from_topic_id: str | None, to_topic_id: str
+    attempt: dict[str, Any],
+    *,
+    from_topic_id: str | None,
+    to_topic_id: str,
+    renewal: bool = False,
 ) -> dict[str, Any]:
     """Record one lifetime topic swap (at most TOPIC_SWAP_LIMIT); the new topic gets a fresh budget.
+
+    ``renewal=True``는 일일 갱신의 주제 변경이다 — 교체 예산 밖의 `renewal_topics`에만 남긴다.
 
     평생 계수(writer_results 등)는 그대로 두고 — 지출 사실은 지우지 않는다 — 교체 시점의
     획득 위치와 계수를 `prior_topic_spend`로 남긴다. `reserve_acquisition`은 그 위치 뒤의
@@ -651,16 +881,29 @@ def record_topic_swap(
 
     budget = _budget_dict(attempt)
     snapshot = _snapshot_from_budget(budget)
+    renewal_topics = [str(topic) for topic in (budget.get(RENEWAL_TOPICS_KEY) or [])]
+    if renewal:
+        # 일일 갱신의 주제 변경 — 교체 예산(`topic_swaps`·`topics`, Critical W6 계단)을 쓰지 않고 자기 목록에만
+        # 남긴다. 지출 경계는 곧이어 여는 갱신 구간(`open_renewal_segment`)이 정한다.
+        if to_topic_id and to_topic_id not in renewal_topics and to_topic_id not in snapshot.topics:
+            renewal_topics.append(to_topic_id)
+        budget[RENEWAL_TOPICS_KEY] = renewal_topics
+        _validate_versioned_budget(budget)
+        return {**attempt, GENERATION_BUDGET_KEY: budget}
     if snapshot.topic_swaps >= TOPIC_SWAP_LIMIT:
         raise GenerationBudgetExceeded("TOPIC_SWAP_EXHAUSTED")
     topics = list(snapshot.topics)
     for topic in (from_topic_id, to_topic_id):
-        if topic and topic not in topics:
+        # 갱신이 고른 주제에서 떠나는 교체는 그 주제를 다시 세지 않는다(갱신 목록에 이미 있다).
+        if topic and topic not in topics and not (topic == from_topic_id and topic in renewal_topics):
             topics.append(topic)
     if len(topics) > TOPIC_LIMIT:
         raise GenerationBudgetExceeded("TOPIC_LIMIT_EXHAUSTED")
     budget["topics"] = topics
     budget["topic_swaps"] = snapshot.topic_swaps + 1
+    # 정규 교체(Critical 교정 소진의 W6 계단 등)는 일일 갱신 구간을 닫는다 — 새 주제는 주제당·평생
+    # 상한으로 산다. 살 수 없으면 비-Critical 사다리가 다시 갱신으로 넘긴다(`noncritical_renewal`).
+    budget.pop(RENEWAL_KEY, None)
     budget[PRIOR_TOPIC_SPEND_KEY] = {
         "acquisition_count": len(_entries(budget)),
         "writer_results": snapshot.writer_results,

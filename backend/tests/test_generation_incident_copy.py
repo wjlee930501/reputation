@@ -42,6 +42,7 @@ from app.workers.generation_incident_control import (
     CONTENT_NOT_GENERATED_UNSCHEDULED_ACTION,
     CONTENT_NOT_GENERATED_UNSCHEDULED_CLOSED_ACTION,
     CONTENT_NOT_GENERATED_UNSCHEDULED_RELEASABLE_ACTION,
+    DAILY_RENEWAL_OPERATOR_ACTION,
     ENVIRONMENT_EXHAUSTED_OPERATOR_ACTION,
     PROVIDER_RETRY_NOW_ACTIONS,
     REFERENCES_OPERATOR_DECIDES_ACTION,
@@ -290,18 +291,19 @@ def test_the_exhausted_environment_action_tells_the_operator_what_to_do():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("code", ["PROVIDER_TIMEOUT", "PROVIDER_UNAVAILABLE"])
-async def test_an_exhausted_provider_failure_stops_saying_wait(monkeypatch, code):
+async def test_an_exhausted_provider_failure_is_owned_by_the_daily_renewal(monkeypatch, code):
     item = _slot()
     attempt = _exhaust_provider(monkeypatch, item, code)
     assert attempt["provider_attempt_count"] == generation_retry_policy.ENVIRONMENT_ATTEMPT_BUDGET
-    assert attempt["next_retry_at"] is None
-    assert generation_retry_policy.recovery_is_abandoned(attempt)
+    # 3일 창이 닫힌 환경 장애는 비-Critical — 사람의 일이 아니라 일일 갱신이 소유한다(2026-10-15).
+    assert attempt["daily_renewal"] is True
+    assert not generation_retry_policy.recovery_is_abandoned(attempt)
 
     request, incident = await _open(monkeypatch, item, code)
 
-    assert request.next_action == ENVIRONMENT_EXHAUSTED_OPERATOR_ACTION
-    assert incident.state == IncidentState.OPEN.value
-    assert requires_operator_action(incident.state, incident.sla_due_at, _kst(9, 16, 7, 1))
+    assert request.next_action == DAILY_RENEWAL_OPERATOR_ACTION
+    assert incident.state == IncidentState.RETRYING.value
+    assert incident.sla_due_at == datetime.fromisoformat(attempt["next_retry_at"])
 
 
 @pytest.mark.asyncio
@@ -347,7 +349,9 @@ async def test_an_exhausted_provider_failure_on_a_written_body_keeps_its_copy(mo
 
     request, _incident_row = await _open(monkeypatch, item, "PROVIDER_TIMEOUT")
 
-    assert request.next_action == generation_operator_action("PROVIDER_TIMEOUT")
+    # 창이 닫힌 환경 장애는 일일 갱신이 소유한다(2026-10-15) — '원고를 만들지 않습니다'가 아니다.
+    assert request.next_action == DAILY_RENEWAL_OPERATOR_ACTION
+    assert request.next_action != ENVIRONMENT_EXHAUSTED_OPERATOR_ACTION
 
 
 # ── 3c 재사용된 RETRYING 인시던트의 기한 ──────────────────────────────────────

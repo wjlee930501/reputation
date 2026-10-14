@@ -555,14 +555,17 @@ class Settings(BaseSettings):
     # 0이면 그 단계를 끈다.
     CONTENT_AUTO_CORRECTION_MAX_PASSES: int = 2
     CONTENT_AUTO_CORRECTION_MAX_REREVIEWS: int = 2
-    # 같은 슬롯의 자동 주제 교체 상한. Critical 원인(교정 상한을 다 쓴 사실·안전 차단)은 이 값까지,
-    # 그 밖의 원인(표본 소진·저장 본문 수리 소진 등)은 min(1, 이 값)까지다(2026-10-14 O5, W6).
+    # 같은 슬롯의 자동 주제 교체 상한 — 원인과 무관하게 이 값까지다(2026-10-14 누락 방지 5).
     # 새 주제마다 작가·검수·본문 전송 예산을 새로 받고 이미지 전송 상한은 슬롯 단위 그대로다.
     CONTENT_AUTO_TOPIC_SWAP_MAX: int = 2
     # 진료비·병원 선택 글의 참고자료 보류(사람이 정함, `operator_decides`)도 주제 교체 계단에
     # 넣는가. 켜면 수기 목록 문서가 있는 의료 주제의 다른 측정 질문으로 한 번 바꿔 쓴다.
     # 기본은 꺼짐 — 계약(CLAUDE.md "곧바로 OPERATOR_REQUIRED(사람이 정함)") 변경이라 대표 결정 뒤에 켠다.
     CONTENT_TOPIC_SWAP_OPERATOR_DECIDES: bool = False
+    # 비-Critical 일일 갱신(2026-10-15 누락 방지 5 나머지): 주제 교체·평생 작가 상한을 다 쓴 비-Critical
+    # 슬롯은 OPERATOR_REQUIRED로 멈추지 않고 KST 하루에 이 수만큼의 작가 세션(세션당 정상 세션 한도 — 작가 3·검수 3)을 새로
+    # 받는다(`workers/noncritical_renewal.py`). 0이면 끈다(종전처럼 사람의 일).
+    CONTENT_NONCRITICAL_DAILY_RENEWAL_SESSIONS: int = 1
     # 모델이 HARD로 단정한 차단인데 교정도 재작성도 맡지 못한 실행(사람이 편집한 DRAFT 등)에
     # 종착 표시(`hard_finding_idle`)를 남겨, 입력·사람 편집·승인 병원 사실이 바뀔 때까지 스윕이
     # 다시 집지 않게 하는가(2026-10-13 E1). 기본은 꺼짐 — 배포 전 측정(계획 3-5 Step 0)이
@@ -656,6 +659,8 @@ class Settings(BaseSettings):
     COST_GUARD_CONTENT_ADHOC_MONTHLY: int = 400
     # 병원 하나가 일정 외 lane 전체에서 하루에 쓸 수 있는 호출(온보딩 병원 1곳이 일 예산의 32%를 쓴 10/13).
     COST_GUARD_CONTENT_NON_SCHEDULE_HOSPITAL_DAILY: int = 30
+    # 일일 갱신 세션(schedule lane)의 병원별 하루 content 호출 상한. 0은 상한 없음.
+    COST_GUARD_CONTENT_RENEWAL_HOSPITAL_DAILY: int = 30
 
     # Slack
     SLACK_WEBHOOK_URL: str = ""

@@ -83,10 +83,11 @@ def _target(name="대장내시경 수면 여부"):
 
 
 class _FakeDB:
-    """후보 select → swapped select 순서로 답하고 UPDATE는 rowcount만 흉내 낸다."""
+    """후보 select → 일일 갱신 후보 select(빈 목록) → swapped select 순서로 답하고 UPDATE는
+    rowcount만 흉내 낸다. 일일 갱신 단계는 `tests/integration/test_noncritical_renewal_postgres.py`가 본다."""
 
     def __init__(self, candidates, *, swapped=(), incident=None, rowcount=1):
-        self._content_selects = [list(candidates), list(swapped)]
+        self._content_selects = [list(candidates), [], list(swapped)]
         self._incident = incident
         self.rowcount = rowcount
         self.updates: list[Update] = []
