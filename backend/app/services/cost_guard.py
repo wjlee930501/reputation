@@ -17,9 +17,14 @@
 KST 기준이므로 일/월 경계도 KST로 맞춰야 집계가 직관적이다.
 """
 import logging
+import math
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
+from string import Template
 from urllib.parse import urljoin
 from zoneinfo import ZoneInfo
 
@@ -70,7 +75,53 @@ _CATEGORY_LABELS = {
     "leadgen": "무료 진단",
 }
 
-_RESERVE_BUDGET_SCRIPT = """
+# content lane(W1) 판정·증가 조각. 카테고리 판정 뒤, 카테고리 증가 전에 같은 Lua 안에서 돈다.
+# ARGV[$a]=lane 모드('none'|'schedule'|'limited'), $a+1 예약 반영 일 천장(-1 없음), $a+2 월 정지 천장
+# (-1 없음), $a+3 lane 일 상한, $a+4 lane 월 상한(0 없음), $a+5 병원 일 상한(0 없음), $a+6 병원 키 유무.
+# KEYS[$k]=lane 일, $k+1 lane 월, $k+2 병원 일 키.
+_LANE_CHECK = Template("""
+local lane_mode = ARGV[$a]
+local lane_daily = 0
+local lane_monthly = 0
+local hosp_daily = 0
+if lane_mode ~= 'none' then
+  lane_daily = tonumber(redis.call('GET', KEYS[$k]) or '0')
+  lane_monthly = tonumber(redis.call('GET', KEYS[$k + 1]) or '0')
+end
+if lane_mode == 'limited' then
+  local reserve_ceiling = tonumber(ARGV[$a + 1])
+  local pause_ceiling = tonumber(ARGV[$a + 2])
+  local lane_daily_limit = tonumber(ARGV[$a + 3])
+  local lane_monthly_limit = tonumber(ARGV[$a + 4])
+  local hosp_limit = tonumber(ARGV[$a + 5])
+  local blocked = ''
+  if pause_ceiling >= 0 and monthly + count > pause_ceiling then blocked = 'monthly_pause'
+  elseif reserve_ceiling >= 0 and daily + count > reserve_ceiling then blocked = 'schedule_reserve'
+  elseif lane_monthly_limit > 0 and lane_monthly + count > lane_monthly_limit then blocked = 'lane_monthly'
+  elseif lane_daily_limit > 0 and lane_daily + count > lane_daily_limit then blocked = 'lane_daily'
+  elseif ARGV[$a + 6] == '1' and hosp_limit > 0 then
+    hosp_daily = tonumber(redis.call('GET', KEYS[$k + 2]) or '0')
+    if hosp_daily + count > hosp_limit then blocked = 'hospital_daily' end
+  end
+  if blocked ~= '' then return $blocked end
+end
+""")
+
+_LANE_INCREMENT = Template("""
+if lane_mode ~= 'none' then
+  local new_lane_daily = redis.call('INCRBY', KEYS[$k], count)
+  local new_lane_monthly = redis.call('INCRBY', KEYS[$k + 1], count)
+  if new_lane_daily == count then redis.call('EXPIRE', KEYS[$k], ARGV[$daily_ttl]) end
+  if new_lane_monthly == count then redis.call('EXPIRE', KEYS[$k + 1], ARGV[$monthly_ttl]) end
+  if lane_mode == 'limited' and ARGV[$a + 6] == '1' then
+    local new_hosp = redis.call('INCRBY', KEYS[$k + 2], count)
+    if new_hosp == count then redis.call('EXPIRE', KEYS[$k + 2], ARGV[$daily_ttl]) end
+  end
+end
+""")
+
+_RESERVE_BUDGET_SCRIPT = (
+    """
 local daily = tonumber(redis.call('GET', KEYS[1]) or '0')
 local monthly = tonumber(redis.call('GET', KEYS[2]) or '0')
 local count = tonumber(ARGV[1])
@@ -83,13 +134,19 @@ end
 if daily_limit > 0 and daily + count > daily_limit then
   return {0, 'daily', daily, monthly}
 end
-
+"""
+    + _LANE_CHECK.substitute(a=6, k=3, blocked="{0, blocked, daily, monthly}")
+    + """
 local new_daily = redis.call('INCRBY', KEYS[1], count)
 local new_monthly = redis.call('INCRBY', KEYS[2], count)
 if daily == 0 then redis.call('EXPIRE', KEYS[1], ARGV[4]) end
 if monthly == 0 then redis.call('EXPIRE', KEYS[2], ARGV[5]) end
+"""
+    + _LANE_INCREMENT.substitute(a=6, k=3, daily_ttl=4, monthly_ttl=5)
+    + """
 return {1, '', new_daily, new_monthly}
 """
+)
 
 _RELEASE_BUDGET_SCRIPT = """
 local count = tonumber(ARGV[1])
@@ -103,7 +160,8 @@ return 1
 
 # 예약 ID가 있으면 같은 논리 작업의 재전달/API-worker 중첩 진입도 한 번만 예약한다.
 # receipt에 원래 KST 일/월 key를 저장하므로 자정·월말 뒤 정산도 새 기간을 건드리지 않는다.
-_RESERVE_WITH_RECEIPT_SCRIPT = """
+_RESERVE_WITH_RECEIPT_SCRIPT = (
+    """
 if redis.call('EXISTS', KEYS[3]) == 1 then
   local existing_category = redis.call('HGET', KEYS[3], 'category') or ''
   local existing_count = tonumber(redis.call('HGET', KEYS[3], 'reserved_units') or '-1')
@@ -134,11 +192,16 @@ end
 if daily_limit > 0 and daily + count > daily_limit then
   return {0, 'daily', daily, monthly, ARGV[7], ARGV[8]}
 end
-
+"""
+    + _LANE_CHECK.substitute(a=10, k=4, blocked="{0, blocked, daily, monthly, ARGV[7], ARGV[8]}")
+    + """
 local new_daily = redis.call('INCRBY', KEYS[1], count)
 local new_monthly = redis.call('INCRBY', KEYS[2], count)
 if daily == 0 then redis.call('EXPIRE', KEYS[1], ARGV[4]) end
 if monthly == 0 then redis.call('EXPIRE', KEYS[2], ARGV[5]) end
+"""
+    + _LANE_INCREMENT.substitute(a=10, k=4, daily_ttl=4, monthly_ttl=5)
+    + """
 redis.call('HSET', KEYS[3],
   'category', ARGV[6],
   'daily_period', ARGV[7],
@@ -147,10 +210,14 @@ redis.call('HSET', KEYS[3],
   'monthly_key', KEYS[2],
   'reserved_units', count,
   'consumed_units', '',
-  'released_units', '')
+  'released_units', '',
+  'lane_daily_key', ARGV[17],
+  'lane_monthly_key', ARGV[18],
+  'hosp_key', ARGV[19])
 redis.call('EXPIRE', KEYS[3], ARGV[9])
 return {1, '', new_daily, new_monthly, ARGV[7], ARGV[8]}
 """
+)
 
 _SETTLE_RESERVATION_SCRIPT = """
 if redis.call('EXISTS', KEYS[1]) == 0 then return {0, 'missing'} end
@@ -172,7 +239,12 @@ end
 local released = reserved - consumed
 local daily_key = redis.call('HGET', KEYS[1], 'daily_key')
 local monthly_key = redis.call('HGET', KEYS[1], 'monthly_key')
-for _, key in ipairs({daily_key, monthly_key}) do
+local settle_keys = {daily_key, monthly_key}
+for _, field in ipairs({'lane_daily_key', 'lane_monthly_key', 'hosp_key'}) do
+  local lane_key = redis.call('HGET', KEYS[1], field)
+  if lane_key and lane_key ~= '' then table.insert(settle_keys, lane_key) end
+end
+for _, key in ipairs(settle_keys) do
   local current = tonumber(redis.call('GET', key) or '0')
   local decrement = math.min(current, released)
   if decrement > 0 then redis.call('DECRBY', key, decrement) end
@@ -298,6 +370,201 @@ def _daily_key(category: str, period: str) -> str:
 
 def _monthly_key(category: str, period: str) -> str:
     return f"cost_guard:{category}:monthly:{period}"
+
+
+# ── content lane(Full-Automatic W1) ─────────────────────────────────────────────────────────────
+# 카테고리를 늘리지 않고 content 예산 안에 하위 예산(lane)을 둔다. `schedule`은 예정일 D+3 이내 슬롯의
+# 생성 경로(23:00 창·복구 스윕)이고 lane 상한이 없으며 일 상한 중 예약분을 혼자 쓴다. 그 밖의 lane은
+# `일 상한 − 예약`·월 정지선(월 상한 × 비율)·자기 lane 상한·병원별 일 상한 안에서만 예약한다.
+# lane을 모르는 호출은 `background`다(자기 상한은 없고 예약·월 정지·병원 상한은 받는다).
+LANE_SCHEDULE = "schedule"
+LANE_POST_PUBLISH = "post_publish"
+LANE_EVIDENCE = "evidence"
+LANE_ADHOC = "adhoc"
+LANE_BACKGROUND = "background"
+CONTENT_LANES: tuple[str, ...] = (
+    LANE_SCHEDULE,
+    LANE_POST_PUBLISH,
+    LANE_EVIDENCE,
+    LANE_ADHOC,
+    LANE_BACKGROUND,
+)
+_LANE_LABELS = {
+    LANE_SCHEDULE: "예정 글 생성",
+    LANE_POST_PUBLISH: "사후 검수·공개 교정",
+    LANE_EVIDENCE: "근거 자료 추출·자동 입력",
+    LANE_ADHOC: "운영자 재생성",
+    LANE_BACKGROUND: "그 밖의 일정 외 작업",
+}
+# 예정일이 오늘 + 이 일수 이내(지난 슬롯 포함)인 슬롯의 생성은 `schedule` lane이다.
+SCHEDULE_LANE_HORIZON_DAYS = 3
+
+
+@dataclass
+class CostLaneScope:
+    """이 실행 맥락의 content lane과 (알면) 병원. `cost_lane()`이 맥락 변수에 건다."""
+
+    lane: str
+    hospital_id: str | None = None
+
+
+_LANE_CONTEXT: ContextVar[CostLaneScope | None] = ContextVar("cost_guard_lane", default=None)
+
+
+@contextmanager
+def cost_lane(lane: str, *, hospital_id: object | None = None) -> Iterator[CostLaneScope]:
+    """이 블록 안의 content 예약을 `lane`(과 병원)으로 센다. 동기·비동기 호출 모두 같은 맥락을 본다."""
+
+    if lane not in CONTENT_LANES:
+        raise ValueError(f"unknown cost_guard lane: {lane}")
+    scope = CostLaneScope(lane, str(hospital_id) if hospital_id else None)
+    token = _LANE_CONTEXT.set(scope)
+    try:
+        yield scope
+    finally:
+        _LANE_CONTEXT.reset(token)
+
+
+def generation_cost_lane(scheduled_date: date | None, *, today: date | None = None) -> str:
+    """생성 경로의 lane — 예정일이 오늘 + D+3 이내(지난 슬롯 포함)면 `schedule`, 아니면 `background`."""
+
+    if scheduled_date is None:
+        return LANE_BACKGROUND
+    today = today or _now().date()
+    horizon = today + timedelta(days=SCHEDULE_LANE_HORIZON_DAYS)
+    return LANE_SCHEDULE if scheduled_date <= horizon else LANE_BACKGROUND
+
+
+def _lane_limits(lane: str) -> tuple[int, int]:
+    table = {
+        LANE_POST_PUBLISH: (
+            settings.COST_GUARD_CONTENT_POST_PUBLISH_DAILY,
+            settings.COST_GUARD_CONTENT_POST_PUBLISH_MONTHLY,
+        ),
+        LANE_EVIDENCE: (
+            settings.COST_GUARD_CONTENT_EVIDENCE_DAILY,
+            settings.COST_GUARD_CONTENT_EVIDENCE_MONTHLY,
+        ),
+        LANE_ADHOC: (
+            settings.COST_GUARD_CONTENT_ADHOC_DAILY,
+            settings.COST_GUARD_CONTENT_ADHOC_MONTHLY,
+        ),
+    }
+    return table.get(lane, (0, 0))
+
+
+def _lane_daily_key(lane: str, period: str) -> str:
+    return f"cost_guard:content:lane:{lane}:daily:{period}"
+
+
+def _lane_monthly_key(lane: str, period: str) -> str:
+    return f"cost_guard:content:lane:{lane}:monthly:{period}"
+
+
+def _hospital_daily_key(hospital_id: str, period: str) -> str:
+    return f"cost_guard:content:hosp:{hospital_id}:{period}"
+
+
+_NO_LANE_KEY = "cost_guard:content:lane:none"
+
+
+@dataclass(frozen=True)
+class _LanePlan:
+    """한 예약의 lane 인자(Lua KEYS 3개 + ARGV 7개)와 영수증에 남길 키."""
+
+    mode: str
+    lane: str | None
+    keys: tuple[str, str, str]
+    args: tuple[object, ...]
+    receipt_keys: tuple[str, str, str]
+
+
+def _schedule_reserve_ceiling(daily_limit: int) -> int:
+    if daily_limit <= 0:
+        return -1
+    return max(daily_limit - max(int(settings.COST_GUARD_CONTENT_SCHEDULE_RESERVE), 0), 0)
+
+
+def _monthly_pause_ceiling(monthly_limit: int) -> int:
+    ratio = float(settings.COST_GUARD_CONTENT_NON_SCHEDULE_MONTHLY_PAUSE_RATIO)
+    if monthly_limit <= 0 or ratio <= 0:
+        return -1
+    return math.floor(monthly_limit * min(ratio, 1.0))
+
+
+def _lane_plan(
+    category: str,
+    lane: str | None,
+    hospital_id: object | None,
+    *,
+    daily_period: str,
+    monthly_period: str,
+    daily_limit: int,
+    monthly_limit: int,
+) -> _LanePlan:
+    if category != "content" or not settings.COST_GUARD_CONTENT_LANES_ENABLED:
+        return _LanePlan("none", None, (_NO_LANE_KEY,) * 3, ("none", -1, -1, 0, 0, 0, "0"), ("", "", ""))
+    scope = _LANE_CONTEXT.get()
+    resolved = lane or (scope.lane if scope else LANE_BACKGROUND)
+    if resolved not in CONTENT_LANES:
+        raise ValueError(f"unknown cost_guard lane: {resolved}")
+    hospital = str(hospital_id) if hospital_id else (scope.hospital_id if scope else None)
+    lane_daily = _lane_daily_key(resolved, daily_period)
+    lane_monthly = _lane_monthly_key(resolved, monthly_period)
+    if resolved == LANE_SCHEDULE:
+        return _LanePlan(
+            "schedule",
+            resolved,
+            (lane_daily, lane_monthly, _NO_LANE_KEY),
+            ("schedule", -1, -1, 0, 0, 0, "0"),
+            (lane_daily, lane_monthly, ""),
+        )
+    lane_daily_limit, lane_monthly_limit = _lane_limits(resolved)
+    hosp_key = _hospital_daily_key(hospital, daily_period) if hospital else ""
+    return _LanePlan(
+        "limited",
+        resolved,
+        (lane_daily, lane_monthly, hosp_key or _NO_LANE_KEY),
+        (
+            "limited",
+            _schedule_reserve_ceiling(daily_limit),
+            _monthly_pause_ceiling(monthly_limit),
+            max(int(lane_daily_limit), 0),
+            max(int(lane_monthly_limit), 0),
+            max(int(settings.COST_GUARD_CONTENT_NON_SCHEDULE_HOSPITAL_DAILY), 0),
+            "1" if hosp_key else "0",
+        ),
+        (lane_daily, lane_monthly, hosp_key),
+    )
+
+
+_LANE_BLOCK_SCOPES = frozenset(
+    {"monthly_pause", "schedule_reserve", "lane_daily", "lane_monthly", "hospital_daily"}
+)
+
+
+def _lane_block_reason(scope: str, plan: _LanePlan, *, daily_limit: int, monthly_limit: int) -> str:
+    lane_label = _LANE_LABELS.get(plan.lane or "", "일정 외 작업")
+    lane_daily_limit, lane_monthly_limit = _lane_limits(plan.lane or "")
+    if scope == "monthly_pause":
+        return (
+            f"콘텐츠 월 사용이 상한({monthly_limit}건)의 "
+            f"{int(float(settings.COST_GUARD_CONTENT_NON_SCHEDULE_MONTHLY_PAUSE_RATIO) * 100)}%를 넘어 "
+            f"일정 외 작업({lane_label})을 멈췄습니다."
+        )
+    if scope == "schedule_reserve":
+        return (
+            f"오늘 콘텐츠 예산 중 {settings.COST_GUARD_CONTENT_SCHEDULE_RESERVE}건은 예정 글 생성 몫이라 "
+            f"일정 외 작업({lane_label})을 보류했습니다."
+        )
+    if scope == "lane_monthly":
+        return f"{lane_label} 월간 상한({lane_monthly_limit}건)에 도달했습니다."
+    if scope == "lane_daily":
+        return f"{lane_label} 일일 상한({lane_daily_limit}건)에 도달했습니다."
+    return (
+        f"이 병원의 일정 외 작업이 오늘 상한"
+        f"({settings.COST_GUARD_CONTENT_NON_SCHEDULE_HOSPITAL_DAILY}건)에 도달했습니다."
+    )
 
 
 def _daily_override_key(category: str, period: str) -> str:
@@ -465,6 +732,8 @@ async def check_and_increment(
     category: str,
     *,
     count: int = 1,
+    lane: str | None = None,
+    hospital_id: object | None = None,
     redis_client: redis_async.Redis | None = None,
 ) -> CostGuardDecision:
     """카테고리 호출 예산을 확인하고, 허용 시 카운터를 count만큼 증가시킨다.
@@ -503,17 +772,28 @@ async def check_and_increment(
         daily_limit = await _effective_daily_limit(client, category, daily_period, daily_limit)
         daily_key = _daily_key(category, daily_period)
         monthly_key = _monthly_key(category, monthly_period)
+        plan = _lane_plan(
+            category,
+            lane,
+            hospital_id,
+            daily_period=daily_period,
+            monthly_period=monthly_period,
+            daily_limit=daily_limit,
+            monthly_limit=monthly_limit,
+        )
 
         reservation = await client.eval(
             _RESERVE_BUDGET_SCRIPT,
-            2,
+            5,
             daily_key,
             monthly_key,
+            *plan.keys,
             count,
             daily_limit,
             monthly_limit,
             _DAILY_TTL_SECONDS,
             _MONTHLY_TTL_SECONDS,
+            *plan.args,
         )
         allowed = bool(int(reservation[0]))
         blocked_scope_raw = reservation[1]
@@ -526,6 +806,13 @@ async def check_and_increment(
         await cost_guard_health.report_guard_healthy(category)
 
         # 한 Lua 연산 안에서 current + count를 검사하고 두 카운터를 함께 예약한다.
+        if not allowed and blocked_scope in _LANE_BLOCK_SCOPES:
+            # 일정 외 lane의 소진은 조용하다(Slack 없음) — 예정 글 생성 몫을 지키는 정상 동작이다.
+            reason = _lane_block_reason(
+                blocked_scope, plan, daily_limit=daily_limit, monthly_limit=monthly_limit
+            )
+            logger.info("cost_guard lane blocked: lane=%s scope=%s", plan.lane, blocked_scope)
+            return CostGuardDecision(False, reason)
         if not allowed and blocked_scope == "monthly":
             await _best_effort_alert(
                 client, category, "monthly", monthly_period, new_monthly, monthly_limit, hard=True
@@ -560,6 +847,8 @@ async def reserve(
     count: int = 1,
     reservation_id: str | uuid.UUID | None = None,
     reserved_at: datetime | None = None,
+    lane: str | None = None,
+    hospital_id: object | None = None,
     redis_client: redis_async.Redis | None = None,
 ) -> CostGuardDecision:
     """Reserve paid-call units once and return an immutable settlement receipt.
@@ -599,13 +888,23 @@ async def reserve(
         receipt_id = str(reservation_id or uuid.uuid4())
         if not receipt_id or len(receipt_id) > 200:
             raise ValueError("reservation_id must contain 1..200 characters")
+        plan = _lane_plan(
+            category,
+            lane,
+            hospital_id,
+            daily_period=daily_period,
+            monthly_period=monthly_period,
+            daily_limit=daily_limit,
+            monthly_limit=monthly_limit,
+        )
 
         result = await client.eval(
             _RESERVE_WITH_RECEIPT_SCRIPT,
-            3,
+            6,
             _daily_key(category, daily_period),
             _monthly_key(category, monthly_period),
             _reservation_key(receipt_id),
+            *plan.keys,
             count,
             daily_limit,
             monthly_limit,
@@ -615,6 +914,8 @@ async def reserve(
             daily_period,
             monthly_period,
             _RESERVATION_TTL_SECONDS,
+            *plan.args,
+            *plan.receipt_keys,
         )
         status = int(result[0])
         await cost_guard_health.report_guard_healthy(category)
@@ -631,6 +932,14 @@ async def reserve(
         if status == -1:
             raise ValueError(
                 f"reservation_id already belongs to different inputs: {receipt_id}"
+            )
+        if status == 0 and scope in _LANE_BLOCK_SCOPES:
+            logger.info("cost_guard lane blocked: lane=%s scope=%s", plan.lane, scope)
+            return CostGuardDecision(
+                False,
+                _lane_block_reason(
+                    scope, plan, daily_limit=daily_limit, monthly_limit=monthly_limit
+                ),
             )
         if status == 0:
             value = monthly_value if scope == "monthly" else daily_value
@@ -1178,3 +1487,74 @@ async def set_kill_switch(enabled: bool, *, redis_client: redis_async.Redis | No
         await client.set(KILL_SWITCH_KEY, "1")
     else:
         await client.delete(KILL_SWITCH_KEY)
+
+
+def content_lane_usage_sync(
+    *, redis_url: str | None = None, now: datetime | None = None
+) -> dict:
+    """content lane 사용량(예약 단위)과 상한 — 준비 점검 참고 사실(`facts.cost_lanes`). 읽기만 한다.
+
+    Redis를 읽지 못하면 `availability=UNAVAILABLE`과 설정값만 돌려준다(0건으로 위장하지 않는다).
+    """
+    import redis as redis_sync  # noqa: PLC0415 — 동기 준비 점검 전용
+
+    current = (now or _now()).astimezone(_KST)
+    daily_period = _daily_period(current)
+    monthly_period = _monthly_period(current)
+    daily_limit, monthly_limit = _limits("content")
+    result: dict = {
+        "enabled": bool(settings.COST_GUARD_ENABLED and settings.COST_GUARD_CONTENT_LANES_ENABLED),
+        "availability": "AVAILABLE",
+        "schedule_reserve": int(settings.COST_GUARD_CONTENT_SCHEDULE_RESERVE),
+        "monthly_pause_at": _monthly_pause_ceiling(monthly_limit),
+        "hospital_daily_limit": int(settings.COST_GUARD_CONTENT_NON_SCHEDULE_HOSPITAL_DAILY),
+        "category_daily_limit": daily_limit,
+        "category_monthly_limit": monthly_limit,
+        "category_daily_used": None,
+        "category_monthly_used": None,
+        "non_schedule_paused": None,
+        "lanes": {},
+    }
+    client = redis_sync.Redis.from_url(
+        redis_url or settings.REDIS_URL, socket_connect_timeout=2, socket_timeout=2
+    )
+    try:
+        effective_daily = _apply_daily_override(
+            daily_limit, client.get(_daily_override_key("content", daily_period))
+        )
+        daily_used = int(client.get(_daily_key("content", daily_period)) or 0)
+        monthly_used = int(client.get(_monthly_key("content", monthly_period)) or 0)
+        pause_at = _monthly_pause_ceiling(monthly_limit)
+        reserve_at = _schedule_reserve_ceiling(effective_daily)
+        result.update(
+            category_daily_limit=effective_daily,
+            category_daily_used=daily_used,
+            category_monthly_used=monthly_used,
+            non_schedule_paused=bool(
+                (pause_at >= 0 and monthly_used >= pause_at)
+                or (reserve_at >= 0 and daily_used >= reserve_at)
+            ),
+        )
+        for lane in CONTENT_LANES:
+            lane_daily_limit, lane_monthly_limit = _lane_limits(lane)
+            result["lanes"][lane] = {
+                "daily_used": int(client.get(_lane_daily_key(lane, daily_period)) or 0),
+                "monthly_used": int(client.get(_lane_monthly_key(lane, monthly_period)) or 0),
+                "daily_limit": lane_daily_limit,
+                "monthly_limit": lane_monthly_limit,
+            }
+    except (OSError, RedisError, RuntimeError, TimeoutError, TypeError, ValueError) as exc:
+        logger.warning("cost_guard lane usage unavailable: %s", exc.__class__.__name__)
+        result["availability"] = "UNAVAILABLE"
+        result["lanes"] = {
+            lane: {
+                "daily_used": None,
+                "monthly_used": None,
+                "daily_limit": _lane_limits(lane)[0],
+                "monthly_limit": _lane_limits(lane)[1],
+            }
+            for lane in CONTENT_LANES
+        }
+    finally:
+        client.close()
+    return result

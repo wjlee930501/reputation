@@ -632,6 +632,21 @@ class Settings(BaseSettings):
     COST_GUARD_DAILY_LEADGEN_CALLS: int = 500
     # 월간: 정상분 360/일 × 30일 = 10,800 + 여유
     COST_GUARD_MONTHLY_LEADGEN_CALLS: int = 12000
+    # content 카테고리 안의 lane(Full-Automatic W1, O1 기본값). 카테고리 상한은 그대로이고 lane은
+    # 그 안의 하위 예산이다. `schedule`(예정일 D+3 이내 슬롯의 생성 경로)은 lane 상한이 없고 일 상한 중
+    # SCHEDULE_RESERVE건을 혼자 쓴다 — 나머지 lane은 `일 상한 − 예약`을 넘지 못하고, 월 사용이
+    # 월 상한의 NON_SCHEDULE_MONTHLY_PAUSE_RATIO를 넘으면 멈춘다. 0은 그 lane 상한 없음.
+    COST_GUARD_CONTENT_LANES_ENABLED: bool = True
+    COST_GUARD_CONTENT_SCHEDULE_RESERVE: int = 150
+    COST_GUARD_CONTENT_NON_SCHEDULE_MONTHLY_PAUSE_RATIO: float = 0.85
+    COST_GUARD_CONTENT_POST_PUBLISH_DAILY: int = 90
+    COST_GUARD_CONTENT_POST_PUBLISH_MONTHLY: int = 1200
+    COST_GUARD_CONTENT_EVIDENCE_DAILY: int = 80
+    COST_GUARD_CONTENT_EVIDENCE_MONTHLY: int = 600
+    COST_GUARD_CONTENT_ADHOC_DAILY: int = 40
+    COST_GUARD_CONTENT_ADHOC_MONTHLY: int = 400
+    # 병원 하나가 일정 외 lane 전체에서 하루에 쓸 수 있는 호출(온보딩 병원 1곳이 일 예산의 32%를 쓴 10/13).
+    COST_GUARD_CONTENT_NON_SCHEDULE_HOSPITAL_DAILY: int = 30
 
     # Slack
     SLACK_WEBHOOK_URL: str = ""

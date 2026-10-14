@@ -3445,6 +3445,8 @@ async def _metered_process_source_asset(
         category="content",
         count=reserved_units,
         reservation_id=reservation_id,
+        lane=cost_guard.LANE_EVIDENCE,
+        hospital_id=source.hospital_id,
     )
     if not decision.allowed:
         raise _SourceProcessingCostBlocked(
@@ -5810,9 +5812,14 @@ def generate_claimed_content_item(
         try:
             run = _resolve_claimed_item_run(db, self, item)
             recorder = GenerationItemRecorder(db, run)
-            state, code, message = _run_generation_item(
-                db, recorder, item, hospital, notify=notify
-            )
+            # 예정일 D+3 이내 슬롯은 일정 경로 예산(schedule lane)을 쓴다(W1).
+            with cost_guard.cost_lane(
+                cost_guard.generation_cost_lane(getattr(item, "scheduled_date", None)),
+                hospital_id=getattr(hospital, "id", None),
+            ):
+                state, code, message = _run_generation_item(
+                    db, recorder, item, hospital, notify=notify
+                )
         except BaseException:
             # 예외로 빠져나온 실행의 미커밋 쓰기는 버린다. 깨진 트랜잭션을 그대로 두면
             # 아래 해제 UPDATE도 실패해 claim이 TTL까지 남는다. rollback 자체가 실패해도
@@ -6437,11 +6444,12 @@ def regenerate_content_item(self, content_id: str):
     item_id = uuid.UUID(content_id)
     if explicit_run_context(self) is None:
         require_dispatch(self, "regenerate-content", str(item_id))
-    with SyncSessionLocal() as db:
+    with SyncSessionLocal() as db, cost_guard.cost_lane(cost_guard.LANE_ADHOC) as cost_scope:
         item = db.get(ContentItem, item_id)
         if not item:
             finish_explicit_run(db, self, item_id, OperationRunState.CANCELLED)
             return
+        cost_scope.hospital_id = str(item.hospital_id)
         if explicit_run_context(self) is not None and not explicit_run_matches(
             db, self, item_id, item.hospital_id
         ):
@@ -6806,7 +6814,7 @@ def recertify_published_content_image(self, content_id: str):
     item_id = uuid.UUID(content_id)
     if explicit_run_context(self) is None:
         require_dispatch(self, "recertify-published-image", str(item_id))
-    with SyncSessionLocal() as db:
+    with SyncSessionLocal() as db, cost_guard.cost_lane(cost_guard.LANE_POST_PUBLISH):
         # 유료 재검수 구간 전체를 이 행 잠금 안에서 돈다. 같은 (글, 판)에 PATCH가 건
         # 기본 키 실행과 sweep의 재실행이 겹치면 뒤에 온 쪽은 여기서 기다렸다가 이미
         # 복구된 인증을 보고 돈을 쓰지 않고 끝난다. update_content도 같은 행을
@@ -6995,12 +7003,13 @@ def recertify_published_content_image(self, content_id: str):
 def generate_content_image(self, content_id: str):
     """Regenerate only the cover image while preserving operator-reviewed text."""
     item_id = uuid.UUID(content_id)
-    with SyncSessionLocal() as db:
+    with SyncSessionLocal() as db, cost_guard.cost_lane(cost_guard.LANE_ADHOC) as cost_scope:
         notify_failure = not _is_auto_image_regeneration_run(db, self)
         item = db.get(ContentItem, item_id)
         if not item:
             finish_explicit_run(db, self, item_id, OperationRunState.CANCELLED)
             return
+        cost_scope.hospital_id = str(item.hospital_id)
         if item.status in (
             ContentStatus.PUBLISHED,
             ContentStatus.CANCELLED,
