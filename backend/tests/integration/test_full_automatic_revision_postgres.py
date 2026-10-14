@@ -219,3 +219,28 @@ async def test_corrected_body_never_publishes_on_an_unavailable_review(pg_async_
     _mark_published(item)
 
     assert await _created(pg_async_session, item) == 0
+
+
+async def test_body_with_an_earlier_blocking_verdict_never_publishes_on_an_outage(pg_async_session):
+    """Codex 4차 P1-1: 같은 본문이 앞서 HARD를 받았으면 표지가 있어도 승인 판을 만들지 않는다."""
+
+    item = await _seed(pg_async_session, content_type=ContentType.DISEASE, title=MEDICAL_TITLE)
+    item.essence_check_summary = {
+        **item.essence_check_summary,
+        "ai_review": _unavailable_review(item),
+        "ai_review_blocking_hashes": [candidate_sha256(item)],
+    }
+    item.essence_check_summary = {
+        **item.essence_check_summary,
+        AI_REVIEW_DEFERRED_KEY: ai_review_deferral_marker(item),
+    }
+    _mark_published(item)
+
+    assert await _created(pg_async_session, item) == 0
+
+    # 다른 본문의 차단 기록은 이 본문을 막지 않는다.
+    item.essence_check_summary = {
+        **item.essence_check_summary,
+        "ai_review_blocking_hashes": ["another-body"],
+    }
+    assert await _created(pg_async_session, item) == 1

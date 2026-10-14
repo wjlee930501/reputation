@@ -7,9 +7,15 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+from app.core.config import settings
 from app.models.content import ContentItem, ContentStatus
 from app.models.essence import HospitalContentPhilosophy
-from app.services.content_ai_review import candidate_review_coverage, candidate_sha256
+from app.services.content_ai_review import (
+    AI_REVIEW_BLOCKING_HASHES_KEY,
+    blocking_review_hashes,
+    candidate_review_coverage,
+    candidate_sha256,
+)
 from app.services.content_engine import FORBIDDEN_CHECK_FIELDS
 from app.services.content_minimal_correction import AUTO_CORRECTION_KEY
 from app.services.essence_engine import (
@@ -217,6 +223,9 @@ def ai_review_deferred(item: ContentItem) -> bool:
         return False
     current_sha = candidate_sha256(item)
     if not review.get("candidate_sha256") or review.get("candidate_sha256") != current_sha:
+        return False
+    if current_sha in blocking_review_hashes(summary):
+        # 같은 본문이 앞서 차단 판정(HARD 등)을 받았다 — 나중 장애가 그 판정을 덮지 못한다.
         return False
     correction = summary.get(AUTO_CORRECTION_KEY)
     return not (isinstance(correction, dict) and correction.get("corrected_sha256"))
@@ -545,6 +554,8 @@ def apply_publication_assessment(item: ContentItem, assessment: PublicationAsses
             # D36 참고자료 없이 저장·발행한 사실의 기록과 D37 선발행 표지 — 감사·운영 조회용이다.
             REFERENCES_OMITTED_KEY,
             AI_REVIEW_DEFERRED_KEY,
+            # D37 안전: 차단 판정을 받은 본문 hash — 지우면 같은 본문이 장애 뒤 선발행된다.
+            AI_REVIEW_BLOCKING_HASHES_KEY,
             # D35 글당 Critical 알림 기록. 지우면 같은 본문의 Critical을 다시 알린다.
             POST_PUBLISH_CRITICAL_ALERT_KEY,
         ):
@@ -566,6 +577,18 @@ def apply_publication_assessment(item: ContentItem, assessment: PublicationAsses
         item.last_reviewed_philosophy_id = assessment.philosophy_id
     item.essence_status = assessment.essence_status
     item.essence_check_summary = summary
+
+
+def _flagged_review_preserved_keys() -> tuple[str, ...]:
+    """사후 검수 FLAGGED 표시와 D35 글당 Critical 알림 기록.
+
+    W4 등급·D35 알림 플래그가 켜졌을 때만 재검증이 보존한다 — 지우면 같은 본문을 다시
+    사고 알린다. 둘 다 꺼져 있으면 main과 같이 지운다(표본 검수가 다시 집는다).
+    """
+
+    if settings.CONTENT_FINDING_TIERS_ENABLED or settings.POST_PUBLISH_CRITICAL_ALERTS_ENABLED:
+        return ("post_publish_ai_review", POST_PUBLISH_CRITICAL_ALERT_KEY)
+    return ()
 
 
 def apply_essence_revalidation(
@@ -595,9 +618,9 @@ def apply_essence_revalidation(
             "image_recertification",
             # 자동 교정 기록 — 지우면 글(주제)당 교정 상한이 초기화된다.
             AUTO_CORRECTION_KEY,
-            # 사후 검수 FLAGGED 표시와 D35 글당 Critical 알림 기록 — 지우면 같은 본문을 다시 사고 알린다.
-            "post_publish_ai_review",
-            POST_PUBLISH_CRITICAL_ALERT_KEY,
+            # D37 안전: 차단 판정을 받은 본문 hash — 지우면 같은 본문이 장애 뒤 선발행된다.
+            AI_REVIEW_BLOCKING_HASHES_KEY,
+            *_flagged_review_preserved_keys(),
         ):
             if key in previous:
                 summary[key] = previous[key]

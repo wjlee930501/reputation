@@ -43,6 +43,7 @@ from app.services.content_ai_review import (
     candidate_sha256,
     content_review_input_payload,
     review_generated_content,
+    store_ai_review,
 )
 from app.services.content_brief import is_usable_content_brief
 from app.services.content_publication import public_candidate_review_safe
@@ -561,7 +562,7 @@ def _checkpoint_review(
         "review_policy": REVIEW_POLICY,
         "review_input_sha256": claim.expectation.review_input_hash,
     }
-    summary["ai_review"] = review_payload
+    store_ai_review(summary, review_payload)
     item.essence_check_summary = summary
     # This metadata participates in public safety. Bump the shared content CAS
     # revision so a concurrent image/generation write cannot replace the summary

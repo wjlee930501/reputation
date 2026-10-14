@@ -22,7 +22,11 @@ from datetime import datetime
 from typing import Any
 
 from app.models.content import ContentStatus
-from app.services.content_ai_review import ContentAiReviewStatus, candidate_sha256
+from app.services.content_ai_review import (
+    ContentAiReviewStatus,
+    candidate_sha256,
+    store_ai_review,
+)
 from app.services.content_engine import FORBIDDEN_CHECK_FIELDS
 from app.services.content_minimal_correction import (
     AUTO_CORRECTION_KEY,
@@ -246,7 +250,7 @@ def apply_published_correction(
         "rereviews": outcome.rereviews,
     }
     new_summary = {k: v for k, v in summary.items() if k != POST_PUBLISH_FLAG_KEY}
-    new_summary["ai_review"] = review.payload()
+    store_ai_review(new_summary, review.payload())
     new_summary[AUTO_CORRECTION_KEY] = record
     item.essence_check_summary = new_summary
     item.content_revision = new_revision

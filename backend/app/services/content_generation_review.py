@@ -15,7 +15,13 @@ from typing import Any
 from app.models.content import ContentItem
 from app.models.essence import HospitalContentPhilosophy
 from app.models.hospital import Hospital
-from app.services.content_ai_review import ContentAiReview, ContentAiReviewStatus
+from app.services.content_ai_review import (
+    ContentAiReview,
+    ContentAiReviewStatus,
+    blocking_review_hashes,
+    remember_blocking_review_hashes,
+    review_payload_is_blocking,
+)
 from app.services.content_engine import (
     EXAM_TREATMENT_TITLE_FINDING_PREFIX,
     GENERATION_REJECTIONS_KEY,
@@ -121,6 +127,9 @@ async def generate_reviewed_content(
     accepted_screening = None
     accepted_reference_findings: list[str] = []
     last_ai_review = None
+    # 이 세션에서 차단 판정(HARD 등)을 받은 후보 hash — 마지막 검수만 저장되므로 따로 모은다(D37 안전:
+    # HARD → 삭제 재작성이 같은 본문을 돌려주고 → 검수 장애면 그 본문을 선발행하지 않는다).
+    session_blocking_hashes: list[str] = []
     last_generation_error: Exception | None = None
     # 세션 안 모든 작가 회차의 결정적 거절 횟수(E5, 사유별).
     rejection_counts: dict[str, dict[str, int]] = {}
@@ -204,6 +213,8 @@ async def generate_reviewed_content(
                 content=candidate,
                 content_brief=approved_brief,
             )
+            if last_ai_review.blocking_findings and last_ai_review.candidate_sha256:
+                session_blocking_hashes.append(last_ai_review.candidate_sha256)
             if last_ai_review.status == ContentAiReviewStatus.UNAVAILABLE:
                 # UNAVAILABLE never grants approval: it merely leaves the candidate to
                 # the deterministic generation and publication gates below.
@@ -334,6 +345,13 @@ async def generate_reviewed_content(
         summary["hard_removal_rewrites"] = removal_rewrites
     if rejection_counts:
         summary[GENERATION_REJECTIONS_SUMMARY_KEY] = rejection_counts
+    previous_summary = getattr(item, "essence_check_summary", None)
+    previous_summary = previous_summary if isinstance(previous_summary, dict) else {}
+    remember_blocking_review_hashes(summary, *blocking_review_hashes(previous_summary))
+    previous_review = previous_summary.get("ai_review")
+    if review_payload_is_blocking(previous_review):
+        remember_blocking_review_hashes(summary, previous_review.get("candidate_sha256"))
+    remember_blocking_review_hashes(summary, *session_blocking_hashes)
     if last_ai_review is not None:
         summary["ai_review"] = last_ai_review.payload()
     reviewed_screening = type(last_screening)(

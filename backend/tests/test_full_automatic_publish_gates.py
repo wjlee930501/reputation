@@ -18,9 +18,11 @@ import pytest
 from app.models.content import ContentStatus, ContentType
 from app.services import content_publication
 from app.services.content_ai_review import (
+    AI_REVIEW_BLOCKING_HASHES_KEY,
     candidate_review_coverage,
     candidate_sha256,
     restamp_review_after_system_reference_change,
+    store_ai_review,
 )
 from app.services.content_engine import _validate_geo
 from app.services.content_publication import (
@@ -336,3 +338,136 @@ def test_the_new_deferral_marker_wins_over_an_older_one(aligned) -> None:
     assert item.essence_check_summary[AI_REVIEW_DEFERRED_KEY]["candidate_sha256"] == (
         candidate_sha256(item)
     )
+
+
+# ── D37 안전: 차단 판정을 받은 본문은 나중 장애로 선발행하지 않는다(Codex 4차 P1-1) ──────────
+
+
+def _hard_review(item) -> dict:
+    return {
+        **_unavailable(item),
+        "status": "REVISE",
+        "blocking": True,
+        "unavailable_reason": None,
+        "findings": [{"severity": "HARD", "kind": "MEDICAL_SAFETY", "message": "위험한 오정보"}],
+    }
+
+
+def test_outage_after_a_hard_verdict_on_the_same_body_never_publishes_first(aligned) -> None:
+    item = _item()
+    item.essence_check_summary = {}
+    store_ai_review(item.essence_check_summary, _hard_review(item))
+    store_ai_review(item.essence_check_summary, _unavailable(item))
+
+    assert item.essence_check_summary[AI_REVIEW_BLOCKING_HASHES_KEY] == [candidate_sha256(item)]
+    assert not ai_review_deferred(item)
+    assessment = assess_content_publication(item, SimpleNamespace(id=uuid.uuid4()))
+    assert assessment.code == "CONTENT_AI_REVIEW_UNAVAILABLE"
+    assert AI_REVIEW_DEFERRED_KEY not in assessment.essence_summary
+
+
+def test_a_hard_verdict_on_another_body_does_not_stop_this_outage(aligned) -> None:
+    item = _item()
+    _with_review(item, _unavailable(item), **{AI_REVIEW_BLOCKING_HASHES_KEY: ["older-body"]})
+
+    assert ai_review_deferred(item)
+
+
+def test_reference_change_carries_the_blocking_record_to_the_new_hash() -> None:
+    item = _item(references_list=[{"title": "위염", "url": "https://health.kdca.go.kr/x"}])
+    before = candidate_sha256(item)
+    _with_review(item, _unavailable(item), **{AI_REVIEW_BLOCKING_HASHES_KEY: [before]})
+
+    item.references_list = []
+    restamp_review_after_system_reference_change(item, before)
+
+    assert item.essence_check_summary["ai_review"]["candidate_sha256"] == candidate_sha256(item)
+    assert not ai_review_deferred(item)
+
+
+def test_gate_record_and_revalidation_keep_the_blocking_record(aligned) -> None:
+    item = _item()
+    _with_review(item, _unavailable(item), **{AI_REVIEW_BLOCKING_HASHES_KEY: [candidate_sha256(item)]})
+
+    apply_publication_assessment(
+        item, assess_content_publication(item, SimpleNamespace(id=uuid.uuid4()))
+    )
+    assert item.essence_check_summary[AI_REVIEW_BLOCKING_HASHES_KEY] == [candidate_sha256(item)]
+
+    content_publication.apply_essence_revalidation(item, SimpleNamespace(id=uuid.uuid4()))
+    assert item.essence_check_summary[AI_REVIEW_BLOCKING_HASHES_KEY] == [candidate_sha256(item)]
+    assert not ai_review_deferred(item)
+
+
+async def test_hard_then_identical_removal_rewrite_then_outage_is_not_deferred(aligned) -> None:
+    """재현: HARD → 삭제 재작성이 같은 본문을 돌려줌 → 검수 장애. 그 본문은 선발행하지 않는다."""
+
+    from dataclasses import replace
+    from unittest.mock import AsyncMock, Mock
+
+    from app.models.hospital import Hospital
+    from app.services.content_ai_review import (
+        ContentAiFinding,
+        ContentAiFindingKind,
+        ContentAiFindingSeverity,
+        ContentAiReview,
+        ContentAiReviewStatus,
+        ContentAiReviewUnavailableReason,
+    )
+    from app.services.content_generation_review import (
+        ContentReviewDependencies,
+        GenerationReviewLimits,
+        generate_reviewed_content,
+    )
+    from app.services.cost_guard import CostGuardDecision
+    from app.services.essence_engine import ESSENCE_STATUS_ALIGNED, EssenceScreeningResult
+
+    candidate = {
+        "title": "치질 진료 전 확인할 점",
+        "body": "증상과 생활 불편을 확인한 뒤 진료 방향을 설명합니다.",
+        "meta_description": "진료 전 확인할 내용을 정리합니다.",
+    }
+    sha = candidate_sha256(candidate)
+    hard = ContentAiReview(
+        ContentAiReviewStatus.REVISE,
+        0.95,
+        (
+            ContentAiFinding(
+                ContentAiFindingSeverity.HARD, ContentAiFindingKind.MEDICAL_SAFETY, "위험한 오정보"
+            ),
+        ),
+        "review",
+        "test-model",
+        candidate_sha256=sha,
+    )
+    outage = replace(
+        ContentAiReview(ContentAiReviewStatus.UNAVAILABLE, 0.0, (), "", "test-model"),
+        candidate_sha256=sha,
+        unavailable_reason=ContentAiReviewUnavailableReason.PROVIDER_ERROR,
+    )
+    hospital = Hospital(id=uuid.uuid4(), name="격리 검증 의원")
+    effects = ContentReviewDependencies(
+        generate=AsyncMock(side_effect=lambda *a, **k: dict(candidate)),
+        review=AsyncMock(side_effect=[hard, outage]),
+        screen=Mock(return_value=EssenceScreeningResult(ESSENCE_STATUS_ALIGNED, {})),
+        check_cost=AsyncMock(return_value=CostGuardDecision(True)),
+    )
+    content, screening = await generate_reviewed_content(
+        hospital=hospital,
+        item=SimpleNamespace(content_type=ContentType.DISEASE, essence_check_summary=None),
+        existing_titles=[],
+        philosophy=SimpleNamespace(id=uuid.uuid4()),
+        approved_brief=None,
+        dependencies=effects,
+        limits=GenerationReviewLimits(3, 2, 1, 1),
+    )
+
+    assert effects.review.await_count == 2
+    assert screening.summary["ai_review"]["status"] == "UNAVAILABLE"
+    assert screening.summary[AI_REVIEW_BLOCKING_HASHES_KEY] == [sha]
+    item = _item(**{k: v for k, v in content.items() if k in ("title", "body", "meta_description")})
+    item.essence_check_summary = dict(screening.summary)
+    assert candidate_sha256(item) == sha
+    assert not ai_review_deferred(item)
+    assessment = assess_content_publication(item, SimpleNamespace(id=uuid.uuid4()))
+    assert not assessment.publishable

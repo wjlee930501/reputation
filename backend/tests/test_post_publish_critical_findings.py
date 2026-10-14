@@ -395,7 +395,8 @@ def test_critical_incident_type_is_an_operator_slack_with_the_error_label() -> N
     assert not incident_policy(kind).sweep_owned
     assert label_for_event("INCIDENT_OPEN") is NotificationLabel.ERROR
     assert label_for_event("POST_PUBLISH_CRITICAL_DIGEST") is NotificationLabel.ERROR
-    assert incident_backlog.RESOLVERS["POST_PUBLISH_REVIEW_FLAGGED"] is incident_backlog.RESOLVERS[kind]
+    resolvers = incident_backlog.active_resolvers()
+    assert resolvers["POST_PUBLISH_REVIEW_FLAGGED"] is resolvers[kind]
 
 
 def test_critical_incident_copy_uses_the_snapshot(monkeypatch) -> None:

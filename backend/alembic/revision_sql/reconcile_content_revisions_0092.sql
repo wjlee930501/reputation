@@ -81,7 +81,8 @@ BEGIN
             -- publish path stamped its deferral marker for the same candidate hash AND for the
             -- CURRENT public text (title/body/meta/FAQ joined by U+001F, the same hash as
             -- `content_publication.publication_text_sha256`), and the body is not an automatic
-            -- correction (a corrected body always needs a PASS bound to it). coalesce keeps a
+            -- correction (a corrected body always needs a PASS bound to it), and the body never
+            -- received a blocking verdict before. coalesce keeps a
             -- missing marker false (never NULL).
             AND NOT coalesce(
                 item.essence_check_summary -> 'ai_review' ->> 'status' = 'UNAVAILABLE'
@@ -95,7 +96,14 @@ BEGIN
                             coalesce(item.title, ''), coalesce(item.body, ''),
                             coalesce(item.meta_description, ''), coalesce(item.faq_question, ''),
                             coalesce(item.faq_answer_summary, '')), 'UTF8'), 'sha256'), 'hex')
-                    AND btrim(coalesce(item.essence_check_summary -> 'auto_correction' ->> 'corrected_sha256', '')) = '',
+                    AND btrim(coalesce(item.essence_check_summary -> 'auto_correction' ->> 'corrected_sha256', '')) = ''
+                    -- A body that ever received a blocking verdict (HARD etc.) never publishes on a
+                    -- later UNAVAILABLE (`content_ai_review.AI_REVIEW_BLOCKING_HASHES_KEY`).
+                    AND NOT coalesce(
+                        jsonb_typeof(item.essence_check_summary -> 'ai_review_blocking_hashes') = 'array'
+                        AND item.essence_check_summary -> 'ai_review_blocking_hashes'
+                            @> to_jsonb(item.essence_check_summary -> 'ai_review' ->> 'candidate_sha256'),
+                        false),
                     false),
                 false)
             AND NOT coalesce(

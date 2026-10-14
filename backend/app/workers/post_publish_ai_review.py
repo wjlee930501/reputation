@@ -61,7 +61,9 @@ from app.services.content_ai_review import (
     ContentAiReview,
     ContentAiReviewStatus,
     candidate_sha256,
+    remember_blocking_review_hashes,
     review_generated_content,
+    store_ai_review,
 )
 from app.services.content_candidate_publication import (
     CandidateApprovalApplied,
@@ -456,7 +458,7 @@ def apply_review_outcome(item: ContentItem, review: ContentAiReview, *, now: dat
         summary = (
             dict(item.essence_check_summary) if isinstance(item.essence_check_summary, dict) else {}
         )
-        summary["ai_review"] = review.payload()
+        store_ai_review(summary, review.payload())
         item.essence_check_summary = summary
         return "WITHHELD_REVIEWED"
     if (
@@ -469,6 +471,7 @@ def apply_review_outcome(item: ContentItem, review: ContentAiReview, *, now: dat
         dict(item.essence_check_summary) if isinstance(item.essence_check_summary, dict) else {}
     )
     if review.blocking_findings:
+        remember_blocking_review_hashes(summary, review.candidate_sha256)
         summary[POST_PUBLISH_FLAG_KEY] = _flag_payload(
             review, review.candidate_sha256, now, summary.get(POST_PUBLISH_FLAG_KEY)
         )
@@ -478,7 +481,7 @@ def apply_review_outcome(item: ContentItem, review: ContentAiReview, *, now: dat
         return "FLAGGED"
     # 차단 지적이 없는 PASS(비차단 SOFT 포함). 현재 본문에 묶인 검수라 `ai_review`도 갱신해
     # 편집으로 낡은 PASS를 현재 해시로 되돌린다 — 이후 되돌림·재발행 게이트가 같은 기록을 본다.
-    summary["ai_review"] = review.payload()
+    store_ai_review(summary, review.payload())
     summary.pop(POST_PUBLISH_FLAG_KEY, None)
     summary.pop(AI_REVIEW_DEFERRED_KEY, None)
     item.essence_check_summary = summary
@@ -1346,6 +1349,7 @@ def review_post_publish_samples() -> dict[str, int]:
     # 순환 import 회피: 워커 태스크 모듈이 이 모듈과 같은 앱을 공유한다.
     from app.workers.tasks import _generation_philosophy_sync, _run_async
 
+    # 기존 단계(교정·상위 재검수·표본)의 시간 예산은 D37 단계가 끝난 뒤부터 센다 — D37은 자기 600초를 쓴다.
     started = time.monotonic()
     philosophies: dict[uuid.UUID, Any] = {}
     attempted = consecutive_unavailable = corrections = 0
@@ -1414,6 +1418,17 @@ def review_post_publish_samples() -> dict[str, int]:
                 _bump(counts, f"deferred_{outcome.lower()}")
                 if outcome == "REVIEWED":
                     _recover_flag_incident(db.get(ContentItem, item_id), hospital, _run_async)
+                elif outcome == "FLAGGED" and (
+                    not critical_alerts_enabled() or correction_cap <= 0
+                ):
+                    # 표본 경로에서 교정이 아직 맡지 않은 FLAGGED(main의 DEFERRED)와 같은 끝 처리 —
+                    # 알림이 꺼져 있으면 조용한 사고를 연다. 교정은 바로 뒤 1단계가 FLAGGED 글로 집고,
+                    # 교정되면 그 사고를 닫는다.
+                    try:
+                        _settle_flag(db, db.get(ContentItem, item_id), hospital, _run_async)
+                    except Exception:  # noqa: BLE001 - 인시던트 기록 실패가 저장된 표시를 되돌리지 않는다.
+                        logger.exception("post-publish flag incident failed for %s", item_id)
+        started = time.monotonic()
         # 1) 이미 FLAGGED인 공개 글 — 표본 검수보다 먼저 푼다(글을 고치는 일이 새 표본보다 급하다).
         if correction_cap > 0:
             flagged = list(
@@ -1472,9 +1487,8 @@ def review_post_publish_samples() -> dict[str, int]:
         if cap <= 0:
             logger.info("post-publish AI review sweep finished: %s", counts)
             return counts
-        # 비공개 글(드물다)을 먼저 — restore가 막혀 있는 글이라 표본보다 급하다. 선발행 단계가 본 글은 빼고,
-        # 그 단계의 연속 장애 계수는 여기로 넘어오지 않는다.
-        consecutive_unavailable = 0
+        # 비공개 글(드물다)을 먼저 — restore가 막혀 있는 글이라 표본보다 급하다. 선발행 단계가 본 글은 뺀다.
+        # 교정 단계의 연속 장애 계수는 main처럼 이어진다(교정 검수가 연달아 못 보면 표본도 접는다).
         candidates = list(db.execute(_withheld_stmt(cap)).unique().scalars().all())
         candidates += list(
             db.execute(_review_stmt(cap * _SCAN_MULTIPLIER)).unique().scalars().all()

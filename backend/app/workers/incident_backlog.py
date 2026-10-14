@@ -733,10 +733,21 @@ RESOLVERS: dict[str, Resolver] = {
     # Phase 1-9c: 도입문의 부수효과 실패 — 리드를 맡으면 닫힌다.
     "LEAD_INTAKE_NOTIFICATION_FAILED": _lead_followed_up,
     "INQUIRY_SMS_FAILED": _lead_followed_up,
-    # D35: 공개 글 사후 검수 — Critical 사고와 옛 조용한 지적 사고.
+}
+# D35: 공개 글 사후 검수 — Critical 사고와 옛 조용한 지적 사고. `POST_PUBLISH_CRITICAL_ALERTS_ENABLED`가
+# 켜졌을 때만 근거 조회에 넣는다 — 꺼져 있으면 조회 대상·배치 순서가 main과 같다.
+POST_PUBLISH_RESOLVERS: dict[str, Resolver] = {
     "POST_PUBLISH_CRITICAL_FINDING": _post_publish_flag_settled,
     "POST_PUBLISH_REVIEW_FLAGGED": _post_publish_flag_settled,
 }
+
+
+def active_resolvers() -> dict[str, Resolver]:
+    """지금 근거 조회에 쓰는 resolver 표(D35 알림 플래그가 켜졌을 때만 사후 검수 종류 포함)."""
+
+    if settings.POST_PUBLISH_CRITICAL_ALERTS_ENABLED:
+        return {**RESOLVERS, **POST_PUBLISH_RESOLVERS}
+    return RESOLVERS
 # 스윕 소유 종류는 RETRYING으로 열리므로 그 상태에서도 근거로 닫는다. 나머지 RETRYING은 자동화의 것이다.
 _RETRYING_RESOLVABLE = tuple(sorted(SWEEP_OWNED_INCIDENT_TYPES & set(RESOLVERS)))
 
@@ -776,6 +787,7 @@ def close_resolved_backlog_incidents(
     """근거가 있는 열린 사고를 닫는다. 나간 열림 알림이 있을 때만 복구 알림을 넣는다. 커밋은 호출자."""
 
     observed = now or datetime.now(UTC)
+    resolvers = active_resolvers()
     candidates = list(
         db.execute(
             select(Incident)
@@ -787,7 +799,7 @@ def close_resolved_backlog_incidents(
                         Incident.incident_type.in_(_RETRYING_RESOLVABLE),
                     ),
                 ),
-                Incident.incident_type.in_(tuple(RESOLVERS)),
+                Incident.incident_type.in_(tuple(resolvers)),
                 # 수신 불명 사고는 수십 건이 근거 없이 쌓일 수 있다 — 닫을 근거가 있는 것만 집어
                 # 배치 앞자리를 근거 없는 오래된 사고가 차지하지 않게 한다.
                 or_(
@@ -806,7 +818,7 @@ def close_resolved_backlog_incidents(
     for incident in candidates:
         if closed >= limit:
             break
-        reason = RESOLVERS[incident.incident_type](db, incident, observed)
+        reason = resolvers[incident.incident_type](db, incident, observed)
         if reason is None:
             continue
         retrying: Incident | None = incident

@@ -86,6 +86,7 @@ from app.services.content_ai_review import (
     hospital_review_facts_fingerprint,
     review_from_payload,
     review_generated_content,
+    store_ai_review,
 )
 from app.services.content_engine import (
     EXISTING_TITLE_PROMPT_LIMIT,
@@ -1194,7 +1195,7 @@ def _write_corrected_candidate(
         if isinstance(item.essence_check_summary, dict)
         else {}
     )
-    summary["ai_review"] = outcome.review.payload()
+    store_ai_review(summary, outcome.review.payload())
     summary[AUTO_CORRECTION_KEY] = correction_state
     if outcome.status == "PASS":
         # 억제만 지우고 예산은 남긴다 — 통째로 지우면 이어지는 이미지 단계가 예산 없는 기록을
@@ -7369,7 +7370,7 @@ def _generate_single_content_item(
                 if isinstance(item.essence_check_summary, dict)
                 else {}
             )
-            summary["ai_review"] = refreshed_review.payload()
+            store_ai_review(summary, refreshed_review.payload())
             item.essence_check_summary = summary
             db.commit()
             stored_assessment = assess_content_publication(item, philosophy)

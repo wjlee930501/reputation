@@ -17,6 +17,7 @@ from app.services.content_ai_review import (
     ContentAiReview,
     ContentAiReviewStatus,
     candidate_sha256,
+    store_ai_review,
 )
 from app.services.content_publication import (
     apply_publication_assessment,
@@ -302,7 +303,7 @@ def apply_approved_candidate_fields(
         if isinstance(getattr(item, "essence_check_summary", None), dict)
         else {}
     )
-    summary["ai_review"] = review.payload()
+    store_ai_review(summary, review.payload())
     summary.pop("post_publish_ai_review", None)
     candidate_view.essence_check_summary = summary
     assessment = assess_content_publication(candidate_view, philosophy)

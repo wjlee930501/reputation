@@ -481,6 +481,47 @@ def candidate_review_coverage(content: dict[str, Any] | object) -> dict[str, int
     }
 
 
+# D37 안전: 차단 판정(HARD·차단 UNCERTAIN)을 한 번이라도 받은 본문 hash. 같은 본문의 나중 검수가
+# 장애(UNAVAILABLE)여도 판정 없이 먼저 발행하지 않는다 — 게이트(`content_publication.ai_review_deferred`)와
+# 승인 판 SQL(0092)이 같은 기록을 읽는다. 검수 기록을 바꾸는 모든 경로가 `store_ai_review`로 쓴다.
+AI_REVIEW_BLOCKING_HASHES_KEY = "ai_review_blocking_hashes"
+_BLOCKING_HASHES_LIMIT = 50
+
+
+def review_payload_is_blocking(review: object) -> bool:
+    """저장된 검수 payload가 차단 판정인가(승인 판 SQL·참고자료 재결합과 같은 규칙)."""
+
+    if not isinstance(review, dict) or review.get("status") != ContentAiReviewStatus.REVISE.value:
+        return False
+    return review.get("schema_version") is None or review.get("blocking") is True
+
+
+def blocking_review_hashes(summary: object) -> list[str]:
+    raw = summary.get(AI_REVIEW_BLOCKING_HASHES_KEY) if isinstance(summary, dict) else None
+    return [str(value) for value in raw if value] if isinstance(raw, list) else []
+
+
+def remember_blocking_review_hashes(summary: dict[str, Any], *hashes: object) -> None:
+    """차단 판정을 받은 본문 hash를 기록에 더한다(순서 유지·중복 없음·최근 상한)."""
+
+    seen = blocking_review_hashes(summary)
+    added = [str(value) for value in hashes if value and str(value) not in seen]
+    if not added:
+        return
+    merged = list(dict.fromkeys([*seen, *added]))
+    summary[AI_REVIEW_BLOCKING_HASHES_KEY] = merged[-_BLOCKING_HASHES_LIMIT:]
+
+
+def store_ai_review(summary: dict[str, Any], payload: dict[str, Any]) -> None:
+    """`summary["ai_review"]`를 바꾼다. 앞뒤 검수 중 차단 판정의 본문 hash는 기록에 남긴다."""
+
+    previous = summary.get("ai_review")
+    for review in (previous, payload):
+        if review_payload_is_blocking(review):
+            remember_blocking_review_hashes(summary, review.get("candidate_sha256"))
+    summary["ai_review"] = payload
+
+
 def restamp_review_after_system_reference_change(item: Any, before_sha: str) -> None:
     """시스템이 참고자료를 바꾼 뒤, 바뀌기 전 본문에 묶여 있던 검수를 새 해시로 옮긴다.
 
@@ -510,6 +551,9 @@ def restamp_review_after_system_reference_change(item: Any, before_sha: str) -> 
     if isinstance(correction, dict) and correction.get("corrected_sha256") == before_sha:
         # 교정본 표지도 같은 본문을 따라간다 — 참고자료 변경이 "교정본은 반드시 재검수"를 풀지 않게.
         updated["auto_correction"] = {**correction, "corrected_sha256": after_sha}
+    if before_sha in blocking_review_hashes(summary):
+        # 차단 판정을 받은 본문은 참고자료만 바뀌어도 같은 본문이다 — 새 hash도 선발행하지 않는다.
+        remember_blocking_review_hashes(updated, after_sha)
     item.essence_check_summary = updated
 
 
