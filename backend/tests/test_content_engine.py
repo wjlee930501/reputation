@@ -29,6 +29,7 @@ from app.services.content_engine import (  # noqa: E402
     _validate_geo,
     _validate_unverified_price_claims,
 )
+from app.services.reference_requirement import REFERENCES_OMITTED_KEY  # noqa: E402
 from app.services.reference_verification import override_reference_fetcher  # noqa: E402
 from app.utils.authority_sources import CURATED_SOURCE_URLS  # noqa: E402
 from app.utils.medical_filter import (  # noqa: E402
@@ -575,9 +576,9 @@ def test_raw_non_whitelisted_references_bypass_geo_hard_fail():
     assert isinstance(findings, list)  # ValueError 없이 통과 — 버그 상황 재현
 
 
-def test_normalized_non_whitelisted_references_trigger_geo_hard_fail():
-    """수정된 동작: references를 먼저 정규화(화이트리스트 밖 URL 제거)한 뒤 검증해야
-    실제로 GEO hard-fail이 발생해 tenacity 재시도를 강제한다."""
+def test_normalized_non_whitelisted_references_are_dropped_and_recorded():
+    """references를 먼저 정규화(화이트리스트 밖 URL 제거)한 뒤 검증한다. 다 빠지면 D36(2026-10-14)
+    으로 거절하지 않고 참고자료 없이 저장하며 그 사실을 기록한다 — 지어낸 근거로 발행하지 않는다."""
     raw_refs = [{"title": "출처", "url": "https://not-a-real-authority.example.com/guide"}]
     normalized = _normalize_references(raw_refs)
     assert normalized == []  # 화이트리스트 밖 URL은 정규화 단계에서 제거됨
@@ -586,15 +587,18 @@ def test_normalized_non_whitelisted_references_trigger_geo_hard_fail():
         "body": "## 증상\n테스트병원 김원장 강남 1회 안내입니다.\n" + ("본문입니다. " * 100),
         "references": normalized,
     }
-    with pytest.raises(ValueError, match="GEO hard-fail"):
-        _validate_geo(result, _geo_hospital(), ContentType.DISEASE)
+    _validate_geo(result, _geo_hospital(), ContentType.DISEASE)
+
+    assert result["references"] == []
+    assert result[REFERENCES_OMITTED_KEY]["reason"] == "NO_VERIFIED_REFERENCE"
 
 
-async def test_generate_content_hard_fails_end_to_end_for_non_whitelisted_only_references(
+async def test_generate_content_saves_without_references_for_non_whitelisted_only_references(
     monkeypatch,
 ):
-    """generate_content 통합 회귀: 화이트리스트 밖 URL만 인용된 응답은 정규화 후
-    references가 비어 GEO hard-fail로 재시도되어야 한다 (근거 없이 발행 완료 금지)."""
+    """generate_content 통합 회귀: 화이트리스트 밖 URL만 인용된 응답은 정규화 후 references가
+    빈다. D36(2026-10-14): 거절·재작성하지 않고 참고자료 없이 결과를 돌려주며 기록한다 —
+    지어낸 근거로 발행하지 않는다는 원칙은 그대로다(빈 참고자료는 근거를 꾸미지 않는다)."""
     hospital = SimpleNamespace(
         name="테스트병원",
         address="서울",
@@ -638,8 +642,11 @@ async def test_generate_content_hard_fails_end_to_end_for_non_whitelisted_only_r
     monkeypatch.setattr(content_engine.generate_content.retry, "sleep", _no_sleep)
     monkeypatch.setattr(content_engine, "GENERATION_REMEDIATION_ROUNDS", 1)
 
-    with pytest.raises(ValueError, match="GEO hard-fail"):
-        await content_engine.generate_content(hospital, ContentType.DISEASE)
+    generated = await content_engine.generate_content(hospital, ContentType.DISEASE)
+
+    assert generated["references"] == []
+    assert generated[REFERENCES_OMITTED_KEY]["reason"] == "NO_VERIFIED_REFERENCE"
+    assert "not-a-real-authority" in " ".join(generated[REFERENCES_OMITTED_KEY]["drop_notes"])
 
 
 async def test_generate_content_injects_curated_trauma_documents_on_first_empty_refs_failure(
@@ -1684,11 +1691,12 @@ async def test_prompt_asks_for_a_distinct_angle_when_the_keyword_repeats(monkeyp
 
 
 async def test_a_rewrite_round_carries_every_deterministic_rejection_so_far(monkeypatch):
-    """빈 references를 채우는 회차가 분량을 하한 아래로 떨어뜨리지 않게 한다.
+    """한 회차의 지적을 고친 재작성이 다른 조건을 깨뜨리지 않게 한다.
 
-    강심장 FAQ 슬롯이 그 왕복에 갇혔다 — GEO 하드 거절(빈 references)을 고친 회차가
-    순수 글자 수를 1,779자에서 1,633자로 줄여 분량 거절로 바뀌었다. 지적을 마지막
-    사유로 덮어쓰면 작가는 직전 회차에 통과했던 조건을 볼 수 없다.
+    강심장 FAQ 슬롯이 그 왕복에 갇혔다 — 하드 거절을 고친 회차가 순수 글자 수를 1,779자에서
+    1,633자로 줄여 분량 거절로 바뀌었다. 지적을 마지막 사유로 덮어쓰면 작가는 직전 회차에
+    통과했던 조건을 볼 수 없다. (빈 references는 D36 뒤로 거절이 아니다 — 첫 회차는 미검증
+    고정 금액 거절로 같은 왕복을 재현한다.)
     """
     hospital = SimpleNamespace(
         name="노원이비인후과의원",
@@ -1715,8 +1723,8 @@ async def test_a_rewrite_round_carries_every_deterministic_rejection_so_far(monk
         "url": "https://health.kdca.go.kr/tinnitus",
     }
     rounds: list[dict] = [
-        # 1회차: 분량은 충분하지만 references가 비어 GEO 하드 거절.
-        {"body": long_body, "references": []},
+        # 1회차: 분량은 충분하지만 근거 없는 고정 금액으로 하드 거절.
+        {"body": long_body + "\n\n검사 비용은 3만원입니다.", "references": [reference]},
         # 2회차: references를 채웠지만 의료광고 금지 표현이 남아 하드 거절.
         {
             "body": "## 이명\n노원이비인후과의원 김원장이 노원에서 최고의 진료를 안내합니다.",
@@ -1759,11 +1767,11 @@ async def test_a_rewrite_round_carries_every_deterministic_rejection_so_far(monk
         )
 
     assert len(user_messages) == 3
-    # 2회차는 빈 references 지적만 봤다.
-    assert "references is empty" in user_messages[1]
-    # 3회차는 새 하드 지적과 함께 **앞선 회차의 references 지적도** 본다.
+    # 2회차는 고정 금액 지적만 봤다.
+    assert "unverified fixed price" in user_messages[1]
+    # 3회차는 새 하드 지적과 함께 **앞선 회차의 지적도** 본다.
     assert "Forbidden medical expressions" in user_messages[2]
-    assert "references is empty" in user_messages[2]
+    assert "unverified fixed price" in user_messages[2]
 
 
 @pytest.mark.parametrize(
@@ -1797,10 +1805,6 @@ def _prompt_surfaces() -> dict[str, str]:
     surfaces = {
         "static_system_block": content_engine.STATIC_SYSTEM_BLOCK,
         "reference_rule": content_engine.TYPE_PROMPT_REFERENCE_RULE,
-        "empty_reference_cause": content_engine._empty_reference_cause(None),
-        "dropped_reference_cause": content_engine._empty_reference_cause(
-            ["health.kdca.go.kr(제목·본문이 빈 페이지)"]
-        ),
     }
     for content_type, prompt in content_engine.TYPE_PROMPTS.items():
         surfaces[f"type:{content_type.value}"] = prompt
@@ -1828,7 +1832,9 @@ def test_the_static_block_tells_the_writer_to_omit_rather_than_guess():
 
     assert "그 URL을 그대로" in block
     assert "확실하지 않은 항목은 빼" in block
-    assert "발행을 보류" in block
+    # D36: 빈 참고자료는 발행을 막지 않는다 — 작가에게도 지어내지 말라고 그대로 말한다.
+    assert "참고자료 없이 발행" in block
+    assert "발행을 보류" not in block
 
 
 async def test_prompt_keeps_the_plain_duplicate_list_for_other_keywords(monkeypatch):
@@ -1896,12 +1902,12 @@ async def test_dropping_every_reference_falls_back_to_the_curated_catalog(monkey
     assert all(reference["url"] in CURATED_SOURCE_URLS for reference in result["references"])
 
 
-async def test_a_dropped_reference_reaches_the_next_round_as_a_named_cause(monkeypatch):
-    """제거는 조용하다 — 그 사실이 작가에게 닿지 않으면 같은 URL이 계속 돌아온다.
+async def test_a_dropped_reference_is_recorded_without_buying_a_rewrite(monkeypatch):
+    """D36(2026-10-14): 화이트리스트 밖 URL 하나만 낸 회차는 정규화에서 근거가 통째로 사라진다.
 
-    화이트리스트 밖 URL 하나만 낸 회차는 정규화 단계에서 근거가 통째로 사라져
-    "references is empty" 거절이 된다. 작가 입장에서는 출처를 냈으므로, 무엇이 왜
-    빠졌는지 말해 주지 않으면 다음 회차도 같은 선택을 한다.
+    종전에는 "references is empty" 거절로 재작성을 사서 작가가 URL을 지어내게 만들었다. 이제는
+    빈 참고자료가 생성을 막지 않는다 — 한 번의 작가 호출로 저장하고, 무엇이 왜 빠졌는지는
+    `references_omitted` 기록에 남긴다.
     """
     hospital = SimpleNamespace(
         name="잠원수면의원",
@@ -1944,19 +1950,17 @@ async def test_a_dropped_reference_reaches_the_next_round_as_a_named_cause(monke
 
     monkeypatch.setattr(content_engine.client.chat.completions, "create", fake_create)
 
-    with pytest.raises(content_engine.MissingCitableReferencesError) as raised:
-        await content_engine.generate_content(
-            hospital,
-            ContentType.FAQ,
-            content_brief={"target_keyword": "수면장애", "target_query": "서초 수면장애 병원"},
-        )
-
-    assert "sleep-blog.example.com" in str(raised.value)
-    assert content_engine._REFERENCE_DROP_NOT_CITABLE in str(raised.value)
-    assert len(messages) > 1, "빈 references 거절은 재작성 회차를 산다"
-    assert "sleep-blog.example.com" in messages[1], (
-        "다음 회차 프롬프트가 어떤 출처가 왜 빠졌는지 말해야 같은 URL이 반복되지 않는다"
+    generated = await content_engine.generate_content(
+        hospital,
+        ContentType.FAQ,
+        content_brief={"target_keyword": "수면장애", "target_query": "서초 수면장애 병원"},
     )
+
+    assert generated["references"] == []
+    recorded = " ".join(generated[REFERENCES_OMITTED_KEY]["drop_notes"])
+    assert "sleep-blog.example.com" in recorded
+    assert content_engine._REFERENCE_DROP_NOT_CITABLE in recorded
+    assert len(messages) == 1, "빈 references는 재작성 회차를 사지 않는다"
 
 
 def test_length_wording_matches_the_soft_gate():

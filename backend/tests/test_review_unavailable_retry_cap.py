@@ -17,6 +17,10 @@
 - 어떤 재시도도 게이트를 우회하지 않는다 — UNAVAILABLE은 PASS가 아니고, 통과한 재검수도 바뀌지 않은
   게이트를 다시 거친다(PR-B 4c·4d·4e).
 
+D37(2026-10-14): 검수 장애로 판정이 없는 글은 이 사다리를 타지 않고 먼저 발행되며 03:10 사후 검수가
+맨 앞에서 본다(`test_full_automatic_publish_gates.py`). 이 사다리와 한도는 판정 없이 발행할 수 없는 글
+(자동 교정본·다른 본문에 묶인 장애 기록)에만 남는다 — 아래 글의 장애 기록은 편집 전 본문에 묶여 있다.
+
 네트워크·DB·공급자는 쓰지 않는다 — 가짜 세션·가짜 검수자만 쓴다.
 """
 
@@ -126,10 +130,10 @@ def _stored_post(philosophy, *, image=True):
             "image_policy_verified_at",
         ):
             setattr(item, field, None)
-    item.essence_check_summary = {
-        "automatic_remediation_attempts": 0,
-        "ai_review": _unavailable_review(item),
-    }
+    # D37(2026-10-14) 뒤로 지금 본문에 묶인 장애 기록은 먼저 발행하고 사후 검수한다. 이 사다리는
+    # 그렇게 할 수 없는 글 — 장애 기록이 다른 본문(편집 전)에 묶인 글 — 에 남는다.
+    review = {**_unavailable_review(item), "candidate_sha256": "0" * 64}
+    item.essence_check_summary = {"automatic_remediation_attempts": 0, "ai_review": review}
     return item
 
 
@@ -881,3 +885,28 @@ def test_a_successful_retry_still_goes_through_the_unchanged_gate(monkeypatch):
     payload = _publish_once(monkeypatch, unsafe, philosophy, _kst(SLOT, 9))
     assert payload["kind"] == "blocked" and payload["code"] == "FORBIDDEN_EXPRESSION"
     assert unsafe.status is tasks.ContentStatus.DRAFT and unsafe.published_at is None
+
+
+def test_an_outage_bound_to_this_body_publishes_without_buying_another_review(monkeypatch):
+    """D37(2026-10-14): 지금 본문에 묶인 검수 장애는 발행을 막지 않는다 — 스윕은 재검수를 사지 않고,
+    발행기는 예정대로 공개하며 선발행 표지를 남긴다(03:10 사후 검수가 맨 앞에서 본다)."""
+
+    philosophy = _approved_philosophy()
+    item = _stored_post(philosophy)
+    item.essence_check_summary["ai_review"] = _unavailable_review(item)
+    calls = _arm_sweep(
+        monkeypatch,
+        philosophy,
+        _review(
+            ContentAiReviewStatus.UNAVAILABLE, ContentAiReviewUnavailableReason.INVALID_RESPONSE
+        ),
+    )
+
+    _run_sweeps(monkeypatch, item, [_kst(SLOT, 1)])
+    payload = _publish_once(monkeypatch, item, philosophy, _kst(SLOT, 8))
+
+    assert calls == []
+    assert payload["kind"] == "published"
+    assert item.status is tasks.ContentStatus.PUBLISHED
+    marker = item.essence_check_summary["ai_review_deferred"]
+    assert marker["candidate_sha256"] == candidate_sha256(item)

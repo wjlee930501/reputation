@@ -1,5 +1,5 @@
 """읽기 전용 운영 조회: 자율 운영 지표(Q1~Q6), 배포 전 확인(Q7), 롤백 점검(Q8), 콘텐츠 게이트 지표(Q9~Q11),
-Phase 4 사전 조회(Q12~Q14), 월간 보고서 보장(Q15)을 JSON 한 줄씩 출력한다.
+Phase 4 사전 조회(Q12~Q14), 월간 보고서 보장(Q15), D36·D37 배포 전 영향(Q16)을 JSON 한 줄씩 출력한다.
 
 새 세션의 트랜잭션에서 첫 문장으로 `SET TRANSACTION READ ONLY`를 실행해 DB 수준에서 쓰기를 막고,
 끝나면 롤백한다. 받은 세션에 이미 열린 트랜잭션이 있으면 먼저 롤백해 새로 시작한다::
@@ -558,6 +558,85 @@ QUERIES: dict[str, tuple[str, ...]] = {
           AND r.idempotency_key LIKE 'report-repair:%'
           AND r.created_at > now() - interval '45 days'
         ORDER BY r.created_at
+        """,
+    ),
+    # (0092, 2026-10-14 D36·D37) 배포 전 영향 — 이 배포로 새로 발행·공개될 수 있는 글. 판정의 정본은 파이썬
+    # 게이트라 근사다(제목 규칙·후보 hash는 SQL로 다시 계산하지 않는다). q16: 참고자료 0개로 보류된 발행 전
+    # 글(D36). q16b: 검수 장애(UNAVAILABLE)로 보류된 발행 전 글(D37, 비용 보류·설정 오류 제외). q16c: 이미
+    # 공개됐지만 참고자료 0개·검수 장애로 공개 표면에서 숨은 글(배포 즉시 다시 보일 수 있다). q16d: D35
+    # 백로그(아래).
+    "q16": (
+        """
+        SELECT left(c.id::text, 8) AS content_id8, h.name AS hospital, c.content_type,
+               c.status, c.scheduled_date, left(c.title, 60) AS title,
+               c.essence_check_summary->'generation_attempt'->>'reason' AS attempt_reason,
+               c.essence_check_summary->'ai_review'->>'status' AS ai_review_status
+        FROM content_items c
+        JOIN hospitals h ON h.id = c.hospital_id
+        WHERE c.status IN ('DRAFT', 'READY')
+          AND c.scheduled_date >= (now() AT TIME ZONE 'Asia/Seoul')::date - 7
+          AND btrim(coalesce(c.body, '')) <> ''
+          AND (c.references_list IS NULL
+               OR jsonb_typeof(c.references_list) <> 'array'
+               OR jsonb_array_length(c.references_list) = 0)
+          AND (c.content_type::text IN ('FAQ','DISEASE','TREATMENT','COLUMN','HEALTH','LOCAL')
+               OR c.essence_check_summary->'generation_attempt'->>'reason' = 'MISSING_REFERENCES')
+        ORDER BY c.scheduled_date, h.name, c.id
+        """,
+        """
+        SELECT left(c.id::text, 8) AS content_id8, h.name AS hospital, c.content_type,
+               c.status, c.scheduled_date, left(c.title, 60) AS title,
+               c.essence_check_summary->'ai_review'->>'unavailable_reason' AS unavailable_reason,
+               c.essence_check_summary->'auto_correction'->>'corrected_sha256'
+                 = c.essence_check_summary->'ai_review'->>'candidate_sha256'
+                 AS auto_corrected_body
+        FROM content_items c
+        JOIN hospitals h ON h.id = c.hospital_id
+        WHERE c.status IN ('DRAFT', 'READY')
+          AND c.scheduled_date >= (now() AT TIME ZONE 'Asia/Seoul')::date - 7
+          AND c.essence_check_summary->'ai_review'->>'status' = 'UNAVAILABLE'
+          AND coalesce(c.essence_check_summary->'ai_review'->>'unavailable_reason', '')
+                IN ('', 'PROVIDER_ERROR', 'INVALID_RESPONSE')
+        ORDER BY c.scheduled_date, h.name, c.id
+        """,
+        """
+        SELECT left(c.id::text, 8) AS content_id8, h.name AS hospital, c.content_type,
+               c.published_at, left(c.title, 60) AS title,
+               (c.references_list IS NULL
+                OR jsonb_typeof(c.references_list) <> 'array'
+                OR jsonb_array_length(c.references_list) = 0) AS references_empty,
+               c.essence_check_summary->'ai_review'->>'status' AS ai_review_status
+        FROM content_items c
+        JOIN hospitals h ON h.id = c.hospital_id
+        WHERE c.status = 'PUBLISHED'
+          AND ((c.content_type::text IN ('FAQ','DISEASE','TREATMENT','COLUMN','HEALTH','LOCAL')
+                AND (c.references_list IS NULL
+                     OR jsonb_typeof(c.references_list) <> 'array'
+                     OR jsonb_array_length(c.references_list) = 0))
+               OR c.essence_check_summary->'ai_review'->>'status' = 'UNAVAILABLE')
+        ORDER BY c.published_at, h.name, c.id
+        """,
+        # q16d (D35): 알림 의도 없이 남은 FLAGGED 공개 글 — 첫 03:10 실행이 "마케터 검토 필요 N건" 요약
+        # 한 통으로 알릴 백로그의 상한(Critical 판정은 본문 대조가 필요해 파이썬이 마지막에 거른다).
+        """
+        SELECT count(*) AS flagged_without_alert,
+               count(*) FILTER (WHERE EXISTS (
+                   SELECT 1 FROM jsonb_array_elements(
+                       CASE WHEN jsonb_typeof(c.essence_check_summary->'post_publish_ai_review'
+                                               ->'structured_findings') = 'array'
+                            THEN c.essence_check_summary->'post_publish_ai_review'->'structured_findings'
+                            ELSE '[]'::jsonb END) f
+                   WHERE f->>'kind' = 'MEDICAL_SAFETY' OR f->>'severity' = 'HARD'))
+                 AS with_medical_or_hard,
+               count(*) FILTER (WHERE jsonb_typeof(c.essence_check_summary->'post_publish_ai_review'
+                                                   ->'structured_findings') IS DISTINCT FROM 'array')
+                 AS without_structure,
+               count(*) FILTER (WHERE c.essence_check_summary->'post_publish_ai_review'
+                                      ->'correction'->>'finished' = 'true') AS correction_finished
+        FROM content_items c
+        WHERE c.status = 'PUBLISHED'
+          AND c.essence_check_summary->'post_publish_ai_review'->>'status' = 'FLAGGED'
+          AND NOT (c.essence_check_summary ? 'post_publish_critical_alert')
         """,
     ),
 }

@@ -31,6 +31,10 @@
 그대로 옮기는 일이 많다('당뇨 진료를 받으려는데 하남시 어느 병원으로 가야 해?' → 제목 '하남시 당뇨
 진료 병원 — 혈당 확인부터 합병증 검사까지').
 
+2026-10-14 대표 결정(D36)으로 이 "참고자료가 비어도 막지 않는다"가 **모든 유형**으로 넓어졌다
+(`references_block_when_empty`는 언제나 거짓). 필수 유형 판정은 여전히 생성 프롬프트·스키마와
+수기 목록 치유가 쓴다 — 치유가 실패하면 참고자료 없이 저장하고 그 사실을 기록한다.
+
 병원 선택 글은 **의료 주제가 없는** 고르기 글만이다(2026-09-29 팀장 결정). 제목이 수기 목록의
 질환·시술 키워드를 담으면(`title_names_medical_subject`) 그 문서가 정당한 근거이므로 병원 선택
 글이 아니다 — '경산 경동맥초음파 검사, 어느 병원에서 받아야 할까요?'는 경동맥초음파 문서를 받는
@@ -243,23 +247,24 @@ def references_block_when_empty_for(
     query_target_id: object = None,
     title: object = None,
 ) -> bool:
-    """참고자료가 비면 이 글의 생성·발행을 막는가(D23).
+    """참고자료가 비면 이 글의 생성·발행을 막는가 — 막지 않는다(D36).
 
-    참고자료 필수 유형(`references_required_for`)이되 제목이 진료비·병원 선택 글이 아니어야 한다.
-    진료비·병원 선택 글은 붙일 공신력 문서가 본질적으로 없어 참고자료가 선택이다. 참고자료가
-    있으면 다른 글과 똑같이 실제 문서 검증·주제 대조·제외 목록을 거친다.
+    2026-10-13 D23은 진료비·병원 선택 글만 참고자료를 선택으로 했다. 2026-10-14 대표 결정(D36)이
+    그것을 모든 유형으로 넓혔다: "참고자료가 무조건 100% 다 있어야 하는 건 아니다". 참고자료 필수
+    유형(`references_required_for`)의 글도 검증된 참고자료가 없으면 수기 목록 치유를 먼저 해 보고,
+    그래도 없으면 참고자료 없이 생성·발행한다(기록은 `REFERENCES_OMITTED_KEY`). 참고자료가 **있으면**
+    종전과 똑같이 실제 문서 검증·주제 대조·제외 목록을 거친다. 빈 참고자료를 재작성 지적으로 넘기지
+    않는다 — 모델이 URL을 지어내게 만드는 유일한 압력이었다.
+
+    인자는 호출부 호환을 위해 남긴다. 필수 유형 판정 자체(`references_required_for`)는 그대로이며
+    생성 프롬프트·스키마·수기 목록 치유가 쓴다.
     """
 
-    return (
-        references_required_for(
-            content_type, content_brief=content_brief, query_target_id=query_target_id
-        )
-        and topic_without_authoritative_source(title) is None
-    )
+    return False
 
 
 def references_block_when_empty(item: object, *, title: object = None) -> bool:
-    """행(또는 같은 속성을 가진 보기)에 대한 `references_block_when_empty_for`."""
+    """행(또는 같은 속성을 가진 보기)에 대한 `references_block_when_empty_for`(D36 — 막지 않는다)."""
 
     return references_block_when_empty_for(
         getattr(item, "content_type", None),
@@ -269,10 +274,29 @@ def references_block_when_empty(item: object, *, title: object = None) -> bool:
     )
 
 
+# ── 참고자료 없이 저장한 기록(D36) ───────────────────────────────────────────────────────
+# 참고자료 필수 유형의 글이 검증된 참고자료 없이 저장될 때 생성이 `essence_check_summary`에 남긴다.
+# 발행을 막지 않는 기록이며 운영 조회(`ops_sql_report`)·감사가 읽는다.
+REFERENCES_OMITTED_KEY = "references_omitted"
+REFERENCES_OMITTED_NO_VERIFIED = "NO_VERIFIED_REFERENCE"
+REFERENCES_OMITTED_NO_AUTHORITATIVE_SOURCE = "NO_AUTHORITATIVE_SOURCE"
+
+
+def references_omitted_reason(title: object) -> str:
+    """참고자료 없이 저장한 이유 — 진료비·병원 선택 글이면 공신력 문서가 본질적으로 없다."""
+
+    return (
+        REFERENCES_OMITTED_NO_AUTHORITATIVE_SOURCE
+        if topic_without_authoritative_source(title) is not None
+        else REFERENCES_OMITTED_NO_VERIFIED
+    )
+
+
 # ── 승인 판 SQL(`reconcile_content_revisions`)에 넘기는 판정 표지 ────────────────────────────
 # DB 함수는 제목 규칙을 다시 구현하지 않는다(0089). 발행 경로가 판을 만들기 직전에 이 판정을
 # `essence_check_summary`에 적고, 함수는 표지의 제목 hash·유형이 행과 같을 때만 "참고자료가
-# 비어도 된다"로 읽는다 — 제목이 바뀐 뒤의 옛 표지는 무효다.
+# 비어도 된다"로 읽는다 — 제목이 바뀐 뒤의 옛 표지는 무효다. 0092부터 함수는 참고자료 수를 보지
+# 않는다(D36). 표지는 0090 함수로 내려가는 롤백에서도 D36 발행이 판을 받도록 계속 적는다.
 REFERENCE_REQUIREMENT_SUMMARY_KEY = "reference_requirement"
 
 

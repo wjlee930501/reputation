@@ -547,36 +547,6 @@ def test_heal_protected_lines_tracks_fence_char_length_and_container():
 # ── 치유·예외 계수 — 2회차 교차 검토(2026-10-13) ────────────────────────────────────
 
 
-async def test_a_reference_heal_followed_by_a_must_use_rejection_is_counted_and_healed(monkeypatch):
-    payload = _payload("검사 전날 식단을 조절합니다.")
-
-    async def fake_attempt(*_args, **_kwargs):
-        raise content_engine.MissingCitableReferencesError(
-            "GEO hard-fail: references is empty for FAQ", dict(payload)
-        )
-
-    def fake_reference_heal(error, *_args, **_kwargs):
-        raise content_engine.MissingMustUseMessagesError(
-            "Required must_use messages missing verbatim (1): ...",
-            error.result,
-            (MUST_USE_2CM,),
-        )
-
-    monkeypatch.setattr(content_engine, "_generate_content_attempt", fake_attempt)
-    monkeypatch.setattr(content_engine, "_heal_from_curated_catalog", fake_reference_heal)
-    monkeypatch.setattr(
-        content_engine, "_validate_generated_result", lambda result, *_a, **_k: dict(result)
-    )
-
-    saved = await _generate([MUST_USE_2CM])
-
-    assert saved["body"].rstrip().endswith(MUST_USE_2CM)
-    assert saved[content_engine.GENERATION_REJECTIONS_KEY] == {
-        "rejected": {"references": 1, "must_use": 1},
-        "healed": {"must_use": 1, "references": 1},
-    }
-
-
 async def test_a_provider_error_after_a_rejection_keeps_the_cumulative_counts(monkeypatch):
     bad_title = _payload("검사 전날 식단을 조절합니다.")
     bad_title["title"] = "최고의 대장내시경 준비 안내"

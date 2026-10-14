@@ -123,6 +123,22 @@ def test_fallback_narrative_query_is_a_registered_read() -> None:
     assert ops_sql_report.parse_args(["--only=q11"]).only == ["q11"]
 
 
+def test_full_automatic_impact_query_lists_newly_publishable_and_visible_posts() -> None:
+    """0092(2026-10-14 D36·D37): 배포 전 영향 — 참고자료 0개·검수 장애로 보류된 발행 전 글과
+    공개 표면에서 숨은 공개 글."""
+
+    drafts, deferred, published, backlog = ops_sql_report.QUERIES["q16"]
+    assert "post_publish_critical_alert" in backlog and "FLAGGED" in backlog
+    for sql in (drafts, deferred, published, backlog):
+        assert sql.strip().upper().startswith("SELECT")
+    assert "jsonb_array_length(c.references_list) = 0" in drafts
+    assert "c.status IN ('DRAFT', 'READY')" in drafts
+    assert "'UNAVAILABLE'" in deferred
+    assert "'PROVIDER_ERROR', 'INVALID_RESPONSE'" in deferred
+    assert "c.status = 'PUBLISHED'" in published
+    assert ops_sql_report.parse_args(["--only=q16"]).only == ["q16"]
+
+
 def test_phase4_precheck_queries_are_registered_reads() -> None:
     """P4-0(2026-10-14): D31 승격 예측(q12), Essence·자동 입력 상태(q13), 보류 사고·알림(q14)."""
 

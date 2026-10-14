@@ -59,7 +59,10 @@ BLOCKED_SHAPES = {
         essence_check_summary={"ai_review": {"status": "UNAVAILABLE", "unavailable_reason": "INVALID_RESPONSE"}}
     ),
     "forbidden_expression": dict(meta_description="완치를 약속드립니다."),
-    "missing_references": dict(references_list=[]),
+    # D36: 비어 있으면 발행한다 — 인용할 수 없는 주소만 남은 글이 막힌다.
+    "missing_references": dict(
+        references_list=[{"title": "블로그", "url": "https://example.com/post"}]
+    ),
 }
 
 

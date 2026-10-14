@@ -431,7 +431,14 @@ def test_stochastic_failures_are_sample_recoverable_not_input_change() -> None:
         assert retry_class_for(code) == GenerationRetryClass.INPUT_CHANGE_REQUIRED, code
 
 
-def test_hard_finding_class_depends_on_who_declared_it() -> None:
+def test_hard_finding_class_depends_on_who_declared_it(monkeypatch) -> None:
+    from app.core.config import settings as _settings
+
+    # 등급이 꺼져 있으면(기본) 모든 HARD가 종착이다 — main과 같다.
+    off = {"findings": [{"severity": "HARD", "kind": "HOSPITAL_FACT", "message": "진료 원칙",
+                         "quote": "q"}]}
+    assert has_model_declared_hard_finding(off, {"body": "q 문장입니다."}) is True
+    monkeypatch.setattr(_settings, "CONTENT_FINDING_TIERS_ENABLED", True)
     assert retry_class_for("CONTENT_AI_HARD_FINDING") == (
         GenerationRetryClass.SAMPLE_RECOVERABLE
     )
@@ -442,7 +449,17 @@ def test_hard_finding_class_depends_on_who_declared_it() -> None:
         {"findings": [{"severity": "UNCERTAIN", "kind": "MEDICAL_SAFETY"}]}
     ) is False
     assert has_model_declared_hard_finding(
-        {"findings": [{"severity": "SOFT"}, {"severity": "HARD", "kind": "HOSPITAL_FACT"}]}
+        {"findings": [{"severity": "SOFT"}, {"severity": "HARD", "kind": "MEDICAL_SAFETY"}]}
+    ) is True
+    # W4: 본문 한 문장을 짚은 의료 내용 없는 병원 사실 HARD는 Critical이 아니다 — 종착이 아니다.
+    sentence = "본원은 환자 이야기를 끝까지 듣는 것을 진료 원칙으로 삼습니다."
+    fact = {"findings": [{"severity": "SOFT"}, {"severity": "HARD", "kind": "HOSPITAL_FACT",
+                          "message": "승인 자료에 없는 진료 원칙", "quote": sentence}]}
+    assert has_model_declared_hard_finding(fact, {"body": f"## 안내\n{sentence}"}) is False
+    # 본문을 모르거나 인용이 없는 병원 사실 HARD는 Critical이다(fail closed).
+    assert has_model_declared_hard_finding(fact) is True
+    assert has_model_declared_hard_finding(
+        {"findings": [{"severity": "HARD", "kind": "HOSPITAL_FACT"}]}
     ) is True
     assert has_model_declared_hard_finding(None) is False
 

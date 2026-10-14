@@ -1,8 +1,13 @@
 """D23 진료비·병원 선택 글 — 참고자료 0개여도 승인 판이 생기고 공개된다(0089, 실제 PostgreSQL).
 
 발행 경로는 `references_block_when_empty` 판정을 `essence_check_summary.reference_requirement`에
-제목 hash·유형과 함께 적고, `reconcile_content_revisions`는 그 표지만 읽는다. 의료 글·제목이 바뀐
-표지·표지 없는 글은 종전처럼 판을 받지 못한다. NOTICE 규칙은 그대로다.
+제목 hash·유형과 함께 적고, `reconcile_content_revisions`는 그 표지만 읽는다. 제목이 바뀐 표지·
+표지 없는 글은 판을 받지 못한다. NOTICE 규칙은 그대로다.
+
+0092(D36)부터 함수는 참고자료 수를 보지 않는다. 이 파일은 **0090 함수**(롤백 대상)를 트랜잭션 안에
+설치하고 그 표지 계약을 고정한다 — D36 뒤의 발행 경로가 적는 표지(`block_when_empty=false`)로 0090
+함수에서도 의료 글이 판을 받는지(롤백 호환)를 함께 본다. 0092 함수는
+`test_full_automatic_revision_postgres.py`가 본다.
 """
 
 from __future__ import annotations
@@ -39,6 +44,14 @@ pytestmark = pytest.mark.asyncio
 COST_TITLE = "강남 도수치료 비용, 무엇으로 정해지나요?"
 MEDICAL_TITLE = "치핵 증상과 진료 흐름"
 _SQL_DIR = Path(__file__).resolve().parents[2] / "alembic" / "revision_sql"
+
+
+@pytest.fixture(autouse=True)
+async def _function_0090(pg_async_session):
+    connection = await pg_async_session.connection()
+    await connection.exec_driver_sql(
+        (_SQL_DIR / "reconcile_content_revisions_0090.sql").read_text(encoding="utf-8")
+    )
 
 
 async def _seed(db, *, content_type: ContentType, title: str) -> ContentItem:
@@ -184,20 +197,22 @@ async def test_cost_title_without_marker_keeps_the_strict_sql_rule(pg_async_sess
     assert await _publish(pg_async_session, item, stamp=False) == 0
 
 
-async def test_medical_post_with_no_references_gets_no_revision(pg_async_session):
+async def test_medical_post_with_no_references_still_gets_a_revision_after_rollback(pg_async_session):
+    """D36: 발행 게이트가 막지 않고, 0090 함수로 되돌려도 발행 경로의 표지(false)로 판이 생긴다."""
+
     item = await _seed(pg_async_session, content_type=ContentType.DISEASE, title=MEDICAL_TITLE)
-    # 발행 게이트도 막는다 — 이 SQL 검사는 마지막 방어선이다.
-    assert not has_required_references(item)
-    item.status = ContentStatus.PUBLISHED
-    item.published_at = datetime.now(UTC)
-    item.published_by = "system:auto-publish"
-    stamp_reference_requirement(item)
-    assert item.essence_check_summary[REFERENCE_REQUIREMENT_SUMMARY_KEY]["block_when_empty"]
-    await pg_async_session.flush()
+    assert has_required_references(item)
 
-    written = await reconcile_content_revisions(pg_async_session, content_item_id=item.id)
+    assert await _publish(pg_async_session, item) == 1
+    marker = item.essence_check_summary[REFERENCE_REQUIREMENT_SUMMARY_KEY]
+    assert marker["block_when_empty"] is False
+    assert marker["no_source_topic"] is None
 
-    assert written.created_count == 0
+
+async def test_medical_post_without_marker_gets_no_revision_under_0090(pg_async_session):
+    item = await _seed(pg_async_session, content_type=ContentType.DISEASE, title=MEDICAL_TITLE)
+
+    assert await _publish(pg_async_session, item, stamp=False) == 0
 
 
 async def test_marker_written_for_another_title_is_ignored(pg_async_session):

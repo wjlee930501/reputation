@@ -291,6 +291,10 @@ INCIDENT_TYPE_POLICIES: dict[str, IncidentTypePolicy] = {
     # 사후검수 지적은 계약상 운영자 큐에 올리지 않는 표본 확인이며, 하루 20편씩 지적·교정 복구마다
     # Slack을 보내 24시간에 60건이 나갔다(2026-10-08 대표 지시로 끔). 콘텐츠 탭에서 본다.
     "POST_PUBLISH_REVIEW_FLAGGED": IncidentTypePolicy(quiet=True),
+    # D35(2026-10-14): 자동 교정을 거친 뒤에도 공개 글에 Critical 지적(의료 안전 HARD·응급 안내 누락)이
+    # 남았다. 글은 내리지 않고 "마케터 검토 필요"를 글당 한 번 알린다 — 운영 담당·Slack·사람의 일.
+    # Critical이 아닌 지적은 사고를 열지 않는다. 닫는 근거는 `incident_backlog.RESOLVERS`에 있다.
+    "POST_PUBLISH_CRITICAL_FINDING": _DEFAULT_POLICY,
     # AE가 Admin에서 고칠 수 없는 일 → 개발 담당(Phase 1-8). 일일 요약의 "개발 확인"으로만 센다.
     # 위조·불일치 actor 헤더는 BFF 서명 문제다(30일 무재발이면 근거로 닫힌다).
     "UNVERIFIED_ADMIN_ACTOR": _DEVELOPER,

@@ -275,6 +275,17 @@ def _message_of(built: object) -> SlackMessage:
 
 
 # 종류 하나에 표본 하나. 왼쪽이 기대 라벨, 오른쪽이 그 종류의 실제 투영이다.
+def _critical_digest_sample():
+    from types import SimpleNamespace
+
+    from app.workers.post_publish_ai_review import build_critical_backlog_digest
+
+    item = SimpleNamespace(
+        id=_HOSPITAL, title="허리 통증 안내", hospital=SimpleNamespace(name="장편한외과의원")
+    )
+    return build_critical_backlog_digest([item], datetime(2026, 10, 15, 3, 10, tzinfo=UTC))
+
+
 _SAMPLES: tuple[tuple[str, NotificationLabel, object], ...] = (
     (
         "INCIDENT_OPEN",
@@ -341,6 +352,11 @@ _SAMPLES: tuple[tuple[str, NotificationLabel, object], ...] = (
         lambda: build_generation_blocked_digest_intent(
             date(2026, 9, 20), "0800", (_blocked_outcome(),)
         ),
+    ),
+    (
+        "POST_PUBLISH_CRITICAL_DIGEST",
+        NotificationLabel.ERROR,
+        lambda: _critical_digest_sample(),
     ),
     (
         "GENERATION_REJECTION_WEEKLY_ROLLUP",

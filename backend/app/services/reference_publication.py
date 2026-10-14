@@ -52,8 +52,10 @@ from app.services.content_ai_review import (
 )
 from app.services.post_publish_review_policy import AUTO_PUBLISHABLE_STATUSES
 from app.services.reference_requirement import (
+    REFERENCES_OMITTED_KEY,
     references_block_when_empty,
     references_left_to_operator,
+    references_omitted_reason,
     references_required,
 )
 from app.services.reference_verification import (
@@ -172,9 +174,14 @@ def publication_references_current(item: object, *, now: datetime | None = None)
 
 
 def publication_references_missing(item: object) -> bool:
-    """참고자료가 필수인 글에 주소가 있는 항목이 하나도 없는가(치유 또는 MISSING_REFERENCES 대상)."""
+    """참고자료가 필수인 글에 주소가 있는 항목이 하나도 없는가 — 발행 직전 수기 목록 치유 대상.
 
-    if not references_block_when_empty(item):
+    D36(2026-10-14) 뒤로 이 상태는 발행을 막지 않는다. 발행 경로가 이 글의 주제로 수기 목록 치유를
+    먼저 시도하고, 채우지 못하면 참고자료 없이 발행한다. 진료비·병원 선택 글은 치유하지 않는다
+    (`references_left_to_operator`).
+    """
+
+    if not references_required(item) or references_left_to_operator(item):
         return False
     entries, _malformed = split_reference_entries(getattr(item, "references_list", None))
     return not entries
@@ -301,7 +308,7 @@ async def refresh_publication_references(
     )
     if (
         publication_references_current(item, now=observed)
-        and not (references_block_when_empty(item) and not references)
+        and not publication_references_missing(item)
         and not strip_curated
     ):
         return PublicationReferenceRefresh(
@@ -360,14 +367,8 @@ async def refresh_publication_references(
                 candidates, topic_terms=topic_terms, defer_transient=True, now=observed
             )
             checks = merge_reference_checks(checks, filled.checks)
-            if filled.deferred and not filled.kept:
-                return PublicationReferenceRefresh(
-                    snapshot=snapshot,
-                    references=references,
-                    checks=checks,
-                    deferred=True,
-                    site_unreachable_urls=_deferred_urls(filled.deferred_checks()),
-                )
+            # 치유 후보의 기관 사이트가 일시 장애여도 미루지 않는다(D36) — 채우지 못하면 참고자료
+            # 없이 발행한다. 이 글이 원래 실은 참고자료의 검증 장애만 발행을 미룬다(위).
             kept = filled.kept
             healed = bool(kept)
     return PublicationReferenceRefresh(
@@ -448,6 +449,17 @@ def apply_publication_reference_refresh(
     item.references_list = refresh.references
     # 시스템 편집이다 — 변경 직전 본문에 묶인 PASS는 새 참고자료로 옮긴다(발행 슬롯을 놓치지 않게).
     restamp_review_after_system_reference_change(item, before_sha)
+    if not refresh.references and references_required(item):
+        # D36: 검증된 참고자료가 하나도 남지 않았다 — 막지 않고 참고자료 없이 발행하며 기록한다.
+        summary = getattr(item, "essence_check_summary", None)
+        item.essence_check_summary = {
+            **(dict(summary) if isinstance(summary, Mapping) else {}),
+            REFERENCES_OMITTED_KEY: {
+                "reason": references_omitted_reason(getattr(item, "title", None)),
+                "drop_notes": [],
+                "at": datetime.now(timezone.utc).isoformat(),
+            },
+        }
     if hasattr(item, "content_revision"):
         item.content_revision = int(getattr(item, "content_revision", 1) or 1) + 1
     return True

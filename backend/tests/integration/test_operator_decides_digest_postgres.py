@@ -206,11 +206,10 @@ def _section_text(row) -> str:
     )
 
 
-def test_seven_forty_five_holds_only_the_medical_post_after_d23(gate_db, incidents):
+def test_seven_forty_five_holds_no_post_for_empty_references_after_d36(gate_db, incidents):
     """D23(2026-10-13): 작성된 진료비 글은 죽은 주소가 빠져 참고자료가 비어도 보류가 아니다.
 
-    같은 조건의 의료 글은 종전처럼 MISSING_REFERENCES로 보류되고, 그 평범한 보류는 주간 요약
-    몫이라 아침 요약을 만들지 않는다.
+    D36(2026-10-14)이 이를 모든 유형으로 넓혔다 — 같은 조건의 의료 글도 보류하지 않는다.
     """
 
     db = gate_db
@@ -227,11 +226,9 @@ def test_seven_forty_five_holds_only_the_medical_post_after_d23(gate_db, inciden
     )
     db.commit()
 
-    assert _run(db) == 1
+    assert _run(db) == 0
 
-    assert [(call["item_id"], call["code"]) for call in incidents] == [
-        (ordinary_today.id, "MISSING_REFERENCES")
-    ]
+    assert incidents == []
     for item in (cost_today, ordinary_today, cost_catchup):
         db.refresh(item)
         assert item.references_list == []

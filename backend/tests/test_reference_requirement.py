@@ -37,6 +37,7 @@ from app.services.reference_publication import (
     publication_references_settled,
 )
 from app.services.reference_requirement import (
+    REFERENCES_OMITTED_KEY,
     REFERENCES_REQUIRED_TYPES,
     brief_carries_medical_topic,
     references_required,
@@ -44,10 +45,6 @@ from app.services.reference_requirement import (
 )
 from app.services.reference_verification import ReferenceVerifier, override_reference_fetcher
 from app.workers import tasks
-from app.workers.generation_run_control import (
-    GENERATION_REFERENCE_REJECTION_MESSAGE,
-    classify_generation_failure,
-)
 from tests.reference_fetch_doubles import PageFetcher
 from tests.test_content_compliance_faq import _content_item, _hospital, _NoExecuteDB, _wire
 from tests.test_reference_publication_gate import (
@@ -205,11 +202,14 @@ def _notice_publish_setup(monkeypatch, *, references, brief, query_target_id, ti
 
 
 @pytest.mark.parametrize("references", [[], ROOT_URLS], ids=["empty", "domain_roots"])
-def test_zero_reference_publish_block_for_medical_notice_2af00d02(monkeypatch, references):
-    """2af00d02 모양은 참고자료가 비었거나 도메인 루트뿐이면 0개로 공개되지 않는다.
+def test_medical_notice_without_verified_references_publishes_without_them_2af00d02(
+    monkeypatch, references
+):
+    """2af00d02 모양 — 참고자료가 비었거나 도메인 루트뿐이다.
 
-    먼저 이 글의 주제로 수기 목록 치유를 시도하고(신경외과 질문에 맞는 수기 문서는 없다),
-    그래도 없으면 MISSING_REFERENCES로 보류한다 — 원인과 맞는 문구로.
+    도메인 루트는 근거가 아니므로 빠진다(GET할 것도 없다). 먼저 이 글의 주제로 수기 목록 치유를
+    시도하고(신경외과 질문에 맞는 수기 문서는 없다), 그래도 없으면 D36(2026-10-14)으로 참고자료
+    없이 발행한다 — 지어낸 근거를 남기지 않고 그 사실을 기록한다.
     """
     item, _db, effects = _notice_publish_setup(
         monkeypatch,
@@ -218,6 +218,7 @@ def test_zero_reference_publish_block_for_medical_notice_2af00d02(monkeypatch, r
         query_target_id=uuid.UUID(_TARGET_ID),
         title="마포구 신경외과 진료 — 증상·검사·치료 흐름 안내",
     )
+    _bind_pass_review(item)
     fetcher = PageFetcher()
     # 비었거나 확인 기록이 없다 — 발행 경로가 재검증·치유를 먼저 돈다.
     assert not publication_references_settled(item)
@@ -226,16 +227,14 @@ def test_zero_reference_publish_block_for_medical_notice_2af00d02(monkeypatch, r
         item.id, reference_verifier=ReferenceVerifier(fetcher, domain_spacing=0)
     )
 
-    assert payload is not None and payload["kind"] == "blocked"
-    assert payload["code"] == "MISSING_REFERENCES"
-    assert "공신력 있는 참고 자료를 확보하지 못했습니다" in payload["message"]
-    assert item.status is tasks.ContentStatus.DRAFT
-    assert item.published_at is None
+    assert payload is None or payload.get("kind") != "blocked", payload
+    assert item.status is tasks.ContentStatus.PUBLISHED
     assert item.references_list == []
-    assert effects == {"revalidate": [], "indexnow": []}
     assert fetcher.calls == []  # 도메인 루트는 문서가 아니다 — GET할 것도 없다
     if references:
-        assert {check["reason"] for check in item.reference_checks} == {"not_citable"}
+        # 판에 묶이는 근거는 남은 참고자료의 것뿐이다(0개면 빈 목록).
+        assert item.reference_checks == []
+        assert item.essence_check_summary[REFERENCES_OMITTED_KEY]["reason"] == "NO_VERIFIED_REFERENCE"
 
 
 @pytest.mark.parametrize("with_brief", [True, False], ids=["brief", "row_link_only"])
@@ -288,7 +287,9 @@ def test_pure_operational_notice_still_publishes_without_references(monkeypatch)
     assert fetcher.calls == []
 
 
-def test_seven_forty_five_holds_a_medical_notice_without_references(monkeypatch):
+def test_seven_forty_five_does_not_page_a_medical_notice_without_references(monkeypatch):
+    """D36: 07:45 게이트도 참고자료가 없다는 이유로 보류·알림하지 않는다(루트 주소는 빠진다)."""
+
     hospital = _publication_hospital()
     title = "마포구 신경외과 진료 — 증상·검사·치료 흐름 안내"
     item = _publication_item(hospital, body="진료 흐름을 안내합니다.", title=title)
@@ -300,6 +301,7 @@ def test_seven_forty_five_holds_a_medical_notice_without_references(monkeypatch)
     item.query_target_id = uuid.UUID(_TARGET_ID)
     item.references_list = [dict(ref) for ref in ROOT_URLS]
     item.reference_checks = None
+    _bind_pass_review(item)
     db = _GateDB(item)
     incidents = _gate_setup(monkeypatch, item)
 
@@ -308,9 +310,8 @@ def test_seven_forty_five_holds_a_medical_notice_without_references(monkeypatch)
             db, now_kst=arrow.get(2026, 6, 10, 7, 45, tzinfo="Asia/Seoul")
         )
 
-    assert paged == 1
-    assert incidents[0]["code"] == "MISSING_REFERENCES"
-    assert "공신력 있는 참고 자료를 확보하지 못했습니다" in incidents[0]["message"]
+    assert paged == 0
+    assert incidents == []
     assert item.references_list == []
 
 
@@ -376,7 +377,9 @@ async def test_manual_publish_heals_an_empty_medical_notice_before_the_reference
     assert raised.value.detail.get("missing") != "references", raised.value.detail
 
 
-async def test_manual_publish_refuses_a_medical_notice_without_references(monkeypatch):
+async def test_manual_publish_does_not_refuse_a_medical_notice_without_references(monkeypatch):
+    """D36: 수동 발행도 참고자료 때문에 거절하지 않는다 — 루트 주소는 빠지고 다음 게이트로 간다."""
+
     hospital = _hospital()
     item = _content_item(
         hospital_id=hospital.id,
@@ -388,6 +391,11 @@ async def test_manual_publish_refuses_a_medical_notice_without_references(monkey
     )
     item.reference_checks = None
     _wire(monkeypatch, item, hospital)
+
+    async def no_philosophy(*_args):
+        return None
+
+    monkeypatch.setattr(content_api, "_get_approved_philosophy", no_philosophy)
     token = set_request_actor("ae@example.com")
     try:
         with override_reference_fetcher(PageFetcher()):
@@ -398,12 +406,15 @@ async def test_manual_publish_refuses_a_medical_notice_without_references(monkey
     finally:
         reset_request_actor(token)
 
-    assert raised.value.status_code == 400, raised.value.detail
-    assert raised.value.detail["missing"] == "references", raised.value.detail
+    # 이 더블 DB에는 승인된 운영 기준이 없어 다음 게이트에서 멈춘다 — 참고자료 거절이 아니다.
+    assert item.references_list == []
+    assert raised.value.detail.get("missing") != "references", raised.value.detail
     assert item.status == "DRAFT"
 
 
-async def test_restore_refuses_a_medical_notice_without_references_and_never_fills_them():
+async def test_restore_allows_a_medical_notice_without_references_and_never_fills_them():
+    """D36: 비어 있는 참고자료는 다시 공개를 막지 않는다. restore는 여전히 채우지 않는다."""
+
     item = SimpleNamespace(
         title="마포구 신경외과 진료 — 증상·검사·치료 흐름 안내",
         body="",
@@ -417,12 +428,8 @@ async def test_restore_refuses_a_medical_notice_without_references_and_never_fil
     )
     db = _CommitDB()
 
-    with pytest.raises(HTTPException) as raised:
-        await content_api._require_restorable_references(db, item, None)
+    await content_api._require_restorable_references(db, item, None)
 
-    assert raised.value.status_code == 409
-    assert raised.value.detail["code"] == "MISSING_REFERENCES"
-    assert "PATCH" in raised.value.detail["message"]
     assert item.references_list == []  # restore는 채우지 않는다
     assert item.content_revision == 4
     assert db.commits == 0
@@ -446,10 +453,10 @@ async def test_restore_keeps_the_pure_operational_notice_exemption():
     assert not publication_references_missing(item)
 
 
-def test_public_surface_keeps_the_type_rule_so_published_posts_do_not_change():
+def test_public_surface_and_gate_agree_that_empty_references_are_allowed():
     """이미 공개된 의료 주제 NOTICE(2af00d02 모양)를 배포만으로 사이트에서 내리지 않는다.
 
-    새 발행·restore는 새 규칙으로 막고, 공개 글 교정은 사람이 따로 한다.
+    D36(2026-10-14) 뒤로 발행 게이트도 같은 답이다 — 참고자료가 비어 있으면 막지 않는다.
     """
     published = SimpleNamespace(
         content_type="NOTICE",
@@ -458,7 +465,7 @@ def test_public_surface_keeps_the_type_rule_so_published_posts_do_not_change():
         references_list=[],
     )
     assert public_surface_has_required_references(published)
-    assert not has_required_references(published)
+    assert has_required_references(published)
 
 
 # ── 생성: 의료 주제 NOTICE는 규칙·스키마·치유·거절이 의료 안내 유형과 같다 ────────────
@@ -541,21 +548,20 @@ def _stub_writer(monkeypatch, payload):
     return calls
 
 
-async def test_medical_notice_whose_references_all_drop_is_rejected_with_the_reference_copy(
-    monkeypatch,
-):
-    """2af00d02 생성 경로: 도메인 루트 2개가 빠져 0개면 조용히 저장하지 않고 거절한다."""
-    _stub_writer(monkeypatch, _notice_payload([dict(ref) for ref in ROOT_URLS]))
+async def test_medical_notice_whose_references_all_drop_is_saved_with_a_record(monkeypatch):
+    """2af00d02 생성 경로: 도메인 루트 2개가 빠져 0개다. D36(2026-10-14) 뒤로는 거절·재작성하지
+    않고(작가가 URL을 지어내게 만드는 압력이었다) 참고자료 없이 저장하며 그 사실을 기록한다."""
+    calls = _stub_writer(monkeypatch, _notice_payload([dict(ref) for ref in ROOT_URLS]))
 
     with override_reference_fetcher(PageFetcher()):
-        with pytest.raises(content_engine.MissingCitableReferencesError) as raised:
-            await content_engine.generate_content(
-                _mapo_hospital(), ContentType.NOTICE, content_brief=_brief_2af00d02()
-            )
+        result = await content_engine.generate_content(
+            _mapo_hospital(), ContentType.NOTICE, content_brief=_brief_2af00d02()
+        )
 
-    code, message = classify_generation_failure(raised.value)
-    assert code == "GENERATION_REJECTED"
-    assert message == GENERATION_REFERENCE_REJECTION_MESSAGE
+    assert calls["n"] == 1
+    assert result["references"] == []
+    assert result[REFERENCES_OMITTED_KEY]["reason"] == "NO_VERIFIED_REFERENCE"
+    assert result[REFERENCES_OMITTED_KEY]["drop_notes"]
 
 
 async def test_medical_notice_whose_references_all_drop_is_healed_from_the_curated_list(
@@ -596,22 +602,22 @@ async def test_pure_operational_notice_generation_still_saves_without_references
 
 
 @pytest.mark.parametrize(
-    ("content_type", "title", "blocks"),
+    ("content_type", "title"),
     [
-        (ContentType.FAQ, "허리 디스크 초기 증상과 진료 시점", True),
-        (ContentType.FAQ, "도수치료 비용 — 시간·횟수·보험에 따라 어떻게 달라지나요?", False),
-        (ContentType.DISEASE, "경산 내과 병원 추천 — 증상별 진료 흐름과 판단 기준", False),
-        (ContentType.FAQ, "경산 경동맥초음파 검사, 어느 병원에서 받아야 할까요?", True),
-        (ContentType.FAQ, None, True),  # 아직 쓰이지 않은 슬롯은 유형대로 필수
-        (ContentType.NOTICE, "추석 연휴 휴진 안내", False),  # 순수 운영 공지는 종전대로 면제
+        (ContentType.FAQ, "허리 디스크 초기 증상과 진료 시점"),
+        (ContentType.FAQ, "도수치료 비용 — 시간·횟수·보험에 따라 어떻게 달라지나요?"),
+        (ContentType.DISEASE, "경산 내과 병원 추천 — 증상별 진료 흐름과 판단 기준"),
+        (ContentType.FAQ, "경산 경동맥초음파 검사, 어느 병원에서 받아야 할까요?"),
+        (ContentType.FAQ, None),
+        (ContentType.NOTICE, "추석 연휴 휴진 안내"),
     ],
 )
-def test_empty_references_block_only_articles_that_have_an_authoritative_source(
-    content_type, title, blocks
-):
+def test_empty_references_never_block_d36(content_type, title):
+    """D23(진료비·병원 선택)을 D36(2026-10-14)이 모든 유형으로 넓혔다 — 비어도 막지 않는다."""
+
     from app.services.reference_requirement import references_block_when_empty_for
 
-    assert references_block_when_empty_for(content_type, title=title) is blocks
+    assert references_block_when_empty_for(content_type, title=title) is False
 
 
 def test_a_published_cost_post_without_references_stays_visible():
@@ -630,5 +636,6 @@ def test_a_published_cost_post_without_references_stays_visible():
     medical = SimpleNamespace(**{**vars(cost), "title": "허리 디스크 초기 증상과 진료 시점"})
 
     assert has_required_references(cost) and public_surface_has_required_references(cost)
-    assert not has_required_references(medical)
-    assert not public_surface_has_required_references(medical)
+    # D36: 의료 글도 같다.
+    assert has_required_references(medical)
+    assert public_surface_has_required_references(medical)

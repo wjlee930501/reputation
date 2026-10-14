@@ -311,12 +311,11 @@ def test_every_live_claimed_shape_is_byte_identical_after_the_last_run_with_real
     assert [incident.safe_error_code for incident in _item_incidents(db, slot)] == [
         "CONTENT_NOT_GENERATED"
     ]
-    assert [incident.safe_error_code for incident in _item_incidents(db, unsettled)] == [
-        "MISSING_REFERENCES"
-    ]
+    # D36(2026-10-14): 참고자료가 다 빠져도 보류가 아니다 — 생성 중인 행이라 공개하지도 않는다.
+    assert _item_incidents(db, unsettled) == []
     assert _item_incidents(db, settled) == []
     assert len(_digests_for(db, hospital)) == 1
-    assert _operator_lines(db, hospital) == 0  # 평범한 참고자료 보류는 운영자 판단 줄이 아니다
+    assert _operator_lines(db, hospital) == 0
     db.expire_all()
     assert all(db.get(ContentItem, row.id).status is ContentStatus.DRAFT for row in rows)
     assert _audits(db, settled) == [] and _runs(db, settled) == []

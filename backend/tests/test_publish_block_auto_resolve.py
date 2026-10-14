@@ -543,7 +543,7 @@ def _install(monkeypatch, calls, *, propose, review):
 def test_hard_finding_corrected_and_rereview_pass_leads_to_publish_gate(worker, monkeypatch):
     philosophy, calls = worker
     body = _body(NEUTRAL_A, WRONG_TRAINING)
-    finding = _finding("HARD", "HOSPITAL_FACT", "수련기관이 프로필과 다릅니다.", WRONG_TRAINING)
+    finding = _finding("HARD", "MEDICAL_SAFETY", "수련기관이 프로필과 다릅니다.", WRONG_TRAINING)
     item = _blocked_item(philosophy, body, finding)
     calls["item"] = item
 
@@ -622,7 +622,7 @@ def test_two_failed_corrections_swap_topic_then_alert_operator(worker, monkeypat
     philosophy, calls = worker
     sentences = [WRONG_TRAINING, UNAPPROVED_PHILOSOPHY, NEUTRAL_A]
     body = _body(*sentences)
-    finding = _finding("HARD", "HOSPITAL_FACT", "수련기관이 프로필과 다릅니다.", WRONG_TRAINING)
+    finding = _finding("HARD", "MEDICAL_SAFETY", "수련기관이 프로필과 다릅니다.", WRONG_TRAINING)
     item = _blocked_item(philosophy, body, finding)
     calls["item"] = item
 
@@ -639,7 +639,7 @@ def test_two_failed_corrections_swap_topic_then_alert_operator(worker, monkeypat
             (
                 ContentAiFinding(
                     ContentAiFindingSeverity.HARD,
-                    ContentAiFindingKind.HOSPITAL_FACT,
+                    ContentAiFindingKind.MEDICAL_SAFETY,
                     "승인 자료에 없는 문장입니다.",
                     quote=remaining[0],
                 ),
@@ -697,7 +697,7 @@ def test_unswappable_slot_stays_with_operator_across_sweeps(worker, monkeypatch)
 
     philosophy, calls = worker
     body = _body(NEUTRAL_A, WRONG_TRAINING)
-    finding = _finding("HARD", "HOSPITAL_FACT", "수련기관이 프로필과 다릅니다.", WRONG_TRAINING)
+    finding = _finding("HARD", "MEDICAL_SAFETY", "수련기관이 프로필과 다릅니다.", WRONG_TRAINING)
     item = _blocked_item(philosophy, body, finding)
     item.essence_check_summary[mc.AUTO_CORRECTION_KEY] = {"passes": 2, "rereviews": 2}
     calls["item"] = item
@@ -783,7 +783,7 @@ def test_swapped_topic_that_fails_correction_again_goes_to_operator(worker, monk
 
     philosophy, calls = worker
     body = _body(NEUTRAL_A, WRONG_TRAINING)
-    finding = _finding("HARD", "HOSPITAL_FACT", "수련기관이 프로필과 다릅니다.", WRONG_TRAINING)
+    finding = _finding("HARD", "MEDICAL_SAFETY", "수련기관이 프로필과 다릅니다.", WRONG_TRAINING)
     item = _blocked_item(philosophy, body, finding, history=[{"to_target_id": "x"}])
     item.essence_check_summary[mc.AUTO_CORRECTION_KEY] = {"passes": 2, "rereviews": 2}
     calls["item"] = item
@@ -809,7 +809,7 @@ def test_correction_cap_exceeded_hands_over_without_provider_calls(worker, monke
     monkeypatch.setattr(settings, "CONTENT_AUTO_CORRECTION_MAX_PASSES", 0)
     monkeypatch.setattr(settings, "CONTENT_AUTO_TOPIC_SWAP_MAX", 0)
     body = _body(NEUTRAL_A, WRONG_TRAINING)
-    finding = _finding("HARD", "HOSPITAL_FACT", "수련기관이 프로필과 다릅니다.", WRONG_TRAINING)
+    finding = _finding("HARD", "MEDICAL_SAFETY", "수련기관이 프로필과 다릅니다.", WRONG_TRAINING)
     item = _blocked_item(philosophy, body, finding)
     calls["item"] = item
     _install(monkeypatch, calls, propose=_no_provider, review=_no_provider)
@@ -829,7 +829,7 @@ def test_rereview_cap_is_separate_from_correction_cap(worker, monkeypatch):
     philosophy, calls = worker
     monkeypatch.setattr(settings, "CONTENT_AUTO_CORRECTION_MAX_REREVIEWS", 1)
     body = _body(NEUTRAL_A, WRONG_TRAINING, UNAPPROVED_PHILOSOPHY)
-    finding = _finding("HARD", "HOSPITAL_FACT", "수련기관이 프로필과 다릅니다.", WRONG_TRAINING)
+    finding = _finding("HARD", "MEDICAL_SAFETY", "수련기관이 프로필과 다릅니다.", WRONG_TRAINING)
     item = _blocked_item(philosophy, body, finding)
     calls["item"] = item
 
@@ -843,7 +843,7 @@ def test_rereview_cap_is_separate_from_correction_cap(worker, monkeypatch):
             (
                 ContentAiFinding(
                     ContentAiFindingSeverity.HARD,
-                    ContentAiFindingKind.HOSPITAL_FACT,
+                    ContentAiFindingKind.MEDICAL_SAFETY,
                     "승인 자료에 없는 진료 원칙입니다.",
                     quote=UNAPPROVED_PHILOSOPHY,
                 ),
@@ -1257,7 +1257,7 @@ def test_uncorrectable_hard_goes_to_swap_then_operator(worker, monkeypatch, hist
 
     philosophy, calls = worker
     body = _body(NEUTRAL_A, MAPO_PROFILE_SENTENCE)
-    finding = _finding("HARD", "HOSPITAL_FACT", "승인 자료에서 심장 초음파를 확인할 수 없습니다.")
+    finding = _finding("HARD", "MEDICAL_SAFETY", "승인 자료에서 심장 초음파를 확인할 수 없습니다.")
     hospital = _hospital()
     _install(monkeypatch, calls, propose=_no_provider, review=_no_provider)
 
@@ -1396,7 +1396,7 @@ def test_first_generation_hard_finding_is_corrected_before_image(worker, monkeyp
 
     philosophy, calls = worker
     item = _empty_slot(philosophy)
-    finding = _finding("HARD", "HOSPITAL_FACT", "수련기관이 프로필과 다릅니다.", WRONG_TRAINING)
+    finding = _finding("HARD", "MEDICAL_SAFETY", "수련기관이 프로필과 다릅니다.", WRONG_TRAINING)
     body = _body(NEUTRAL_A, WRONG_TRAINING)
     outcomes = _first_generation(monkeypatch, calls, philosophy, item, body, finding)
 
@@ -1435,7 +1435,7 @@ def test_first_generation_hard_that_cannot_be_fixed_waits_for_topic_swap_not_ope
     philosophy, calls = worker
     item = _empty_slot(philosophy)
     sentences = [WRONG_TRAINING, UNAPPROVED_PHILOSOPHY, NEUTRAL_A]
-    finding = _finding("HARD", "HOSPITAL_FACT", "수련기관이 프로필과 다릅니다.", WRONG_TRAINING)
+    finding = _finding("HARD", "MEDICAL_SAFETY", "수련기관이 프로필과 다릅니다.", WRONG_TRAINING)
     outcomes = _first_generation(
         monkeypatch, calls, philosophy, item, _body(*sentences), finding
     )
@@ -1452,7 +1452,7 @@ def test_first_generation_hard_that_cannot_be_fixed_waits_for_topic_swap_not_ope
             (
                 ContentAiFinding(
                     ContentAiFindingSeverity.HARD,
-                    ContentAiFindingKind.HOSPITAL_FACT,
+                    ContentAiFindingKind.MEDICAL_SAFETY,
                     "승인 자료에 없는 문장입니다.",
                     quote=remaining[0],
                 ),
@@ -1484,7 +1484,7 @@ def test_first_generation_respects_zero_correction_cap_without_provider_calls(
     monkeypatch.setattr(settings, "CONTENT_AUTO_CORRECTION_MAX_PASSES", 0)
     monkeypatch.setattr(settings, "CONTENT_AUTO_TOPIC_SWAP_MAX", 0)
     item = _empty_slot(philosophy)
-    finding = _finding("HARD", "HOSPITAL_FACT", "수련기관이 프로필과 다릅니다.", WRONG_TRAINING)
+    finding = _finding("HARD", "MEDICAL_SAFETY", "수련기관이 프로필과 다릅니다.", WRONG_TRAINING)
     _first_generation(
         monkeypatch, calls, philosophy, item, _body(NEUTRAL_A, WRONG_TRAINING), finding
     )
@@ -1547,7 +1547,7 @@ def test_correction_runs_after_backoff_and_its_pass_clears_the_review_record(
 
     philosophy, calls = worker
     body = _body(NEUTRAL_A, WRONG_TRAINING)
-    finding = _finding("HARD", "HOSPITAL_FACT", "수련기관이 프로필과 다릅니다.", WRONG_TRAINING)
+    finding = _finding("HARD", "MEDICAL_SAFETY", "수련기관이 프로필과 다릅니다.", WRONG_TRAINING)
     item = _blocked_item(philosophy, body, finding)
     calls["item"] = item
     _review_unavailable_twice(item, philosophy)
@@ -1584,7 +1584,7 @@ def test_correction_and_review_unavailable_caps_keep_separate_counters(worker, m
 
     philosophy, calls = worker
     body = _body(NEUTRAL_A, WRONG_TRAINING)
-    finding = _finding("HARD", "HOSPITAL_FACT", "수련기관이 프로필과 다릅니다.", WRONG_TRAINING)
+    finding = _finding("HARD", "MEDICAL_SAFETY", "수련기관이 프로필과 다릅니다.", WRONG_TRAINING)
     item = _blocked_item(philosophy, body, finding)
     calls["item"] = item
 
@@ -1926,7 +1926,7 @@ async def test_pass_that_would_shorten_the_body_below_the_minimum_buys_no_rerevi
 def test_quoted_uncertain_next_to_a_hard_is_corrected_in_the_same_pass(worker, monkeypatch):
     philosophy, calls = worker
     body = _body(NEUTRAL_A, WRONG_TRAINING, UNAPPROVED_PHILOSOPHY)
-    hard = _finding("HARD", "HOSPITAL_FACT", "수련기관이 프로필과 다릅니다.", WRONG_TRAINING)
+    hard = _finding("HARD", "MEDICAL_SAFETY", "수련기관이 프로필과 다릅니다.", WRONG_TRAINING)
     uncertain = _finding(
         "UNCERTAIN", "HOSPITAL_FACT", "승인 자료에 없는 진료 원칙입니다.", UNAPPROVED_PHILOSOPHY
     )
@@ -1984,7 +1984,7 @@ def test_human_edited_hard_block_is_marked_idle_and_skipped_next_sweep(worker, m
     monkeypatch.setattr(settings, "CONTENT_HARD_FINDING_IDLE_TERMINAL", True)
     philosophy, calls = worker
     body = _body(NEUTRAL_A, WRONG_TRAINING)
-    finding = _finding("HARD", "HOSPITAL_FACT", "수련기관이 프로필과 다릅니다.", WRONG_TRAINING)
+    finding = _finding("HARD", "MEDICAL_SAFETY", "수련기관이 프로필과 다릅니다.", WRONG_TRAINING)
     item = _blocked_item(philosophy, body, finding)
     item.human_edited_at = datetime.now(UTC) - timedelta(days=1)
     calls["item"] = item
@@ -2008,7 +2008,7 @@ def test_human_edited_hard_block_is_not_marked_while_the_flag_is_off(worker, mon
     monkeypatch.setattr(settings, "CONTENT_HARD_FINDING_IDLE_TERMINAL", False)
     philosophy, calls = worker
     body = _body(NEUTRAL_A, WRONG_TRAINING)
-    finding = _finding("HARD", "HOSPITAL_FACT", "수련기관이 프로필과 다릅니다.", WRONG_TRAINING)
+    finding = _finding("HARD", "MEDICAL_SAFETY", "수련기관이 프로필과 다릅니다.", WRONG_TRAINING)
     item = _blocked_item(philosophy, body, finding)
     item.human_edited_at = datetime.now(UTC) - timedelta(days=1)
     calls["item"] = item
@@ -2021,3 +2021,136 @@ def test_human_edited_hard_block_is_not_marked_while_the_flag_is_off(worker, mon
     assert (state, code) == (tasks.GenerationItemState.FAILED, "CONTENT_AI_HARD_FINDING")
     assert not (tasks._stored_generation_attempt(item) or {}).get("hard_finding_idle")
     assert calls["llm"] == 0 and calls["reviews"] == [] and calls["writes"] == []
+
+
+# ── W4(2026-10-14): Critical이 아닌 지적은 교정 제안·교정 상한·주제 교체 없이 결정적으로 푼다 ──
+
+
+def test_noncritical_fact_sentence_is_deleted_without_a_proposal_or_correction_budget(
+    worker, monkeypatch
+):
+    """감사 실례(마포 수련기관 오기) — 병원 사실 지적은 Critical이 아니다. 지적 문장을 지우고 첫 판정
+    모델로 재검수한다. 교정 제안(LLM)·교정 상한(passes·rereviews)·주제 교체 표시를 쓰지 않는다."""
+
+    monkeypatch.setattr(settings, "CONTENT_FINDING_TIERS_ENABLED", True)
+
+    philosophy, calls = worker
+    body = _body(NEUTRAL_A, WRONG_TRAINING)
+    finding = _finding("HARD", "HOSPITAL_FACT", "수련기관이 프로필과 다릅니다.", WRONG_TRAINING)
+    item = _blocked_item(philosophy, body, finding)
+    calls["item"] = item
+    models = []
+
+    async def propose(**_kwargs):
+        raise AssertionError("비-Critical 지적은 교정 제안을 사지 않는다")
+
+    async def review(**kwargs):
+        models.append(kwargs.get("model"))
+        return _review(kwargs["content"])
+
+    _install(monkeypatch, calls, propose=propose, review=review)
+
+    state, code, _message = tasks._generate_single_content_item(
+        _DB(), item, _hospital(id=item.hospital_id)
+    )
+
+    assert (state, code) == (tasks.GenerationItemState.SUCCEEDED, None)
+    assert WRONG_TRAINING not in item.body and NEUTRAL_A in item.body
+    assert calls["llm"] == 0 and calls["writer"] == 0
+    assert models == [settings.POST_PUBLISH_AI_REVIEW_MODEL]
+    record = item.essence_check_summary[mc.AUTO_CORRECTION_KEY]
+    assert record[mc.NONCRITICAL_REREVIEWS_KEY] == 1
+    assert not record.get("passes") and not record.get("rereviews")
+    assert not record.get("exhausted") and not record.get("swap_requested_at")
+    assert record["corrected_sha256"] == candidate_sha256(tasks._stored_candidate(item))
+    assert not read_generation_attempt(item).get(AUTO_CORRECTION_EXHAUSTED_KEY)
+    assert _blocking_ai_review_state(item) is None
+
+
+def test_noncritical_number_mismatch_deletes_the_sentence_never_substitutes(worker, monkeypatch):
+    """감사 실례(2주 vs 승인 자료 3주) — 숫자를 승인 값으로 바꿔 넣지 않고 그 문장을 지운다
+    (오케스트레이터 결정, Codex P1-3)."""
+
+    monkeypatch.setattr(settings, "CONTENT_FINDING_TIERS_ENABLED", True)
+
+    philosophy, calls = worker
+    philosophy.positioning_statement = "도수치료 뒤 일상 복귀까지 보통 3주가 걸린다고 안내합니다."
+    wrong = "도수치료 뒤 일상 복귀까지는 보통 2주가 걸립니다."
+    body = _body(NEUTRAL_A, wrong)
+    finding = _finding("HARD", "HOSPITAL_FACT", "회복 기간이 승인 자료와 다릅니다.", wrong)
+    item = _blocked_item(philosophy, body, finding)
+    calls["item"] = item
+
+    async def propose(**_kwargs):
+        raise AssertionError("비-Critical 지적은 교정 제안을 사지 않는다")
+
+    async def review(**kwargs):
+        return _review(kwargs["content"])
+
+    _install(monkeypatch, calls, propose=propose, review=review)
+
+    tasks._generate_single_content_item(_DB(), item, _hospital(id=item.hospital_id))
+
+    assert wrong not in item.body and "3주" not in item.body and NEUTRAL_A in item.body
+
+
+def test_unquoted_fact_is_critical_and_takes_the_existing_ladder(worker, monkeypatch):
+    """인용 없는 지적은 문장으로 확인할 수 없다 — Critical(fail closed)이라 결정적 삭제가 아니라 기존
+    계단(교정 불가 → 주제 교체 → 사람)으로 간다(Codex 2차 결정 A)."""
+
+    monkeypatch.setattr(settings, "CONTENT_FINDING_TIERS_ENABLED", True)
+
+    philosophy, calls = worker
+    finding = _finding("HARD", "HOSPITAL_FACT", "승인 자료에서 개원 연도를 확인할 수 없습니다.")
+    item = _blocked_item(philosophy, _body(NEUTRAL_A), finding)
+    calls["item"] = item
+    escalated = []
+
+    def escalate(_db, _item, _philosophy, _state):
+        escalated.append(_item.id)
+        return tasks.GenerationItemState.FAILED, "CONTENT_AI_HARD_FINDING", "교체 대기"
+
+    monkeypatch.setattr(tasks, "_escalate_exhausted_correction", escalate)
+    _install(
+        monkeypatch,
+        calls,
+        propose=lambda **_k: (_ for _ in ()).throw(AssertionError("교정 제안 없음")),
+        review=lambda **_k: (_ for _ in ()).throw(AssertionError("재검수 없음")),
+    )
+
+    state, code, _message = tasks._generate_single_content_item(
+        _DB(), item, _hospital(id=item.hospital_id)
+    )
+
+    assert escalated == [item.id]
+    assert (state, code) == (tasks.GenerationItemState.FAILED, "CONTENT_AI_HARD_FINDING")
+    assert calls["llm"] == 0 and calls["reviews"] == []
+
+
+def test_medical_risk_reported_as_a_hospital_fact_takes_the_critical_ladder(worker, monkeypatch):
+    """Codex P1-2: 종류 라벨이 병원 사실이어도 투약 내용이면 Critical — 결정적 삭제가 아니라 기존
+    교정 계단(교정 제안 → 재검수)을 탄다."""
+
+    monkeypatch.setattr(settings, "CONTENT_FINDING_TIERS_ENABLED", True)
+
+    philosophy, calls = worker
+    dose = "증상이 있으면 하루 5mg을 복용합니다."
+    body = _body(NEUTRAL_A, dose)
+    finding = _finding("HARD", "HOSPITAL_FACT", "투약량이 승인 자료(20mL)와 다릅니다.", dose)
+    item = _blocked_item(philosophy, body, finding)
+    calls["item"] = item
+
+    async def propose(*, targets, **_kwargs):
+        return {targets[0].key: ("DELETE", "")}
+
+    async def review(**kwargs):
+        return _review(kwargs["content"])
+
+    _install(monkeypatch, calls, propose=propose, review=review)
+
+    tasks._generate_single_content_item(_DB(), item, _hospital(id=item.hospital_id))
+
+    assert calls["llm"] == 1
+    record = item.essence_check_summary[mc.AUTO_CORRECTION_KEY]
+    assert record.get("passes") == 1 and not record.get(mc.NONCRITICAL_REREVIEWS_KEY)
+    assert "20" not in item.body.replace("2026", "")

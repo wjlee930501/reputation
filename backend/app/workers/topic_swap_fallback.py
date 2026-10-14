@@ -334,7 +334,7 @@ def exhausted_body_sample_reason(item: ContentItem) -> str | None:
         return None
     if reason not in SAMPLE_BODY_CODES:
         return None
-    if has_model_declared_hard_finding(_stored_review(item)):
+    if has_model_declared_hard_finding(_stored_review(item), item):
         return None
     return reason
 

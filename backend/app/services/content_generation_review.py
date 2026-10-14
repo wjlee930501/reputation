@@ -9,12 +9,19 @@ from __future__ import annotations
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
 from app.models.content import ContentItem
 from app.models.essence import HospitalContentPhilosophy
 from app.models.hospital import Hospital
-from app.services.content_ai_review import ContentAiReview, ContentAiReviewStatus
+from app.services.content_ai_review import (
+    ContentAiReview,
+    ContentAiReviewStatus,
+    blocking_review_hashes,
+    remember_blocking_review_hashes,
+    review_payload_is_blocking,
+)
 from app.services.content_engine import (
     EXAM_TREATMENT_TITLE_FINDING_PREFIX,
     GENERATION_REJECTIONS_KEY,
@@ -34,6 +41,11 @@ from app.services.essence_engine import (
     ESSENCE_STATUS_ALIGNED,
     ESSENCE_STATUS_NEEDS_REVIEW,
     EssenceScreeningResult,
+)
+from app.services.reference_requirement import (
+    REFERENCES_OMITTED_KEY,
+    references_omitted_reason,
+    references_required_for,
 )
 
 logger = logging.getLogger(__name__)
@@ -115,6 +127,9 @@ async def generate_reviewed_content(
     accepted_screening = None
     accepted_reference_findings: list[str] = []
     last_ai_review = None
+    # 이 세션에서 차단 판정(HARD 등)을 받은 후보 hash — 마지막 검수만 저장되므로 따로 모은다(D37 안전:
+    # HARD → 삭제 재작성이 같은 본문을 돌려주고 → 검수 장애면 그 본문을 선발행하지 않는다).
+    session_blocking_hashes: list[str] = []
     last_generation_error: Exception | None = None
     # 세션 안 모든 작가 회차의 결정적 거절 횟수(E5, 사유별).
     rejection_counts: dict[str, dict[str, int]] = {}
@@ -198,6 +213,8 @@ async def generate_reviewed_content(
                 content=candidate,
                 content_brief=approved_brief,
             )
+            if last_ai_review.blocking_findings and last_ai_review.candidate_sha256:
+                session_blocking_hashes.append(last_ai_review.candidate_sha256)
             if last_ai_review.status == ContentAiReviewStatus.UNAVAILABLE:
                 # UNAVAILABLE never grants approval: it merely leaves the candidate to
                 # the deterministic generation and publication gates below.
@@ -310,6 +327,16 @@ async def generate_reviewed_content(
         ]
     if accepted_reference_findings:
         summary["reference_findings"] = accepted_reference_findings[:5]
+    # D36: 참고자료 필수 글이 검증된 참고자료 없이 저장된다 — 막지 않고 기록한다. 검수 지적으로
+    # 참고자료를 떼어 낸 뒤 비었을 때도 같은 기록이다.
+    if not (last_content.get("references") or []) and references_required_for(
+        item.content_type, content_brief=approved_brief
+    ):
+        summary[REFERENCES_OMITTED_KEY] = last_content.get(REFERENCES_OMITTED_KEY) or {
+            "reason": references_omitted_reason(last_content.get("title")),
+            "drop_notes": [],
+            "at": datetime.now(UTC).isoformat(),
+        }
     if automatic_rewrites > 0:
         summary["automatic_remediation_attempts"] = automatic_rewrites
     if reviewer_driven_rewrites > 0:
@@ -318,6 +345,13 @@ async def generate_reviewed_content(
         summary["hard_removal_rewrites"] = removal_rewrites
     if rejection_counts:
         summary[GENERATION_REJECTIONS_SUMMARY_KEY] = rejection_counts
+    previous_summary = getattr(item, "essence_check_summary", None)
+    previous_summary = previous_summary if isinstance(previous_summary, dict) else {}
+    remember_blocking_review_hashes(summary, *blocking_review_hashes(previous_summary))
+    previous_review = previous_summary.get("ai_review")
+    if review_payload_is_blocking(previous_review):
+        remember_blocking_review_hashes(summary, previous_review.get("candidate_sha256"))
+    remember_blocking_review_hashes(summary, *session_blocking_hashes)
     if last_ai_review is not None:
         summary["ai_review"] = last_ai_review.payload()
     reviewed_screening = type(last_screening)(

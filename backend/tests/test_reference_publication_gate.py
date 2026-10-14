@@ -21,6 +21,7 @@ from fastapi import HTTPException
 
 from app.api.admin import content as content_api
 from app.services.audit_log import reset_request_actor, set_request_actor
+from app.services.content_ai_review import candidate_review_coverage, candidate_sha256
 from app.services.content_engine import MissingCitableReferencesError
 from app.services.content_row_state import REFERENCE_RETRY_ROW_REASON, content_row_state
 from app.services.content_visibility import PublicVisibility
@@ -30,6 +31,7 @@ from app.services.reference_publication import (
     refresh_publication_references,
     verify_publication_references,
 )
+from app.services.reference_requirement import REFERENCES_OMITTED_KEY
 from app.services.reference_verification import (
     REFERENCE_CHECK_MAX_AGE,
     ReferenceVerifier,
@@ -239,26 +241,25 @@ def test_heal_never_borrows_a_curated_document_from_another_topic(monkeypatch):
     assert urls and all("cntnts_sn=6765" in url for url in urls)
 
 
-def test_still_nothing_holds_publication_with_the_real_cause(monkeypatch):
+def test_still_nothing_publishes_without_references_and_records_why(monkeypatch):
+    """지어낸 주소(404)는 빠지고 수기 목록에도 맞는 문서가 없다. D36(2026-10-14) 뒤로는 보류하지
+    않고 참고자료 없이 발행하며, 그 사실을 기록한다 — 지어낸 근거는 공개되지 않는다."""
+
     item, db, effects = _publish_setup(
         monkeypatch,
         references=[{"title": "경산 내과 진료비", "url": GUESSED}],
         checks=None,
-        # 의료 글이어야 보류된다 — 진료비·병원 선택 글은 참고자료가 선택이다(D23).
         title=NO_CATALOG_TITLE,
     )
     fetcher = PageFetcher({GUESSED: (404, GUESSED, "")})
 
     payload = tasks._auto_publish_one(item.id, reference_verifier=ReferenceVerifier(fetcher, domain_spacing=0))
 
-    assert payload["kind"] == "blocked"
-    assert payload["code"] == "MISSING_REFERENCES"
-    assert "공신력 있는 참고 자료를 확보하지 못했습니다" in payload["message"]
-    assert item.status is tasks.ContentStatus.DRAFT
+    assert payload is None or payload.get("kind") != "blocked", payload
+    assert item.status is tasks.ContentStatus.PUBLISHED
     assert item.references_list == []
-    assert item.reference_checks[0]["reason"] == "dead_link"
-    assert effects == {"revalidate": [], "indexnow": []}
-    # 운영자 인시던트·요약에 실리는 원인과 조치도 같은 원인을 말한다.
+    assert item.essence_check_summary[REFERENCES_OMITTED_KEY]["reason"] == "NO_VERIFIED_REFERENCE"
+    # 옛 보류 사유의 운영자 문구는 남은 옛 기록을 위해 그대로다.
     assert "참고 자료를 확보하지 못해" in generation_safe_cause("MISSING_REFERENCES")
     assert "실제 문서 확인" in generation_operator_action("MISSING_REFERENCES")
 
@@ -499,7 +500,9 @@ def test_seven_forty_five_does_not_page_a_slot_a_worker_claims_after_the_refresh
     assert (paged, incidents) == (0, [])
 
 
-def test_seven_forty_five_holds_and_pages_the_real_cause_when_nothing_survives(monkeypatch):
+def test_seven_forty_five_does_not_page_when_nothing_survives(monkeypatch):
+    """D36: 참고자료가 하나도 남지 않아도 07:45는 보류·알림하지 않는다(참고자료 없이 발행한다)."""
+
     hospital = _publication_hospital()
     item = _publication_item(hospital, body="귀지 관리 기준을 안내합니다.", title=NO_CATALOG_TITLE)
     item.references_list = [{"title": "진료비", "url": GUESSED}]
@@ -512,9 +515,8 @@ def test_seven_forty_five_holds_and_pages_the_real_cause_when_nothing_survives(m
             db, now_kst=arrow.get(2026, 6, 10, 7, 45, tzinfo="Asia/Seoul")
         )
 
-    assert paged == 1
-    assert incidents[0]["code"] == "MISSING_REFERENCES"
-    assert "공신력 있는 참고 자료를 확보하지 못했습니다" in incidents[0]["message"]
+    assert paged == 0
+    assert incidents == []
     assert item.references_list == []
 
 
@@ -640,6 +642,9 @@ async def test_admin_patch_offline_rejects_an_unverifiable_outside_url(monkeypat
 
 
 async def test_admin_manual_publish_runs_the_same_reference_gate(monkeypatch):
+    """수동 발행도 같은 재검증으로 지어낸 주소를 뺀다. D36: 다 빠져도 참고자료 때문에 거절하지
+    않는다 — 이 더블 DB에는 승인 기준이 없어 다음 게이트에서 멈춘다."""
+
     hospital = _hospital()
     item = _content_item(
         hospital_id=hospital.id,
@@ -650,6 +655,11 @@ async def test_admin_manual_publish_runs_the_same_reference_gate(monkeypatch):
     )
     item.reference_checks = None
     _wire(monkeypatch, item, hospital)
+
+    async def no_philosophy(*_args):
+        return None
+
+    monkeypatch.setattr(content_api, "_get_approved_philosophy", no_philosophy)
     token = set_request_actor("ae@example.com")
     try:
         with override_reference_fetcher(PageFetcher({GUESSED: (404, GUESSED, "")})):
@@ -660,8 +670,7 @@ async def test_admin_manual_publish_runs_the_same_reference_gate(monkeypatch):
     finally:
         reset_request_actor(token)
 
-    assert raised.value.status_code == 400, raised.value.detail
-    assert raised.value.detail["missing"] == "references", raised.value.detail
+    assert raised.value.detail.get("missing") != "references", raised.value.detail
     assert item.references_list == []
     assert item.reference_checks[0]["reason"] == "dead_link"
 
@@ -705,7 +714,9 @@ def test_reference_free_operational_notice_binds_an_honest_empty_revision_eviden
     assert bind_reference_checks_to_revision(notice) == []
 
 
-def test_reference_required_faq_cannot_bind_fabricated_empty_evidence():
+def test_reference_required_faq_binds_empty_evidence_without_fabricating_any():
+    """D36: 참고자료가 없는 필수 유형 글은 빈 근거로 판에 묶인다 — 근거를 지어내지 않는다."""
+
     faq = SimpleNamespace(
         content_type="FAQ",
         title="치핵 치료 안내",
@@ -717,7 +728,7 @@ def test_reference_required_faq_cannot_bind_fabricated_empty_evidence():
         reference_checks=None,
     )
 
-    assert bind_reference_checks_to_revision(faq) is None
+    assert bind_reference_checks_to_revision(faq) == []
 
 
 def test_malformed_reference_checks_never_bind_to_a_required_revision():
@@ -1074,7 +1085,10 @@ def test_prefetch_gets_a_claimed_row_only_in_the_last_window(monkeypatch):
     assert refresh is not None and refresh.references == [] and refresh.operator_decides
 
 
-def test_last_run_reports_a_claimed_medical_post_that_nothing_can_heal(monkeypatch):
+def test_last_run_neither_reports_nor_publishes_a_claimed_post_nothing_can_heal(monkeypatch):
+    """D36: 치유할 문서가 없는 빈 참고자료는 보류가 아니다 — 보고하지 않고, 생성 중인 행이라
+    공개하지도 않는다. 행은 그대로다."""
+
     item, _db, _effects = _claimed_post(
         monkeypatch, at=LAST_RUN, references=[], title=NO_CATALOG_TITLE
     )
@@ -1084,8 +1098,7 @@ def test_last_run_reports_a_claimed_medical_post_that_nothing_can_heal(monkeypat
         item.id, reference_verifier=ReferenceVerifier(_hemorrhoid_fetcher())
     )
 
-    assert payload["kind"] == "blocked" and payload["code"] == "MISSING_REFERENCES"
-    assert payload["operator_line"] is False  # 평범한 참고자료 보류는 주간 요약 몫이다
+    assert payload is None
     assert _row_bytes(item) == before
 
 
@@ -1162,7 +1175,8 @@ def test_last_run_uses_the_prefetched_refresh_when_the_claim_is_taken_during_the
         ),
     )
 
-    assert payload["kind"] == "blocked" and payload["operator_line"] is False
+    # D36: 다 빠져도 보류가 아니다 — 생성 중인 행이라 공개하지 않고, 행도 쓰지 않는다.
+    assert payload is None
     assert (item.content_revision, item.references_list, item.reference_checks) == (
         3,
         before_refs,
@@ -1210,8 +1224,8 @@ def test_a_claimed_row_past_its_date_is_judged_like_the_last_run(monkeypatch):
         item.id, reference_verifier=ReferenceVerifier(fetcher, domain_spacing=0)
     )
 
-    assert payload["kind"] == "blocked" and payload["code"] == "MISSING_REFERENCES"
-    assert payload["operator_line"] is False
+    # D36: 지어낸 주소가 빠져 비어도 보류가 아니다 — 생성 중인 행이라 공개하지도 않는다.
+    assert payload is None
     assert fetcher.calls == [GUESSED] and _row_bytes(item) == before
 
 
@@ -1491,6 +1505,11 @@ async def test_manual_publish_fetches_before_taking_the_hospital_lock(monkeypatc
         locks.append("hospital")
 
     monkeypatch.setattr(content_api, "acquire_hospital_advisory_lock", record_lock)
+
+    async def no_philosophy(*_args):
+        return None
+
+    monkeypatch.setattr(content_api, "_get_approved_philosophy", no_philosophy)
     locks_at_fetch: list[int] = []
     fetcher = _MutatingFetcher(lambda: locks_at_fetch.append(len(locks)), {GUESSED: (404, GUESSED, "")})
     token = set_request_actor("ae@example.com")
@@ -2012,7 +2031,7 @@ async def test_manual_publish_rechecks_the_gate_on_the_locked_row(monkeypatch):
     assert item.status != content_api.ContentStatus.PUBLISHED
 
 
-# ── 공개 글 PATCH: 필수 글의 참고자료를 비울 수 없다 ───────────────────────────────
+# ── 공개 글 PATCH: D36 뒤로 필수 글의 참고자료도 비울 수 있다 ─────────────────────────
 
 
 @pytest.mark.parametrize(
@@ -2020,9 +2039,12 @@ async def test_manual_publish_rechecks_the_gate_on_the_locked_row(monkeypatch):
     [("FAQ", None), ("NOTICE", uuid.uuid4())],
     ids=["medical_type", "notice_with_query_link"],
 )
-async def test_patch_cannot_empty_the_references_of_a_published_post(
+async def test_patch_may_empty_the_references_of_a_published_post_d36(
     monkeypatch, content_type, query_target_id
 ):
+    """D36(2026-10-14): 참고자료 없는 글도 공개된다 — 공개 글의 참고자료를 비우는 PATCH를 막지 않는다
+    (종전에는 비우면 공개 표면에서 숨어 막았다)."""
+
     hospital = _hospital()
     references = [{"title": "치핵", "url": CURATED_HEMORRHOID_KDCA}]
     item = _content_item(
@@ -2038,7 +2060,7 @@ async def test_patch_cannot_empty_the_references_of_a_published_post(
     _wire(monkeypatch, item, hospital)
     monkeypatch.setattr(content_api, "ensure_site_revalidate_configured", lambda: None)
 
-    with override_reference_fetcher(PageFetcher()), pytest.raises(HTTPException) as raised:
+    with override_reference_fetcher(PageFetcher()):
         await content_api.update_content(
             hospital.id,
             item.id,
@@ -2046,8 +2068,8 @@ async def test_patch_cannot_empty_the_references_of_a_published_post(
             db=_PatchDB(hospital),
         )
 
-    assert raised.value.status_code == 400
-    assert "비울 수 없습니다" in raised.value.detail["message"]
+    assert item.references_list == []
+    assert item.status == content_api.ContentStatus.PUBLISHED
 
 
 # ── 08:00 발행기: GET 사이에 바뀐 행은 장애 알림 대상도 아니다 ──────────────────────
@@ -2204,9 +2226,15 @@ def test_regeneration_stores_the_reference_checks_for_the_publication_gates(monk
         return result, SimpleNamespace(status="ALIGNED", summary={"blocking": False})
 
     monkeypatch.setattr(tasks, "_generate_with_auto_review", writer)
-    # 저장 본문 수리 경로로 들어가게 한다(재검수 없이 곧바로 작가 세션).
+    # 저장 본문 수리 경로로 들어가게 한다(재검수 없이 곧바로 작가 세션). 빈 참고자료는 D36 뒤로
+    # 차단이 아니므로 지금 본문에 묶인 문체 지적이 수리 경로를 연다.
     item.essence_check_summary["ai_review"]["findings"][0]["severity"] = "HARD"
     item.essence_check_summary["ai_review"]["findings"][0]["kind"] = "STYLE"
+    item.essence_check_summary["ai_review"].update(
+        schema_version="3",
+        candidate_sha256=candidate_sha256(item),
+        coverage=candidate_review_coverage(item),
+    )
 
     state, code, _message = tasks._generate_single_content_item(db, item, hospital)
 

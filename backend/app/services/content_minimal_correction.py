@@ -40,6 +40,10 @@ from app.services.content_ai_review import (
     hospital_review_profile,
 )
 from app.services.content_engine import CONTENT_BODY_MIN_CHARS, body_plain_length
+from app.services.finding_criticality import (
+    mentions_medical_safety,
+    review_blocks_only_noncritically,
+)
 from app.services.must_use_verbatim import (
     appears_as_standalone_sentence,
     normalize_verbatim,
@@ -1172,6 +1176,164 @@ async def run_minimal_correction(
         review=last_review,
         passes=passes,
         rereviews=rereviews,
+        history=history,
+    )
+
+
+# ── 비-Critical 지적의 결정적 해소 (W4) ─────────────────────────────────────────
+# 의료 내용이 없는 병원 사실처럼 Critical이 아닌 지적(`finding_criticality`)은 교정 제안(LLM)을 사지
+# 않고 지적 문장을 지운다. 숫자를 승인 값으로 바꿔 넣지 않는다(2026-10-14 오케스트레이터 결정 — 단위
+# 첫 글자·숫자만 맞춘 치환이 투약량·다른 사실의 기간을 지어냈다, Codex P1-3). 지우기는 새 주장을
+# 만들 수 없다. 교정본은 여전히 독립 재검수 PASS가
+# 그 hash에 묶여야 발행된다(계약 그대로). 재검수는 첫 판정 모델(`POST_PUBLISH_AI_REVIEW_MODEL`)로
+# 하며, 이 계단의 재검수 수는 Critical 교정의 상한(`CONTENT_AUTO_CORRECTION_*`)과 따로 센다.
+NONCRITICAL_REREVIEW_LIMIT = 2
+NONCRITICAL_REREVIEWS_KEY = "noncritical_rereviews"
+
+
+@dataclass(frozen=True, slots=True)
+class NoncriticalFixPlan:
+    plan: CorrectionPlan
+    decisions: dict[str, SentenceDecision]
+
+
+def plan_noncritical_fixes(
+    content: Mapping[str, Any],
+    review: Mapping[str, Any] | None,
+    *,
+    must_use_messages: Iterable[str] = (),
+) -> NoncriticalFixPlan | None:
+    """차단 지적이 모두 Critical이 아니고 모두 문장 하나로 짚혀 있을 때의 결정적 교정 계획.
+
+    하나라도 결정적으로 풀 수 없으면(인용 없음·여러 곳·제목·필수 문구 문장·응급 안내) ``None``이다 —
+    그 글은 기존 경로(재검수·재작성 계단)가 맡는다. 짚힌 문장은 모두 지운다(숫자 치환 없음).
+    """
+
+    if not review_blocks_only_noncritically(review, content):
+        return None
+    must_use = [str(message) for message in must_use_messages if str(message).strip()]
+    plan = plan_corrections(content, review, must_use_messages=must_use, include_uncertain=True)
+    if not plan.targets or plan.insertions or plan.uncorrectable:
+        return None
+    # 실제로 지울 문장 전체가 의료·안전 어휘 검사를 통과해야 한다 — 부분 인용으로 같은 문장의 응급 안내
+    # ("흉통에는 즉시 119")까지 지우지 않는다(Codex 2차 P1-2).
+    if any(mentions_medical_safety(target.sentence) for target in plan.targets):
+        return None
+    decisions = {
+        target.key: SentenceDecision(target.key, None, "noncritical_delete")
+        for target in plan.targets
+    }
+    # 지우기 전 본문에 응급 안내(119·응급실·즉시 내원)가 있었으면 지운 뒤에도 남아 있어야 한다.
+    corrected = apply_corrections(content, plan, decisions)
+    if emergency_guidance_lost(content, corrected):
+        return None
+    return NoncriticalFixPlan(plan=plan, decisions=decisions)
+
+
+EMERGENCY_GUIDANCE_TERMS = ("119", "응급실", "즉시 내원")
+
+
+def emergency_guidance_lost(before: Mapping[str, Any], after: Mapping[str, Any]) -> bool:
+    """지우기 전 본문의 응급 안내 표현 가운데 지운 뒤에 사라진 것이 있는가."""
+
+    old = str(before.get("body") or "")
+    new = str(after.get("body") or "")
+    return any(term in old and term not in new for term in EMERGENCY_GUIDANCE_TERMS)
+
+
+async def run_noncritical_resolution(
+    *,
+    hospital: Any,
+    philosophy: Any,
+    content: dict[str, Any],
+    review: Mapping[str, Any] | None,
+    content_brief: Mapping[str, Any] | None,
+    must_use_messages: Iterable[str],
+    rereviews_used: int,
+    review_fn: Callable[..., Awaitable[ContentAiReview]],
+    max_rereviews: int = NONCRITICAL_REREVIEW_LIMIT,
+) -> CorrectionOutcome:
+    """비-Critical 지적 문장을 결정적으로 지우고 독립 재검수한다.
+
+    공급자 교정 제안을 사지 않는다. 결과의 ``rereviews``는 이 계단의 누적 재검수 수다(Critical 교정
+    상한과 따로 센다). 재검수가 다시 비-Critical만 짚으면 남은 수 안에서 한 번 더 지운다. Critical이
+    나오면 멈추고(``BLOCKED``) 호출부가 기존 교정·교체 계단으로 넘긴다.
+    """
+
+    must_use = list(must_use_messages)
+    sources = approved_fact_texts(hospital, philosophy)
+    used = max(0, int(rereviews_used or 0))
+    current = dict(content)
+    current_review: Mapping[str, Any] | None = review
+    last_review: ContentAiReview | None = None
+    history: list[dict[str, Any]] = []
+    addressed: list[dict[str, str]] = []
+    status = "NOT_APPLICABLE"
+    while True:
+        fix = plan_noncritical_fixes(current, current_review, must_use_messages=must_use)
+        if fix is None:
+            status = "BLOCKED" if last_review is not None else "NOT_APPLICABLE"
+            break
+        if used >= max_rereviews:
+            status = "BLOCKED" if last_review is not None else "EXHAUSTED"
+            break
+        corrected = apply_corrections(current, fix.plan, fix.decisions)
+        try:
+            verify_correction_scope(
+                current, corrected, fix.plan, sources=sources, must_use_messages=must_use
+            )
+        except CorrectionScopeError as exc:
+            # 지우기만 하는 교정이 범위를 못 지키면(분량 하한 등) 이 계단은 맡지 않는다.
+            logger.info("Non-critical deterministic fix rejected: %s", exc)
+            status = "REJECTED" if last_review is None else "BLOCKED"
+            break
+        used += 1
+        addressed.extend(
+            {
+                "finding": " / ".join(target.messages),
+                "before": target.sentence,
+                "after": fix.decisions[target.key].replacement or "",
+            }
+            for target in fix.plan.targets
+        )
+        last_review = await review_fn(
+            hospital=hospital,
+            philosophy=philosophy,
+            content=corrected,
+            content_brief=content_brief,
+            correction_context={"addressed": list(addressed)},
+            model=settings.POST_PUBLISH_AI_REVIEW_MODEL,
+        )
+        history.append(
+            {
+                "noncritical": True,
+                "sentences": [
+                    {
+                        "field": target.field,
+                        "before": target.sentence[:300],
+                        "after": (fix.decisions[target.key].replacement or "")[:300],
+                        "decision": fix.decisions[target.key].reason,
+                    }
+                    for target in fix.plan.targets
+                ],
+                "review_status": last_review.status.value,
+                "corrected_sha256": candidate_sha256(corrected),
+            }
+        )
+        current = corrected
+        current_review = last_review.payload()
+        if last_review.status == ContentAiReviewStatus.UNAVAILABLE:
+            status = "UNAVAILABLE"
+            break
+        if last_review.status == ContentAiReviewStatus.PASS:
+            status = "PASS"
+            break
+        status = "BLOCKED"
+    return CorrectionOutcome(
+        status=status,
+        content=current if last_review is not None else None,
+        review=last_review,
+        rereviews=used,
         history=history,
     )
 

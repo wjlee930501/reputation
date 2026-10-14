@@ -306,7 +306,8 @@ def test_the_real_incident_does_not_write_a_live_claimed_row_at_the_last_run(
 ):
     """A2 — 23시 사본 판정 뒤의 실제 인시던트도 claim이 살아 있는 행은 쓰지 않는다.
 
-    D23 뒤로 진료비 글은 보류되지 않으므로, 보류되는 의료 글(수기 목록 치유 후보 없음)로 본다.
+    D36(2026-10-14) 뒤로 빈 참고자료는 어떤 글도 보류하지 않으므로, 결정적 검사(금지 표현)로
+    보류되는 글로 본다.
     """
 
     db = real_incidents
@@ -314,6 +315,8 @@ def test_the_real_incident_does_not_write_a_live_claimed_row_at_the_last_run(
     item = _written(
         db, hospital, schedule, title=NO_CATALOG_TITLE, scheduled_date=TODAY, sequence_no=1
     )
+    item.meta_description = "완치를 약속드립니다."
+    db.commit()
     _claim(db, item, _kst(TODAY, 22, 10))
     before = _row_json(db, item)
 
@@ -321,7 +324,7 @@ def test_the_real_incident_does_not_write_a_live_claimed_row_at_the_last_run(
 
     assert _row_json(db, item) == before  # 모든 열이 바이트 그대로
     [incident] = _item_incidents(db, item)
-    assert incident.safe_error_code == "MISSING_REFERENCES"
+    assert incident.safe_error_code == "FORBIDDEN_EXPRESSION"
 
 
 def test_the_real_incident_opens_nothing_for_a_cost_post_with_a_pre_d23_operator_record(

@@ -117,7 +117,6 @@ from app.services.reference_publication import (
     bind_reference_checks_to_revision,
     disallowed_curated_references,
     publication_references_current,
-    publication_references_missing,
     publication_references_settled,
     reference_snapshot,
     reference_snapshot_matches,
@@ -1942,21 +1941,7 @@ async def _require_restorable_references(db, item: ContentItem, verification) ->
                 ),
             },
         )
-    if publication_references_missing(item):
-        # 의료 주제 글(의료 안내 유형·질문이 연결된 NOTICE)인데 참고자료가 하나도 없다. restore는
-        # 채우지 않는다(공개됐던 글의 참고자료를 자동으로 바꾸지 않는다) — 사람이 먼저 넣게 한다.
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": "MISSING_REFERENCES",
-                "message": (
-                    "공신력 있는 참고 자료가 없어 다시 공개하지 않았습니다 — 의료 주제를 다루는 "
-                    "글은 실제 문서 확인을 통과한 출처가 1개 이상 필요합니다. 참고 자료 수정"
-                    "(PATCH)으로 이 글의 주제와 맞는 실제 문서를 먼저 넣은 뒤 다시 공개해 주세요."
-                ),
-                "failed_references": [],
-            },
-        )
+    # D36(2026-10-14): 참고자료가 비어 있는 것은 다시 공개를 막지 않는다 — 있는 참고자료만 검증한다.
     failures = unverified_reference_details(item)
     if not failures:
         return

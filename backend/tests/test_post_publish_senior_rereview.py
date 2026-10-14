@@ -5,6 +5,9 @@ from __future__ import annotations
 import asyncio
 import uuid
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
+
+import pytest
 
 from app.core.config import settings
 from app.services.content_ai_review import (
@@ -20,9 +23,14 @@ from tests.test_post_publish_ai_review import _published, _review
 NOW = datetime(2026, 10, 20, 3, 10, tzinfo=timezone.utc)
 
 
+PHILOSOPHY = "본원은 환자 한 분 한 분의 이야기를 끝까지 듣는 것을 진료 원칙으로 삼습니다."
+
+
 def _flagged(severity="UNCERTAIN", days_ago=8):
     item = _published()
     item.id = uuid.uuid4()
+    item.body = f"## 안내\n{PHILOSOPHY}"
+    item.hospital = SimpleNamespace(id=uuid.uuid4(), name="강남병원")
     item.essence_check_summary = {
         "post_publish_ai_review": {
             "status": "FLAGGED",
@@ -61,7 +69,7 @@ def _wire(monkeypatch, item, review):
         lambda *_a, **_k: calls.__setitem__("recovered", calls["recovered"] + 1),
     )
     monkeypatch.setattr(
-        sweep, "_open_flag_incident",
+        sweep, "_open_critical_incident",
         lambda _item, _h, _r, **k: calls["needs_human"].append(k.get("needs_human_reason")),
     )
     return calls
@@ -89,10 +97,15 @@ def test_senior_pass_closes_the_flag_with_the_review_model(monkeypatch):
     assert "post_publish_ai_review" not in item.essence_check_summary
 
 
-def test_senior_still_uncertain_is_recorded_once_and_stays_quiet(monkeypatch):
+def test_senior_still_uncertain_is_recorded_once_and_closes_quietly(monkeypatch):
+    """상위 재검수 뒤에도 의료 내용 없는 확신 부족만 남았다 — 사고 없이 조용히 닫는다(D35)."""
+
     item = _flagged()
     uncertain = ContentAiFinding(
-        ContentAiFindingSeverity.UNCERTAIN, ContentAiFindingKind.MEDICAL_SAFETY, "확신 부족"
+        ContentAiFindingSeverity.UNCERTAIN,
+        ContentAiFindingKind.HOSPITAL_FACT,
+        "확인할 수 없는 진료 원칙",
+        quote=PHILOSOPHY,
     )
     calls = _wire(monkeypatch, item, _review(item, status=ContentAiReviewStatus.REVISE, findings=[uncertain]))
 
@@ -103,13 +116,12 @@ def test_senior_still_uncertain_is_recorded_once_and_stays_quiet(monkeypatch):
     assert marker["senior_rereview"]["model"] == settings.CLAUDE_MODEL_REVIEW
     assert marker["correction"]["finished"] is True
     assert calls["needs_human"] == []
+    assert marker["closed"]["reason"] == "NONCRITICAL"
+    assert item.post_publish_reviewed_by == sweep.POST_PUBLISH_NONCRITICAL_CLOSER
 
 
-def test_senior_hard_finding_refreshes_the_quiet_flag_incident(monkeypatch):
-    """상위 검수의 HARD도 사람의 Slack·할 일로 올리지 않는다(D2, 10/8 지시 유지).
-
-    조용한 FLAGGED 사고의 문구만 '사람이 직접 고쳐야 한다'로 갱신하고 콘텐츠 탭에 남긴다.
-    """
+def test_senior_critical_finding_asks_the_marketer_once(monkeypatch):
+    """상위 검수가 의료 안전 HARD(Critical)를 냈다 — 글은 내리지 않고 "마케터 검토 필요"(D35)."""
 
     item = _flagged()
     hard = ContentAiFinding(ContentAiFindingSeverity.HARD, ContentAiFindingKind.MEDICAL_SAFETY, "근거 없는 단정")
@@ -117,7 +129,23 @@ def test_senior_hard_finding_refreshes_the_quiet_flag_incident(monkeypatch):
 
     sweep.senior_rereview_flagged(_DB(), item, object(), object(), asyncio.run, NOW)
 
-    assert calls["needs_human"] == ["SENIOR_REREVIEW_HARD"]
+    assert len(calls["needs_human"]) == 1
+    assert item.essence_check_summary[sweep.POST_PUBLISH_CRITICAL_ALERT_KEY]["critical_alert_sent_at"]
+
+
+def test_senior_uncertain_medical_finding_is_critical_and_alerts(monkeypatch):
+    """의료 안전 지적은 확신 부족이어도 Critical이다(fail closed) — 조용히 닫지 않고 알린다."""
+
+    item = _flagged()
+    uncertain = ContentAiFinding(
+        ContentAiFindingSeverity.UNCERTAIN, ContentAiFindingKind.MEDICAL_SAFETY, "확신 부족"
+    )
+    calls = _wire(monkeypatch, item, _review(item, status=ContentAiReviewStatus.REVISE, findings=[uncertain]))
+
+    sweep.senior_rereview_flagged(_DB(), item, object(), object(), asyncio.run, NOW)
+
+    assert len(calls["needs_human"]) == 1
+    assert item.post_publish_reviewed_at is None
 
 
 def test_senior_rereview_marker_keeps_the_item_out_of_tomorrows_selection(monkeypatch):
@@ -165,8 +193,9 @@ def test_unavailable_rereview_does_not_spend_the_daily_cap(monkeypatch):
 
     class _Db(_SweepDb):
         def __init__(self):
-            # FLAGGED 조회(없음) → 숫자 시각 표시(없음) → 옛 표시 한 쪽 → 비공개 → 표본
-            self._batches = [[], [], [first, second], [], []]
+            # Critical 백로그(없음) → 미전달 알림(없음) → FLAGGED 조회(없음) → 숫자 시각 표시(없음)
+            # → 옛 표시 한 쪽 → 비공개 → 표본(선발행 단계는 표본 상한 0이라 돌지 않는다)
+            self._batches = [[], [], [], [], [first, second], [], []]
 
     seen: list = []
 
@@ -229,3 +258,13 @@ def test_a_new_flag_carries_a_numeric_checked_at_for_sql_selection():
     assert payload["checked_at_epoch"] == int(NOW.timestamp())
     assert sweep.settled_long_enough(payload, NOW + timedelta(days=7), 7)
     assert not sweep.settled_long_enough(payload, NOW + timedelta(days=6), 7)
+
+
+@pytest.fixture(autouse=True)
+def _tiers_and_alerts_on(monkeypatch):
+    """이 파일은 기본 꺼짐인 W4 등급·D35 알림을 켠 동작을 고정한다(꺼진 동작은 main과 같다)."""
+
+    from app.core.config import settings as _settings
+
+    monkeypatch.setattr(_settings, "CONTENT_FINDING_TIERS_ENABLED", True)
+    monkeypatch.setattr(_settings, "POST_PUBLISH_CRITICAL_ALERTS_ENABLED", True)

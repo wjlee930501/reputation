@@ -86,6 +86,7 @@ from app.services.content_ai_review import (
     hospital_review_facts_fingerprint,
     review_from_payload,
     review_generated_content,
+    store_ai_review,
 )
 from app.services.content_engine import (
     EXISTING_TITLE_PROMPT_LIMIT,
@@ -104,12 +105,14 @@ from app.services.content_generation_review import (
 )
 from app.services.content_minimal_correction import (
     AUTO_CORRECTION_KEY,
+    NONCRITICAL_REREVIEWS_KEY,
     CorrectionDependencies,
     correction_allowed_for,
     correction_limits,
     plan_corrections,
     propose_sentence_corrections,
     run_minimal_correction,
+    run_noncritical_resolution,
 )
 from app.services.content_month_target import month_content_target_sync
 from app.services.content_provenance import build_generation_provenance
@@ -209,6 +212,7 @@ from app.services.essence_sources import (
     required_text_source_predicate,
     start_source_processing_best_effort,
 )
+from app.services.finding_criticality import review_has_critical_finding
 from app.services.hospital_activation import (
     AUTO_ACTIVATE_ACTOR,
     activate_hospital_sync,
@@ -658,7 +662,8 @@ _GENERATION_ATTEMPT_KEY = "generation_attempt"
 # price/coverage rules, curated KDCA catalog selection, or GEO/season semantics.  The
 # token lets already rejected slots receive one bounded re-evaluation after a deploy;
 # the newly stored context then restores H-08's identical-input loop suppression.
-GENERATION_GATE_CATALOG_VERSION = "2026-10-13.1"
+# 2026-10-14.1: D36(참고자료 없이 생성·발행), D37(검수 장애면 먼저 발행), W4(비-Critical 지적의 결정적 해소).
+GENERATION_GATE_CATALOG_VERSION = "2026-10-14.1"
 _STORED_EMPTY_CONTENT_BLOCK_CODES = frozenset(
     {"MISSING_APPROVED_ESSENCE", "COST_BLOCKED", "GENERATION_REJECTED"}
 )
@@ -768,7 +773,7 @@ def _stored_review_has_uncertain_finding(item: ContentItem) -> bool:
 def _stored_model_declared_hard(item: ContentItem) -> bool:
     """Whether the stored independent review itself declared a HARD finding."""
 
-    return has_model_declared_hard_finding(_stored_ai_review(item))
+    return has_model_declared_hard_finding(_stored_ai_review(item), _stored_candidate(item))
 
 
 def _stored_block_is_sample_remediable(item: ContentItem, code: str | None) -> bool:
@@ -1076,6 +1081,12 @@ def _auto_correct_blocked_body(
     if waiting is not None:
         return waiting
     review = _stored_ai_review(item)
+    if settings.CONTENT_FINDING_TIERS_ENABLED and not review_has_critical_finding(
+        review, _stored_candidate(item)
+    ):
+        # Critical이 아닌 지적(병원 사실·수치 불일치·확신 부족)은 교정 제안을 사지 않고 결정적으로
+        # 지운다. 교정 상한·주제 교체 예산을 쓰지 않는다(W4). 맡지 못하면 기존 재검수·재작성 계단이다.
+        return _resolve_noncritical_block(db, item, hospital, philosophy)
     candidate = _stored_candidate(item)
     must_use = required_must_use_messages(philosophy)
     # 모델이 HARD로 단정한 판정에 함께 나온 인용 UNCERTAIN도 같은 패스가 고친다 — HARD만 고치면
@@ -1132,41 +1143,8 @@ def _auto_correct_blocked_body(
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
     if outcome.content is not None and outcome.review is not None:
-        corrected = outcome.content
-        new_state["corrected_sha256"] = candidate_sha256(corrected)
-        summary = (
-            dict(item.essence_check_summary)
-            if isinstance(item.essence_check_summary, dict)
-            else {}
-        )
-        summary["ai_review"] = outcome.review.payload()
-        summary[AUTO_CORRECTION_KEY] = new_state
-        if outcome.status == "PASS":
-            # 억제만 지우고 예산은 남긴다 — 통째로 지우면 이어지는 이미지 단계가 예산 없는 기록을
-            # LEGACY_SPEND_UNKNOWN으로 읽어 슬롯이 사람의 일로 굳는다(2026-10-13, 6건).
-            summary = _summary_without_attempt_suppression(summary)
-        written = write_back_generated_content(
-            db,
-            item_id=item.id,
-            expected_revision=expected_revision,
-            expected_claim_token=getattr(item, "generation_claim_token", None),
-            correction_only=True,
-            values={
-                "body": corrected.get("body"),
-                "faq_answer_summary": corrected.get("faq_answer_summary"),
-                "meta_description": corrected.get("meta_description"),
-                "body_updated_at": datetime.now(timezone.utc),
-                "essence_check_summary": summary,
-            },
-        )
-        if written == 0:
-            db.rollback()
-            logger.info(
-                "Discarding minimal correction for %s — row changed during correction", item.id
-            )
+        if not _write_corrected_candidate(db, item, outcome, new_state, expected_revision):
             return GenerationItemState.DISCARDED, None, None
-        db.commit()
-        db.refresh(item)
     else:
         # 범위 검사가 교정본을 거절했다 — 본문은 그대로 두고 쓴 회차만 센다.
         summary = dict(item.essence_check_summary or {})
@@ -1194,6 +1172,117 @@ def _auto_correct_blocked_body(
         # 교정을 거친 뒤에도 남은 사실·안전 HARD는 다시 교정할 문장이 없거나 상한이 끝났다.
         return _escalate_exhausted_correction(
             db, item, philosophy, _stored_auto_correction_state(item)
+        )
+    return _AUTO_CORRECTION_REASSESS
+
+
+def _write_corrected_candidate(
+    db,
+    item: ContentItem,
+    outcome: Any,
+    correction_state: dict[str, Any],
+    expected_revision: int,
+) -> bool:
+    """교정본과 그 재검수 판정을 한 번의 상태 가드 UPDATE로 저장한다. 행이 바뀌었으면 False다."""
+
+    corrected = outcome.content
+    correction_state["corrected_sha256"] = candidate_sha256(corrected)
+    summary = (
+        dict(item.essence_check_summary)
+        if isinstance(item.essence_check_summary, dict)
+        else {}
+    )
+    store_ai_review(summary, outcome.review.payload())
+    summary[AUTO_CORRECTION_KEY] = correction_state
+    if outcome.status == "PASS":
+        # 억제만 지우고 예산은 남긴다 — 통째로 지우면 이어지는 이미지 단계가 예산 없는 기록을
+        # LEGACY_SPEND_UNKNOWN으로 읽어 슬롯이 사람의 일로 굳는다(2026-10-13, 6건).
+        summary = _summary_without_attempt_suppression(summary)
+    written = write_back_generated_content(
+        db,
+        item_id=item.id,
+        expected_revision=expected_revision,
+        expected_claim_token=getattr(item, "generation_claim_token", None),
+        correction_only=True,
+        values={
+            "body": corrected.get("body"),
+            "faq_answer_summary": corrected.get("faq_answer_summary"),
+            "meta_description": corrected.get("meta_description"),
+            "body_updated_at": datetime.now(timezone.utc),
+            "essence_check_summary": summary,
+        },
+    )
+    if written == 0:
+        db.rollback()
+        logger.info(
+            "Discarding minimal correction for %s — row changed during correction", item.id
+        )
+        return False
+    db.commit()
+    db.refresh(item)
+    return True
+
+
+def _resolve_noncritical_block(
+    db,
+    item: ContentItem,
+    hospital: Hospital,
+    philosophy: HospitalContentPhilosophy,
+) -> tuple[GenerationItemState, str | None, str | None] | str | None:
+    """Critical이 아닌 독립 검수 지적을 결정적으로 푼다(W4, `run_noncritical_resolution`).
+
+    지적 문장을 지우거나 승인 자료의 같은 단위 수치 하나로 바꾸고 첫 판정 모델로 재검수한다. 교정
+    제안(LLM)을 사지 않고, 최소 교정의 상한(`passes`·`rereviews`)과 주제 교체 예산을 쓰지 않는다 —
+    이 계단의 재검수 수는 교정 기록의 `noncritical_rereviews`(주제당 상한 2)로 따로 센다. 반환값은
+    `_auto_correct_blocked_body`와 같다. ``None``이면 맡을 수 없다(인용 없음 등) — 기존 경로가 맡는다.
+    """
+
+    if not settings.CONTENT_FINDING_TIERS_ENABLED or not correction_allowed_for(item):
+        return None
+    review = _stored_ai_review(item)
+    if review_has_critical_finding(review, _stored_candidate(item)):
+        return None
+    waiting = _review_wait_blocks_correction(item, philosophy)
+    if waiting is not None:
+        return waiting
+    state = _stored_auto_correction_state(item)
+    expected_revision = int(getattr(item, "content_revision", 1) or 1)
+
+    outcome = _run_async(
+        run_noncritical_resolution(
+            hospital=hospital,
+            philosophy=philosophy,
+            content=_stored_candidate(item),
+            review=review,
+            content_brief=getattr(item, "content_brief", None),
+            must_use_messages=required_must_use_messages(philosophy),
+            rereviews_used=int(state.get(NONCRITICAL_REREVIEWS_KEY) or 0),
+            review_fn=review_generated_content,
+        )
+    )
+    if outcome.content is None or outcome.review is None:
+        # 맡지 못했다(결정적으로 풀 수 없음·상한·범위 거절) — 아무것도 사지 않았다.
+        return None
+    new_state: dict[str, Any] = {
+        **state,
+        NONCRITICAL_REREVIEWS_KEY: outcome.rereviews,
+        "history": (list(state.get("history") or []) + outcome.history)[
+            -_AUTO_CORRECTION_HISTORY_LIMIT:
+        ],
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if not _write_corrected_candidate(db, item, outcome, new_state, expected_revision):
+        return GenerationItemState.DISCARDED, None, None
+    if outcome.status == "PASS":
+        logger.info("Non-critical findings resolved deterministically for %s", item.id)
+        return _AUTO_CORRECTION_RESOLVED
+    if outcome.status == "UNAVAILABLE":
+        code = _content_ai_unavailable_code(outcome.review)
+        _remember_generation_attempt(db, item, philosophy, code)
+        return (
+            GenerationItemState.FAILED,
+            code,
+            "교정한 본문의 독립 재검수를 끝내지 못해 다음 자동 재검수를 기다립니다.",
         )
     return _AUTO_CORRECTION_REASSESS
 
@@ -7061,6 +7150,18 @@ def _generate_single_content_item(
     )
     if body_uses_current_philosophy:
         stored_assessment = assess_content_publication(item, philosophy)
+        if (
+            stored_assessment.code == "CONTENT_AI_HARD_FINDING"
+            and not review_only
+            and not _approved_facts_changed_since_block(item, hospital)
+        ):
+            # Critical이 아닌 지적은 같은 본문을 다시 사기 전에 결정적으로 먼저 지운다(W4) — 확신
+            # 부족 재검수·재작성보다 싸고 교정·교체 예산을 쓰지 않는다. 맡지 못하면 아래 종전 경로다.
+            resolved = _resolve_noncritical_block(db, item, hospital, philosophy)
+            if isinstance(resolved, tuple):
+                return resolved
+            if resolved is not None:
+                stored_assessment = assess_content_publication(item, philosophy)
         # 모델이 HARD로 단정하지 않은(합성 UNCERTAIN만 남은) 차단은 표본 실패다. 같은
         # 본문을 한 번 더 독립 검수에 태워 본다 — 재검수는 확신도 부족만으로 생긴
         # UNCERTAIN을 상위 모델로 1회 승격해 스스로 푼다. 예산은 아래에서 계수한다.
@@ -7136,7 +7237,7 @@ def _generate_single_content_item(
                 if isinstance(item.essence_check_summary, dict)
                 else {}
             )
-            summary["ai_review"] = refreshed_review.payload()
+            store_ai_review(summary, refreshed_review.payload())
             item.essence_check_summary = summary
             db.commit()
             stored_assessment = assess_content_publication(item, philosophy)

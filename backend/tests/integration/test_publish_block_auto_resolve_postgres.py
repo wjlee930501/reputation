@@ -69,7 +69,9 @@ def _approved_philosophy(db, hospital):
     ).scalar_one()
 
 
-def _blocked_post(db, *, scheduled_date=SLOT) -> tuple[Hospital, ContentItem]:
+def _blocked_post(
+    db, *, scheduled_date=SLOT, kind: str = "MEDICAL_SAFETY"
+) -> tuple[Hospital, ContentItem]:
     hospital, schedule = _hospital(db)
     hospital.director_name = "이현진"
     hospital.director_career = "가톨릭대학교 성모병원 정형외과 전공의 수련, 정형외과 전문의"
@@ -145,7 +147,7 @@ def _blocked_post(db, *, scheduled_date=SLOT) -> tuple[Hospital, ContentItem]:
             "findings": [
                 {
                     "severity": "HARD",
-                    "kind": "HOSPITAL_FACT",
+                    "kind": kind,
                     "quote": WRONG,
                     "message": "원장 수련기관이 승인 프로필과 다릅니다.",
                     "target": "CANDIDATE_TEXT",
@@ -439,3 +441,32 @@ def test_correction_write_is_refused_when_a_human_edit_lands_mid_pass(
         db, item_id=item.id, expected_revision=revision, values={"meta_description": "x"}
     ) == 1
     db.rollback()
+
+
+def test_noncritical_fact_is_deleted_without_a_proposal_then_published(
+    gate_db, incidents, monkeypatch
+):
+    """W4(2026-10-14): 병원 사실(수련기관 오기) 지적은 Critical이 아니다 — 교정 제안 없이 문장을 지우고
+    재검수 PASS가 그 본문 hash에 묶인 뒤 기존 발행기가 공개한다(실제 Postgres)."""
+
+    from app.core.config import settings as _settings
+
+    monkeypatch.setattr(_settings, "CONTENT_FINDING_TIERS_ENABLED", True)
+    db = gate_db
+    hospital, item = _blocked_post(db, kind="HOSPITAL_FACT")
+    calls = _fake_providers(monkeypatch, verdict=ContentAiReviewStatus.PASS)
+    _quiet_publication_effects(monkeypatch)
+
+    state, code, _message = _run_2300_sweep_worker(db, monkeypatch, hospital, item)
+    assert (state, code) == (tasks.GenerationItemState.SUCCEEDED, None)
+    db.expire_all()
+    stored = db.get(ContentItem, item.id)
+    assert WRONG not in stored.body and FIXED not in stored.body
+    assert calls["propose"] == 0
+    record = stored.essence_check_summary[mc.AUTO_CORRECTION_KEY]
+    assert record[mc.NONCRITICAL_REREVIEWS_KEY] == 1 and not record.get("passes")
+
+    _publisher_run(db, monkeypatch, _kst(SLOT, 8))
+
+    db.expire_all()
+    assert db.get(ContentItem, item.id).status == ContentStatus.PUBLISHED
