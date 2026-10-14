@@ -39,6 +39,8 @@ def normalized_source_value(field_name: str, value: Any) -> Any:
         metadata.pop(SOURCE_PROCESSING_METADATA_KEY, None)
         metadata.pop("extraction_input_hash", None)
         metadata.pop("extraction_coverage", None)
+        metadata.pop("extraction_content_hash", None)
+        metadata.pop("extraction_processing_version", None)
         return json.loads(json.dumps(metadata, sort_keys=True, ensure_ascii=False))
     return value
 

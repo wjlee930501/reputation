@@ -443,6 +443,7 @@ from app.services.site_revalidation_control import (
 from app.services.source_processing_runs import (
     SOURCE_PROCESSING_OPERATION,
     SOURCE_PROCESSING_RETRY_DELAY_SECONDS,
+    SOURCE_PROCESSING_VERSION,
     processing_claim,
     processing_input_hash,
     run_dispatch_matches,
@@ -3466,6 +3467,43 @@ async def _metered_process_source_asset(
         )
 
 
+SOURCE_EVIDENCE_UNCHANGED = "UNCHANGED"
+
+
+def _source_evidence_is_current(db, source, current_content_hash: str) -> bool:
+    """마지막으로 성공한 근거 추출이 지금 본문과 같은 본문을 읽었는가.
+
+    정본은 추출 결과를 쓸 때 남기는 `extraction_content_hash`다. 그 표지가 없는 옛 행은 PROCESSED
+    상태와 행의 `content_hash`가 근거다 — 본문을 바꾸는 경로(수집·PATCH)는 모두 상태를 PENDING으로
+    되돌리므로 PROCESSED면 노트가 지금 본문에서 나왔다. PROCESSED가 아닌 행은 노트가 남아 있고 처리
+    시각이 있을 때만 믿는다(PATCH는 노트를 지우고 처리 시각을 비운다). 처리 판(`SOURCE_PROCESSING_VERSION`)이
+    바뀌었으면 다시 추출한다.
+    """
+
+    if not current_content_hash or not (source.raw_text or "").strip():
+        return False
+    metadata = source.source_metadata or {}
+    if int(metadata.get("extraction_processing_version") or SOURCE_PROCESSING_VERSION) != int(
+        SOURCE_PROCESSING_VERSION
+    ):
+        return False
+    extracted_hash = metadata.get("extraction_content_hash")
+    if source.status == SourceStatus.PROCESSED:
+        return (extracted_hash or source.content_hash) == current_content_hash
+    if extracted_hash != current_content_hash or source.processed_at is None:
+        return False
+    if source.status not in (SourceStatus.PENDING, SourceStatus.ERROR):
+        return False
+    return (
+        db.scalar(
+            select(HospitalSourceEvidenceNote.id)
+            .where(HospitalSourceEvidenceNote.source_asset_id == source.id)
+            .limit(1)
+        )
+        is not None
+    )
+
+
 def _claim_source_processing(
     source_id: uuid.UUID,
     *,
@@ -3492,6 +3530,18 @@ def _claim_source_processing(
             and extraction_input_hash == current_input_hash
         ):
             return None, SourceStatus.PROCESSED.value, current_input_hash
+        if _source_evidence_is_current(db, source, current_content_hash):
+            # 본문(제목·주소·원문·운영자 메모)이 마지막 추출 때와 같다 — 메타데이터(수집 시각 등)만
+            # 바뀌었다. 근거 노트를 그대로 두고 공급자 호출 없이 끝낸다(W2, 10/13 재추출 107회).
+            metadata = without_processing_claim(source.source_metadata)
+            metadata["extraction_input_hash"] = current_input_hash
+            metadata["extraction_content_hash"] = current_content_hash
+            source.source_metadata = metadata
+            source.content_hash = current_content_hash
+            source.status = SourceStatus.PROCESSED
+            source.process_error = None
+            db.commit()
+            return None, SOURCE_EVIDENCE_UNCHANGED, current_input_hash
         if not source.raw_text or not source.raw_text.strip():
             raise ValueError("자료 본문이 없는 URL 전용 자료는 처리할 수 없습니다.")
         existing_claim = processing_claim(source.source_metadata)
@@ -3576,6 +3626,8 @@ def _write_source_processing_result(
         metadata = without_processing_claim(source.source_metadata)
         metadata["extraction_coverage"] = source_processing_coverage(source.raw_text)
         metadata["extraction_input_hash"] = input_hash
+        metadata["extraction_content_hash"] = current_content_hash
+        metadata["extraction_processing_version"] = SOURCE_PROCESSING_VERSION
         source.source_metadata = metadata
         source.status = SourceStatus.PROCESSED
         source.process_error = None
@@ -3713,7 +3765,12 @@ def _complete_source_processing_run_item(
         run.request_payload = payload
         if outcome == SourceStatus.PROCESSED.value:
             run.success_count = int(run.success_count or 0) + 1
-        elif outcome in {"NOT_FOUND", SourceStatus.EXCLUDED.value, "SUPERSEDED"}:
+        elif outcome in {
+            "NOT_FOUND",
+            SourceStatus.EXCLUDED.value,
+            "SUPERSEDED",
+            SOURCE_EVIDENCE_UNCHANGED,
+        }:
             run.skipped_count = int(run.skipped_count or 0) + 1
         else:
             run.failure_count = int(run.failure_count or 0) + 1
