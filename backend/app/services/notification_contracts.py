@@ -34,6 +34,12 @@ class SlackMessage:
         return json.dumps(self.payload(), ensure_ascii=False, sort_keys=True)
 
 
+# 닫지 않는 알림의 시도 상한(2026-10-14 D35). outbox는 `attempt_count <= max_attempts`를 지키므로 무한대
+# 대신 닿을 수 없는 값을 쓴다 — 재시도 간격은 1시간에서 멈추므로(`notification_transport.retry_delay`)
+# 이 상한까지 100년이 넘는다. 시도 횟수로 FAILED가 되지 않고, 시간당 한 번보다 자주 보내지 않는다.
+UNBOUNDED_NOTIFICATION_ATTEMPTS = 1_000_000
+
+
 @dataclass(frozen=True, slots=True)
 class NotificationIntent:
     dedupe_key: str

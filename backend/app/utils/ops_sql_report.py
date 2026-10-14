@@ -632,7 +632,21 @@ QUERIES: dict[str, tuple[str, ...]] = {
                                                    ->'structured_findings') IS DISTINCT FROM 'array')
                  AS without_structure,
                count(*) FILTER (WHERE c.essence_check_summary->'post_publish_ai_review'
-                                      ->'correction'->>'finished' = 'true') AS correction_finished
+                                      ->'correction'->>'finished' = 'true') AS correction_finished,
+               -- 2026-10-14 재설계: 검수 모델이 `critical: false`를 명시하지 않은 차단 지적이 하나라도
+               -- 있거나 구조가 없으면 Critical이다(요약 크기의 상한 — 어휘·인용 대조는 파이썬이 더한다).
+               count(*) FILTER (WHERE jsonb_typeof(c.essence_check_summary->'post_publish_ai_review'
+                                                   ->'structured_findings') IS DISTINCT FROM 'array'
+                                 OR EXISTS (
+                   SELECT 1 FROM jsonb_array_elements(
+                       CASE WHEN jsonb_typeof(c.essence_check_summary->'post_publish_ai_review'
+                                               ->'structured_findings') = 'array'
+                            THEN c.essence_check_summary->'post_publish_ai_review'->'structured_findings'
+                            ELSE '[]'::jsonb END) f
+                   WHERE f->>'severity' IN ('HARD', 'UNCERTAIN')
+                     AND coalesce(f->>'target', '') <> 'MUST_USE_MESSAGE'
+                     AND (f->'critical') IS DISTINCT FROM 'false'::jsonb))
+                 AS digest_upper_bound
         FROM content_items c
         WHERE c.status = 'PUBLISHED'
           AND c.essence_check_summary->'post_publish_ai_review'->>'status' = 'FLAGGED'

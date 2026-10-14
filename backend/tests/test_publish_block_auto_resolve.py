@@ -2064,6 +2064,7 @@ def test_noncritical_fact_sentence_is_deleted_without_a_proposal_or_correction_b
     philosophy, calls = worker
     body = _body(NEUTRAL_A, WRONG_TRAINING)
     finding = _finding("HARD", "HOSPITAL_FACT", "수련기관이 프로필과 다릅니다.", WRONG_TRAINING)
+    finding["critical"] = False  # 검수 모델이 비-Critical로 판정(v3)
     item = _blocked_item(philosophy, body, finding)
     calls["item"] = item
     models = []
@@ -2105,6 +2106,7 @@ def test_noncritical_number_mismatch_deletes_the_sentence_never_substitutes(work
     wrong = "도수치료 뒤 일상 복귀까지는 보통 2주가 걸립니다."
     body = _body(NEUTRAL_A, wrong)
     finding = _finding("HARD", "HOSPITAL_FACT", "회복 기간이 승인 자료와 다릅니다.", wrong)
+    finding["critical"] = False  # 검수 모델이 비-Critical로 판정(v3)
     item = _blocked_item(philosophy, body, finding)
     calls["item"] = item
 

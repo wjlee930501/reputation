@@ -70,7 +70,7 @@ def _approved_philosophy(db, hospital):
 
 
 def _blocked_post(
-    db, *, scheduled_date=SLOT, kind: str = "MEDICAL_SAFETY"
+    db, *, scheduled_date=SLOT, kind: str = "MEDICAL_SAFETY", critical: bool | None = None
 ) -> tuple[Hospital, ContentItem]:
     hospital, schedule = _hospital(db)
     hospital.director_name = "이현진"
@@ -151,6 +151,8 @@ def _blocked_post(
                     "quote": WRONG,
                     "message": "원장 수련기관이 승인 프로필과 다릅니다.",
                     "target": "CANDIDATE_TEXT",
+                    # 검수 모델의 판정(v3). None이면 필드가 없는 옛 기록 — Critical이다.
+                    **({} if critical is None else {"critical": critical}),
                 }
             ],
             "schema_version": "content-review-v2",
@@ -453,7 +455,7 @@ def test_noncritical_fact_is_deleted_without_a_proposal_then_published(
 
     monkeypatch.setattr(_settings, "CONTENT_FINDING_TIERS_ENABLED", True)
     db = gate_db
-    hospital, item = _blocked_post(db, kind="HOSPITAL_FACT")
+    hospital, item = _blocked_post(db, kind="HOSPITAL_FACT", critical=False)
     calls = _fake_providers(monkeypatch, verdict=ContentAiReviewStatus.PASS)
     _quiet_publication_effects(monkeypatch)
 

@@ -569,13 +569,13 @@ class Settings(BaseSettings):
     # 10/10 이후 이 공회전을 보여 줄 때만 켠다. 끄면 남은 표시도 종착으로 읽지 않는다(롤백).
     CONTENT_HARD_FINDING_IDLE_TERMINAL: bool = False
     # W4 지적 등급(`finding_criticality`)을 쓰는가 — 비-Critical 지적의 결정적 삭제·교정/교체 예산 면제.
-    # 기본 꺼짐(2026-10-14 Codex 3차 HOLD): 어휘 기반 등급은 안전하게 만들 수 없어, 검수 모델이 직접
-    # `critical`을 판정하도록 다시 설계할 때까지 끈다. 끄면 모든 지적이 종전(main)과 같다.
-    CONTENT_FINDING_TIERS_ENABLED: bool = False
-    # D35 공개 글 Critical 알림("마케터 검토 필요" 글당 한 번·배포 전 백로그 요약)을 쓰는가. 기본 꺼짐 —
-    # 전달 유실 경로(사고 복구가 미발송 알림을 종결 등)를 전용 알림 유형으로 다시 설계할 때까지 끈다.
-    # 끄면 사후 검수 지적은 종전처럼 조용한 POST_PUBLISH_REVIEW_FLAGGED 사고로만 남는다.
-    POST_PUBLISH_CRITICAL_ALERTS_ENABLED: bool = False
+    # 기본 켜짐(2026-10-14 재설계): 등급은 검수 모델의 `critical` 판정(필드 없으면 Critical)이 정하고
+    # 의료·안전 어휘는 추가 안전망이다. 끄면(롤백 스위치) 모든 지적이 종전(main)과 같다.
+    CONTENT_FINDING_TIERS_ENABLED: bool = True
+    # D35 공개 글 Critical 알림("마케터 검토 필요" 글당 한 번·배포 전 백로그 요약)을 쓰는가. 기본 켜짐
+    # (2026-10-14 재설계): 글 id 키의 전용 알림 유형(사고 복구가 종결하지 않음, 닫지 않는 백오프 재시도).
+    # 끄면(롤백 스위치) 사후 검수 지적은 종전처럼 조용한 POST_PUBLISH_REVIEW_FLAGGED 사고로만 남는다.
+    POST_PUBLISH_CRITICAL_ALERTS_ENABLED: bool = True
     # 같은 원고 후보의 독립 검수가 공급자 장애·잘린 응답으로 연속 실패할 때 자동 재검수를
     # 사는 최대 횟수(KST 날을 넘어 누적). 닿으면 사람의 일(OPERATOR_REQUIRED)로 넘긴다.
     CONTENT_AI_REVIEW_UNAVAILABLE_MAX_RETRIES: int = 6

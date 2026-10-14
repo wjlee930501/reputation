@@ -50,8 +50,15 @@ def _item(**extra):
     return item
 
 
-def _finding(severity, kind, message="승인 자료에 없는 진료 원칙 문장", quote=PHILOSOPHY):
-    return {"severity": severity, "kind": kind, "message": message, "quote": quote}
+def _finding(
+    severity, kind, message="승인 자료에 없는 진료 원칙 문장", quote=PHILOSOPHY, critical="auto"
+):
+    # 검수 모델의 판정(v3): 기본은 의료 안전 종류면 Critical, 아니면 비-Critical로 판정했다고 둔다.
+    if critical == "auto":
+        critical = kind == "MEDICAL_SAFETY"
+    return {
+        "severity": severity, "kind": kind, "message": message, "quote": quote, "critical": critical
+    }
 
 
 def _flag(item, *findings, finished=True, senior=False):
@@ -95,7 +102,10 @@ class _DB:
 
 @pytest.fixture
 def calls(monkeypatch):
-    recorded = {"critical": [], "recovered": 0}
+    recorded = {"critical": [], "recovered": 0, "alerts": []}
+    monkeypatch.setattr(
+        sweep, "_enqueue_notification", lambda _db, intent, _now: recorded["alerts"].append(intent)
+    )
     monkeypatch.setattr(
         sweep,
         "_open_critical_incident",
@@ -125,7 +135,10 @@ def test_critical_flag_asks_the_marketer_and_keeps_the_post_public(monkeypatch, 
     sweep._settle_flag(_DB(), item, item.hospital, asyncio.run, needs_human_reason="blocked", now=NOW)
 
     assert [item_id for item_id, _title in calls["critical"]] == [item.id]
-    assert item.essence_check_summary[KEY]["critical_alert_sent_at"] == NOW.isoformat()
+    [alert] = calls["alerts"]
+    assert alert.notification_type == sweep.POST_PUBLISH_CRITICAL_ALERT_NOTIFICATION_TYPE
+    assert alert.dedupe_key == f"post-publish-critical:{item.id}" and alert.incident_id is None
+    assert item.essence_check_summary[KEY]["enqueued_at"] == NOW.isoformat()
     assert item.status == ContentStatus.PUBLISHED and item.post_publish_reviewed_at is None
     assert calls["recovered"] == 1  # 옛 조용한 사고는 더 쌓지 않는다
 
@@ -168,12 +181,12 @@ def test_uncertain_only_flag_waits_for_the_senior_rereview(monkeypatch, calls):
 @pytest.mark.parametrize(
     "finding",
     [
-        # Codex 2차 재현 — 영어·혼합 언어로 쓴 의료 지적은 종류와 무관하게 Critical이다.
-        _finding("HARD", "STYLE", "Missing emergency care instructions for chest pain"),
-        _finding("HARD", "HOSPITAL_FACT", "진료 원칙: contraindication for pregnancy is omitted"),
+        # 2026-10-14 대표 결정 — 검수 모델이 Critical로 판정했거나(판정 없음 포함) 안전망 어휘가 있다.
+        _finding("HARD", "STYLE", "Missing emergency care instructions for chest pain", critical=True),
+        _finding("HARD", "HOSPITAL_FACT", "판정 없음", critical=None),
         _finding("UNCERTAIN", "MEDICAL_SAFETY", "확신 부족"),
-        _finding("HARD", "HOSPITAL_FACT", "제목 지적", quote="치질 진료 전"),
-        _finding("HARD", "HOSPITAL_FACT", "인용 없음", quote=""),
+        _finding("HARD", "HOSPITAL_FACT", "100% 완치를 보장한다는 문장"),
+        _finding("HARD", "STYLE", "할인 유인 문구"),
     ],
 )
 def test_medical_or_unverifiable_flags_are_never_closed_quietly(monkeypatch, calls, finding):
@@ -220,6 +233,7 @@ def test_noncritical_verdict_requests_no_alert() -> None:
                 ContentAiFindingKind.HOSPITAL_FACT,
                 "승인 자료에 없는 진료 원칙 문장",
                 quote=PHILOSOPHY,
+                critical=False,
             )
         ],
     )
@@ -234,14 +248,14 @@ def test_one_alert_per_post_lifetime_even_when_the_body_changes(monkeypatch, cal
     item = _item()
     sweep.apply_review_outcome(item, _critical_review(item), now=NOW)
     _lock_to(monkeypatch, item)
-    assert sweep.ensure_critical_alert(_DB(), item.id, asyncio.run, now=NOW) == "SENT"
+    assert sweep.ensure_critical_alert(_DB(), item.id, asyncio.run, now=NOW) == "ENQUEUED"
 
     item.body = item.body + "\n새 문단입니다."
     sweep.apply_review_outcome(item, _critical_review(item, "다른 위험한 오정보"), now=NOW)
     assert sweep.ensure_critical_alert(_DB(), item.id, asyncio.run, now=NOW) == "SKIPPED"
     sweep._settle_flag(_DB(), item, item.hospital, asyncio.run, needs_human_reason="blocked", now=NOW)
 
-    assert len(calls["critical"]) == 1
+    assert len(calls["critical"]) == 1 and len(calls["alerts"]) == 1
 
 
 def test_delivery_uses_the_snapshot_even_after_the_flag_is_gone(monkeypatch, calls):
@@ -254,11 +268,35 @@ def test_delivery_uses_the_snapshot_even_after_the_flag_is_gone(monkeypatch, cal
         k: v for k, v in item.essence_check_summary.items() if k != sweep.POST_PUBLISH_FLAG_KEY
     }
 
-    assert sweep._deliver_critical_alert(_DB(), item.id, asyncio.run, now=NOW) == "SENT"
+    assert sweep._deliver_critical_alert(_DB(), item.id, asyncio.run, now=NOW) == "ENQUEUED"
     assert calls["critical"] == [(item.id, item.title)]
+    assert item.title in calls["alerts"][0].message.payload_json()
 
 
-def test_failed_deliveries_retry_then_close_without_blocking_the_queue(monkeypatch):
+def test_enqueue_failure_keeps_the_intent_pending_and_never_closes_it(monkeypatch, calls):
+    """outbox에 넣지 못하면 의도는 남는다 — 몇 번을 실패해도 닫지 않고 다음 실행이 다시 넣는다."""
+
+    item = _item()
+    sweep.apply_review_outcome(item, _critical_review(item), now=NOW)
+    _lock_to(monkeypatch, item)
+
+    def broken(*_a, **_k):
+        raise RuntimeError("outbox down")
+
+    monkeypatch.setattr(sweep, "_enqueue_notification", broken)
+    for _ in range(10):
+        with pytest.raises(RuntimeError):
+            sweep._deliver_critical_alert(_DB(), item.id, asyncio.run, now=NOW)
+    alert = item.essence_check_summary[KEY]
+    assert alert["enqueued_at"] is None and alert["closed_at"] is None
+
+    recorded = []
+    monkeypatch.setattr(sweep, "_enqueue_notification", lambda _db, intent, _now: recorded.append(intent))
+    assert sweep._deliver_critical_alert(_DB(), item.id, asyncio.run, now=NOW) == "ENQUEUED"
+    assert len(recorded) == 1 and item.essence_check_summary[KEY]["enqueued_at"] == NOW.isoformat()
+
+
+def test_incident_failure_does_not_undo_the_enqueued_alert(monkeypatch, calls):
     item = _item()
     sweep.apply_review_outcome(item, _critical_review(item), now=NOW)
     _lock_to(monkeypatch, item)
@@ -267,14 +305,24 @@ def test_failed_deliveries_retry_then_close_without_blocking_the_queue(monkeypat
         raise RuntimeError("incident store down")
 
     monkeypatch.setattr(sweep, "_open_critical_incident", broken)
-    results = [
-        sweep._deliver_critical_alert(_DB(), item.id, asyncio.run, now=NOW)
-        for _ in range(sweep._ALERT_MAX_ATTEMPTS)
-    ]
 
-    assert results == ["RETRY"] * (sweep._ALERT_MAX_ATTEMPTS - 1) + ["CLOSED"]
-    alert = item.essence_check_summary[KEY]
-    assert alert["closed_reason"] == "delivery_failed" and alert["critical_alert_sent_at"] is None
+    assert sweep._deliver_critical_alert(_DB(), item.id, asyncio.run, now=NOW) == "ENQUEUED"
+    assert len(calls["alerts"]) == 1
+
+
+def test_alert_intent_retries_without_a_cap_and_is_not_tied_to_an_incident(calls) -> None:
+    from app.services.notification_contracts import UNBOUNDED_NOTIFICATION_ATTEMPTS
+    from app.services.notification_transport import retry_delay
+
+    item = _item()
+    intent = sweep.build_critical_alert(item, item.hospital, {"title": "제목", "findings": ["오정보"]})
+
+    assert intent.max_attempts == UNBOUNDED_NOTIFICATION_ATTEMPTS and intent.incident_id is None
+    assert intent.hospital_id == item.hospital.id
+    assert intent.message.fallback_text.startswith("[Error : 오류 발생] 마케터 검토 필요")
+    # 시간당 한 번보다 자주 보내지 않고, 큰 시도 수에서도 간격 계산이 커지지 않는다.
+    assert retry_delay(UNBOUNDED_NOTIFICATION_ATTEMPTS - 1, None) == 3600
+    assert retry_delay(1, None) == 15
 
 
 def test_an_unpublished_post_closes_its_alert(monkeypatch, calls):
@@ -295,7 +343,7 @@ def test_pending_queue_skips_sent_and_closed_intents_oldest_first() -> None:
         )
     )
 
-    assert "critical_alert_sent_at" in sql and "closed_at" in sql
+    assert "enqueued_at" in sql and "critical_alert_sent_at" in sql and "closed_at" in sql
     assert "ORDER BY" in sql and "requested_at" in sql.split("ORDER BY")[1]
     # 공개 상태로 거르지 않는다 — 공개 중이 아닌 의도는 전달기가 닫아 자리를 비운다.
     assert "content_items.status" not in sql.split("FROM")[1].split("ORDER BY")[0]
@@ -325,63 +373,78 @@ def test_the_critical_alert_survives_gate_rewrites_of_the_summary() -> None:
 
 
 class _BacklogDB(_DB):
-    def __init__(self, rows):
+    """id 커서 쪽 조회를 흉내 낸다 — 호출마다 다음 쪽을 돌려준다."""
+
+    def __init__(self, rows, page):
         super().__init__()
-        self.rows = rows
+        self.pages = [rows[i : i + page] for i in range(0, len(rows), page)] + [[]]
+        self.queries = 0
 
     def execute(self, _stmt):
-        rows = self.rows
-        return SimpleNamespace(unique=lambda: SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: rows)))
+        rows = self.pages[min(self.queries, len(self.pages) - 1)]
+        self.queries += 1
+        return SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: rows))
 
 
-def test_backlog_is_announced_in_one_digest_and_marked_sent(monkeypatch):
+def test_backlog_is_announced_in_one_digest_across_every_page(monkeypatch, calls):
+    """커서로 전부 훑는다 — 600건(쪽 200)이어도 요약은 한 통, 표시는 30줄 + "외 N건"."""
+
     critical = [
-        _flag(_item(), _finding("HARD", "MEDICAL_SAFETY", "위험한 오정보"))
-        for _ in range(35)
+        _flag(_item(), _finding("HARD", "MEDICAL_SAFETY", "위험한 오정보")) for _ in range(560)
     ]
-    finished = _flag(
-        _item(), _finding("HARD", "MEDICAL_SAFETY", "응급 안내 누락"), finished=True
+    # 옛 저장 지적(`critical` 키 없음)은 HARD + 완치·보장·최저가·할인일 때만 Critical, 아니면 조용히 닫는다.
+    legacy = [
+        _flag(_item(), {"severity": "HARD", "kind": "HOSPITAL_FACT", "message": "완치를 보장한다는 표현",
+                        "quote": PHILOSOPHY})
+        for _ in range(5)
+    ]
+    legacy_quiet = [
+        _flag(_item(), {"severity": "HARD", "kind": "HOSPITAL_FACT", "message": "통증 효과 표현의 근거 없음",
+                        "quote": PHILOSOPHY})
+        for _ in range(7)
+    ]
+    legacy_unfinished = _flag(
+        _item(), {"severity": "HARD", "kind": "HOSPITAL_FACT", "message": "m", "quote": PHILOSOPHY},
+        finished=False,
     )
-    noncritical = _flag(_item(), _finding("HARD", "HOSPITAL_FACT"))
-    enqueued = []
-    monkeypatch.setattr(
-        "app.services.notification_store.enqueue_notification_sync",
-        lambda _db, intent: enqueued.append(intent),
-    )
-    db = _BacklogDB([*critical, finished, noncritical])
+    noncritical = [_flag(_item(), _finding("HARD", "HOSPITAL_FACT")) for _ in range(28)]
+    db = _BacklogDB([*critical, *legacy, *legacy_quiet, legacy_unfinished, *noncritical], page=200)
+    monkeypatch.setattr(sweep, "_BACKLOG_PAGE", 200)
 
-    assert sweep.send_critical_backlog_digest(db, now=NOW) == 36
+    assert sweep.send_critical_backlog_digest(db, now=NOW) == 565
 
-    [intent] = enqueued
+    [intent] = calls["alerts"]
+    assert db.queries == 4 and db.commits == 1  # 3쪽 + 빈 쪽
     assert intent.notification_type == sweep.POST_PUBLISH_CRITICAL_DIGEST_NOTIFICATION_TYPE
     payload = intent.message.payload_json()
-    assert "마케터 검토 필요 36건" in payload and "외 6건" in payload
+    assert "마케터 검토 필요 565건" in payload and "외 535건" in payload
+    assert payload.count("「") == 30
     assert intent.message.fallback_text.startswith("[Error : 오류 발생]")
-    for item in [*critical, finished]:
-        assert item.essence_check_summary[KEY]["critical_alert_sent_at"] == NOW.isoformat()
+    for item in [*critical, *legacy]:
+        assert item.essence_check_summary[KEY]["enqueued_at"] == NOW.isoformat()
         assert item.essence_check_summary[KEY]["via"] == "BACKLOG_DIGEST"
-    assert KEY not in noncritical.essence_check_summary
+    assert all(KEY not in item.essence_check_summary for item in [*noncritical, *legacy_quiet])
+    for item in [*noncritical, *legacy_quiet]:
+        assert item.post_publish_reviewed_by == sweep.POST_PUBLISH_NONCRITICAL_CLOSER
+        assert item.essence_check_summary[sweep.POST_PUBLISH_FLAG_KEY]["closed"]["reason"] == "NONCRITICAL"
+    # 교정이 아직 맡을 수 있는 글은 스윕에 맡긴다.
+    assert legacy_unfinished.post_publish_reviewed_at is None
 
 
-def test_no_backlog_no_digest(monkeypatch):
-    enqueued = []
-    monkeypatch.setattr(
-        "app.services.notification_store.enqueue_notification_sync",
-        lambda _db, intent: enqueued.append(intent),
-    )
-
-    assert sweep.send_critical_backlog_digest(_BacklogDB([]), now=NOW) == 0
-    assert enqueued == []
+def test_no_backlog_no_digest(monkeypatch, calls):
+    assert sweep.send_critical_backlog_digest(_BacklogDB([], page=200), now=NOW) == 0
+    assert calls["alerts"] == []
 
 
 def test_backlog_scan_excludes_posts_with_any_alert_intent() -> None:
     sql = str(
-        sweep._backlog_stmt(5).compile(
+        sweep._backlog_page_stmt(uuid.UUID(int=1), 5).compile(
             dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
         )
     )
 
     assert "post_publish_critical_alert" in sql and "FLAGGED" in sql
+    assert "content_items.id >" in sql and "ORDER BY content_items.id" in sql
 
 
 # ── 등록·문구·근거 ───────────────────────────────────────────────────────────────
@@ -395,6 +458,7 @@ def test_critical_incident_type_is_an_operator_slack_with_the_error_label() -> N
     assert not incident_policy(kind).sweep_owned
     assert label_for_event("INCIDENT_OPEN") is NotificationLabel.ERROR
     assert label_for_event("POST_PUBLISH_CRITICAL_DIGEST") is NotificationLabel.ERROR
+    assert label_for_event("POST_PUBLISH_CRITICAL_ALERT") is NotificationLabel.ERROR
     resolvers = incident_backlog.active_resolvers()
     assert resolvers["POST_PUBLISH_REVIEW_FLAGGED"] is resolvers[kind]
 
@@ -419,6 +483,8 @@ def test_critical_incident_copy_uses_the_snapshot(monkeypatch) -> None:
     assert captured["problem"].startswith("마케터 검토 필요: 공개된 글 「옛 제목」")
     assert "흑색변 오정보" in captured["problem"]
     assert "자동으로 내리지 않았습니다" in captured["customer_impact"]
+    # Slack은 전용 알림이 맡는다 — 사고는 알리지 않는다(복구가 알림을 종결할 수 없다).
+    assert captured["notify"] is False
 
 
 class _Session:
@@ -485,12 +551,13 @@ def _tiers_and_alerts_on(monkeypatch):
 # ── 기본 꺼짐: 알림·등급을 끄면 종전(main)과 같다 ──────────────────────────────────
 
 
-def test_alerts_off_by_default_leave_the_legacy_quiet_incident(monkeypatch, calls) -> None:
+def test_alerts_switched_off_leave_the_legacy_quiet_incident(monkeypatch, calls) -> None:
     from app.core.config import Settings
     from app.core.config import settings as _settings
 
-    assert Settings.model_fields["POST_PUBLISH_CRITICAL_ALERTS_ENABLED"].default is False
-    assert Settings.model_fields["CONTENT_FINDING_TIERS_ENABLED"].default is False
+    # 2026-10-14 재설계 뒤 기본 켜짐이다. 끄면(롤백 스위치) 종전(main)과 같다.
+    assert Settings.model_fields["POST_PUBLISH_CRITICAL_ALERTS_ENABLED"].default is True
+    assert Settings.model_fields["CONTENT_FINDING_TIERS_ENABLED"].default is True
     monkeypatch.setattr(_settings, "POST_PUBLISH_CRITICAL_ALERTS_ENABLED", False)
     legacy = []
     monkeypatch.setattr(

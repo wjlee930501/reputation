@@ -286,6 +286,16 @@ def _critical_digest_sample():
     return build_critical_backlog_digest([item], datetime(2026, 10, 15, 3, 10, tzinfo=UTC))
 
 
+def _critical_alert_sample():
+    from types import SimpleNamespace
+
+    from app.workers.post_publish_ai_review import build_critical_alert
+
+    item = SimpleNamespace(id=_HOSPITAL, title="허리 통증 안내")
+    hospital = SimpleNamespace(id=_HOSPITAL, name="장편한외과의원")
+    return build_critical_alert(item, hospital, {"title": "허리 통증 안내", "findings": ["오정보"]})
+
+
 _SAMPLES: tuple[tuple[str, NotificationLabel, object], ...] = (
     (
         "INCIDENT_OPEN",
@@ -357,6 +367,11 @@ _SAMPLES: tuple[tuple[str, NotificationLabel, object], ...] = (
         "POST_PUBLISH_CRITICAL_DIGEST",
         NotificationLabel.ERROR,
         lambda: _critical_digest_sample(),
+    ),
+    (
+        "POST_PUBLISH_CRITICAL_ALERT",
+        NotificationLabel.ERROR,
+        lambda: _critical_alert_sample(),
     ),
     (
         "GENERATION_REJECTION_WEEKLY_ROLLUP",

@@ -10,7 +10,7 @@
   알 수 없는 지적(fail closed). 감지 자체가 Critical-blocked는 아니다 — 먼저 기존 교정·재작성·주제 교체
   계단을 탄다.
   (출력 주입·tenant 혼입의 결정적 검사는 아직 없다 — 생기면 여기 코드로 더한다.)
-- ``NONCRITICAL``: 의료 내용이 없는 병원 사실(진료 철학 문장·경력·개원 연도·시설·예약·홍보 문구)·
+- ``NONCRITICAL``: 검수 모델이 `critical: false`로 판정한, 의료 내용이 없는 병원 사실(진료 철학 문장·경력·개원 연도·시설·예약·홍보 문구)·
   문체·참고자료·검수 장애·공급자 장애 등. 지적 문장을 결정적으로 지우고 진행하며(숫자를 바꿔 넣지
   않는다) 교정·주제 교체 예산을 쓰지 않는다.
 - ``RESPECT``: 사람이 만든 공개 권한 상태(근거 철회·PAUSED·비공개). Critical처럼 막지만 자동으로
@@ -104,6 +104,29 @@ def mentions_medical_safety(text: object) -> bool:
     return _LEXICON_RE.search(str(text or "")) is not None
 
 
+# ── Critical 판정의 안전망 어휘(2026-10-14 대표 결정) ─────────────────────────────────────
+# 검수 모델의 판정을 덮는 어휘는 이 넷뿐이다 — 완치·보장·최저가·할인(활용·띄어쓰기 포함)과 영어 대응어.
+# 위 `MEDICAL_SAFETY_LEXICON`은 등급 어휘가 아니라 결정적 삭제의 편집 안전 검사(응급 안내·의료 문장을
+# 지우지 않는다)에만 쓴다.
+CRITICAL_OVERRIDE_PATTERNS: tuple[str, ...] = (
+    r"완\s*치",
+    r"보\s*장(?!\s*성)",
+    r"최\s*저\s*가",
+    r"할\s*인",
+    r"(?<![a-z])cure(?:d|s)?(?![a-z])",
+    r"(?<![a-z])guarantee",
+    r"(?<![a-z])lowest\s+price",
+    r"(?<![a-z])discount",
+)
+_OVERRIDE_RE = re.compile("|".join(CRITICAL_OVERRIDE_PATTERNS), re.IGNORECASE)
+
+
+def mentions_critical_override(text: object) -> bool:
+    """Critical 안전망 어휘(완치·보장·최저가·할인)가 있는가 — 검수 모델이 false라 해도 Critical이다."""
+
+    return _OVERRIDE_RE.search(str(text or "")) is not None
+
+
 def _quote_spans(text: str, quote: str) -> list[tuple[int, int]]:
     parts = [re.escape(part) for part in quote.split()]
     if not parts:
@@ -155,28 +178,32 @@ def is_emergency_guidance_finding(finding: Mapping[str, Any]) -> bool:
     )
 
 
+def reviewer_marked_noncritical(finding: Mapping[str, Any]) -> bool:
+    """검수 모델이 이 지적에 `critical: false`를 **명시**했는가(v3 검수). 빠졌거나 bool이 아니면 아니다."""
+
+    return finding.get("critical") is False
+
+
+def _override_hit(finding: Mapping[str, Any], content: object) -> bool:
+    sentence = locate_body_sentence(content, finding.get("quote")) or ""
+    return mentions_critical_override(
+        f"{finding.get('message') or ''} {finding.get('quote') or ''} {sentence}"
+    )
+
+
 def classify_finding(finding: Mapping[str, Any], content: object = None) -> Criticality:
-    """독립 검수 지적 하나의 등급 — 허용 목록이다. 아래를 **모두** 만족할 때만 비-Critical이다.
+    """독립 검수 지적 하나의 등급(2026-10-14 대표 결정 — 등급은 검수 모델이 정한다).
 
-    1. 종류가 `NONCRITICAL_KINDS`(병원 사실·문체·참고자료)다.
-    2. 인용(`quote`)이 있고, 그 인용이 본문의 정확히 한 문장을 가리킨다(제목·메타·FAQ가 아니다).
-       `content`(후보 본문)가 없으면 확인할 수 없으므로 Critical이다.
-    3. 지적 문구·인용·그 문장 전체 어디에도 의료·안전 어휘(`MEDICAL_SAFETY_LEXICON`)가 없다.
-
-    그 밖은 모두 Critical이다(fail closed) — 의료 안전(확신 부족 포함)·종류 불명·제목 지적·인용 없는
-    지적·혼합 언어. 발행을 막지 않는 지적(SOFT·필수 문구를 짚은 지적)은 등급을 매기지 않는다(비-Critical).
+    발행을 막는 지적은 검수 모델이 `critical: false`를 명시했고 지적 문구·인용·인용이 가리키는 본문
+    문장에 안전망 어휘(완치·보장·최저가·할인, `mentions_critical_override`)가 없을 때만 비-Critical이다.
+    `critical`이 true이거나 없으면(null·옛 기록·합성 지적) Critical이다. 발행을 막지 않는 지적(SOFT·필수
+    문구를 짚은 지적)은 등급을 매기지 않는다(비-Critical). 비-Critical이어도 결정적으로 지울 수 없으면
+    (인용 없음·제목 등) 삭제 계획(`content_minimal_correction.plan_noncritical_fixes`)이 맡지 않는다.
     """
 
     if not finding_blocks(finding):
         return Criticality.NONCRITICAL
-    if _label(finding.get("kind")) not in NONCRITICAL_KINDS:
-        return Criticality.CRITICAL
-    sentence = locate_body_sentence(content, finding.get("quote"))
-    if sentence is None:
-        return Criticality.CRITICAL
-    if mentions_medical_safety(
-        f"{finding.get('message') or ''} {finding.get('quote') or ''} {sentence}"
-    ):
+    if not reviewer_marked_noncritical(finding) or _override_hit(finding, content):
         return Criticality.CRITICAL
     return Criticality.NONCRITICAL
 
@@ -212,12 +239,39 @@ def review_blocks_only_noncritically(review: object, content: object = None) -> 
     return bool(blocking) and not critical_findings(blocking, content)
 
 
+def legacy_finding_is_critical(finding: Mapping[str, Any], content: object = None) -> bool:
+    """검수 모델의 `critical` 판정이 **없던** 옛 저장 지적(v3 이전)의 등급(2026-10-14 대표 결정).
+
+    판정받은 적 없는 옛 지적을 모두 Critical로 올리지 않는다. HARD이고 안전망 어휘(완치·보장·최저가·
+    할인)가 지적 문구·인용·인용 문장에 있을 때만 Critical이고, 나머지는 조용히 닫는다. v3 이후의 검수
+    출력은 언제나 `critical` 키를 싣는다(값이 없으면 null = Critical).
+    """
+
+    return bool(
+        finding_blocks(finding)
+        and _label(finding.get("severity")) == "HARD"
+        and _override_hit(finding, content)
+    )
+
+
 def flag_findings_are_critical(structured_findings: object, content: object = None) -> bool:
-    """사후 검수 표시의 구조화 지적에 Critical이 있는가. 구조를 모르면 Critical이다."""
+    """사후 검수 표시의 구조화 지적에 Critical이 있는가. 구조를 모르면 Critical이다.
+
+    `critical` 키가 있는 지적(v3 검수 출력)은 `classify_finding`, 키가 없는 옛 저장 지적은
+    `legacy_finding_is_critical`(어휘 안전망만)로 본다.
+    """
 
     if not isinstance(structured_findings, list) or not structured_findings:
         return True
-    return bool(critical_findings(structured_findings, content))
+    for finding in structured_findings:
+        if not isinstance(finding, Mapping):
+            continue
+        if "critical" in finding:
+            if classify_finding(finding, content) is Criticality.CRITICAL:
+                return True
+        elif legacy_finding_is_critical(finding, content):
+            return True
+    return False
 
 
 # ── 게이트 차단 코드·생성 거절 라벨 ─────────────────────────────────────────────────
