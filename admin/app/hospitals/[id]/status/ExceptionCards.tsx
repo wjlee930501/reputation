@@ -17,7 +17,6 @@ import type {
   OperationsAction,
   OperationsIncidentDetail,
 } from '@/types'
-import { EscalatedDraftCard } from './EscalatedDraftCard'
 
 const PERMISSION_DENIED =
   '이 작업은 권한 있는 담당자만 처리할 수 있습니다. 담당자에게 요청하거나 개발팀 문의 정보를 복사하세요.'
@@ -30,12 +29,9 @@ type DetailState = 'idle' | 'loading' | 'ready' | 'failed'
 export function ExceptionCards({
   exceptions,
   onDone,
-  onNotice,
 }: {
   exceptions: HospitalOverviewException[]
   onDone: () => Promise<void>
-  /** 카드가 사라진 뒤에도 남아야 하는 안내를 화면 위쪽으로 올린다. */
-  onNotice?: (text: string) => void
 }) {
   return (
     <section aria-label="사람이 결정할 항목" className="space-y-3">
@@ -45,18 +41,9 @@ export function ExceptionCards({
           지금 사람이 결정할 항목이 없습니다.
         </p>
       ) : (
-        exceptions.map((exception) =>
-          exception.kind === 'escalated_draft' ? (
-            <EscalatedDraftCard
-              key={exception.id}
-              exception={exception}
-              onDone={onDone}
-              onNotice={onNotice}
-            />
-          ) : (
-            <IncidentCard key={exception.id} exception={exception} onDone={onDone} />
-          ),
-        )
+        exceptions.map((exception) => (
+          <IncidentCard key={exception.id} exception={exception} onDone={onDone} />
+        ))
       )}
     </section>
   )

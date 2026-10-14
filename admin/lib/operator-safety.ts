@@ -1,11 +1,3 @@
-export async function persistThenApprove(
-  persist: () => Promise<unknown>,
-  approve: () => Promise<unknown>,
-): Promise<void> {
-  await persist()
-  await approve()
-}
-
 export interface VariantDraft {
   query_text: string
   platform: string

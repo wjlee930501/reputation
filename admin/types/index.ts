@@ -209,7 +209,7 @@ export interface HospitalListRow extends Omit<Hospital, 'missing_profile_require
 }
 
 export interface HospitalOverviewException {
-  kind: 'incident' | 'escalated_draft'
+  kind: 'incident'
   id: string
   title: string
   evidence: string | null
@@ -468,8 +468,20 @@ export interface ContentPhilosophy {
   approval_note: string | null
   created_at: string | null
   updated_at: string | null
-  /** 재검수 요청 응답에서만 채워진다. false면 보관은 끝났고 재검수는 reconcile이 회수한다. */
-  re_review_dispatched?: boolean | null
+  /** 자동 운영 요약(Phase 4 D33)의 합성 메타데이터 — 만든 방식·입력 자료·버린 문장·충돌. */
+  synthesis_metadata?: EssenceSynthesisMetadata | null
+}
+
+export interface EssenceSynthesisMetadata {
+  mode?: string
+  trigger?: string
+  fallback?: boolean
+  input_hashes?: Record<string, string>
+  source_kinds?: Record<string, string>
+  excluded_inputs?: Array<Record<string, unknown>>
+  dropped_total?: number
+  conflicts?: Array<Record<string, unknown>>
+  applied_at?: string
 }
 
 export type AIQueryTargetPriority = 'HIGH' | 'NORMAL' | 'LOW'

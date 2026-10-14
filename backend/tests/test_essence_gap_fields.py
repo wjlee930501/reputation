@@ -6,25 +6,13 @@
 """
 
 from app.models import essence as essence_model
-from app.services import essence_auto_review
 
 
-def test_gap_field_constants_are_shared_objects():
-    assert essence_auto_review.AUTO_REVIEW_GAP_FIELD is essence_model.AUTO_REVIEW_GAP_FIELD
-    assert (
-        essence_auto_review.AUTO_RECOVERY_CYCLE_GAP_FIELD
-        is essence_model.AUTO_RECOVERY_CYCLE_GAP_FIELD
-    )
-
-
-def test_server_owned_gap_fields_cover_both_automatic_writers():
+def test_server_owned_gap_fields_keep_the_old_review_markers() -> None:
     assert set(essence_model.SERVER_OWNED_GAP_FIELDS) == {
-        essence_auto_review.AUTO_REVIEW_GAP_FIELD,
-        essence_auto_review.AUTO_RECOVERY_CYCLE_GAP_FIELD,
-        # 재시도 시각과 자료 제외 사실도 서버만 쓴다 — 지워지면 백오프를 우회하거나
-        # 승인이 무엇을 못 봤는지가 사라진다.
+        essence_model.AUTO_REVIEW_GAP_FIELD,
+        essence_model.AUTO_RECOVERY_CYCLE_GAP_FIELD,
         essence_model.AUTO_RECOVERY_LAST_AT_GAP_FIELD,
         essence_model.EXCLUDED_ERROR_SOURCE_GAP_FIELD,
-        # 바로 사람에게 넘긴 보류 표식 — 지워지면 같은 입력을 자동으로 다시 산다.
         essence_model.AUTO_RECOVERY_TERMINAL_GAP_FIELD,
     }

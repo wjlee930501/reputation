@@ -442,7 +442,7 @@ async def test_batched_states_judge_current_like_the_single_lookup():
 
     states = await get_essence_readiness_states(db, [fresh, stale, waiting])
 
-    assert db.query_count == 4
+    assert db.query_count == 3
     assert states[fresh].current is True
     assert states[stale].current is True
     assert states[waiting].current is True
@@ -458,48 +458,18 @@ async def test_batched_states_judge_current_like_the_single_lookup():
 
 
 @pytest.mark.asyncio
-async def test_batched_states_flag_a_hospital_with_an_escalated_draft():
-    """자동 검수가 보류한 초안은 사람이 손대야 풀린다 — `current`가 살아 있어도 예외로 남는다."""
+async def test_a_leftover_review_draft_is_never_an_exception():
+    """Phase 4(D33): 운영 기준은 승인 없이 자동 적용된다 — 남은 보류 초안은 사람의 예외가 아니다."""
     source = _source()
     hospital_id, approved_row, single_db = _states_case(
         sources=[source], approved_sources=[source]
     )
     source.hospital_id = hospital_id
-    draft_id = uuid.uuid4()
     db = _AsyncReadinessStatesDB(
         [approved_row],
         [source],
         draft_rows=[
-            _draft_row(hospital_id, draft_id, [source], reasons=("근거 없는 효과 표현",))
-        ],
-    )
-
-    states = await get_essence_readiness_states(db, [hospital_id])
-
-    assert states[hospital_id].escalated_draft is True
-    # 보류 사유는 현황 화면이 초안을 다시 조회하지 않도록 여기서 함께 실린다.
-    assert states[hospital_id].escalated_draft_id == draft_id
-    assert states[hospital_id].escalated_draft_findings == ("근거 없는 효과 표현",)
-    assert states[hospital_id].current is True
-    assert states[hospital_id].required_sources == 1
-    assert (await get_essence_readiness(single_db, hospital_id)).current is not None
-
-
-@pytest.mark.asyncio
-async def test_an_escalated_draft_from_an_older_source_snapshot_is_not_an_exception():
-    """자료가 바뀌어 새 판이 승인되면 옛 초안은 예외가 아니다 — 안 그러면 영영 "예외 있음"이다."""
-    source = _source()
-    hospital_id, approved_row, _single_db = _states_case(
-        sources=[source], approved_sources=[source]
-    )
-    source.hospital_id = hospital_id
-    stale_source = _source()
-    db = _AsyncReadinessStatesDB(
-        [approved_row],
-        [source],
-        # 초안이 선언한 자료 집합은 지금 집합이 아니다(쓰기 게이트의 `_drafts_for_snapshot`).
-        draft_rows=[
-            _draft_row(hospital_id, uuid.uuid4(), [stale_source], reasons=("근거 없는 효과 표현",))
+            _draft_row(hospital_id, uuid.uuid4(), [source], reasons=("근거 없는 효과 표현",))
         ],
     )
 
@@ -507,26 +477,8 @@ async def test_an_escalated_draft_from_an_older_source_snapshot_is_not_an_except
 
     assert states[hospital_id].escalated_draft is False
     assert states[hospital_id].escalated_draft_id is None
-
-
-@pytest.mark.asyncio
-async def test_a_gap_without_a_reason_is_not_an_exception():
-    """사유가 없으면 승인 게이트도 막지 않는다 — 목록의 예외 수와 현황의 카드가 갈리지 않게."""
-    source = _source()
-    hospital_id, approved_row, _single_db = _states_case(
-        sources=[source], approved_sources=[source]
-    )
-    source.hospital_id = hospital_id
-    db = _AsyncReadinessStatesDB(
-        [approved_row],
-        [source],
-        draft_rows=[_draft_row(hospital_id, uuid.uuid4(), [source], reasons=("",))],
-    )
-
-    states = await get_essence_readiness_states(db, [hospital_id])
-
-    assert states[hospital_id].escalated_draft is False
-    assert states[hospital_id].escalated_draft_findings == ()
+    assert states[hospital_id].current is True
+    assert (await get_essence_readiness(single_db, hospital_id)).current is not None
 
 
 @pytest.mark.asyncio

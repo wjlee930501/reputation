@@ -40,10 +40,6 @@ from sqlalchemy.orm import Session
 
 from app.models.content import ContentItem
 from app.models.essence import (
-    AUTO_RECOVERY_CYCLE_GAP_FIELD,
-    AUTO_RECOVERY_LAST_AT_GAP_FIELD,
-    AUTO_RECOVERY_TERMINAL_GAP_FIELD,
-    AUTO_REVIEW_GAP_FIELD,
     EXCLUDED_ERROR_SOURCE_GAP_FIELD,
     HospitalContentPhilosophy,
     HospitalSourceAsset,
@@ -95,15 +91,6 @@ from app.utils.prompt_injection import has_prompt_injection
 AUTOMATIC_ESSENCE_ACTOR = "system:essence-auto"
 AUTOMATIC_ESSENCE_MODE = "AUTOMATIC"
 AUTOMATIC_APPROVAL_NOTE = "automatic summary (D33)"
-#: 옛 AI 검수 경로가 남긴 초안·승인본의 작성자. 현황 화면이 옛 보류 초안을 읽을 때만 쓴다.
-AUTO_ESSENCE_ACTOR = "SYSTEM_ESSENCE_AI_REVIEW"
-# 옛 보류 초안의 자동 재검수 사다리(읽기 전용 — 이 경로는 더 이상 보류 초안을 만들지 않는다).
-AUTO_ESSENCE_MAX_RECOVERY_CYCLES = 4
-AUTO_ESSENCE_RECOVERY_BACKOFFS: tuple[timedelta, ...] = (
-    timedelta(hours=1),
-    timedelta(hours=4),
-    timedelta(hours=12),
-)
 # 필수 자료가 6시간 넘게 ERROR이거나, 다른 필수 자료가 이미 처리됐고 1시간 유예가 지났다면
 # ERROR 자료를 합성 입력과 완결성 검사에서 빼고 gap으로 남긴다(D26).
 ERROR_SOURCE_EXCLUSION_AFTER = timedelta(hours=6)
@@ -301,42 +288,6 @@ def partition_automatic_inputs(
     return usable, excluded
 
 
-def _automatic_recovery_terminal_reason(philosophy: HospitalContentPhilosophy) -> str | None:
-    """바로 사람에게 넘긴 보류라는 서버 표식의 사유. 없으면 None."""
-
-    for item in getattr(philosophy, "unsupported_gaps", None) or []:
-        if isinstance(item, dict) and item.get("field") == AUTO_RECOVERY_TERMINAL_GAP_FIELD:
-            return str(item.get("reason") or "operator_required")
-    return None
-
-
-def _automatic_recovery_cycles(philosophy: HospitalContentPhilosophy) -> int:
-    """Read the durable retry marker stored on an escalated automatic draft."""
-
-    cycles = 0
-    for item in getattr(philosophy, "unsupported_gaps", None) or []:
-        if not isinstance(item, dict) or item.get("field") != AUTO_RECOVERY_CYCLE_GAP_FIELD:
-            continue
-        try:
-            cycles = max(cycles, int(item.get("reason") or 0))
-        except (TypeError, ValueError):
-            continue
-    return cycles
-
-
-def _automatic_recovery_last_at(philosophy: HospitalContentPhilosophy) -> datetime | None:
-    """Read the timestamp of the last automatic escalation, if this draft has one."""
-
-    latest: datetime | None = None
-    for item in getattr(philosophy, "unsupported_gaps", None) or []:
-        if not isinstance(item, dict) or item.get("field") != AUTO_RECOVERY_LAST_AT_GAP_FIELD:
-            continue
-        parsed = _as_utc(item.get("reason"))
-        if parsed is not None and (latest is None or parsed > latest):
-            latest = parsed
-    return latest
-
-
 def _as_utc(value: object) -> datetime | None:
     """Normalize a stored timestamp (ISO text or column value) to aware UTC."""
 
@@ -349,72 +300,6 @@ def _as_utc(value: object) -> datetime | None:
         return None
     return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
 
-
-def effective_recovery_cycle(philosophy: HospitalContentPhilosophy) -> int:
-    """이 초안이 실제로 쓴 자동 재검수 사이클 수.
-
-    옛 배포는 "영구 정지"를 뜻하는 고정값(8)을 박았고 시각은 남기지 않았다. 그 표식을
-    소진으로 읽으면 운영 중인 병원이 영원히 사람의 승인만 기다린다 — 이 버전업이 없애려는
-    바로 그 상태다. 시각이 없는 상한 초과 표식은 레거시로 보고 **사이클 1**로 읽어 남은
-    사다리(2·3·4)를 준다. 시각이 있는 상한 초과는 이 코드가 센 것이므로 소진 그대로다.
-    """
-
-    cycles = _automatic_recovery_cycles(philosophy)
-    if cycles >= AUTO_ESSENCE_MAX_RECOVERY_CYCLES and _automatic_recovery_last_at(philosophy) is None:
-        return 1
-    return cycles
-
-
-def automatic_recovery_backoff(cycle: int) -> timedelta:
-    """사이클 c를 쓴 보류가 다음 자동 재검수까지 기다리는 시간. 읽기·쓰기가 같은 표를 쓴다."""
-
-    index = min(max(int(cycle), 1), len(AUTO_ESSENCE_RECOVERY_BACKOFFS)) - 1
-    return AUTO_ESSENCE_RECOVERY_BACKOFFS[index]
-
-
-def automatic_recovery_due_at(philosophy: HospitalContentPhilosophy) -> datetime | None:
-    """다음 자동 재검수가 가능한 시각. None이면 자동 예산이 끝났다(사람의 일).
-
-    사이클 c를 이미 쓴 초안은 마지막 시도로부터 `automatic_recovery_backoff(c)`가 지나야
-    다시 시도한다. 표식이 없는 옛 초안(c=0)과 레거시 영구 정지 표식은 지금 바로 한 번 받는다.
-    """
-
-    if _automatic_recovery_terminal_reason(philosophy) is not None:
-        return None
-    cycles = effective_recovery_cycle(philosophy)
-    last_at = _automatic_recovery_last_at(philosophy)
-    if cycles >= AUTO_ESSENCE_MAX_RECOVERY_CYCLES:
-        return None
-    if cycles <= 0 or last_at is None:
-        return datetime.min.replace(tzinfo=timezone.utc)
-    return last_at + automatic_recovery_backoff(cycles)
-
-
-def automatic_recovery_owns_draft(philosophy: HospitalContentPhilosophy) -> bool:
-    """자동 복구가 아직 소유한 보류인가 — 기한 도래 여부가 아니라 예산 잔량으로 판정한다.
-
-    사람이 손대지 않은 시스템 초안이고 예산이 남아 있으면, 기다리는 중이라도 그 일은
-    운영자의 할 일이 아니다(현황 예외 카드·인시던트 상태가 같은 판정을 쓴다).
-    """
-
-    # 컬럼 일부만 고른 행(목록·현황의 묶음 조회)도 같은 판정을 물어본다. 빠진 값은
-    # "시스템 초안이라는 증거 없음"으로 읽어 사람의 일로 남긴다(fail-closed).
-    has_auto_review_finding = any(
-        isinstance(item, dict) and item.get("field") == AUTO_REVIEW_GAP_FIELD
-        for item in getattr(philosophy, "unsupported_gaps", None) or []
-    )
-    created_at = getattr(philosophy, "created_at", None)
-    updated_at = getattr(philosophy, "updated_at", None)
-    return bool(
-        getattr(philosophy, "created_by", None) == AUTO_ESSENCE_ACTOR
-        and has_auto_review_finding
-        and automatic_recovery_due_at(philosophy) is not None
-        and created_at is not None
-        and updated_at is not None
-        and created_at == updated_at
-        and getattr(philosophy, "reviewed_by", None) is None
-        and getattr(philosophy, "approved_at", None) is None
-    )
 
 def _split_stale_error_sources(
     sources: list[HospitalSourceAsset],
@@ -1339,19 +1224,12 @@ def refresh_essence_snapshot(
 __all__ = (
     "AUTOMATIC_ESSENCE_ACTOR",
     "AUTOMATIC_ESSENCE_MODE",
-    "AUTO_ESSENCE_ACTOR",
-    "AUTO_ESSENCE_MAX_RECOVERY_CYCLES",
-    "AUTO_ESSENCE_RECOVERY_BACKOFFS",
     "AUTOMATIC_RESYNTHESIS_DEBOUNCE",
     "ERROR_SOURCE_EXCLUSION_AFTER",
     "ERROR_SOURCE_EXCLUSION_GRACE",
     "EssenceRefreshResult",
     "EssenceRefreshStatus",
     "EssenceSynthesisDeferred",
-    "automatic_recovery_backoff",
-    "automatic_recovery_due_at",
-    "automatic_recovery_owns_draft",
-    "effective_recovery_cycle",
     "essence_refresh_needed",
     "essence_refresh_trigger",
     "is_automatic_essence",

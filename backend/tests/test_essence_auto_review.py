@@ -1,4 +1,4 @@
-"""자동 Essence(Phase 4 D33) — 다시 합성할 이유(T1~T6)·오염 입력 제외·옛 보류 초안 읽기 규칙."""
+"""자동 Essence(Phase 4 D33) — 다시 합성할 이유(T1~T6)·오염 입력 제외·백오프·오류 자료 제외."""
 
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -188,113 +188,16 @@ def test_the_automatic_path_has_no_review_or_escalation_status() -> None:
         "NOT_FOUND",
         "DEFERRED",
     }
-    for retired in ("review_essence_candidate", "EssenceAiReview", "deterministic_candidate_findings"):
+    for retired in (
+        "review_essence_candidate",
+        "EssenceAiReview",
+        "deterministic_candidate_findings",
+        "automatic_recovery_owns_draft",
+    ):
         assert not hasattr(essence_auto_review, retired)
 
 
-# ── 자동 재검수 예산과 백오프 ────────────────────────────────────────────────
-
-
-def _auto_draft(
-    *,
-    cycles: int | None = None,
-    last_at: datetime | None = None,
-    reviewed_by=None,
-    edited: bool = False,
-    findings: bool = True,
-    version: int = 1,
-):
-    created_at = datetime(2026, 9, 1, tzinfo=timezone.utc)
-    gaps = []
-    if findings:
-        gaps.append({"field": "automatic_ai_review", "reason": "근거 부족"})
-    if cycles is not None:
-        gaps.append({"field": "automatic_recovery_cycle", "reason": str(cycles)})
-    if last_at is not None:
-        gaps.append({"field": "automatic_recovery_last_at", "reason": last_at.isoformat()})
-    return SimpleNamespace(
-        created_by=essence_auto_review.AUTO_ESSENCE_ACTOR,
-        unsupported_gaps=gaps,
-        created_at=created_at,
-        updated_at=created_at + timedelta(seconds=1) if edited else created_at,
-        reviewed_by=reviewed_by,
-        approved_at=None,
-        version=version,
-        id=uuid.uuid4(),
-    )
-
-
-def test_escalated_draft_waits_one_then_four_then_twelve_hours() -> None:
-    last_at = datetime(2026, 9, 10, tzinfo=timezone.utc)
-
-    assert essence_auto_review.automatic_recovery_due_at(
-        _auto_draft(cycles=1, last_at=last_at)
-    ) == last_at + timedelta(hours=1)
-    assert essence_auto_review.automatic_recovery_due_at(
-        _auto_draft(cycles=2, last_at=last_at)
-    ) == last_at + timedelta(hours=4)
-    assert essence_auto_review.automatic_recovery_due_at(
-        _auto_draft(cycles=3, last_at=last_at)
-    ) == last_at + timedelta(hours=12)
-
-
-def test_recovery_backoff_is_one_table_for_read_and_write() -> None:
-    assert essence_auto_review.automatic_recovery_backoff(1) == timedelta(hours=1)
-    assert essence_auto_review.automatic_recovery_backoff(2) == timedelta(hours=4)
-    assert essence_auto_review.automatic_recovery_backoff(3) == timedelta(hours=12)
-    # 표 밖의 사이클은 마지막 칸을 쓴다(상한 4에서는 도달하지 않지만 0·음수·초과에 안전하다).
-    assert essence_auto_review.automatic_recovery_backoff(0) == timedelta(hours=1)
-    assert essence_auto_review.automatic_recovery_backoff(9) == timedelta(hours=12)
-
-
-def test_automatic_recovery_budget_is_exhausted_at_four_cycles() -> None:
-    last_at = datetime(2026, 9, 10, tzinfo=timezone.utc)
-    far_future = last_at + timedelta(days=365)
-
-    exhausted = _auto_draft(cycles=essence_auto_review.AUTO_ESSENCE_MAX_RECOVERY_CYCLES, last_at=last_at)
-    assert essence_auto_review.automatic_recovery_due_at(exhausted) is None
-    assert far_future > last_at
-
-
-def test_legacy_permanent_stop_marker_resumes_the_ladder_instead_of_starving() -> None:
-    """옛 배포의 고정 표식(8, 시각 없음)은 소진이 아니라 사이클 1로 읽는다."""
-
-    now = datetime(2026, 9, 12, tzinfo=timezone.utc)
-    legacy = _auto_draft(cycles=8)
-
-    assert essence_auto_review.effective_recovery_cycle(legacy) == 1
-    assert essence_auto_review.automatic_recovery_due_at(legacy) is not None
-    assert essence_auto_review.automatic_recovery_owns_draft(legacy) is True
-
-    # 시각이 있는 상한 초과는 이 코드가 센 것이므로 소진 그대로다.
-    counted = _auto_draft(
-        cycles=essence_auto_review.AUTO_ESSENCE_MAX_RECOVERY_CYCLES,
-        last_at=now - timedelta(days=30),
-    )
-    assert essence_auto_review.effective_recovery_cycle(counted) == 4
-    assert essence_auto_review.automatic_recovery_due_at(counted) is None
-    assert essence_auto_review.automatic_recovery_owns_draft(counted) is False
-
-
-def test_automatic_budget_owns_a_waiting_draft_even_before_its_due_time() -> None:
-    """기한을 기다리는 중이어도 예산이 남았으면 사람의 할 일이 아니다(현황 예외 카드)."""
-
-    last_at = datetime(2026, 9, 10, tzinfo=timezone.utc)
-    waiting = _auto_draft(cycles=1, last_at=last_at)
-
-    assert essence_auto_review.automatic_recovery_owns_draft(waiting) is True
-    # 사람이 손댄 초안은 예산과 무관하게 사람의 일이다.
-    assert essence_auto_review.automatic_recovery_owns_draft(_auto_draft(edited=True)) is False
-    assert (
-        essence_auto_review.automatic_recovery_owns_draft(_auto_draft(reviewed_by="운영자")) is False
-    )
-    # 컬럼 일부만 고른 행은 시스템 초안이라는 증거가 없으므로 사람의 일로 남는다.
-    assert (
-        essence_auto_review.automatic_recovery_owns_draft(
-            SimpleNamespace(unsupported_gaps=[{"field": "automatic_ai_review", "reason": "x"}])
-        )
-        is False
-    )
+# ── 같은 입력의 반복 실패 백오프 ──────────────────────────────────────────────
 
 
 def test_repeated_claim_failures_back_off_up_to_one_day() -> None:
@@ -381,17 +284,6 @@ def test_error_source_alone_waits_six_hours() -> None:
 
     assert [s.id for s in usable] == [young.id, pending.id]
     assert [s.id for s in excluded] == [old.id]
-
-
-def test_terminal_marker_hands_the_draft_to_a_person_immediately() -> None:
-    last_at = datetime(2026, 9, 10, tzinfo=timezone.utc)
-    draft = _auto_draft(cycles=1, last_at=last_at)
-    draft.unsupported_gaps.append(
-        {"field": "automatic_recovery_terminal", "reason": "conflict_notes"}
-    )
-
-    assert essence_auto_review.automatic_recovery_due_at(draft) is None
-    assert essence_auto_review.automatic_recovery_owns_draft(draft) is False
 
 
 def test_terminal_marker_is_server_owned() -> None:

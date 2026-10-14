@@ -37,7 +37,7 @@ from app.services.content_month_target import (
     resolve_month_target,
 )
 from app.services.content_visibility import assess_sampled_visibility, visibility_load_only
-from app.services.essence_readiness import EssenceReadinessState, get_essence_readiness_states
+from app.services.essence_readiness import get_essence_readiness_states
 from app.services.hospital_states import content_state, domain_state, public_service_state
 from app.services.schedule_reconciliation import effective_schedules_query
 from app.services.sov_trend import latest_measured_week, weekly_mention_trend
@@ -74,7 +74,7 @@ _CONDITIONS: dict[str, tuple[str, str, str | None]] = {
     "site_built": ("공개 페이지 준비", "system", None),
     "schedule": ("발행 요일 설정", "human", "/hospitals/{hospital_id}/content#content-schedule"),
     "sources": ("근거 자료 처리 {count}건", "system", None),
-    "essence_review": ("콘텐츠 운영 기준 자동 검수", "system", None),
+    "essence_review": ("콘텐츠 운영 기준 자동 생성", "system", None),
     # 자료가 하나도 없으면 자동 검수가 기다리기만 한다 — 사람이 채워야 다음이 있다.
     "sources_required": (
         "공식 채널·근거 자료 등록",
@@ -86,7 +86,6 @@ _CONDITIONS: dict[str, tuple[str, str, str | None]] = {
     "public_service": ("공개 서비스 시작 후 자동 발행", "system", None),
 }
 
-_ESCALATED_DRAFT_ACTIONS = ["re_review", "approve_with_override"]
 
 
 def _remaining(hospital_id: uuid.UUID, keys: tuple[str, ...]) -> list[RemainingCondition]:
@@ -166,37 +165,6 @@ async def _incident_cards(
             )
         )
     return cards
-
-
-def _escalated_draft_card(
-    hospital_id: uuid.UUID, readiness: EssenceReadinessState
-) -> ExceptionCard | None:
-    """자동 재검수 예산이 끝났거나 사람이 손댄, 보류 사유가 남은 초안.
-
-    예산이 남은 시스템 초안은 `get_essence_readiness_states`가 아예 싣지 않는다 —
-    자동 복구 중인 일은 운영자의 할 일이 아니다. 사유 전부가 근거이며 하나라도 지우면 승인 게이트와
-    화면이 어긋난다(`api/admin/essence.py`의 예외 승인 조건과 같은 목록).
-
-    초안과 사유는 상태 판정과 같은 묶음 조회(`get_essence_readiness_states`)가 이미 읽었다 —
-    여기서 다시 조회하면 같은 JSONB 필터가 두 벌이 되고 쿼리도 하나 더 나간다.
-
-    `actions`는 비운다 — 재검수·예외 승인은 운영 센터의 인시던트 mutation이 아니라
-    essence 라우트이고, 카드가 그 폼(사유 길이·근거 확인)을 직접 다룬다.
-    """
-    if readiness.escalated_draft_id is None or not readiness.escalated_draft_findings:
-        return None
-    return ExceptionCard(
-        kind="escalated_draft",
-        id=str(readiness.escalated_draft_id),
-        title="콘텐츠 운영 기준 자동 검수 보류",
-        evidence="\n".join(readiness.escalated_draft_findings),
-        next_action="초안을 고쳐 재검수를 받거나, 확인한 근거를 적어 예외 승인하세요.",
-        allowed_actions=list(_ESCALATED_DRAFT_ACTIONS),
-        # 옛 `/essence` 경로는 현황 탭으로 redirect되고 2026-10-09에 사라진다.
-        href=f"/hospitals/{hospital_id}",
-        hospital_id=hospital_id,
-        actions=[],
-    )
 
 
 async def _month_summary(db: AsyncSession, hospital: Hospital) -> MonthSummary:
@@ -291,10 +259,8 @@ async def get_hospital_overview(
     )
     domain = domain_state(hospital)
 
+    # 운영 기준은 승인 단계 없이 자동 적용된다(Phase 4 D33) — 보류 초안은 사람의 예외가 아니다.
     exceptions = await _incident_cards(db, hospital_id, actor)
-    draft_card = _escalated_draft_card(hospital_id, readiness)
-    if draft_card is not None:
-        exceptions.append(draft_card)
 
     return HospitalOverviewResponse(
         hospital_id=hospital.id,
