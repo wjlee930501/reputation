@@ -1,5 +1,33 @@
 # Re:putation — 현재 프로젝트 개발 안내
 
+## 최신 운영 배포 — 2026-10-14 Phase 4-B 자동 Essence + D36·D37 게이트
+
+main `5b13b02c`(PR #258 `claude/autonomy-p4b` + PR #256 `claude/fa-gates`)을 API·Worker·Beat·Admin에 한 번에 배포했다(2026-10-14 13:23~13:37 KST,
+배치 시간대 밖, `--override-reason`). 리비전은 api `00253-nnp`, worker `00243-h45`, beat `00238-762`, admin `00109-d6r`, Site 그대로,
+**DB head `0092_publish_without_references_or_verdict`**(승인 판 함수 교체). P4-B(D33): 승인 없는 자동 Essence 판, 원문 문장 필수 문구,
+`ESSENCE_AUTO_REVIEW_*` 은퇴. D36: 참고자료 없이 생성·발행. D37: 검수 장애면 먼저 발행하고 사후 검수. 게이트 카탈로그 판 `2026-10-14.1`.
+`CONTENT_FINDING_TIERS_ENABLED`·`POST_PUBLISH_CRITICAL_ALERTS_ENABLED`는 기본 False로 꺼져 있다. 배포 전 q16 1건(판정된 HARD라 발행되지 않음),
+q16b 0, q16c 5(D23 공개 글). readiness 18/18, 병원 헬스 11/11, release 일치, +35분 ERROR 1(`COST_GUARD_FAIL_OPEN`, 11분 뒤 복구, 원인 미조사).
+`essence_autonomy_backfill --apply`로 장보고·뉴플랜·세종다온의 자동 판을 적용했고, 장보고·뉴플랜에는 첫 일정이 생겼다. 신기한속은 T3로 v2가 됐고
+공개 8곳의 판은 그대로다. **신기한속 v2·세종다온 v5가 설문 안내문·조각을 필수 문구로 골라 데이터 핫픽스로 비웠다**(코드 수정 PR #259).
+대표 지시로 뉴플랜·장보고 자동 입력을 적용했고(`naver_place_id`만), 세종다온 온보딩 사고는 조용히 닫았다.
+후속으로 main `d5f8e333`(PR #259, 필수 문구는 원장의 답 문장만 — 정책 판 `2026-10-14.4`)을 14:41~14:51에 Backend만 다시 배포했다(api `00254-qv8`,
+worker `00244-mhh`, beat `00239-9jc`, readiness 18/18, ERROR 0). 이어 데이터 핫픽스 2와 main `94d8851d`(PR #265, 필수 문구는 원장 목소리 노트에서만·약/검사 설명 제외 — 정책 판 `2026-10-14.5`)를 16:05~16:12에
+Backend만 배포했다(api `00259-2bc`, worker `00249-gwt`, beat `00244-n9r`, readiness 18/18, ERROR 0). 16:15 틱이 자동 판 4곳을 다시 만들었다.
+**롤백 주의**: 트래픽 롤백은 참고자료 0개·검수 장애 공개 글을 다시 숨기고 카탈로그 재평가를 반복시킨다. 상세는
+[P4-B·게이트 배포 기록](docs/releases/2026-10-14-p4b-gates-production.md).
+
+## 이전 운영 배포 — 2026-10-14 Phase 4-A 온보딩 자율화
+
+main `c5ef4adf`(PR #257 `claude/autonomy-p4` + 함께 실린 W3 #254·W8 #255)을 API·Worker·Beat·Admin에 배포했다(2026-10-14 12:46~12:57 KST,
+배치 시간대 밖, `--override-reason`). 리비전은 api `00252-qfn`, worker `00242-c5q`, beat `00237-vnd`, admin `00108-9hv`, Site 그대로,
+**DB head `0091_add_profile_provenance_and_essence_metadata`**(추가형). D30 자동 입력 빈 칸 즉시 반영·출처 원장, D31 완료 술어(진료 철학·Google
+선택)와 15분 승격 스윕, D32 설문 PDF/링크, D34 충돌 네이버 우선, `ops_sql_report` q12~q14. `PROFILE_GATE_OPTIONAL_ENRICHMENT`는 코드에서 사라졌다.
+배포 전 q12: `would_publish_now` 0곳(공개 11곳·세종다온 `PROFILE_INCOMPLETE`). readiness 18/18, 병원 11곳 헬스 200, +30분 ERROR 0. 백필은 비공개
+병원(세종다온)만 `--apply`했고 수집 결과 `NOTHING_TO_APPLY`(URL 없음·네이버 플레이스 못 찾음) — 바뀐 프로필 값 0, 승격·공개 0. 공개 11곳은
+`--include-live` 없이 수집도 보내지 않았다(대표 결정 대기). P4-B(#258)·게이트(#256)는 포함되지 않았다. 상세는
+[Phase 4-A 배포 기록](docs/releases/2026-10-14-autonomy-phase4a-production.md).
+
 ## 최신 운영 배포 — 2026-10-13 Phase 3 콘텐츠 게이트
 
 main `c1ce0494`(PR #245 `claude/autonomy-p3`)을 API·Worker·Beat에 배포했다(2026-10-13 15:48~15:56 KST, 같은 날 네 번째 배포 — 대표 지시
