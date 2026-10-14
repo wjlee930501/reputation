@@ -492,8 +492,9 @@ def apply_review_outcome(item: ContentItem, review: ContentAiReview, *, now: dat
 
 # ── D35 Critical 알림 — 글당 평생 한 번의 전용 알림(2026-10-14 재설계) ─────────────────────────
 # 알림 의도는 Critical 판정을 저장하는 같은 커밋에 글 행(`POST_PUBLISH_CRITICAL_ALERT_KEY`)에 남고, 판정
-# 스냅샷(제목·지적·본문 hash)을 싣는다. 곧이어(실패하면 다음 실행 첫머리에) 글 id를 키로 하는 전용 알림
-# (`POST_PUBLISH_CRITICAL_ALERT`)을 outbox에 넣고 같은 커밋에 `enqueued_at`을 적는다. 이 알림은 사고 에피소드에
+# 스냅샷(제목·지적·본문 hash)을 싣는다. 스윕 실행 끝에(실패하면 다음 실행 첫머리에) 병원마다 한 통의 전용
+# 알림(`POST_PUBLISH_CRITICAL_ALERT` — 한 건이면 글 id 키, 여러 건이면 "마케터 검토 필요 N건" 묶음, 2026-10-15)을
+# outbox에 넣고 같은 커밋에 글마다 `enqueued_at`을 적는다. 이 알림은 사고 에피소드에
 # 묶이지 않으므로(`incident_id` 없음) 사고 복구가 발송 전에 종결하지 않고, 시도 횟수로 닫히지 않는다 —
 # 전달 실패는 백오프(최대 1시간 간격)로 계속 다시 보낸다. 한 번 요청된 글은 본문이 바뀌어도 다시 요청하지
 # 않는다(대표 결정 "글당 한 번", 같은 dedupe 키). Admin의 할 일은 알리지 않는 사고(`notify=False`)가 맡는다.
@@ -502,6 +503,8 @@ _ALERT_BATCH = 50
 # 훑고(쪽당 `_BACKLOG_PAGE`) 표시만 30줄이다.
 _BACKLOG_PAGE = 200
 _BACKLOG_DIGEST_LINES = 30
+# 한 병원의 묶음 알림이 보이는 글 줄 수(그다음 "외 N건").
+_GROUP_ALERT_LINES = 10
 POST_PUBLISH_CRITICAL_DIGEST_NOTIFICATION_TYPE = "POST_PUBLISH_CRITICAL_DIGEST"
 POST_PUBLISH_CRITICAL_ALERT_NOTIFICATION_TYPE = "POST_PUBLISH_CRITICAL_ALERT"
 
@@ -552,7 +555,7 @@ def _pending_critical_alert_stmt(limit: int):
 
     alert = ContentItem.essence_check_summary[POST_PUBLISH_CRITICAL_ALERT_KEY]
     return (
-        select(ContentItem.id)
+        select(ContentItem.id, ContentItem.hospital_id)
         .where(
             alert["requested_at"].as_string().is_not(None),
             alert["enqueued_at"].as_string().is_(None),
@@ -617,68 +620,187 @@ def build_critical_alert(item: ContentItem, hospital: Hospital, snapshot: dict[s
     )
 
 
-def _deliver_critical_alert(db, item_id, run_async, *, now: datetime | None = None) -> str:
-    """알림 의도 하나를 outbox에 넣는다(같은 커밋에 `enqueued_at`). ``ENQUEUED``·``CLOSED``·``SKIPPED``.
+def build_critical_group_alert(
+    hospital: Hospital, entries: list[tuple[ContentItem, dict[str, Any]]], now: datetime
+):
+    """한 병원의 여러 Critical 글을 한 통으로 — "마케터 검토 필요 N건"(제목 최대 10줄, 그다음 "외 N건").
 
-    outbox에 넣는 데 실패하면 예외가 그대로 나가고 의도는 남는다 — 다음 실행 첫머리가 다시 넣는다.
+    링크는 그 병원의 콘텐츠 탭 하나다(알림 계약상 메시지당 URL 하나).
     """
 
-    observed = now or datetime.now(UTC)
-    locked = _lock_item(db, item_id)
-    summary = dict(locked.essence_check_summary or {}) if locked is not None else {}
-    alert = summary.get(POST_PUBLISH_CRITICAL_ALERT_KEY)
-    if (
-        locked is None
-        or not isinstance(alert, dict)
-        or alert.get("enqueued_at")
-        or alert.get("critical_alert_sent_at")
-        or alert.get("closed_at")
-    ):
-        db.rollback()
-        return "SKIPPED"
-    hospital = getattr(locked, "hospital", None)
-    if locked.status != ContentStatus.PUBLISHED or hospital is None:
+    from app.services.notification_contracts import (
+        UNBOUNDED_NOTIFICATION_ATTEMPTS,
+        NotificationIntent,
+    )
+    from app.services.notification_labels import prefixed_for_event
+    from app.services.notification_milestone_rendering import (
+        RenderedSlackMessage,
+        action_block,
+        admin_url,
+        chunk_lines,
+        header_block,
+        safe_text,
+        section_block,
+        validated_message,
+    )
+
+    kind = POST_PUBLISH_CRITICAL_ALERT_NOTIFICATION_TYPE
+    total = len(entries)
+    hospital_name = safe_text(str(getattr(hospital, "name", "") or "병원"), 60)
+    lines = []
+    for item, snapshot in entries[:_GROUP_ALERT_LINES]:
+        title = safe_text(str(snapshot.get("title") or item.title or ""), 80)
+        findings = snapshot.get("findings") or []
+        detail = f" — {safe_text(str(findings[0]), 100)}" if findings else ""
+        lines.append(f"• 「{title}」{detail}")
+    if total > _GROUP_ALERT_LINES:
+        lines.append(f"외 {total - _GROUP_ALERT_LINES}건")
+    action_url = admin_url(settings.ADMIN_BASE_URL, f"/hospitals/{hospital.id}/content")
+    header = f"마케터 검토 필요 {total}건: {hospital_name}"
+    blocks = [
+        header_block("post_publish_critical_alert_header", prefixed_for_event(kind, header)),
+        section_block(
+            "post_publish_critical_alert_body",
+            "공개된 글의 사후 검수에서 의료 안전·의료광고 지적이 나왔습니다. "
+            "글은 그대로 공개되어 있습니다 — 자동으로 내리지 않았습니다.",
+        ),
+        *(
+            section_block(f"post_publish_critical_alert_items_{index}", chunk)
+            for index, chunk in enumerate(chunk_lines(lines))
+        ),
+        section_block(
+            "post_publish_critical_alert_next",
+            "콘텐츠 탭에서 지적 문장을 확인해 주세요. 고쳐야 하면 직접 고치거나 비공개로 돌리고, "
+            "문제가 없으면 공개 내용 확인을 기록해 주세요.",
+        ),
+        action_block("post_publish_critical_alert_action", action_url, "콘텐츠 탭 열기"),
+    ]
+    message = validated_message(
+        RenderedSlackMessage(prefixed_for_event(kind, header), tuple(blocks), action_url),
+        settings.ADMIN_BASE_URL,
+    )
+    identity = hashlib.sha256(
+        ",".join(sorted(str(item.id) for item, _snapshot in entries)).encode("utf-8")
+    ).hexdigest()[:16]
+    return NotificationIntent(
+        dedupe_key=f"post-publish-critical-group:{hospital.id}:{now.date().isoformat()}:{identity}",
+        notification_type=kind,
+        message=message,
+        hospital_id=getattr(hospital, "id", None),
+        max_attempts=UNBOUNDED_NOTIFICATION_ATTEMPTS,
+    )
+
+
+def _deliver_hospital_critical_alerts(
+    db, item_ids, run_async, *, now: datetime
+) -> tuple[int, int]:
+    """한 병원의 미전달 알림 의도를 outbox에 **한 통**으로 넣는다(같은 커밋에 글마다 `enqueued_at`).
+
+    한 건이면 종전의 글 단위 알림, 여러 건이면 병원 단위 묶음 알림이다. 공개 중이 아닌 글의 의도는
+    같은 커밋에 닫는다. ``(넣은 글 수, 닫은 글 수)``. outbox에 넣는 데 실패하면 예외가 그대로 나가고
+    의도는 남는다 — 다음 실행 첫머리가 다시 넣는다.
+    """
+
+    ready: list[tuple[ContentItem, dict[str, Any]]] = []
+    closed = 0
+    for item_id in item_ids:
+        locked = _lock_item(db, item_id)
+        summary = dict(locked.essence_check_summary or {}) if locked is not None else {}
+        alert = summary.get(POST_PUBLISH_CRITICAL_ALERT_KEY)
+        if (
+            locked is None
+            or not isinstance(alert, dict)
+            or alert.get("enqueued_at")
+            or alert.get("critical_alert_sent_at")
+            or alert.get("closed_at")
+        ):
+            continue
+        if locked.status != ContentStatus.PUBLISHED or getattr(locked, "hospital", None) is None:
+            summary[POST_PUBLISH_CRITICAL_ALERT_KEY] = {
+                **alert,
+                "closed_at": now.isoformat(),
+                "closed_reason": "not_public",
+            }
+            locked.essence_check_summary = summary
+            closed += 1
+            continue
+        ready.append((locked, alert))
+    if not ready:
+        if closed:
+            db.commit()
+        else:
+            db.rollback()
+        return 0, closed
+    hospital = ready[0][0].hospital
+    snapshots = [(locked, alert.get("snapshot") or {}) for locked, alert in ready]
+    if len(ready) == 1:
+        intent = build_critical_alert(ready[0][0], hospital, snapshots[0][1])
+        grouped: dict[str, Any] = {}
+    else:
+        intent = build_critical_group_alert(hospital, snapshots, now)
+        grouped = {"via": "HOSPITAL_GROUP"}
+    _enqueue_notification(db, intent, now)
+    for locked, alert in ready:
+        summary = dict(locked.essence_check_summary or {})
         summary[POST_PUBLISH_CRITICAL_ALERT_KEY] = {
             **alert,
-            "closed_at": observed.isoformat(),
-            "closed_reason": "not_public",
+            "enqueued_at": now.isoformat(),
+            "notification_dedupe_key": intent.dedupe_key,
+            **grouped,
         }
         locked.essence_check_summary = summary
-        db.commit()
-        return "CLOSED"
-    snapshot = alert.get("snapshot") or {}
-    _enqueue_notification(db, build_critical_alert(locked, hospital, snapshot), observed)
-    summary[POST_PUBLISH_CRITICAL_ALERT_KEY] = {
-        **alert,
-        "enqueued_at": observed.isoformat(),
-        "notification_dedupe_key": critical_alert_dedupe_key(locked.id),
-    }
-    locked.essence_check_summary = summary
     db.commit()
-    try:
-        # Admin의 할 일(운영 센터) — Slack은 위 전용 알림 하나뿐이라 사고는 알리지 않는다.
-        _open_critical_incident(locked, hospital, run_async, snapshot=snapshot)
-    except Exception:  # noqa: BLE001 - 알림은 이미 outbox에 있다. 사고 기록 실패가 알림을 막지 않는다.
-        logger.exception("post-publish critical incident open failed for %s", item_id)
-    return "ENQUEUED"
+    for locked, snapshot in snapshots:
+        try:
+            # Admin의 할 일(운영 센터) — Slack은 위 알림 하나뿐이라 사고는 알리지 않는다.
+            _open_critical_incident(locked, hospital, run_async, snapshot=snapshot)
+        except Exception:  # noqa: BLE001 - 알림은 이미 outbox에 있다. 사고 기록 실패가 알림을 막지 않는다.
+            logger.exception("post-publish critical incident open failed for %s", locked.id)
+    return len(ready), closed
+
+
+def _deliver_critical_alert(db, item_id, run_async, *, now: datetime | None = None) -> str:
+    """알림 의도 하나를 outbox에 넣는다(같은 커밋에 `enqueued_at`). ``ENQUEUED``·``CLOSED``·``SKIPPED``."""
+
+    enqueued, closed = _deliver_hospital_critical_alerts(
+        db, [item_id], run_async, now=now or datetime.now(UTC)
+    )
+    if enqueued:
+        return "ENQUEUED"
+    return "CLOSED" if closed else "SKIPPED"
 
 
 def deliver_pending_critical_alerts(db, run_async, *, now: datetime | None = None) -> int:
-    """outbox에 아직 넣지 않은 알림 의도를 가장 오래된 것부터 넣는다. 넣은 수."""
+    """outbox에 아직 넣지 않은 알림 의도를 **병원마다 한 통**으로 넣는다(가장 오래된 요청의 병원부터).
 
+    한 스윕 실행이 같은 병원의 Critical 글 여러 건을 판정하면 Slack이 글마다 나가지 않고 하나로 묶인다
+    (2026-10-15 — 03:10 실행이 한 병원에 7통을 3분 안에 보냈다). 넣은 글 수.
+    """
+
+    observed = now or datetime.now(UTC)
+    # 시간 제한 등으로 끊긴 단계의 커밋되지 않은 쓰기를 이어 쓰지 않는다(실행 끝 `finally`에서도 부른다).
+    db.rollback()
+    groups: dict[object, list[object]] = {}
+    for item_id, hospital_id in db.execute(_pending_critical_alert_stmt(_ALERT_BATCH)).all():
+        groups.setdefault(hospital_id, []).append(item_id)
     enqueued = 0
-    for item_id in list(db.execute(_pending_critical_alert_stmt(_ALERT_BATCH)).scalars().all()):
+    for hospital_id, item_ids in groups.items():
         try:
-            if _deliver_critical_alert(db, item_id, run_async, now=now) == "ENQUEUED":
-                enqueued += 1
-        except Exception:  # noqa: BLE001 - 한 글의 실패가 나머지 의도를 막지 않는다(다음 실행이 다시 본다).
+            enqueued += _deliver_hospital_critical_alerts(db, item_ids, run_async, now=observed)[0]
+        except Exception:  # noqa: BLE001 - 한 병원의 실패가 나머지 의도를 막지 않는다(다음 실행이 다시 본다).
             db.rollback()
-            logger.exception("post-publish critical alert enqueue failed for %s", item_id)
+            logger.exception(
+                "post-publish critical alert enqueue failed for hospital %s", hospital_id
+            )
     return enqueued
 
 
 def ensure_critical_alert(db, item_id, run_async, *, now: datetime | None = None) -> str:
-    """이 글에 알림 의도가 없고 지금 표시가 Critical이면 의도를 남기고, 미전달 의도를 outbox에 넣는다."""
+    """이 글에 알림 의도가 없고 지금 표시가 Critical이면 의도를 남긴다(``REQUESTED``, 아니면 ``SKIPPED``).
+
+    outbox에는 넣지 않는다 — 스윕이 실행 끝에 병원마다 한 통으로 묶어 넣는다
+    (`deliver_pending_critical_alerts`). 실행이 그 전에 죽어도 의도는 커밋돼 있어 다음 실행 첫머리가 넣는다.
+    """
 
     observed = now or datetime.now(UTC)
     locked = _lock_item(db, item_id)
@@ -687,11 +809,9 @@ def ensure_critical_alert(db, item_id, run_async, *, now: datetime | None = None
         if _request_critical_alert(summary, locked, observed):
             locked.essence_check_summary = summary
             db.commit()
-        else:
-            db.rollback()
-    else:
-        db.rollback()
-    return _deliver_critical_alert(db, item_id, run_async, now=observed)
+            return "REQUESTED"
+    db.rollback()
+    return "SKIPPED"
 
 
 def _alert_safely(db, item_id, run_async) -> None:
@@ -1145,7 +1265,8 @@ def _review_and_apply(db, item, hospital, philosophy, run_async, now: datetime) 
     outcome = apply_review_outcome(locked, review, now=now)
     db.commit()
     if outcome == "FLAGGED" and critical_alerts_enabled():
-        # Critical 판정은 교정 결과·장애·하루 상한과 무관하게 지금 알린다(글당 한 번).
+        # Critical 판정은 교정 결과·장애·하루 상한과 무관하게 지금 알림 의도로 남긴다(글당 한 번). Slack은
+        # 실행 끝에 병원마다 한 통으로 묶여 나간다(`deliver_pending_critical_alerts`).
         _alert_safely(db, item_id, run_async)
     return outcome
 
@@ -1468,6 +1589,30 @@ def review_post_publish_samples() -> dict[str, int]:
     if cap <= 0 and correction_cap <= 0:
         return counts
     # 순환 import 회피: 워커 태스크 모듈이 이 모듈과 같은 앱을 공유한다.
+    from app.workers.tasks import _run_async
+
+    with SyncSessionLocal() as db, cost_guard.cost_lane(cost_guard.LANE_POST_PUBLISH):
+        try:
+            _review_post_publish_samples_in(
+                db, counts, cap=cap, correction_cap=correction_cap, max_passes=max_passes
+            )
+        finally:
+            # 이번 실행이 남긴 Critical 알림 의도를 병원마다 한 통으로 보낸다(시간 제한에 걸려도 시도한다).
+            try:
+                if critical_alerts_enabled():
+                    deliver_pending_critical_alerts(db, _run_async)
+            except Exception:  # noqa: BLE001 - 의도는 남아 다음 실행 첫머리가 다시 넣는다.
+                db.rollback()
+                logger.exception("post-publish critical alert delivery failed")
+    logger.info("post-publish AI review sweep finished: %s", counts)
+    return counts
+
+
+def _review_post_publish_samples_in(
+    db, counts: dict[str, int], *, cap: int, correction_cap: int, max_passes: int
+) -> None:
+    """`review_post_publish_samples`의 본체 — 열린 세션 하나로 단계를 차례로 돈다(counts를 채운다)."""
+
     from app.workers.tasks import _generation_philosophy_sync, _run_async
 
     # 기존 단계(교정·상위 재검수·표본)의 시간 예산은 D37 단계가 끝난 뒤부터 센다 — D37은 자기 600초를 쓴다.
@@ -1495,170 +1640,167 @@ def review_post_publish_samples() -> dict[str, int]:
         if key:
             _bump(counts, key)
 
-    with SyncSessionLocal() as db, cost_guard.cost_lane(cost_guard.LANE_POST_PUBLISH):
-        # 0) 배포 전부터 남은 Critical 공개 글을 요약 한 통으로 알리고(글마다 쏟아내지 않는다), 미전달
-        # 알림 의도를 가장 오래된 것부터 보낸다(사고 기록 실패 뒤 재시도·종결).
-        try:
-            if critical_alerts_enabled():
-                send_critical_backlog_digest(db)
-        except Exception:  # noqa: BLE001 - 요약 실패가 하루 검수를 멈추지 않는다(다음 실행이 다시 본다).
-            db.rollback()
-            logger.exception("post-publish critical backlog digest failed")
-        try:
-            if critical_alerts_enabled():
-                deliver_pending_critical_alerts(db, _run_async)
-        except Exception:  # noqa: BLE001
-            db.rollback()
-            logger.exception("post-publish critical alert delivery failed")
-        # 0b) 검수 장애로 판정 없이 먼저 발행된 글(D37) — 실제 첫 단계다. 자기 시간·연속 장애·상한을 쓰고
-        # 뒤 단계(교정·상위 재검수·표본)와 나누지 않는다. 공개 중인데 아무 검수도 받지 않은 글이다.
-        seen: set[uuid.UUID] = set()
-        if cap > 0:
-            deferred_started = time.monotonic()
-            deferred_done = deferred_unavailable = 0
-            for item in list(db.execute(_deferred_review_stmt(cap)).unique().scalars().all()):
-                if (
-                    deferred_done >= cap
-                    or deferred_unavailable >= _CONSECUTIVE_UNAVAILABLE_LIMIT
-                    or time.monotonic() - deferred_started > _DEFERRED_RUN_BUDGET_SECONDS
-                ):
-                    break
-                hospital = item.hospital
-                if hospital.id not in philosophies:
-                    philosophies[hospital.id] = _generation_philosophy_sync(db, hospital.id)
-                if philosophies[hospital.id] is None:
-                    counts["skipped"] += 1
-                    continue
-                deferred_done += 1
-                seen.add(item.id)
-                item_id = item.id
-                outcome = _review_and_apply(
-                    db, item, hospital, philosophies[hospital.id], _run_async, datetime.now(UTC)
-                )
-                deferred_unavailable = deferred_unavailable + 1 if outcome == "UNAVAILABLE" else 0
-                _bump(counts, f"deferred_{outcome.lower()}")
-                if outcome == "REVIEWED":
-                    _recover_flag_incident(db.get(ContentItem, item_id), hospital, _run_async)
-                elif outcome == "FLAGGED" and (
-                    not critical_alerts_enabled() or correction_cap <= 0
-                ):
-                    # 표본 경로에서 교정이 아직 맡지 않은 FLAGGED(main의 DEFERRED)와 같은 끝 처리 —
-                    # 알림이 꺼져 있으면 조용한 사고를 연다. 교정은 바로 뒤 1단계가 FLAGGED 글로 집고,
-                    # 교정되면 그 사고를 닫는다.
-                    try:
-                        _settle_flag(db, db.get(ContentItem, item_id), hospital, _run_async)
-                    except Exception:  # noqa: BLE001 - 인시던트 기록 실패가 저장된 표시를 되돌리지 않는다.
-                        logger.exception("post-publish flag incident failed for %s", item_id)
-        started = time.monotonic()
-        # 1) 이미 FLAGGED인 공개 글 — 표본 검수보다 먼저 푼다(글을 고치는 일이 새 표본보다 급하다).
-        if correction_cap > 0:
-            flagged = list(
-                db.execute(_flagged_stmt(correction_cap * _FLAG_SCAN_MULTIPLIER))
-                .unique()
-                .scalars()
-                .all()
-            )
-            for item in flagged:
-                if corrections >= correction_cap or out_of_budget():
-                    break
-                marker = (item.essence_check_summary or {}).get(POST_PUBLISH_FLAG_KEY)
-                if pc.correction_exhausted(marker, max_passes=max_passes):
-                    continue
-                hospital = item.hospital
-                if hospital.id not in philosophies:
-                    philosophies[hospital.id] = _generation_philosophy_sync(db, hospital.id)
-                if philosophies[hospital.id] is None:
-                    counts["skipped"] += 1
-                    continue
-                result = process_flagged_post(
-                    db, item, hospital, philosophies[hospital.id], run_async=_run_async
-                )
-                if result != "SKIPPED":
-                    corrections += 1
-                tally(result)
-        # 1b) 교정으로 못 푼 UNCERTAIN만 남은 글 — 며칠 뒤 검수 모델로 한 번 더 본다(PASS면 닫힌다).
-        rereview_days = int(settings.POST_PUBLISH_UNCERTAIN_REREVIEW_DAYS)
-        if correction_cap > 0 and rereview_days > 0:
-            rereview_now = datetime.now(UTC)
-            selection = _uncertain_settled_items(
-                db,
-                correction_cap * _FLAG_SCAN_MULTIPLIER,
-                now=rereview_now,
-                days=rereview_days,
-                after_id=_load_uncertain_scan_cursor(),
-            )
-            _save_uncertain_scan_cursor(selection.next_cursor)
-            for item in selection.items:
-                if corrections >= correction_cap or out_of_budget():
-                    break
-                hospital = item.hospital
-                if hospital.id not in philosophies:
-                    philosophies[hospital.id] = _generation_philosophy_sync(db, hospital.id)
-                if philosophies[hospital.id] is None:
-                    counts["skipped"] += 1
-                    continue
-                result = senior_rereview_flagged(
-                    db, item, hospital, philosophies[hospital.id], _run_async, rereview_now
-                )
-                # 검수를 끝내지 못한 시도는 하루 상한을 쓰지 않는다(연속 불가는 out_of_budget이 끊는다).
-                if result not in ("UNAVAILABLE", "SKIPPED"):
-                    corrections += 1
-                tally(result)
-                _bump(counts, f"senior_rereview_{result.lower()}")
-        if cap <= 0:
-            logger.info("post-publish AI review sweep finished: %s", counts)
-            return counts
-        # 비공개 글(드물다)을 먼저 — restore가 막혀 있는 글이라 표본보다 급하다. 선발행 단계가 본 글은 뺀다.
-        # 교정 단계의 연속 장애 계수는 main처럼 이어진다(교정 검수가 연달아 못 보면 표본도 접는다).
-        candidates = list(db.execute(_withheld_stmt(cap)).unique().scalars().all())
-        candidates += list(
-            db.execute(_review_stmt(cap * _SCAN_MULTIPLIER)).unique().scalars().all()
-        )
-        candidates = [item for item in candidates if not (item.id in seen or seen.add(item.id))]
-        for item in candidates:
-            if attempted >= cap or out_of_budget():
+    # 0) 배포 전부터 남은 Critical 공개 글을 요약 한 통으로 알리고(글마다 쏟아내지 않는다), 미전달
+    # 알림 의도를 가장 오래된 것부터 보낸다(사고 기록 실패 뒤 재시도·종결).
+    try:
+        if critical_alerts_enabled():
+            send_critical_backlog_digest(db)
+    except Exception:  # noqa: BLE001 - 요약 실패가 하루 검수를 멈추지 않는다(다음 실행이 다시 본다).
+        db.rollback()
+        logger.exception("post-publish critical backlog digest failed")
+    try:
+        if critical_alerts_enabled():
+            deliver_pending_critical_alerts(db, _run_async)
+    except Exception:  # noqa: BLE001
+        db.rollback()
+        logger.exception("post-publish critical alert delivery failed")
+    # 0b) 검수 장애로 판정 없이 먼저 발행된 글(D37) — 실제 첫 단계다. 자기 시간·연속 장애·상한을 쓰고
+    # 뒤 단계(교정·상위 재검수·표본)와 나누지 않는다. 공개 중인데 아무 검수도 받지 않은 글이다.
+    seen: set[uuid.UUID] = set()
+    if cap > 0:
+        deferred_started = time.monotonic()
+        deferred_done = deferred_unavailable = 0
+        for item in list(db.execute(_deferred_review_stmt(cap)).unique().scalars().all()):
+            if (
+                deferred_done >= cap
+                or deferred_unavailable >= _CONSECUTIVE_UNAVAILABLE_LIMIT
+                or time.monotonic() - deferred_started > _DEFERRED_RUN_BUDGET_SECONDS
+            ):
                 break
             hospital = item.hospital
             if hospital.id not in philosophies:
                 philosophies[hospital.id] = _generation_philosophy_sync(db, hospital.id)
-            philosophy = philosophies[hospital.id]
-            if philosophy is None:
+            if philosophies[hospital.id] is None:
                 counts["skipped"] += 1
                 continue
-            attempted += 1
+            deferred_done += 1
+            seen.add(item.id)
             item_id = item.id
             outcome = _review_and_apply(
-                db, item, hospital, philosophy, _run_async, datetime.now(UTC)
+                db, item, hospital, philosophies[hospital.id], _run_async, datetime.now(UTC)
             )
-            consecutive_unavailable = consecutive_unavailable + 1 if outcome == "UNAVAILABLE" else 0
-            _bump(counts, outcome.lower())
-            if outcome == "FLAGGED":
-                locked = db.get(ContentItem, item_id)
-                result = "DEFERRED"
-                if correction_cap > 0 and corrections < correction_cap and not out_of_budget():
-                    result = process_flagged_post(
-                        db, locked, hospital, philosophy, run_async=_run_async
-                    )
-                    if result != "SKIPPED":
-                        corrections += 1
-                    tally(result)
-                # Critical 알림은 판정을 저장할 때 이미 나갔다(`_review_and_apply`). 교정이 이 글을 더
-                # 맡을 수 없을 때만 끝 처리(비-Critical 조용한 종결 판단)를 한다.
-                settle = (
-                    result == "SKIPPED" or correction_cap <= 0
-                    if critical_alerts_enabled()
-                    # 종전(main): 교정이 사고를 처리하지 않은 결과면 조용한 사고를 연다.
-                    else result not in _LEGACY_INCIDENT_HANDLED
-                )
-                if settle:
-                    try:
-                        _settle_flag(db, locked, hospital, _run_async)
-                    except Exception:  # noqa: BLE001 - 인시던트 기록 실패가 저장된 표시를 되돌리지 않는다.
-                        logger.exception("post-publish flag incident failed for %s", item_id)
-            elif outcome == "REVIEWED":
+            deferred_unavailable = deferred_unavailable + 1 if outcome == "UNAVAILABLE" else 0
+            _bump(counts, f"deferred_{outcome.lower()}")
+            if outcome == "REVIEWED":
                 _recover_flag_incident(db.get(ContentItem, item_id), hospital, _run_async)
-    logger.info("post-publish AI review sweep finished: %s", counts)
-    return counts
+            elif outcome == "FLAGGED" and (
+                not critical_alerts_enabled() or correction_cap <= 0
+            ):
+                # 표본 경로에서 교정이 아직 맡지 않은 FLAGGED(main의 DEFERRED)와 같은 끝 처리 —
+                # 알림이 꺼져 있으면 조용한 사고를 연다. 교정은 바로 뒤 1단계가 FLAGGED 글로 집고,
+                # 교정되면 그 사고를 닫는다.
+                try:
+                    _settle_flag(db, db.get(ContentItem, item_id), hospital, _run_async)
+                except Exception:  # noqa: BLE001 - 인시던트 기록 실패가 저장된 표시를 되돌리지 않는다.
+                    logger.exception("post-publish flag incident failed for %s", item_id)
+    started = time.monotonic()
+    # 1) 이미 FLAGGED인 공개 글 — 표본 검수보다 먼저 푼다(글을 고치는 일이 새 표본보다 급하다).
+    if correction_cap > 0:
+        flagged = list(
+            db.execute(_flagged_stmt(correction_cap * _FLAG_SCAN_MULTIPLIER))
+            .unique()
+            .scalars()
+            .all()
+        )
+        for item in flagged:
+            if corrections >= correction_cap or out_of_budget():
+                break
+            marker = (item.essence_check_summary or {}).get(POST_PUBLISH_FLAG_KEY)
+            if pc.correction_exhausted(marker, max_passes=max_passes):
+                continue
+            hospital = item.hospital
+            if hospital.id not in philosophies:
+                philosophies[hospital.id] = _generation_philosophy_sync(db, hospital.id)
+            if philosophies[hospital.id] is None:
+                counts["skipped"] += 1
+                continue
+            result = process_flagged_post(
+                db, item, hospital, philosophies[hospital.id], run_async=_run_async
+            )
+            if result != "SKIPPED":
+                corrections += 1
+            tally(result)
+    # 1b) 교정으로 못 푼 UNCERTAIN만 남은 글 — 며칠 뒤 검수 모델로 한 번 더 본다(PASS면 닫힌다).
+    rereview_days = int(settings.POST_PUBLISH_UNCERTAIN_REREVIEW_DAYS)
+    if correction_cap > 0 and rereview_days > 0:
+        rereview_now = datetime.now(UTC)
+        selection = _uncertain_settled_items(
+            db,
+            correction_cap * _FLAG_SCAN_MULTIPLIER,
+            now=rereview_now,
+            days=rereview_days,
+            after_id=_load_uncertain_scan_cursor(),
+        )
+        _save_uncertain_scan_cursor(selection.next_cursor)
+        for item in selection.items:
+            if corrections >= correction_cap or out_of_budget():
+                break
+            hospital = item.hospital
+            if hospital.id not in philosophies:
+                philosophies[hospital.id] = _generation_philosophy_sync(db, hospital.id)
+            if philosophies[hospital.id] is None:
+                counts["skipped"] += 1
+                continue
+            result = senior_rereview_flagged(
+                db, item, hospital, philosophies[hospital.id], _run_async, rereview_now
+            )
+            # 검수를 끝내지 못한 시도는 하루 상한을 쓰지 않는다(연속 불가는 out_of_budget이 끊는다).
+            if result not in ("UNAVAILABLE", "SKIPPED"):
+                corrections += 1
+            tally(result)
+            _bump(counts, f"senior_rereview_{result.lower()}")
+    if cap <= 0:
+        return
+    # 비공개 글(드물다)을 먼저 — restore가 막혀 있는 글이라 표본보다 급하다. 선발행 단계가 본 글은 뺀다.
+    # 교정 단계의 연속 장애 계수는 main처럼 이어진다(교정 검수가 연달아 못 보면 표본도 접는다).
+    candidates = list(db.execute(_withheld_stmt(cap)).unique().scalars().all())
+    candidates += list(
+        db.execute(_review_stmt(cap * _SCAN_MULTIPLIER)).unique().scalars().all()
+    )
+    candidates = [item for item in candidates if not (item.id in seen or seen.add(item.id))]
+    for item in candidates:
+        if attempted >= cap or out_of_budget():
+            break
+        hospital = item.hospital
+        if hospital.id not in philosophies:
+            philosophies[hospital.id] = _generation_philosophy_sync(db, hospital.id)
+        philosophy = philosophies[hospital.id]
+        if philosophy is None:
+            counts["skipped"] += 1
+            continue
+        attempted += 1
+        item_id = item.id
+        outcome = _review_and_apply(
+            db, item, hospital, philosophy, _run_async, datetime.now(UTC)
+        )
+        consecutive_unavailable = consecutive_unavailable + 1 if outcome == "UNAVAILABLE" else 0
+        _bump(counts, outcome.lower())
+        if outcome == "FLAGGED":
+            locked = db.get(ContentItem, item_id)
+            result = "DEFERRED"
+            if correction_cap > 0 and corrections < correction_cap and not out_of_budget():
+                result = process_flagged_post(
+                    db, locked, hospital, philosophy, run_async=_run_async
+                )
+                if result != "SKIPPED":
+                    corrections += 1
+                tally(result)
+            # Critical 알림 의도는 판정을 저장할 때 이미 남았다(`_review_and_apply`, Slack은 실행 끝에
+            # 병원별 한 통). 교정이 이 글을 더
+            # 맡을 수 없을 때만 끝 처리(비-Critical 조용한 종결 판단)를 한다.
+            settle = (
+                result == "SKIPPED" or correction_cap <= 0
+                if critical_alerts_enabled()
+                # 종전(main): 교정이 사고를 처리하지 않은 결과면 조용한 사고를 연다.
+                else result not in _LEGACY_INCIDENT_HANDLED
+            )
+            if settle:
+                try:
+                    _settle_flag(db, locked, hospital, _run_async)
+                except Exception:  # noqa: BLE001 - 인시던트 기록 실패가 저장된 표시를 되돌리지 않는다.
+                    logger.exception("post-publish flag incident failed for %s", item_id)
+        elif outcome == "REVIEWED":
+            _recover_flag_incident(db.get(ContentItem, item_id), hospital, _run_async)
 
 
 def _recover_flag_incident(

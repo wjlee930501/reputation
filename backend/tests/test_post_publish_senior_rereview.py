@@ -132,6 +132,7 @@ def test_senior_critical_finding_asks_the_marketer_once(monkeypatch):
     calls = _wire(monkeypatch, item, _review(item, status=ContentAiReviewStatus.REVISE, findings=[hard]))
 
     sweep.senior_rereview_flagged(_DB(), item, object(), object(), asyncio.run, NOW)
+    sweep._deliver_critical_alert(_DB(), item.id, asyncio.run, now=NOW)  # 실행 끝의 병원별 전달
 
     assert len(calls["needs_human"]) == 1
     assert item.essence_check_summary[sweep.POST_PUBLISH_CRITICAL_ALERT_KEY]["enqueued_at"]
@@ -148,6 +149,7 @@ def test_senior_uncertain_medical_finding_is_critical_and_alerts(monkeypatch):
     calls = _wire(monkeypatch, item, _review(item, status=ContentAiReviewStatus.REVISE, findings=[uncertain]))
 
     sweep.senior_rereview_flagged(_DB(), item, object(), object(), asyncio.run, NOW)
+    sweep._deliver_critical_alert(_DB(), item.id, asyncio.run, now=NOW)  # 실행 끝의 병원별 전달
 
     assert len(calls["needs_human"]) == 1
     assert item.post_publish_reviewed_at is None
