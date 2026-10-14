@@ -82,6 +82,10 @@ async def open_or_touch_incident(
         request.pipeline, request.object_type, request.object_id, request.fingerprint
     )
     retry_until = await _sweep_retry_deadline(db, request, dedupe_key, observed_at)
+    # 조용한 종류(Slack·할 일·요약 건수에서 빠지는 관찰)는 언제나 LOW다 — 호출부의 기본값
+    # (`open_ops_incident`의 HIGH)이 OPEN/HIGH 더미를 만들지 않게 한다(Full-Automatic W9, 설계 §3.6).
+    quiet = incident_policy(request.incident_type).quiet
+    requested_severity = "LOW" if quiet else request.severity.value
     base = insert(Incident).values(
         id=uuid.uuid4(),
         hospital_id=request.hospital_id,
@@ -92,7 +96,7 @@ async def open_or_touch_incident(
             IncidentState.RETRYING if retry_until is not None else IncidentState.OPEN
         ).value,
         sla_due_at=retry_until,
-        severity=request.severity.value,
+        severity=requested_severity,
         customer_impact=sanitize_operator_text(request.customer_impact) or "고객 영향 정보를 아직 확인하지 못했습니다.",
         source_type=normalize_incident_code(request.source_type),
         source_id=normalize_source_id(request.source_id),
@@ -111,6 +115,9 @@ async def open_or_touch_incident(
         (or_(Incident.severity == "MEDIUM", base.excluded.severity == "MEDIUM"), "MEDIUM"),
         else_="LOW",
     )
+    if quiet:
+        # 이미 HIGH로 열린 옛 행도 다음 관측에서 LOW로 내린다.
+        severity = literal("LOW", type_=Incident.severity.type)
     reopened = Incident.state.in_(
         (IncidentState.RECOVERED.value, IncidentState.ACKNOWLEDGED.value)
     )
