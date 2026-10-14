@@ -1399,7 +1399,10 @@ def test_fresh_coverage_recovery_run_does_not_redispatch(monkeypatch, state):
     assert db.commits == 0
 
 
-def test_task_success_without_complete_manifest_is_reconciled_to_partial():
+def test_task_success_without_complete_manifest_is_reconciled_to_partial(monkeypatch):
+    # 복구 마감 전(1~7일)의 판정이다. 마감 뒤에는 옛 매니페스트도 셀 단위로 최종이 된다(W8,
+    # `test_w8_report_guarantee`).
+    monkeypatch.setattr(tasks, "_monthly_sov_deadline_reached", lambda *_args: False)
     hospital_id = uuid.uuid4()
     run = SimpleNamespace(
         state=OperationRunState.SUCCEEDED,

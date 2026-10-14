@@ -1,4 +1,4 @@
-"""읽기 전용 운영 조회: 자율 운영 지표(Q1~Q6), 배포 전 확인(Q7), 롤백 점검(Q8), 콘텐츠 게이트 지표(Q9~Q10)를 JSON 한 줄씩 출력한다.
+"""읽기 전용 운영 조회: 자율 운영 지표(Q1~Q6), 배포 전 확인(Q7), 롤백 점검(Q8), 콘텐츠 게이트 지표(Q9~Q11), 월간 보고서 보장(Q15)을 JSON 한 줄씩 출력한다.
 
 새 세션의 트랜잭션에서 첫 문장으로 `SET TRANSACTION READ ONLY`를 실행해 DB 수준에서 쓰기를 막고,
 끝나면 롤백한다. 받은 세션에 이미 열린 트랜잭션이 있으면 먼저 롤백해 새로 시작한다::
@@ -292,6 +292,93 @@ QUERIES: dict[str, tuple[str, ...]] = {
                OR first_published_at >= now() - interval '3 days')
           AND status <> 'CANCELLED'
         ORDER BY scheduled_date, id
+        """,
+    ),
+    # (W8) 지난달(KST) 서비스 구간 병원마다 최신 월간 보고서의 전달 게이트 입력. 전달 가능 여부의 정본은
+    # `monthly_report_delivery_gate`(Python)이고 `customer_ready` 컬럼은 생성 시점 스냅샷이라 읽지 않는다.
+    # 보조: W8 사고(원장 PDF·월간 측정·안전망)와 안전망 재생성 실행(`report-repair:` 키).
+    "q15": (
+        """
+        SELECT h.name,
+               left(h.id::text, 8) AS hospital_id8,
+               period.y AS period_year,
+               period.m AS period_month,
+               l.version,
+               l.quality,
+               l.sov_summary->>'report_kind' AS report_kind,
+               l.sov_summary->'observation_adequacy'->>'status' AS adequacy_status,
+               l.sov_summary->'observation_adequacy'->>'lineage' AS adequacy_lineage,
+               mm.id IS NOT NULL AS has_manifest,
+               mm.closed_at IS NOT NULL AS manifest_closed,
+               (l.manifest_id IS NOT DISTINCT FROM mm.id) AS manifest_linked,
+               a.id IS NOT NULL AS has_doctor_artifact,
+               a.validation_metadata->>'validation_version' AS artifact_contract,
+               (a.path = l.doctor_pdf_path) AS artifact_path_matches,
+               (a.sha256 = a.validation_metadata->>'sha256') AS artifact_hash_matches,
+               (SELECT count(*) FROM monthly_delivery_events d WHERE d.report_id = l.id)
+                 AS delivery_events,
+               l.created_at
+        FROM (
+            SELECT extract(year FROM d)::int AS y,
+                   extract(month FROM d)::int AS m,
+                   make_timestamptz(extract(year FROM d)::int, extract(month FROM d)::int, 1,
+                                    0, 0, 0, 'Asia/Seoul') AS starts_at
+            FROM (SELECT date_trunc('month', now() AT TIME ZONE 'Asia/Seoul')
+                         - interval '1 month' AS d) AS anchor
+        ) AS period
+        JOIN hospitals h ON EXISTS (
+            SELECT 1 FROM hospital_service_intervals si
+            WHERE si.hospital_id = h.id
+              AND si.started_at < period.starts_at + interval '1 month'
+              AND (si.ended_at IS NULL OR si.ended_at > period.starts_at)
+        )
+        LEFT JOIN LATERAL (
+            SELECT r.*
+            FROM monthly_reports r
+            WHERE r.hospital_id = h.id
+              AND r.report_type = 'MONTHLY'
+              AND r.period_year = period.y AND r.period_month = period.m
+            ORDER BY r.version DESC
+            LIMIT 1
+        ) AS l ON true
+        LEFT JOIN monthly_measurement_manifests mm
+               ON mm.hospital_id = h.id AND mm.period_year = period.y AND mm.period_month = period.m
+        LEFT JOIN monthly_report_artifacts a ON a.report_id = l.id AND a.audience = 'DOCTOR'
+        ORDER BY h.name
+        """,
+        """
+        SELECT i.incident_type,
+               i.state,
+               i.severity,
+               coalesce(h.name, '-') AS hospital,
+               i.source_id,
+               i.safe_error_code,
+               i.first_seen_at,
+               i.sla_due_at
+        FROM incidents i
+        LEFT JOIN hospitals h ON h.id = i.hospital_id
+        WHERE i.incident_type IN (
+                'MONTHLY_DOCTOR_PDF_BLOCKED',
+                'MONTHLY_SOV_MEASUREMENT_FAILED',
+                'MONTHLY_REPORT_SAFETY_NET_FAILED'
+              )
+          AND i.state IN ('OPEN', 'RETRYING', 'RECOVERED')
+        ORDER BY i.incident_type, i.first_seen_at
+        """,
+        """
+        SELECT h.name,
+               r.idempotency_key,
+               r.state,
+               r.safe_error_code,
+               r.result_summary->>'stage' AS stage,
+               r.created_at,
+               r.completed_at
+        FROM operation_runs r
+        JOIN hospitals h ON h.id = r.hospital_id
+        WHERE r.operation_type = 'GENERATE_MONTHLY_REPORT'
+          AND r.idempotency_key LIKE 'report-repair:%'
+          AND r.created_at > now() - interval '45 days'
+        ORDER BY r.created_at
         """,
     ),
 }

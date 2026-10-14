@@ -59,6 +59,10 @@ def _representative_sort_key(attempt: CellAttempt) -> tuple[bool, int, bool, flo
     )
 
 
+# 반복 기록(slot) 계약 없이 동결된 옛 매니페스트를 측정 마감 뒤 셀 단위로 최종 판정한 표본.
+LEGACY_FINAL_LINEAGE = "LEGACY_FINAL"
+
+
 @dataclass(frozen=True, slots=True)
 class ManifestCellInput:
     query_key: str

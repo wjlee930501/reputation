@@ -10,6 +10,7 @@ from sqlalchemy.orm import aliased
 
 from app.models.content import ContentItem
 from app.models.hospital import Hospital
+from app.models.monthly_control import MonthlyDeliveryEvent
 from app.models.operations import Incident, IncidentState, OperationRun
 from app.models.report import MonthlyReport
 from app.models.sov import SovRecord
@@ -19,6 +20,12 @@ from app.services.contract_delivery_coverage import (
 )
 from app.services.incident_cause_group import cause_group_key
 from app.services.incident_types import incident_is_quiet
+from app.services.monthly_period import (
+    MonthlyPeriodError,
+    eligible_hospital_ids,
+    prior_month_to_close,
+)
+from app.services.monthly_report_readiness import load_period_report_state
 from app.services.notification_contracts import NotificationIntent, SlackMessage, validate_message
 from app.services.notification_copy import incident_copy
 from app.services.notification_labels import prefixed_for_event
@@ -52,6 +59,8 @@ class FleetFacts:
     action_groups: tuple[FleetActionGroup, ...] = ()
     # 개발 담당만 고칠 수 있는 열린 사고의 원인 묶음 수. 운영 담당의 할 일에 섞지 않는다.
     developer_work: int = 0
+    # D39: 지난달 원장 보고서가 전달 가능한데 10일이 지나도 사람 전달 기록이 없는 병원 수.
+    undelivered_ready_reports: int = 0
 
 
 _FAILED_STATES = ("FAILED", "PARTIAL")
@@ -444,7 +453,34 @@ def collect_fleet_facts(db, *, now):
         collect_contract_delivery_coverage(db, now=now),
         tuple(sorted(action_groups, key=lambda item: (-item.count, item.hospital_name, item.incident_type))),
         len(developer_keys),
+        count_undelivered_ready_reports(db, now=now),
     )
+
+
+# 원장 전달은 사람이 한다(D39). 10일이 지나도 전달 기록이 없는 준비본만 하루 한 줄로 보인다.
+UNDELIVERED_REPORT_REMINDER_AFTER_DAY = 10
+
+
+def count_undelivered_ready_reports(db, *, now) -> int:
+    """지난달 서비스 병원 중 전달 게이트를 통과한 최신 월간 보고서에 사람 전달 기록이 없는 수."""
+    if now.astimezone(KST).day <= UNDELIVERED_REPORT_REMINDER_AFTER_DAY:
+        return 0
+    try:
+        period = prior_month_to_close(now)
+    except MonthlyPeriodError:
+        return 0
+    count = 0
+    for hospital_id in eligible_hospital_ids(db, period):
+        state = load_period_report_state(db, hospital_id, period.year, period.month)
+        if state.report is None or not state.gate.ready:
+            continue
+        delivered = db.scalar(
+            select(MonthlyDeliveryEvent.id)
+            .where(MonthlyDeliveryEvent.report_id == state.report.id)
+            .limit(1)
+        )
+        count += int(delivered is None)
+    return count
 
 
 def build_fleet_heartbeat(report: WatchdogReport, facts: FleetFacts, *, now, admin_base_url):
@@ -502,6 +538,11 @@ def build_fleet_heartbeat(report: WatchdogReport, facts: FleetFacts, *, now, adm
         actions.append(
             f"예약 자동 발행 보류가 켜져 있습니다({scope}). 보류 중인 병원의 글은 생성만 되고 "
             "발행되지 않습니다. 의도한 보류가 아니면 개발 담당에게 보류 설정 해제를 요청해 주세요."
+        )
+    if facts.undelivered_ready_reports:
+        actions.append(
+            f"지난달 원장 보고서 {facts.undelivered_ready_reports}건이 준비됐지만 10일이 지나도록 "
+            "전달 기록이 없습니다. 원장님께 전달한 뒤 보고서 화면에 기록해 주세요."
         )
     actions.append(f"자동 복구 중 {facts.recovering}건은 시스템이 처리합니다. 수동으로 반복 실행하지 마세요.")
     state_lines = [f"공개 운영 {facts.hospitals}곳 · 확인 필요 이슈 {facts.operator_work}건",

@@ -752,7 +752,9 @@ def test_doctor_artifact_storage_failure_keeps_report_blocked_and_opens_recovery
     monkeypatch.setattr(
         tasks,
         "load_monthly_sov_manifest",
-        lambda *_args: SimpleNamespace(cells=(), selected_records=(), scored_records=()),
+        lambda *_args, **_kwargs: SimpleNamespace(
+            cells=(), selected_records=(), scored_records=()
+        ),
     )
     monkeypatch.setattr(tasks, "build_monthly_sov", lambda *_args, **_kwargs: FakeMonthlySov())
     monkeypatch.setattr(tasks, "generate_pdf_report", lambda **_kwargs: "gs://qa-private/ae.pdf")
@@ -837,7 +839,8 @@ def test_doctor_artifact_storage_failure_keeps_report_blocked_and_opens_recovery
         assert run.state == OperationRunState.PARTIAL
         assert run.result_summary["stage"] == "BLOCKED"
         assert run.safe_error_code == "DOCTOR_ARTIFACT_BLOCKED"
-        assert incident.state == "OPEN"
+        # 원장 PDF 실패는 자동 재생성 창 동안 스윕 소유(RETRYING)다 — 사람은 창이 지나야 부른다.
+        assert incident.state == "RETRYING"
         assert incident.operation_run_id == run_id
         assert incident.safe_error_code == "DOCTOR_PDF_STORAGE_FAILED"
         assert outbox.operation_run_id == run_id

@@ -4,6 +4,7 @@ from typing import Protocol, TypedDict
 
 from app.services import sov_engine
 from app.services.monthly_sov_types import (
+    LEGACY_FINAL_LINEAGE,
     ComparisonSummary,
     ManifestCellInput,
     MeasurementBasis,
@@ -485,7 +486,16 @@ def build_monthly_sov(
     interval = wilson_interval(mentioned_attempts, attempts_used)
     scored = _scored_cells(headline_cells, "LOCAL")
     required_cells = tuple(cell for cell in cells if cell.state != "EXCLUDED")
-    slotted = tuple(cell for cell in required_cells if cell.slot_lineage == "SLOTTED")
+    slotted = tuple(
+        cell
+        for cell in required_cells
+        if cell.slot_lineage in ("SLOTTED", LEGACY_FINAL_LINEAGE)
+    )
+    counted_lineage = (
+        LEGACY_FINAL_LINEAGE
+        if any(cell.slot_lineage == LEGACY_FINAL_LINEAGE for cell in slotted)
+        else "SLOTTED"
+    )
     planned_slots = sum(cell.planned_repeat_count for cell in slotted)
     confirmed_slots = sum(cell.confirmed_slot_count for cell in slotted)
     ambiguous_slots = sum(cell.ambiguous_slot_count for cell in slotted)
@@ -497,13 +507,13 @@ def build_monthly_sov(
         adequacy_lineage = "MIXED" if slotted else "LEGACY_UNKNOWN"
     elif planned_slots and confirmed_slots == planned_slots:
         adequacy_status = "COMPLETE"
-        adequacy_lineage = "SLOTTED"
+        adequacy_lineage = counted_lineage
     elif confirmed_slots:
         adequacy_status = "LIMITED"
-        adequacy_lineage = "SLOTTED"
+        adequacy_lineage = counted_lineage
     else:
         adequacy_status = "UNAVAILABLE"
-        adequacy_lineage = "SLOTTED"
+        adequacy_lineage = counted_lineage
     return MonthlySovSummary(
         sov_pct=headline_rate,
         sov_pct_all_cells=all_cells_rate,

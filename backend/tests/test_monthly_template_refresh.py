@@ -469,6 +469,8 @@ def test_measurement_gate_is_skipped_only_for_an_allowed_template_refresh(
     monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: session)
     monkeypatch.setattr(tasks, "_hospital_requires_monthly_sov_success", lambda *_a: True)
     monkeypatch.setattr(tasks, "_monthly_sov_measurement_succeeded", lambda *_a: False)
+    # 그 달 매니페스트는 있다(없으면 마감 뒤 '기준 설정' 보고서로 관문을 넘는다 — D38).
+    monkeypatch.setattr(tasks, "_monthly_manifest_absent_after_deadline", lambda *_a: False)
     monkeypatch.setattr(tasks, "_mark_monthly_report_measurement_incomplete", lambda *_a: None)
     monkeypatch.setattr(tasks, "_mark_monthly_operation_run_running", lambda *_a: None)
     seen: dict = {}
