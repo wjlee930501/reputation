@@ -780,32 +780,67 @@ def build_critical_backlog_digest(items: list[ContentItem], now: datetime):
     )
 
 
+def _noncritical_flag_settled(marker: object) -> bool:
+    """Critical이 아닌 FLAGGED를 지금 조용히 닫아도 되는가 — 자동 교정이 끝났고 상위 재검수를 기다리지
+    않는다(`_settle_flag`와 같은 조건). 아직 교정이 맡을 수 있으면 평소 스윕 경로에 맡긴다."""
+
+    if not isinstance(marker, dict) or marker.get("status") != POST_PUBLISH_FLAGGED:
+        return False
+    correction = marker.get("correction")
+    if not (isinstance(correction, dict) and correction.get("finished") is True):
+        return False
+    return not (uncertain_only(marker) and not marker.get(POST_PUBLISH_SENIOR_REREVIEW_KEY))
+
+
+def _close_backlog_noncritical(items: list[ContentItem], now: datetime) -> None:
+    """배포 전부터 남은 비-Critical FLAGGED 공개 글을 조용히 닫는다(호출부의 커밋, 알림 없음)."""
+
+    for item in items:
+        summary = dict(item.essence_check_summary or {})
+        marker = summary.get(POST_PUBLISH_FLAG_KEY) or {}
+        summary[POST_PUBLISH_FLAG_KEY] = {
+            **marker,
+            "closed": {"reason": "NONCRITICAL", "at": now.isoformat()},
+        }
+        item.essence_check_summary = summary
+        item.post_publish_reviewed_at = now
+        item.post_publish_reviewed_by = POST_PUBLISH_NONCRITICAL_CLOSER
+
+
 def send_critical_backlog_digest(db, *, now: datetime | None = None) -> int:
     """알림 의도가 없는 Critical FLAGGED 공개 글 **전부**를 요약 한 통으로 알리고 의도를 '넣음'으로 적는다.
 
     id 커서로 백로그 전체를 한 트랜잭션에서 훑는다(쪽 상한에 잘려 다음 날 두 번째 요약이 나가지 않는다).
     요약 outbox 행과 모든 글의 의도가 같은 커밋이다. 배포 첫 실행에서 기존 백로그를 조용히 빼지도, 글마다
-    쏟아내지도 않는다. 그 뒤로 새 Critical은 판정 저장 때 의도가 생기므로 글마다 알린다. Critical이 아닌
-    FLAGGED는 대상이 아니다(조용히 닫는 경로가 맡는다). 알린 글 수.
+    쏟아내지도 않는다. 그 뒤로 새 Critical은 판정 저장 때 의도가 생기므로 글마다 알린다. 옛 저장 지적
+    (`critical` 키 없음)은 어휘 안전망만으로 가른다(`flag_findings_are_critical`). Critical이 아닌 FLAGGED는
+    교정이 끝났으면 같은 커밋에 조용히 닫고(`system:ai-review-noncritical`), 아니면 스윕에 맡긴다. 알린 글 수.
     """
 
     observed = now or datetime.now(UTC)
     critical: list[ContentItem] = []
+    noncritical_closable: list[ContentItem] = []
     after: uuid.UUID | None = None
     while True:
         page = list(db.execute(_backlog_page_stmt(after, _BACKLOG_PAGE)).scalars().all())
         if not page:
             break
         after = page[-1].id
-        critical.extend(
-            item
-            for item in page
-            if flag_is_critical((item.essence_check_summary or {}).get(POST_PUBLISH_FLAG_KEY), item)
-        )
+        for item in page:
+            marker = (item.essence_check_summary or {}).get(POST_PUBLISH_FLAG_KEY)
+            if flag_is_critical(marker, item):
+                critical.append(item)
+            elif _noncritical_flag_settled(marker):
+                noncritical_closable.append(item)
         if len(page) < _BACKLOG_PAGE:
             break
-    if not critical:
+    if not critical and not noncritical_closable:
         db.rollback()
+        return 0
+    if noncritical_closable:
+        _close_backlog_noncritical(noncritical_closable, observed)
+    if not critical:
+        db.commit()
         return 0
     critical.sort(key=lambda item: (item.published_at or observed, str(item.id)))
     intent = build_critical_backlog_digest(critical, observed)

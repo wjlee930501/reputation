@@ -258,8 +258,9 @@ class ContentAiFinding:
             payload["quote"] = self.quote
         if self.original_severity is not None:
             payload["original_severity"] = self.original_severity.value
-        if self.critical is not None:
-            payload["critical"] = self.critical
+        # v3 출력은 언제나 키를 싣는다 — null(판정 없음)은 Critical이고, 키가 없는 옛 저장 지적과 구분된다
+        # (`finding_criticality.flag_findings_are_critical`).
+        payload["critical"] = self.critical
         return payload
 
 

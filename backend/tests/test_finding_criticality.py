@@ -262,12 +262,36 @@ def test_review_parser_reads_the_critical_field_strictly() -> None:
     assert parse().critical is None
     assert parse(critical="false").critical is None
     assert parse(critical=False).payload()["critical"] is False
-    assert "critical" not in parse().payload()
+    # v3 출력은 판정이 없어도 키를 싣는다(null = Critical) — 키 없는 옛 저장 지적과 구분된다.
+    assert "critical" in parse().payload() and parse().payload()["critical"] is None
     # 저장된 기록에서 되살릴 때도 같다 — 옛 v2 기록(필드 없음)은 None(Critical)이다.
     stored = car.review_from_payload(
         {"status": "REVISE", "findings": [parse(critical=False).payload(), parse().payload()]}
     )
     assert [finding.critical for finding in stored.findings] == [False, None]
+
+
+def test_stored_flag_findings_without_the_key_use_only_the_lexicon() -> None:
+    """옛 저장 지적(키 없음)은 판정받은 적이 없다 — 어휘가 걸릴 때만 Critical이다(대표 지시)."""
+
+    def legacy(message="근거 없는 진료 원칙", quote=PHILOSOPHY):
+        finding = _finding("HARD", "MEDICAL_SAFETY", message, quote=quote)
+        finding.pop("critical")
+        return finding
+
+    assert flag_findings_are_critical([legacy()], CONTENT) is False
+    assert flag_findings_are_critical([legacy(message="응급 안내가 빠졌습니다")], CONTENT) is True
+    # 인용이 가리키는 본문 문장 전체도 본다.
+    assert flag_findings_are_critical([legacy(quote="흉통에는 즉시")], {"body": CHEST}) is True
+    # v3 출력은 키가 있다 — null·true는 Critical, false는 허용 목록.
+    nulled = _finding("HARD", "HOSPITAL_FACT", "근거 없는 진료 원칙", quote=PHILOSOPHY, critical=None)
+    assert flag_findings_are_critical([nulled], CONTENT) is True
+    assert flag_findings_are_critical([legacy(), nulled], CONTENT) is True
+    assert flag_findings_are_critical(
+        [_finding("HARD", "HOSPITAL_FACT", "근거 없는 진료 원칙", quote=PHILOSOPHY)], CONTENT
+    ) is False
+    # 구조가 없으면 여전히 Critical이다.
+    assert flag_findings_are_critical(None, CONTENT) is True
 
 
 def test_review_schema_requires_the_critical_field_and_bumps_the_version() -> None:

@@ -223,12 +223,40 @@ def review_blocks_only_noncritically(review: object, content: object = None) -> 
     return bool(blocking) and not critical_findings(blocking, content)
 
 
+def legacy_finding_is_critical(finding: Mapping[str, Any], content: object = None) -> bool:
+    """검수 모델의 `critical` 판정이 **없던** 옛 저장 지적(v3 이전)의 등급 — 어휘 안전망만 쓴다.
+
+    2026-10-14 대표 지시: 판정받은 적 없는 옛 지적을 모두 Critical로 올리지 않는다. 지적 문구·인용·
+    인용이 가리키는 본문 문장 어디에든 의료·안전 어휘가 있으면 Critical, 아니면 조용히 닫는다.
+    v3 이후의 검수 출력은 언제나 `critical` 키를 싣는다(값이 없으면 null = Critical).
+    """
+
+    if not finding_blocks(finding):
+        return False
+    sentence = locate_body_sentence(content, finding.get("quote")) or ""
+    return mentions_medical_safety(
+        f"{finding.get('message') or ''} {finding.get('quote') or ''} {sentence}"
+    )
+
+
 def flag_findings_are_critical(structured_findings: object, content: object = None) -> bool:
-    """사후 검수 표시의 구조화 지적에 Critical이 있는가. 구조를 모르면 Critical이다."""
+    """사후 검수 표시의 구조화 지적에 Critical이 있는가. 구조를 모르면 Critical이다.
+
+    `critical` 키가 있는 지적(v3 검수 출력)은 `classify_finding`, 키가 없는 옛 저장 지적은
+    `legacy_finding_is_critical`(어휘 안전망만)로 본다.
+    """
 
     if not isinstance(structured_findings, list) or not structured_findings:
         return True
-    return bool(critical_findings(structured_findings, content))
+    for finding in structured_findings:
+        if not isinstance(finding, Mapping):
+            continue
+        if "critical" in finding:
+            if classify_finding(finding, content) is Criticality.CRITICAL:
+                return True
+        elif legacy_finding_is_critical(finding, content):
+            return True
+    return False
 
 
 # ── 게이트 차단 코드·생성 거절 라벨 ─────────────────────────────────────────────────

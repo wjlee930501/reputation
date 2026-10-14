@@ -389,12 +389,23 @@ def test_backlog_is_announced_in_one_digest_across_every_page(monkeypatch, calls
     critical = [
         _flag(_item(), _finding("HARD", "MEDICAL_SAFETY", "위험한 오정보")) for _ in range(560)
     ]
-    legacy = [  # v2 기록(`critical` 없음)은 Critical로 읽는다 — 다시 사지 않는다.
-        _flag(_item(), {"severity": "HARD", "kind": "HOSPITAL_FACT", "message": "m", "quote": PHILOSOPHY})
+    # 옛 저장 지적(`critical` 키 없음)은 어휘 안전망만 — 의료 어휘가 있으면 Critical, 아니면 조용히 닫는다.
+    legacy = [
+        _flag(_item(), {"severity": "HARD", "kind": "MEDICAL_SAFETY", "message": "응급 안내 누락",
+                        "quote": PHILOSOPHY})
         for _ in range(5)
     ]
-    noncritical = [_flag(_item(), _finding("HARD", "HOSPITAL_FACT")) for _ in range(35)]
-    db = _BacklogDB([*critical, *legacy, *noncritical], page=200)
+    legacy_quiet = [
+        _flag(_item(), {"severity": "HARD", "kind": "MEDICAL_SAFETY", "message": "근거 없는 진료 원칙",
+                        "quote": PHILOSOPHY})
+        for _ in range(7)
+    ]
+    legacy_unfinished = _flag(
+        _item(), {"severity": "HARD", "kind": "HOSPITAL_FACT", "message": "m", "quote": PHILOSOPHY},
+        finished=False,
+    )
+    noncritical = [_flag(_item(), _finding("HARD", "HOSPITAL_FACT")) for _ in range(28)]
+    db = _BacklogDB([*critical, *legacy, *legacy_quiet, legacy_unfinished, *noncritical], page=200)
     monkeypatch.setattr(sweep, "_BACKLOG_PAGE", 200)
 
     assert sweep.send_critical_backlog_digest(db, now=NOW) == 565
@@ -409,7 +420,12 @@ def test_backlog_is_announced_in_one_digest_across_every_page(monkeypatch, calls
     for item in [*critical, *legacy]:
         assert item.essence_check_summary[KEY]["enqueued_at"] == NOW.isoformat()
         assert item.essence_check_summary[KEY]["via"] == "BACKLOG_DIGEST"
-    assert all(KEY not in item.essence_check_summary for item in noncritical)
+    assert all(KEY not in item.essence_check_summary for item in [*noncritical, *legacy_quiet])
+    for item in [*noncritical, *legacy_quiet]:
+        assert item.post_publish_reviewed_by == sweep.POST_PUBLISH_NONCRITICAL_CLOSER
+        assert item.essence_check_summary[sweep.POST_PUBLISH_FLAG_KEY]["closed"]["reason"] == "NONCRITICAL"
+    # 교정이 아직 맡을 수 있는 글은 스윕에 맡긴다.
+    assert legacy_unfinished.post_publish_reviewed_at is None
 
 
 def test_no_backlog_no_digest(monkeypatch, calls):
