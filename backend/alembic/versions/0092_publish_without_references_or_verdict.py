@@ -14,8 +14,8 @@ unchanged.
 Downgrade reinstalls the 0090 function. The publish path keeps stamping the 0089 reference marker
 (`block_when_empty=false`), so D36 posts still receive revisions under the 0090 function.
 
-Revision ID: 0091_publish_without_references_or_verdict
-Revises: 0090_allow_fallback_treatment_narrative
+Revision ID: 0092_publish_without_references_or_verdict
+Revises: 0091_add_profile_provenance_and_essence_metadata
 """
 
 from __future__ import annotations
@@ -24,8 +24,8 @@ from pathlib import Path
 
 from alembic import op
 
-revision: str = "0091_publish_without_references_or_verdict"
-down_revision: str | None = "0090_allow_fallback_treatment_narrative"
+revision: str = "0092_publish_without_references_or_verdict"
+down_revision: str | None = "0091_add_profile_provenance_and_essence_metadata"
 branch_labels: str | None = None
 depends_on: str | None = None
 
@@ -33,7 +33,7 @@ _SQL_DIR = Path(__file__).resolve().parents[1] / "revision_sql"
 
 
 def upgrade() -> None:
-    op.execute((_SQL_DIR / "reconcile_content_revisions_0091.sql").read_text(encoding="utf-8"))
+    op.execute((_SQL_DIR / "reconcile_content_revisions_0092.sql").read_text(encoding="utf-8"))
 
 
 def downgrade() -> None:

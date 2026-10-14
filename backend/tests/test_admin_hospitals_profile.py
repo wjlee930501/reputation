@@ -9,8 +9,10 @@ from fastapi import BackgroundTasks, HTTPException
 from app.api.admin import hospitals as hospitals_api
 from app.models.handoff import HandoffState
 from app.models.hospital import HospitalStatus
+from app.services import profile_completion
 from app.services.essence_readiness import EssenceReadinessState
 from app.services.hospital_geocoding import GeocodeResult, GeocodingError
+from app.workers.tasks import build_aeo_site
 
 
 class FakeDB:
@@ -116,7 +118,7 @@ async def test_profile_complete_is_derived_from_requirements(monkeypatch):
         dispatched.append(command.operation_type)
         return None
 
-    monkeypatch.setattr(hospitals_api, "dispatch_operation", _dispatch)
+    monkeypatch.setattr(profile_completion, "dispatch_operation", _dispatch)
 
     result = await hospitals_api.update_profile(
         hospital.id,
@@ -135,7 +137,7 @@ async def test_profile_complete_is_derived_from_requirements(monkeypatch):
     assert len(background.tasks) == 1
     site_task = background.tasks[0]
     assert getattr(getattr(site_task.func, "__self__", None), "name", None) == (
-        hospitals_api.build_aeo_site.name
+        build_aeo_site.name
     )
     assert site_task.kwargs["args"] == [str(hospital.id)]
 
@@ -499,7 +501,7 @@ async def test_a_legacy_gap_this_patch_did_not_create_keeps_the_live_hospital_sa
         status=HospitalStatus.ACTIVE,
         site_live=True,
         profile_complete=True,
-        director_philosophy=None,
+        director_career=None,
     )
     db = FakeDB(hospital)
 
@@ -514,13 +516,13 @@ async def test_a_legacy_gap_this_patch_did_not_create_keeps_the_live_hospital_sa
     assert hospital.profile_complete is True
     assert result["profile_complete"] is True
     assert [item["key"] for item in result["missing_profile_requirements"]] == [
-        "director_philosophy"
+        "director_basic"
     ]
     assert db.committed is True
 
 
 async def test_a_legacy_gap_does_not_flip_completion_off_for_a_non_live_hospital():
-    hospital = _hospital(profile_complete=True, director_philosophy=None)
+    hospital = _hospital(profile_complete=True, director_career=None)
     db = FakeDB(hospital)
 
     result = await hospitals_api.update_profile(
@@ -532,7 +534,7 @@ async def test_a_legacy_gap_does_not_flip_completion_off_for_a_non_live_hospital
 
     assert hospital.profile_complete is True
     assert result["missing_profile_requirements"] == [
-        {"key": "director_philosophy", "label": "진료 철학"}
+        {"key": "director_basic", "label": "원장명·약력"}
     ]
 
 

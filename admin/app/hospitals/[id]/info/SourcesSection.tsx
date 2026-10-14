@@ -3,15 +3,17 @@
 import { useCallback, useEffect, useState } from 'react'
 
 import { ADMIN_COPY } from '@/lib/admin-copy'
-import { fetchAPI } from '@/lib/api'
+import { ApiError, fetchAPI } from '@/lib/api'
 import { defaultAssetTitles } from '@/lib/asset-title'
 import {
+  DOCUMENT_UPLOAD_ACCEPT,
   TEXT_SOURCE_TYPE_OPTIONS,
   groupNotesByType,
   isTextSource,
   processingSummary,
   sourceIncidentHref,
   sourceRowStatus,
+  sourceTextUnreadable,
   type SourceProcessingRunSummary,
 } from '@/lib/info-sections'
 import { safeOperatorError } from '@/lib/operations-journey'
@@ -36,7 +38,7 @@ interface TextSourceRow {
   file_access_url: string | null
   evidence_note_count: number
   //: 채널 자료의 fetch 진행 상태와, 자동 복구가 끝났을 때 열린 예외 id.
-  source_metadata?: { fetch_state?: string; incident_id?: string } | null
+  source_metadata?: { fetch_state?: string; incident_id?: string; text_extraction?: string } | null
   display: { source_type_label: string } | null
 }
 
@@ -148,6 +150,12 @@ export function SourcesSection({
           </span>
         )}
       </div>
+
+      <SurveyCard
+        hospitalId={hospitalId}
+        surveys={sources.filter((source) => source.source_type === 'INTERVIEW')}
+        onChanged={() => { void refresh(); void readRun() }}
+      />
 
       <SourceUploadForm hospitalId={hospitalId} onUploaded={() => { void refresh(); void readRun() }} />
 
@@ -369,6 +377,146 @@ function SourceRow({
   )
 }
 
+/** 서버가 설문 링크를 거절한 이유(422)는 그대로 보여 주고, 그 밖의 실패는 일반 안내로 바꾼다. */
+function surveyFailureText(e: unknown, fallback: string): string {
+  if (e instanceof ApiError && e.status === 422 && e.message) return e.message
+  return safeOperatorError('onboarding', fallback)
+}
+
+/**
+ * 원장 인터뷰 설문. 파일(PDF·DOCX)과 공유 링크 두 길이 있고, 둘 다 같은 자료 유형
+ * (INTERVIEW)으로 저장된다. 처리는 저장 뒤 서버가 이어서 한다.
+ */
+function SurveyCard({
+  hospitalId,
+  surveys,
+  onChanged,
+}: {
+  hospitalId: string
+  surveys: TextSourceRow[]
+  onChanged: () => void
+}) {
+  const [file, setFile] = useState<File | null>(null)
+  const [url, setUrl] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [feedback, setFeedback] = useState<string | null>(null)
+
+  async function uploadFile(e: React.FormEvent) {
+    e.preventDefault()
+    if (!file) return
+    setBusy(true)
+    setFeedback(null)
+    const body = new FormData()
+    body.append('source_type', 'INTERVIEW')
+    body.append('title', file.name)
+    body.append('file', file)
+    try {
+      await fetchAPI(`/admin/hospitals/${hospitalId}/essence/sources/upload`, { method: 'POST', body })
+      setFile(null)
+      const input = document.getElementById('info-survey-file') as HTMLInputElement | null
+      if (input) input.value = ''
+      setFeedback(ADMIN_COPY.surveyFileSaved)
+      onChanged()
+    } catch (err) {
+      setFeedback(surveyFailureText(err, ADMIN_COPY.surveyFileFailed))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function addLink(e: React.FormEvent) {
+    e.preventDefault()
+    const trimmed = url.trim()
+    if (!trimmed) return
+    setBusy(true)
+    setFeedback(null)
+    try {
+      await fetchAPI(`/admin/hospitals/${hospitalId}/essence/sources/crawl`, {
+        method: 'POST',
+        body: JSON.stringify({ source_type: 'INTERVIEW', url: trimmed }),
+      })
+      setUrl('')
+      setFeedback(ADMIN_COPY.surveyLinkSaved)
+      onChanged()
+    } catch (err) {
+      setFeedback(surveyFailureText(err, ADMIN_COPY.surveyLinkFailed))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div
+      data-testid="survey-card"
+      className="space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-4"
+    >
+      <div>
+        <h4 className="text-sm font-semibold text-slate-800">{ADMIN_COPY.surveyTitle}</h4>
+        <p className="mt-0.5 text-xs leading-5 text-slate-600">{ADMIN_COPY.surveyHint}</p>
+      </div>
+
+      <form onSubmit={uploadFile} className="flex flex-wrap items-center gap-3">
+        <input
+          id="info-survey-file"
+          type="file"
+          aria-label={ADMIN_COPY.surveyFileLabel}
+          accept={DOCUMENT_UPLOAD_ACCEPT}
+          onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+          className="block min-w-0 flex-1 text-sm text-slate-700 file:mr-3 file:rounded-md file:border-0 file:bg-slate-100 file:px-3 file:py-1.5 file:text-sm"
+        />
+        <button
+          type="submit"
+          disabled={busy || !file}
+          className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
+        >
+          {ADMIN_COPY.surveyFileSave}
+        </button>
+      </form>
+
+      <form onSubmit={addLink} className="flex flex-wrap items-center gap-3">
+        <input
+          type="url"
+          value={url}
+          onChange={(e) => setUrl(e.target.value)}
+          aria-label={ADMIN_COPY.surveyLinkLabel}
+          placeholder="https://"
+          className="min-w-0 flex-1 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+        />
+        <button
+          type="submit"
+          disabled={busy || url.trim() === ''}
+          className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+        >
+          {ADMIN_COPY.surveyLinkSave}
+        </button>
+      </form>
+
+      {feedback && <p role="status" className="text-xs text-slate-600">{feedback}</p>}
+
+      {surveys.length === 0 ? (
+        <p className="text-xs italic text-slate-500">{ADMIN_COPY.surveyEmpty}</p>
+      ) : (
+        <ul className="space-y-1.5">
+          {surveys.map((survey) => {
+            const row = sourceRowStatus(survey)
+            return (
+              <li key={survey.id} className="text-xs text-slate-700">
+                <span className="font-medium">{survey.title}</span>
+                <span className={`ml-2 rounded-full px-2 py-0.5 ${TONE_CLASS[row.tone] ?? TONE_CLASS.neutral}`}>
+                  {row.label}
+                </span>
+                {sourceTextUnreadable(survey) && (
+                  <p className="mt-0.5 text-amber-800">{ADMIN_COPY.surveyUnreadable}</p>
+                )}
+              </li>
+            )
+          })}
+        </ul>
+      )}
+    </div>
+  )
+}
+
 /** 문서 파일 업로드. 유형과 파일별 제목만 받고, 처리는 저장 뒤 서버가 이어서 한다. */
 function SourceUploadForm({
   hospitalId,
@@ -417,7 +565,7 @@ function SourceUploadForm({
       failed === 0
         ? `${succeeded}개 저장 완료. 처리는 자동으로 이어집니다.`
         : succeeded === 0
-          ? safeOperatorError('onboarding', `${failed}개 저장 실패. 파일 형식(PDF·DOCX)을 확인한 뒤 다시 저장하세요.`)
+          ? safeOperatorError('onboarding', `${failed}개 저장 실패. ${ADMIN_COPY.documentUploadFormatFailed}`)
           : `${succeeded}개 저장, ${failed}개 실패. 실패한 파일만 다시 선택해 저장하세요.`,
     )
     if (succeeded > 0) {
@@ -443,17 +591,17 @@ function SourceUploadForm({
           ))}
         </select>
         <p className="self-center text-xs leading-5 text-slate-600">
-          PDF·DOCX 문서를 올릴 수 있습니다. 여러 개를 한 번에 고를 수 있습니다.
+          {ADMIN_COPY.documentUploadHint}
         </p>
       </div>
 
       <input
         id="info-source-file"
         required
-        aria-label="올릴 문서 파일 (PDF·DOCX)"
+        aria-label={ADMIN_COPY.documentUploadLabel}
         type="file"
         multiple
-        accept="application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        accept={DOCUMENT_UPLOAD_ACCEPT}
         onChange={(e) => selectFiles(e.target.files)}
         className="block w-full text-sm text-slate-700 file:mr-3 file:rounded-md file:border-0 file:bg-slate-100 file:px-3 file:py-1.5 file:text-sm"
       />

@@ -454,6 +454,16 @@ def _patch_html_fetch(monkeypatch, html: str):
         def raise_for_status(self):
             return None
 
+        async def aiter_bytes(self):
+            yield self.content
+
+    class _Stream:
+        async def __aenter__(self):
+            return _Resp()
+
+        async def __aexit__(self, *args):
+            return False
+
     class _Client:
         def __init__(self, *args, **kwargs):
             pass
@@ -464,8 +474,8 @@ def _patch_html_fetch(monkeypatch, html: str):
         async def __aexit__(self, *args):
             return False
 
-        async def get(self, *args, **kwargs):
-            return _Resp()
+        def stream(self, *args, **kwargs):
+            return _Stream()
 
     monkeypatch.setattr(ax.httpx, "AsyncClient", _Client)
     return ax
@@ -528,3 +538,61 @@ def test_validate_response_peer_falls_back_to_socket_getpeername():
         extensions={"network_stream": SimpleNamespace(get_extra_info=lambda key: extras.get(key))},
     )
     assert _validate_response_peer(response, target) is None
+
+
+@pytest.mark.asyncio
+async def test_fetch_url_text_stops_reading_at_the_byte_cap(monkeypatch):
+    """4MB 상한은 받은 뒤 자르는 것이 아니라 받는 동안 지킨다 — 큰 응답이 메모리를 채우지 않는다."""
+    from app.services import asset_extractor as ax
+
+    target = ax.FetchTarget(
+        url="https://example.com/big",
+        hostname="example.com",
+        port=443,
+        allowed_ips=frozenset({"93.184.216.34"}),
+    )
+    monkeypatch.setattr(ax, "_validate_fetch_target", lambda _url: (target, None))
+    monkeypatch.setattr(ax, "_validate_response_peer", lambda _resp, _tgt: None)
+    monkeypatch.setattr(ax, "MAX_HTML_BYTES", 1024)
+    pulled: list[int] = []
+    chunk = ("<p>" + "가" * 300 + "</p>").encode("utf-8")
+
+    class _Resp:
+        status_code = 200
+        headers = {"content-type": "text/html; charset=utf-8"}
+        encoding = "utf-8"
+
+        def raise_for_status(self):
+            return None
+
+        async def aiter_bytes(self):
+            for index in range(10_000):  # 무한에 가까운 본문
+                pulled.append(index)
+                yield chunk
+
+    class _Stream:
+        async def __aenter__(self):
+            return _Resp()
+
+        async def __aexit__(self, *args):
+            return False
+
+    class _Client:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        def stream(self, *args, **kwargs):
+            return _Stream()
+
+    monkeypatch.setattr(ax.httpx, "AsyncClient", _Client)
+
+    text, error, _quality = await ax.fetch_url_text("https://example.com/big")
+
+    assert error is None and text.startswith("가")
+    assert len(pulled) <= 1024 // len(chunk) + 1

@@ -77,7 +77,7 @@ BEGIN
                      )))
             AND NOT coalesce((item.essence_check_summary ->> 'blocking')::boolean, false)
             AND NOT coalesce((item.essence_check_summary ->> 'authority_change')::boolean, false)
-            -- 0091 (D37): an UNAVAILABLE review (no verdict) may publish first only when the
+            -- 0092 (D37): an UNAVAILABLE review (no verdict) may publish first only when the
             -- publish path stamped its deferral marker for the same candidate hash AND for the
             -- CURRENT public text (title/body/meta/FAQ joined by U+001F, the same hash as
             -- `content_publication.publication_text_sha256`), and the body is not an automatic
@@ -102,7 +102,7 @@ BEGIN
                 item.essence_check_summary -> 'ai_review' ->> 'status' = 'REVISE'
                 AND coalesce((item.essence_check_summary -> 'ai_review' ->> 'blocking')::boolean, true), false
             )
-            -- 0091 (D36): no reference-count clause. A post publishes without references when
+            -- 0092 (D36): no reference-count clause. A post publishes without references when
             -- none is verified; references that are present still need a passing check above.
             AND (item.content_type::text <> 'FAQ' OR (
                 right(btrim(coalesce(item.faq_question, '')), 1) = '?'

@@ -3930,12 +3930,17 @@ def fetch_channel_source(self, source_id: str) -> dict[str, object]:
         return {"source_id": source_id, "status": FETCH_STATE_FAILED, "error": message}
 
     from app.services.source_processing_runs import normalized_optional_text
+    from app.services.survey_sources import mask_interview_text
 
-    crawled_text = normalized_optional_text(fetched.text)
     with SyncSessionLocal() as db:
-        source = db.get(HospitalSourceAsset, source_uuid)
+        # 행을 잠그고 **지금** 자료 유형으로 가린다(E6). 수집 중에 자료를 설문(INTERVIEW)으로 바꾼 PATCH도
+        # 같은 행을 잠그므로, 어느 쪽이 먼저 커밋해도 저장되는 설문 본문은 가려진다.
+        source = db.get(HospitalSourceAsset, source_uuid, with_for_update=True)
         if source is None or source.status == SourceStatus.EXCLUDED:
             return {"source_id": source_id, "status": "GONE"}
+        crawled_text = mask_interview_text(
+            source.source_type, normalized_optional_text(fetched.text)
+        )
         source.title = fetched.title
         source.raw_text = crawled_text
         source.content_hash = compute_source_content_hash(
@@ -4833,12 +4838,17 @@ def reconcile_essence_snapshots(self) -> dict[str, int]:
         )
         queued += 1
     initial_schedules_created = _ensure_initial_schedules()
+    # Phase 4(E3): 프로필 완료 승격과 자동 입력 회수 스윕도 이 틱에 붙는다 — RedBeat 변경 없음.
+    from app.workers.profile_autofill_tasks import run_onboarding_sweeps
+
+    onboarding = run_onboarding_sweeps()
     return {
         "queued": queued,
         "initial_schedules_created": initial_schedules_created,
         "source_fetches_redispatched": redispatched_fetches,
         "source_runs_created": len(created_source_runs),
         "source_runs_resumed": resumed_source_runs,
+        **onboarding,
     }
 
 

@@ -226,7 +226,7 @@ PUBLICATION_TEXT_FIELDS = ("title", "body", "meta_description", "faq_question", 
 
 
 def publication_text_sha256(item: object) -> str:
-    """승인 판 SQL(0091)이 다시 계산할 수 있는 공개 텍스트 hash — 선발행 표지를 지금 본문에 묶는다.
+    """승인 판 SQL(0092)이 다시 계산할 수 있는 공개 텍스트 hash — 선발행 표지를 지금 본문에 묶는다.
 
     다섯 필드(없으면 빈 문자열)를 단위 구분 문자(U+001F)로 이은 UTF-8의 sha256. SQL은
     ``concat_ws(chr(31), coalesce(title,''), …)``로 같은 값을 만든다.
@@ -237,7 +237,7 @@ def publication_text_sha256(item: object) -> str:
 
 
 def ai_review_deferral_marker(item: ContentItem) -> dict[str, Any]:
-    """발행 판정에 남기는 선발행 표지. 승인 판 SQL(0091)은 검수 기록의 hash와 같고, 지금 공개 텍스트의
+    """발행 판정에 남기는 선발행 표지. 승인 판 SQL(0092)은 검수 기록의 hash와 같고, 지금 공개 텍스트의
     hash(`publication_text_sha256`)와 같고, 자동 교정 기록이 없을 때만 읽는다."""
 
     review = (getattr(item, "essence_check_summary", None) or {}).get("ai_review") or {}

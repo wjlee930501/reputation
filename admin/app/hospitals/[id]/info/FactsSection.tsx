@@ -8,9 +8,10 @@ import {
 } from '@/lib/external-channel-urls'
 import { INFO_SECTION_TITLES } from '@/lib/info-sections'
 import { emptyPhysician } from '@/lib/physicians'
+import { PROVENANCE_SOURCE_LABEL, ProvenanceConflict } from '@/lib/provenance-conflict'
 import type { AutofillFieldMeta } from '@/lib/api'
 import type { DoctorPhotoOption } from '@/lib/physicians'
-import type { Physician, ProfileSourceRegistration } from '@/types'
+import type { FieldProvenance, Physician, ProfileSourceRegistration } from '@/types'
 import { PhysiciansSection } from './PhysiciansSection'
 
 export interface Treatment {
@@ -79,16 +80,32 @@ export function AiBadge({ meta }: { meta: AutofillFieldMeta }) {
   )
 }
 
+/** 자동 입력으로 채워진 칸의 출처 배지. 마케터가 고친 칸은 OPERATOR라 보이지 않는다. */
+export function ProvenanceBadge({ info }: { info: FieldProvenance | undefined }) {
+  if (!info || info.origin !== 'AUTOFILL') return null
+  const source = info.source ? PROVENANCE_SOURCE_LABEL[info.source] : undefined
+  return (
+    <span
+      data-testid="provenance-badge"
+      className="inline-flex items-center px-1.5 py-0.5 text-[10px] font-semibold rounded-full border bg-slate-50 text-slate-600 border-slate-200 cursor-default"
+    >
+      {source ? `${ADMIN_COPY.autofillBadge} · ${source}` : ADMIN_COPY.autofillBadge}
+    </span>
+  )
+}
+
 function TagInput({
   label,
   values,
   onChange,
   badge,
+  conflict,
 }: {
   label: string
   values: string[]
   onChange: (v: string[]) => void
   badge?: React.ReactNode
+  conflict?: React.ReactNode
 }) {
   const [input, setInput] = useState('')
   const inputId = useId()
@@ -145,6 +162,7 @@ function TagInput({
         placeholder="입력 후 Enter 또는 쉼표로 추가"
         className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
       />
+      {conflict}
     </div>
   )
 }
@@ -206,6 +224,8 @@ function SourceRegistrationNotice({
 export interface FactsSectionProps {
   profile: Partial<HospitalInfoProfile>
   aiFilled: Record<string, AutofillFieldMeta>
+  /** 서버가 저장해 둔 칸별 출처. 자동 입력된 칸에 배지와 충돌 안내를 붙인다. */
+  provenance?: Record<string, FieldProvenance> | null
   fieldCls: (fieldKey: string, isAiFilled: boolean) => string
   coordinateNotice: string | null
   /** 저장은 됐고 좌표만 변환하지 못한 경우. 오류가 아니므로 주소 칸 아래에만 남긴다. */
@@ -221,6 +241,7 @@ export interface FactsSectionProps {
 export function FactsSection({
   profile,
   aiFilled,
+  provenance,
   fieldCls,
   coordinateNotice,
   geocodeWarning,
@@ -232,6 +253,9 @@ export function FactsSection({
   onCoordinateChange,
 }: FactsSectionProps) {
   const [weekdayCommonHours, setWeekdayCommonHours] = useState('')
+  // 저장 전 미리보기 제안이 먼저, 없으면 서버가 기록한 자동 입력 출처를 보인다.
+  const badge = (key: string) =>
+    aiFilled[key] ? <AiBadge meta={aiFilled[key]} /> : <ProvenanceBadge info={provenance?.[key]} />
   const treatments = profile.treatments ?? []
   const physicians = profile.physicians ?? []
   const duplicateChannelUrlWarnings = findDuplicateChannelUrls(profile)
@@ -292,8 +316,8 @@ export function FactsSection({
         />
         <div>
           <label htmlFor="info-director-philosophy" className="flex items-center gap-2 text-sm font-medium text-slate-700 mb-1.5">
-            진료 철학
-            {aiFilled.director_philosophy && <AiBadge meta={aiFilled.director_philosophy} />}
+            진료 철학 {ADMIN_COPY.optionalMark}
+            {badge('director_philosophy')}
           </label>
           <textarea
             id="info-director-philosophy"
@@ -302,6 +326,7 @@ export function FactsSection({
             rows={3}
             className={`w-full px-3 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none ${fieldCls('director_philosophy', !!aiFilled.director_philosophy)}`}
           />
+          <ProvenanceConflict info={provenance?.director_philosophy} />
         </div>
       </SectionShell>
 
@@ -310,7 +335,7 @@ export function FactsSection({
         description="시술·치료 안내와 질환 가이드 글을 자동으로 만드는 기준입니다. 실제 진료하는 항목만 입력해 주세요."
         action={
           <div className="flex shrink-0 items-center gap-2">
-            {aiFilled.treatments && <AiBadge meta={aiFilled.treatments} />}
+            {badge('treatments')}
             <button
               type="button"
               onClick={() => onFieldChange('treatments', [...treatments, { name: '', description: '' }])}
@@ -356,6 +381,7 @@ export function FactsSection({
             <p className="text-sm text-slate-400">진료 항목을 추가해 주세요.</p>
           )}
         </div>
+        <ProvenanceConflict info={provenance?.treatments} />
       </SectionShell>
 
       <SectionShell
@@ -365,7 +391,7 @@ export function FactsSection({
         <div>
           <label htmlFor="info-address" className="flex items-center gap-2 text-sm font-medium text-slate-700 mb-1.5">
             주소
-            {aiFilled.address && <AiBadge meta={aiFilled.address} />}
+            {badge('address')}
           </label>
           <input
             type="text"
@@ -380,6 +406,7 @@ export function FactsSection({
               {geocodeWarning}
             </p>
           )}
+          <ProvenanceConflict info={provenance?.address} />
         </div>
         <div>
           <label htmlFor="info-address-detail" className="block text-sm font-medium text-slate-700 mb-1.5">
@@ -400,7 +427,7 @@ export function FactsSection({
         <div>
           <label htmlFor="info-phone" className="flex items-center gap-2 text-sm font-medium text-slate-700 mb-1.5">
             전화번호
-            {aiFilled.phone && <AiBadge meta={aiFilled.phone} />}
+            {badge('phone')}
           </label>
           <input
             type="text"
@@ -410,12 +437,14 @@ export function FactsSection({
             placeholder="02-1234-5678"
             className={`w-full px-3 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent ${fieldCls('phone', !!aiFilled.phone)}`}
           />
+          <ProvenanceConflict info={provenance?.phone} />
         </div>
         <div>
           <label className="flex items-center gap-2 text-sm font-medium text-slate-700 mb-1.5">
             진료시간
-            {aiFilled.business_hours && <AiBadge meta={aiFilled.business_hours} />}
+            {badge('business_hours')}
           </label>
+          <ProvenanceConflict info={provenance?.business_hours} />
           <div className="space-y-2">
             <div className="rounded-lg border border-blue-100 bg-blue-50 p-3">
               <label htmlFor="info-weekday-common" className="block text-xs font-semibold text-blue-900">
@@ -474,7 +503,7 @@ export function FactsSection({
           <div>
             <label htmlFor="info-website-url" className="flex items-center gap-2 text-sm font-medium text-slate-700 mb-1.5">
               홈페이지 URL
-              {aiFilled.website_url && <AiBadge meta={aiFilled.website_url} />}
+              {badge('website_url')}
             </label>
             <input
               type="url"
@@ -484,11 +513,12 @@ export function FactsSection({
               className={`w-full px-3 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent ${fieldCls('website_url', !!aiFilled.website_url)}`}
             />
             <SourceRegistrationNotice field="website_url" results={sourceRegistration} />
+            <ProvenanceConflict info={provenance?.website_url} />
           </div>
           <div>
             <label htmlFor="info-blog-url" className="flex items-center gap-2 text-sm font-medium text-slate-700 mb-1.5">
               블로그 URL
-              {aiFilled.blog_url && <AiBadge meta={aiFilled.blog_url} />}
+              {badge('blog_url')}
             </label>
             <input
               type="url"
@@ -498,9 +528,10 @@ export function FactsSection({
               className={`w-full px-3 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent ${fieldCls('blog_url', !!aiFilled.blog_url)}`}
             />
             <SourceRegistrationNotice field="blog_url" results={sourceRegistration} />
+            <ProvenanceConflict info={provenance?.blog_url} />
           </div>
           <div>
-            <label htmlFor="info-google-business-url" className="block text-sm font-medium text-slate-700 mb-1.5">구글 병원 정보 URL</label>
+            <label htmlFor="info-google-business-url" className="block text-sm font-medium text-slate-700 mb-1.5">구글 병원 정보 URL {ADMIN_COPY.optionalMark}</label>
             <input
               type="url"
               id="info-google-business-url"
@@ -512,7 +543,7 @@ export function FactsSection({
             <p className="mt-1 text-xs text-slate-500">{GOOGLE_CHANNEL_FIELD_HINTS.google_business_profile_url}</p>
           </div>
           <div>
-            <label htmlFor="info-google-maps-url" className="block text-sm font-medium text-slate-700 mb-1.5">구글 지도 URL</label>
+            <label htmlFor="info-google-maps-url" className="block text-sm font-medium text-slate-700 mb-1.5">구글 지도 URL {ADMIN_COPY.optionalMark}</label>
             <input
               type="url"
               id="info-google-maps-url"
@@ -598,25 +629,29 @@ export function FactsSection({
           label="지역"
           values={profile.region ?? []}
           onChange={(v) => onFieldChange('region', v)}
-          badge={aiFilled.region ? <AiBadge meta={aiFilled.region} /> : undefined}
+          badge={badge('region')}
+          conflict={<ProvenanceConflict info={provenance?.region} />}
         />
         <TagInput
           label="전문과목"
           values={profile.specialties ?? []}
           onChange={(v) => onFieldChange('specialties', v)}
-          badge={aiFilled.specialties ? <AiBadge meta={aiFilled.specialties} /> : undefined}
+          badge={badge('specialties')}
+          conflict={<ProvenanceConflict info={provenance?.specialties} />}
         />
         <TagInput
           label="핵심 키워드"
           values={profile.keywords ?? []}
           onChange={(v) => onFieldChange('keywords', v)}
-          badge={aiFilled.keywords ? <AiBadge meta={aiFilled.keywords} /> : undefined}
+          badge={badge('keywords')}
+          conflict={<ProvenanceConflict info={provenance?.keywords} />}
         />
         <TagInput
           label="경쟁 병원"
           values={profile.competitors ?? []}
           onChange={(v) => onFieldChange('competitors', v)}
-          badge={aiFilled.competitors ? <AiBadge meta={aiFilled.competitors} /> : undefined}
+          badge={badge('competitors')}
+          conflict={<ProvenanceConflict info={provenance?.competitors} />}
         />
       </SectionShell>
     </>

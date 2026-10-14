@@ -2,7 +2,7 @@
 
 import { useParams } from 'next/navigation'
 import { useEffect, useState } from 'react'
-import { ApiError, fetchAPI, autofillProfile, getStoredAutofillDraft } from '@/lib/api'
+import { ApiError, fetchAPI, autofillProfile } from '@/lib/api'
 import { OperatorIssuePanel } from '@/app/_components/OperatorIssuePanel'
 import { isExpectedOperatorRequestFailure, safeOperatorError } from '@/lib/operations-journey'
 import { factsPatchPayload } from '@/lib/profile-patch'
@@ -288,27 +288,7 @@ export default function HospitalInfoPage() {
     }
   }
 
-  // 계약 등록 직후 백그라운드가 찾아 둔 초안을 불러와 같은 규칙으로 빈 칸만 채운다.
-  // 저장은 사람이 확인한 뒤 '저장'으로 한다.
-  async function handleStoredAutofill() {
-    setAutofillLoading(true)
-    setError(null)
-    try {
-      const stored = await getStoredAutofillDraft(hospitalId)
-      applyAutofillResult(stored, stored.lead_suggestions?.phone)
-    } catch (e: unknown) {
-      if (e instanceof ApiError && e.status === 404) {
-        setError(ADMIN_COPY.storedAutofillMissing)
-        return
-      }
-      if (!isExpectedOperatorRequestFailure(e)) throw e
-      setError(safeOperatorError('onboarding', ADMIN_COPY.storedAutofillRetry))
-    } finally {
-      setAutofillLoading(false)
-    }
-  }
-
-  function applyAutofillResult(result: AutofillResponse, leadPhone?: string) {
+  function applyAutofillResult(result: AutofillResponse) {
     setAutofillResult(result)
 
     const { draft, field_meta } = result
@@ -367,12 +347,6 @@ export default function HospitalInfoPage() {
           next.treatments = val as Treatment[]
           if (field_meta.treatments) newAiFilled.treatments = field_meta.treatments
         }
-      }
-
-      // 상담 요청의 대표번호는 확인 전 제안이다 — 전화 칸이 비어 있을 때만 채운다.
-      if (leadPhone && leadPhone.trim() !== '' && isBlankScalar(next.phone)) {
-        next.phone = leadPhone.trim()
-        newAiFilled.phone = { source: 'lead', confidence: 0.5 }
       }
 
       return next
@@ -440,14 +414,6 @@ export default function HospitalInfoPage() {
               className="min-h-11 flex-1 px-4 py-2 text-sm font-medium text-slate-700 border border-slate-300 rounded-lg hover:bg-slate-50 disabled:opacity-50 transition-colors sm:flex-none"
             >
               병원 정보 자동 입력
-            </button>
-            <button
-              type="button"
-              onClick={() => void handleStoredAutofill()}
-              disabled={saving || autofillLoading}
-              className="min-h-11 flex-1 px-4 py-2 text-sm font-medium text-slate-700 border border-slate-300 rounded-lg hover:bg-slate-50 disabled:opacity-50 transition-colors sm:flex-none"
-            >
-              {ADMIN_COPY.storedAutofillApply}
             </button>
             <button
               type="submit"
@@ -548,6 +514,7 @@ export default function HospitalInfoPage() {
         <FactsSection
           profile={profile}
           aiFilled={aiFilled}
+          provenance={hospital?.profile_field_provenance}
           fieldCls={fieldCls}
           coordinateNotice={coordinateNotice}
           geocodeWarning={geocodeWarning}

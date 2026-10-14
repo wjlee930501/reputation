@@ -295,7 +295,7 @@ def references_omitted_reason(title: object) -> str:
 # ── 승인 판 SQL(`reconcile_content_revisions`)에 넘기는 판정 표지 ────────────────────────────
 # DB 함수는 제목 규칙을 다시 구현하지 않는다(0089). 발행 경로가 판을 만들기 직전에 이 판정을
 # `essence_check_summary`에 적고, 함수는 표지의 제목 hash·유형이 행과 같을 때만 "참고자료가
-# 비어도 된다"로 읽는다 — 제목이 바뀐 뒤의 옛 표지는 무효다. 0091부터 함수는 참고자료 수를 보지
+# 비어도 된다"로 읽는다 — 제목이 바뀐 뒤의 옛 표지는 무효다. 0092부터 함수는 참고자료 수를 보지
 # 않는다(D36). 표지는 0090 함수로 내려가는 롤백에서도 D36 발행이 판을 받도록 계속 적는다.
 REFERENCE_REQUIREMENT_SUMMARY_KEY = "reference_requirement"
 

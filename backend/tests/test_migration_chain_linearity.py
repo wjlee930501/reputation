@@ -58,7 +58,8 @@ OPERATION_RUN_REDISPATCH_COUNT = "0087_add_operation_run_redispatch_count"
 OUTBOX_OPEN_PAIRING_INDEX = "0088_add_outbox_open_pairing_index"
 OPTIONAL_REFERENCE_REVISIONS = "0089_allow_optional_reference_revisions"
 FALLBACK_NARRATIVE_REVISIONS = "0090_allow_fallback_treatment_narrative"
-PUBLISH_WITHOUT_REFERENCES_OR_VERDICT = "0091_publish_without_references_or_verdict"
+PROFILE_PROVENANCE = "0091_add_profile_provenance_and_essence_metadata"
+PUBLISH_WITHOUT_REFERENCES_OR_VERDICT = "0092_publish_without_references_or_verdict"
 
 PRODUCTION_STAMP = CONTENT_CUSTOMIZATION
 HEAD = PUBLISH_WITHOUT_REFERENCES_OR_VERDICT
@@ -142,6 +143,7 @@ def test_hardening_revisions_keep_their_recovered_parents() -> None:
         OUTBOX_OPEN_PAIRING_INDEX,
         OPTIONAL_REFERENCE_REVISIONS,
         FALLBACK_NARRATIVE_REVISIONS,
+        PROFILE_PROVENANCE,
         PUBLISH_WITHOUT_REFERENCES_OR_VERDICT,
     )
     parents = {
@@ -187,7 +189,8 @@ def test_hardening_revisions_keep_their_recovered_parents() -> None:
         OUTBOX_OPEN_PAIRING_INDEX: OPERATION_RUN_REDISPATCH_COUNT,
         OPTIONAL_REFERENCE_REVISIONS: OUTBOX_OPEN_PAIRING_INDEX,
         FALLBACK_NARRATIVE_REVISIONS: OPTIONAL_REFERENCE_REVISIONS,
-        PUBLISH_WITHOUT_REFERENCES_OR_VERDICT: FALLBACK_NARRATIVE_REVISIONS,
+        PROFILE_PROVENANCE: FALLBACK_NARRATIVE_REVISIONS,
+        PUBLISH_WITHOUT_REFERENCES_OR_VERDICT: PROFILE_PROVENANCE,
     }
 
 
@@ -200,6 +203,7 @@ def test_upgrade_from_the_production_stamp_runs_the_linear_tail() -> None:
 
     assert pending == [
         PUBLISH_WITHOUT_REFERENCES_OR_VERDICT,
+        PROFILE_PROVENANCE,
         FALLBACK_NARRATIVE_REVISIONS,
         OPTIONAL_REFERENCE_REVISIONS,
         OUTBOX_OPEN_PAIRING_INDEX,
@@ -247,7 +251,7 @@ def test_fresh_database_applies_the_whole_chain_in_order() -> None:
     ]
 
     assert len(applied) == len(set(applied))
-    assert applied[-40:] == [
+    assert applied[-41:] == [
         PHOTO_PROVENANCE,
         IMAGE_POLICY,
         CONTENT_CUSTOMIZATION,
@@ -287,5 +291,6 @@ def test_fresh_database_applies_the_whole_chain_in_order() -> None:
         OUTBOX_OPEN_PAIRING_INDEX,
         OPTIONAL_REFERENCE_REVISIONS,
         FALLBACK_NARRATIVE_REVISIONS,
+        PROFILE_PROVENANCE,
         PUBLISH_WITHOUT_REFERENCES_OR_VERDICT,
     ]

@@ -709,9 +709,6 @@ class Settings(BaseSettings):
     # (ONBOARDING_SOURCES_UNREACHABLE)로 올릴지. 기본 꺼짐 — 켜기 전에는 CLAUDE.md의
     # "채널 fetch 실패는 인시던트가 아니라 자료 행 상태" 계약이 그대로다(대표 결정).
     ONBOARDING_SOURCE_FETCH_ALERTS_ENABLED: bool = False
-    # 대표 결정 전에는 False. True면 병원 기본 정보 완료(=공개 활성화 선행조건)에서
-    # 원장 약력·진료 철학·Google 병원 정보를 보강 항목으로 내린다(원장명·네이버는 계속 필수).
-    PROFILE_GATE_OPTIONAL_ENRICHMENT: bool = False
 
     # Lead retention (개인정보보호법 제21조 — 보유기간)
     LEAD_RETENTION_DAYS: int = 180  # 수집 후 자동 파기까지 일수

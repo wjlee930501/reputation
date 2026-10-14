@@ -190,6 +190,37 @@ def extract_docx_text(data: bytes) -> str:
         return ""
 
 
+GOOGLE_LOGIN_HOSTS = frozenset({"accounts.google.com"})
+GOOGLE_LOGIN_REQUIRED_MESSAGE = (
+    "Google 로그인이 필요한 링크입니다. 공유 설정을 '링크가 있는 모든 사용자'로 바꿔 주세요."
+)
+
+
+_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+
+
+async def _read_capped(response: httpx.Response, limit: int) -> bytes:
+    """스트림 응답 본문을 ``limit`` 바이트까지만 받는다. 넘으면 그 자리에서 읽기를 멈춘다."""
+
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in response.aiter_bytes():
+        remaining = limit - total
+        if remaining <= 0:
+            break
+        piece = chunk[:remaining]
+        chunks.append(piece)
+        total += len(piece)
+        if total >= limit:
+            break
+    return b"".join(chunks)
+
+
+def _is_plain_text_type(content_type: str) -> bool:
+    media = (content_type or "").split(";", 1)[0].strip().lower()
+    return media in {"text/plain", "text/csv", "text/tab-separated-values"}
+
+
 async def fetch_url_text(url: str) -> tuple[str, str | None, FetchQuality | None]:
     """URL을 가져와 마크다운 형태 텍스트 + 추출 실패 사유 + 품질 신호를 반환.
 
@@ -206,40 +237,53 @@ async def fetch_url_text(url: str) -> tuple[str, str | None, FetchQuality | None
     try:
         current_target = target
         async with httpx.AsyncClient(timeout=DEFAULT_FETCH_TIMEOUT, follow_redirects=False) as client:
-            response: httpx.Response | None = None
+            fetched: tuple[httpx.Response, str, bytes] | None = None
             for _ in range(MAX_REDIRECTS + 1):
-                response = await client.get(current_target.url, headers=_browser_headers())
-                peer_error = _validate_response_peer(response, current_target)
-                if peer_error:
-                    return "", peer_error, None
-                if response.status_code not in {301, 302, 303, 307, 308}:
-                    break
-                location = response.headers.get("location")
-                if not location:
-                    break
+                # 스트림으로 받는다 — 본문은 받으면서 MAX_HTML_BYTES에서 끊는다(전체를 메모리에 올린 뒤
+                # 자르지 않는다). 리다이렉트 응답의 본문은 읽지 않는다.
+                async with client.stream(
+                    "GET", current_target.url, headers=_browser_headers()
+                ) as response:
+                    peer_error = _validate_response_peer(response, current_target)
+                    if peer_error:
+                        return "", peer_error, None
+                    location = (
+                        response.headers.get("location")
+                        if response.status_code in _REDIRECT_STATUSES
+                        else None
+                    )
+                    if not location:
+                        response.raise_for_status()
+                        content_type = response.headers.get("content-type", "")
+                        if "html" not in content_type and "text" not in content_type:
+                            return "", f"HTML이 아닌 콘텐츠({content_type})는 자동 추출 불가.", None
+                        content = await _read_capped(response, MAX_HTML_BYTES)
+                        fetched = (response, content_type, content)
+                        break
                 next_url = urljoin(current_target.url, location)
+                if (urlparse(next_url).hostname or "").lower() in GOOGLE_LOGIN_HOSTS:
+                    # 공유가 꺼진 Google 문서는 로그인 페이지로 보낸다 — 그 HTML을 본문으로 저장하지 않는다.
+                    return "", GOOGLE_LOGIN_REQUIRED_MESSAGE, None
                 next_target, validation_error = await asyncio.to_thread(
                     _validate_fetch_target, next_url
                 )
                 if validation_error or next_target is None:
                     return "", f"리다이렉트 대상 차단: {validation_error}", None
                 current_target = next_target
-            if response is None:
-                return "", "URL 접근 실패.", None
-            if response.status_code in {301, 302, 303, 307, 308}:
+            if fetched is None:
                 return "", "리다이렉트가 너무 많습니다.", None
-            response.raise_for_status()
-            content_type = response.headers.get("content-type", "")
-            if "html" not in content_type and "text" not in content_type:
-                return "", f"HTML이 아닌 콘텐츠({content_type})는 자동 추출 불가.", None
-            content = response.content[:MAX_HTML_BYTES]
+            response, content_type, content = fetched
             html, detected_encoding = decode_html_bytes(
                 content,
                 declared_encoding=response.encoding,
                 content_type=content_type,
             )
-            scoped_html = _scope_to_content_container(html)
-            text = strip_navigation_fragments(_html_to_markdown(scoped_html))
+            if _is_plain_text_type(content_type):
+                # 내보내기 텍스트·CSV(Google 문서·스프레드시트)는 HTML이 아니다 — 줄바꿈을 그대로 둔다.
+                text = html.strip()
+            else:
+                scoped_html = _scope_to_content_container(html)
+                text = strip_navigation_fragments(_html_to_markdown(scoped_html))
             quality = _assess_fetch_quality(
                 html,
                 text,

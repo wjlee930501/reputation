@@ -124,7 +124,7 @@ def test_fallback_narrative_query_is_a_registered_read() -> None:
 
 
 def test_full_automatic_impact_query_lists_newly_publishable_and_visible_posts() -> None:
-    """0091(2026-10-14 D36·D37): 배포 전 영향 — 참고자료 0개·검수 장애로 보류된 발행 전 글과
+    """0092(2026-10-14 D36·D37): 배포 전 영향 — 참고자료 0개·검수 장애로 보류된 발행 전 글과
     공개 표면에서 숨은 공개 글."""
 
     drafts, deferred, published, backlog = ops_sql_report.QUERIES["q16"]
@@ -137,6 +137,24 @@ def test_full_automatic_impact_query_lists_newly_publishable_and_visible_posts()
     assert "'PROVIDER_ERROR', 'INVALID_RESPONSE'" in deferred
     assert "c.status = 'PUBLISHED'" in published
     assert ops_sql_report.parse_args(["--only=q16"]).only == ["q16"]
+
+
+def test_phase4_precheck_queries_are_registered_reads() -> None:
+    """P4-0(2026-10-14): D31 승격 예측(q12), Essence·자동 입력 상태(q13), 보류 사고·알림(q14)."""
+
+    assert [len(ops_sql_report.QUERIES[name]) for name in ("q12", "q13", "q14")] == [1, 1, 2]
+    for name in ("q12", "q13", "q14"):
+        for sql in ops_sql_report.QUERIES[name]:
+            assert sql.strip().upper().startswith("SELECT")
+    assert "would_promote" in ops_sql_report.QUERIES["q12"][0]
+    assert "HANDOFF_ACCEPTED" in ops_sql_report.QUERIES["q12"][0]
+    assert "PROFILE_AUTOFILL" in ops_sql_report.QUERIES["q13"][0]
+    assert "MISSING_APPROVED_ESSENCE_DIGEST" in ops_sql_report.QUERIES["q14"][1]
+    assert ops_sql_report.parse_args(["--only=q12", "--only=q13,q14"]).only == [
+        "q12",
+        "q13",
+        "q14",
+    ]
 
 
 def test_monthly_report_guarantee_queries_are_registered_reads() -> None:

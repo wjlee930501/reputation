@@ -1,9 +1,9 @@
-"""0091 승인 판 함수 — D36(참고자료 없이)·D37(검수 장애면 먼저 발행) (실제 PostgreSQL).
+"""0092 승인 판 함수 — D36(참고자료 없이)·D37(검수 장애면 먼저 발행) (실제 PostgreSQL).
 
 - D36: 참고자료 0개 의료 글도 판을 받는다(표지 없이도). 참고자료가 **있으면** 통과한 확인이 있어야 한다.
 - D37: 독립 검수가 UNAVAILABLE인 글은 발행 경로가 같은 후보 hash로 적은 선발행 표지가 있을 때만 판을
   받는다. 표지가 없거나 다른 hash면 종전처럼 막는다.
-- 공개 가시성도 같은 글을 숨기지 않는다. 함수는 트랜잭션 안에 0091을 설치해 본다(공유 테스트 DB의
+- 공개 가시성도 같은 글을 숨기지 않는다. 함수는 트랜잭션 안에 0092를 설치해 본다(공유 테스트 DB의
   head와 무관하다). 내려가기(0090)는 D37 표지를 무시한다.
 """
 
@@ -46,8 +46,8 @@ async def _install(db, version: str) -> None:
 
 
 @pytest.fixture(autouse=True)
-async def _function_0091(pg_async_session):
-    await _install(pg_async_session, "0091")
+async def _function_0092(pg_async_session):
+    await _install(pg_async_session, "0092")
 
 
 def _mark_published(item: ContentItem) -> None:
@@ -95,7 +95,7 @@ async def test_medical_post_without_references_gets_a_revision_and_is_public(pg_
     item.reference_checks = bind_reference_checks_to_revision(item)
     _mark_published(item)
 
-    # 표지 없이도(0091은 참고자료 수를 보지 않는다).
+    # 표지 없이도(0092는 참고자료 수를 보지 않는다).
     assert await _created(pg_async_session, item) == 1
 
     loaded = await _reload(pg_async_session, item)
@@ -159,7 +159,7 @@ async def test_downgrade_to_0090_ignores_the_deferral_marker(pg_async_session):
 
     assert await _created(pg_async_session, item) == 0
 
-    await _install(pg_async_session, "0091")
+    await _install(pg_async_session, "0092")
     created = (
         await pg_async_session.execute(
             text("SELECT * FROM reconcile_content_revisions(:id)"), {"id": item.id}

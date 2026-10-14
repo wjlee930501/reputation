@@ -38,6 +38,7 @@ class _FakeSession:
 
     def __init__(self, store):
         self.store = store
+        self.locked_gets = store.setdefault("__locked_gets__", [])
 
     def __enter__(self):
         return self
@@ -47,10 +48,14 @@ class _FakeSession:
 
     def _sources(self):
         return [
-            row for row in self.store.values() if getattr(row, "source_type", None) is not None
+            row
+            for row in self.store.values()
+            if not isinstance(row, list) and getattr(row, "source_type", None) is not None
         ]
 
-    def get(self, _model, object_id):
+    def get(self, _model, object_id, **kwargs):
+        if kwargs.get("with_for_update"):
+            self.locked_gets.append(object_id)
         return self.store.get(object_id)
 
     def execute(self, stmt):
@@ -186,6 +191,32 @@ def test_a_fetched_channel_source_gets_its_body_and_starts_processing(worker_env
     assert source.source_metadata["crawled_at"]
     assert worker_env.calls["processing"] == [(source.hospital_id, source.id)]
     assert worker_env.calls["opened"] == []
+
+
+def test_a_source_retyped_to_survey_while_fetching_is_stored_masked(worker_env, monkeypatch):
+    """리뷰 재현: 수집 대기 중인 홈페이지 자료를 설문으로 바꾸면 수집 본문이 가림 없이 저장됐다."""
+    from app.services.essence_engine import compute_source_content_hash
+
+    source = _add(worker_env, _source())
+
+    async def fake_fetch(*, source_type, url, title=None):
+        # 수집하는 동안 운영자가 자료 유형을 설문으로 바꿨다(PATCH가 먼저 커밋).
+        source.source_type = SourceType.INTERVIEW
+        return FetchedSourceContent(
+            title="설문", text="원장 연락처 010-1234-5678, 메일 doctor@example.com"
+        )
+
+    monkeypatch.setattr(tasks, "fetch_source_content", fake_fetch)
+
+    result = tasks.fetch_channel_source.apply(args=[str(source.id)]).get()
+
+    assert result["status"] == "FETCHED"
+    assert source.raw_text == "원장 연락처 [가림], 메일 [가림]"
+    assert source.content_hash == compute_source_content_hash(
+        "설문", "https://clinic.example.com", source.raw_text, None
+    )
+    # 저장은 행을 잠근 뒤 읽은 지금 유형으로 판정한다 — PATCH와 엇갈리지 않는다.
+    assert worker_env.store["__locked_gets__"] == [source.id]
 
 
 def test_a_permanent_failure_becomes_source_state_not_an_incident(worker_env, monkeypatch):
