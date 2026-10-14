@@ -89,8 +89,8 @@ async def test_new_rows_are_added_and_missing_rows_are_deleted():
 
     assert [row.name for row in db.added] == ["김성열", "전상훈"]
     assert db.deleted == [existing]
-    # 대표 표시가 없으면 첫 행이 대표가 된다.
-    assert [row.is_representative for row in db.added] == [True, False]
+    # 대표 표시는 저장한 그대로다 — 대표가 없어도 서버가 몰래 체크하지 않는다.
+    assert [row.is_representative for row in db.added] == [False, False]
     assert [row.display_order for row in db.added] == [0, 1]
 
 

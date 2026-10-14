@@ -47,6 +47,7 @@ from app.services.hospital_lifecycle import (
     public_hospital_sql_expression,
 )
 from app.services.hospital_logo import is_public_logo_ref, public_logo_url
+from app.services.hospital_physicians import effective_representatives
 from app.services.photo_assets import effective_photo_metadata
 from app.services.public_asset_ref import is_public_asset_path
 from app.utils.domain import normalize_domain
@@ -478,8 +479,21 @@ def _serialize_hospital(
         )
 
     approved_doctor_photo_ids = doctor_identity_asset_ids(photo_records)
+    # 다른(대표가 아닌) 의료진에게 연결된 사진은 그 사람의 얼굴이다. 사진은 최근 갱신
+    # 순이라 나중에 올린 부원장 사진이 맨 앞에 오므로, 대표 사진 대체 후보에서 뺀다.
+    physician_rows = list(getattr(h, "physicians", None) or [])
+    representative_ids = {id(row) for row in effective_representatives(physician_rows)}
+    linked_to_others = {
+        physician.photo_source_id
+        for physician in physician_rows
+        if physician.photo_source_id and id(physician) not in representative_ids
+    }
     doctor_asset = next(
-        (asset for asset in photo_records if asset.id in approved_doctor_photo_ids),
+        (
+            asset
+            for asset in photo_records
+            if asset.id in approved_doctor_photo_ids and asset.id not in linked_to_others
+        ),
         None,
     )
     legacy_director_photo = public_asset_url(h.slug, doctor_asset.id) if doctor_asset else None
