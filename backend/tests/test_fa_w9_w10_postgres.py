@@ -485,6 +485,98 @@ def test_writer_exhausted_slot_without_swap_budget_is_left_to_the_ladder(env, mo
     assert swapped == [] and dispatched == [] and report.actions == {}
 
 
+def test_stall_detector_opens_the_daily_renewal_for_a_spent_non_critical_slot(
+    env, monkeypatch
+) -> None:
+    """2026-10-15: 교체·평생 상한을 다 쓴 비-Critical 슬롯은 사다리(사람의 일)가 아니라 일일 갱신이다.
+
+    정체 감지기는 갱신 단계(교체 pass 안)를 부르고 곧바로 생성으로 보낸다 — 같은 날 다시 돌아도
+    구간은 한 번이다. 생성 경로가 쓰는 술어(`renewal_due`)와 같은 판정이다.
+    """
+
+    from app.core.config import settings
+    from app.workers import noncritical_renewal, topic_swap_fallback
+    from app.workers.generation_attempt_state import (
+        acquisition_completed,
+        record_topic_swap,
+        renewal_segment,
+        reserve_acquisition,
+    )
+
+    monkeypatch.setattr(settings, "CONTENT_NONCRITICAL_DAILY_RENEWAL_SESSIONS", 1)
+    monkeypatch.setattr(settings, "CONTENT_AUTO_TOPIC_SWAP_MAX", 2)
+    now = datetime.now(UTC)
+    attempt = _writer_exhausted_attempt(now)
+    for topic, previous in (("topic-b", "topic-a"), ("topic-c", "topic-b")):
+        attempt = record_topic_swap(attempt, from_topic_id=previous, to_topic_id=topic)
+        for index in range(6):
+            acquisition_id = f"writer:ctx:{topic}:{index}"
+            attempt = reserve_acquisition(attempt, acquisition_id=acquisition_id, kind="WRITER")
+            attempt = acquisition_completed(
+                attempt, acquisition_id=acquisition_id, transport_attempts=1, outcome="RESULT"
+            )
+    attempt.update(
+        {"reason": "GENERATION_BUDGET_EXHAUSTED", "retry_class": "SAMPLE_RECOVERABLE"}
+    )
+    hospital = _hospital(env, active=True)
+    item = _slot(
+        env,
+        hospital,
+        scheduled=now.astimezone(KST).date(),
+        attempt=attempt,
+        created_hours_ago=30,
+    )
+    row = env.db.get(ContentItem, item.id)
+    row.topic_swap_history = [
+        {"from_target_id": None, "swapped_at": (now - timedelta(days=3)).isoformat()},
+        {"from_target_id": None, "swapped_at": (now - timedelta(days=2)).isoformat()},
+    ]
+    env.db.commit()
+    assert noncritical_renewal.renewal_due(row, now) is True
+
+    monkeypatch.setattr(
+        content_stall_detector,
+        "find_stalled_items",
+        lambda db, *, now: [db.get(ContentItem, item.id)],
+    )
+    passes: list[str] = []
+
+    def _only_this_slot(db, *, window_start, window_end, now=None):
+        # 공유 테스트 DB의 다른 행을 건드리지 않도록 이 슬롯만 갱신한다(같은 `_renew_one`).
+        passes.append("pass")
+        current = db.get(ContentItem, item.id)
+        db.refresh(current)
+        if noncritical_renewal.renewal_due(current, now or datetime.now(UTC)):
+            topic_swap_fallback._renew_one(db, current, now=now or datetime.now(UTC))
+            db.commit()
+
+    monkeypatch.setattr(topic_swap_fallback, "swap_exhausted_topics", _only_this_slot)
+    dispatched: list[uuid.UUID] = []
+    monkeypatch.setattr(
+        content_stall_detector,
+        "_dispatch",
+        lambda db, tasks, recorder_cls, ids, *rest: dispatched.extend(ids) or len(ids),
+    )
+
+    report = content_stall_detector.run_stall_detector(env.db, now=now)
+
+    assert report.actions.get(content_stall_detector.RUNG_RENEWAL) == 1
+    assert "TOPIC_SWAP" not in report.actions and "PULL_RETRY" not in report.actions
+    assert dispatched == [item.id] and passes == ["pass"]
+    env.db.expire_all()
+    stored = env.db.get(ContentItem, item.id).essence_check_summary[GENERATION_ATTEMPT_KEY]
+    assert stored["reason"] == noncritical_renewal.DAILY_RENEWAL_REASON
+    assert stored["retry_class"] == "SAMPLE_RECOVERABLE"
+    assert renewal_segment(stored)["count"] == 1
+
+    # 같은 날 다시 돌아도 구간을 다시 열지 않는다.
+    second = content_stall_detector.run_stall_detector(env.db, now=now)
+    assert content_stall_detector.RUNG_RENEWAL not in second.actions
+    env.db.expire_all()
+    stored = env.db.get(ContentItem, item.id).essence_check_summary[GENERATION_ATTEMPT_KEY]
+    assert renewal_segment(stored)["count"] == 1
+
+
 def test_dispatch_never_sends_a_writer_exhausted_slot(env, monkeypatch) -> None:
     from app.workers import tasks as worker_tasks
     from app.workers.generation_batch_run import GenerationBatchRecorder

@@ -151,6 +151,9 @@ from app.services.content_review_feedback import (
     non_reference_remediation_messages as _non_reference_remediation_messages,  # noqa: F401 -- stable legacy worker import
 )
 from app.services.content_review_feedback import (
+    renewal_feedback as _renewal_feedback,  # noqa: F401 -- stable legacy worker import
+)
+from app.services.content_review_feedback import (
     review_finding_items as _review_finding_items,  # noqa: F401 -- stable legacy worker import
 )
 from app.services.content_review_feedback import (
@@ -545,6 +548,7 @@ from app.workers.generation_retry_policy import (
     BODY_REPAIR_STATE_KEY,
     DAILY_RESET_ENVIRONMENT_CODES,
     ENVIRONMENT_SINCE_KEY,
+    GENERATION_BUDGET_EXHAUSTED_CODE,
     HARD_FINDING_IDLE_KEY,
     OPERATOR_DECIDES_KEY,
     REVIEW_UNAVAILABLE_CODE,
@@ -613,6 +617,16 @@ from app.workers.nightly_generation_batch import (
     write_back_generated_content,
     write_back_generated_image,
     write_back_published_image_certificate,
+)
+from app.workers.noncritical_renewal import (
+    DAILY_RENEWAL_KEY,
+    DAILY_RENEWAL_REASON,
+    RENEWAL_EXCLUDED_KEY,
+    in_renewal_mode,
+    record_is_renewable,
+    renewal_candidate,
+    renewal_holds,
+    renewal_wait_fields,
 )
 from app.workers.publish_revision_incident import (
     RevisionNotCreated,
@@ -1089,6 +1103,73 @@ def _review_wait_blocks_correction(
     return None
 
 
+def _renewal_metered(db, item: ContentItem, kind: str, fn):
+    """일일 갱신 구간이 열린 슬롯의 생성 밖 비-Critical 검수(W4 결정적 삭제 재검수·저장 본문 재검수)를 그
+    구간 원장으로 산다.
+
+    작가 세션의 호출은 `_generate_with_auto_review`가 이미 원장으로 산다. 위 두 재검수는 원장 밖이라,
+    갱신 슬롯에서는 여기서 같은 구간 상한(검수·전송)을 받게 한다. 상한에 닿으면
+    `GenerationBudgetExceeded`로 공급자 호출 없이 끝나고 호출부가 갱신 대기로 남긴다. 갱신이 아닌 슬롯과
+    Critical 교정(Critical 계단 소유)은 종전 그대로다. ``fn``은 `review_generated_content` 계약
+    (`attempt_counter`·`transport_observer`)을 받아야 한다.
+    """
+
+    if not in_renewal_mode(item):
+        return fn
+
+    async def metered(*args, **kwargs):
+        ledger = GenerationBudgetLedger(db, item)
+        reservation = ledger.reserve(
+            acquisition_id=f"renewal:{kind.lower()}:{uuid.uuid4()}", kind=kind
+        )
+        # 작가 세션의 검수(`_budgeted_review`)와 같은 계약 — HTTP 직전마다 원장에 전송 1회를 옮기고,
+        # 예약한 몫(3)을 넘으면 공급자 호출 전에 막는다(동일 모델 재시도·대체 모델 포함).
+        counter: dict[str, int] = {"http_attempt": 0}
+        try:
+            result = await fn(
+                *args,
+                **kwargs,
+                attempt_counter=counter,
+                transport_observer=lambda: ledger.transport_started(reservation),
+            )
+        except BaseException:  # noqa: BROAD_EXCEPT_OK -- 중단·시간 초과도 예약한 전송을 쓴 것으로 센다
+            ledger.complete(
+                reservation, transport_attempts=counter["http_attempt"], outcome="UNKNOWN"
+            )
+            raise
+        ledger.complete(
+            reservation, transport_attempts=counter["http_attempt"], outcome="RESULT"
+        )
+        return result
+
+    return metered
+
+
+def _renewal_budget_spent(
+    db, item: ContentItem, philosophy: HospitalContentPhilosophy | None
+) -> tuple[GenerationItemState, str, str]:
+    """갱신 구간 상한에 막힌 본문 경로의 결과 — 시도 기록을 남겨 다음 갱신까지 집지 않게 한다.
+
+    저장 본문에 Critical 판정이 있으면 그 판정을 지우지 않고 Critical 계단(교정 → 교체 → 사람)으로 넘긴다.
+    """
+
+    if _stored_model_declared_hard(item):
+        _remember_generation_attempt(
+            db, item, philosophy, "CONTENT_AI_HARD_FINDING", count_attempt=False
+        )
+        return (
+            GenerationItemState.FAILED,
+            "CONTENT_AI_HARD_FINDING",
+            "독립 검수의 사실·의료 안전 지적이 해결되지 않았습니다.",
+        )
+    _remember_generation_attempt(db, item, philosophy, GENERATION_BUDGET_EXHAUSTED_CODE)
+    return (
+        GenerationItemState.FAILED,
+        GENERATION_BUDGET_EXHAUSTED_CODE,
+        "오늘의 일일 재시도 몫을 모두 써 다음 날 다시 시도합니다.",
+    )
+
+
 def _auto_correct_blocked_body(
     db,
     item: ContentItem,
@@ -1157,6 +1238,9 @@ def _auto_correct_blocked_body(
             state=state,
             limits=limits,
             dependencies=CorrectionDependencies(
+                # Critical 사실·안전 지적의 교정은 Critical 계단(교정 상한 → 교체 → 사람)이 소유한다 —
+                # 일일 갱신 구간으로 사지 않는다. 지출 끝은 주제당 교정 상한이고, 다 쓰면 Critical
+                # 종착(교체 또는 OPERATOR_REQUIRED)이라 갱신이 다시 열지 않는다.
                 propose=propose_sentence_corrections,
                 review=review_generated_content,
             ),
@@ -1282,18 +1366,22 @@ def _resolve_noncritical_block(
     state = _stored_auto_correction_state(item)
     expected_revision = int(getattr(item, "content_revision", 1) or 1)
 
-    outcome = _run_async(
-        run_noncritical_resolution(
-            hospital=hospital,
-            philosophy=philosophy,
-            content=_stored_candidate(item),
-            review=review,
-            content_brief=getattr(item, "content_brief", None),
-            must_use_messages=required_must_use_messages(philosophy),
-            rereviews_used=int(state.get(NONCRITICAL_REREVIEWS_KEY) or 0),
-            review_fn=review_generated_content,
+    try:
+        outcome = _run_async(
+            run_noncritical_resolution(
+                hospital=hospital,
+                philosophy=philosophy,
+                content=_stored_candidate(item),
+                review=review,
+                content_brief=getattr(item, "content_brief", None),
+                must_use_messages=required_must_use_messages(philosophy),
+                rereviews_used=int(state.get(NONCRITICAL_REREVIEWS_KEY) or 0),
+                review_fn=_renewal_metered(db, item, "REVIEWER", review_generated_content),
+            )
         )
-    )
+    except GenerationBudgetExceeded:
+        # 일일 갱신 구간의 검수 몫을 다 썼다 — 다음 갱신을 기다린다(공급자 호출 없음).
+        return _renewal_budget_spent(db, item, philosophy)
     if outcome.content is None or outcome.review is None:
         # 맡지 못했다(결정적으로 풀 수 없음·상한·범위 거절) — 아무것도 사지 않았다.
         return None
@@ -1399,6 +1487,10 @@ def _terminal_attempt_is_unchanged(
     previous = _stored_generation_attempt(item)
     if not attempt_is_terminal(previous):
         return False
+    if renewal_candidate(item):
+        # 비-Critical 소진은 종착이 아니다 — 일일 갱신이 하루 한 번 새 예산으로 잇는다(2026-10-15).
+        # Critical 원인·사람이 정하는 보류·지출 불명 예산은 갱신 대상이 아니라 종전처럼 종착이다.
+        return False
     if previous.get("context") != _generation_attempt_context(item, philosophy):
         return False
     if previous.get(HARD_FINDING_IDLE_KEY) and _approved_facts_changed_since_block(item, hospital):
@@ -1443,6 +1535,10 @@ def _generation_retry_is_eligible(db):
         hospital_id = item.hospital_id
         if hospital_id not in philosophies:
             philosophies[hospital_id] = _generation_philosophy_sync(db, hospital_id)
+        # 오늘의 일일 갱신 구간이 아직 열리지 않았거나 다음 갱신을 기다리는 비-Critical 슬롯은 집지 않는다
+        # (본문이 있어도) — 워커의 같은 판정과 짝이다. 구간을 연 직후의 기록은 지금 기한이라 집힌다.
+        if renewal_holds(item):
+            return False
         # 종착 기록이 입력 그대로면 본문이 있어도 집지 않는다 — 워커의 같은 판정과 짝이다.
         if _terminal_attempt_is_unchanged(item, philosophies[hospital_id]):
             return False
@@ -1646,6 +1742,11 @@ def _remember_generation_attempt(
         attempt["next_retry_at"] = None
     for key, value in (extra or {}).items():
         attempt[key] = value
+    # 비-Critical 사다리의 끝(교체·평생 상한 소진)과 일일 갱신 구간 안의 비-Critical 실패는 사람의 일이
+    # 아니라 다음 갱신을 기다린다(`noncritical_renewal`). Critical 원인·입력 변경 종착은 그대로다.
+    renewal = renewal_wait_fields(item, attempt, now=observed_at, previous=previous)
+    if renewal is not None:
+        attempt.update(renewal)
     if GENERATION_BUDGET_KEY not in attempt and attempt_spend_stays_unknown(previous, reason):
         # 지출을 모르는 레거시 기록 위의 결정은 계수를 쓰지 않는다. 계수 0을 쓰면 다음 읽기가
         # KNOWN_COUNTERS(0)로 읽어 감사된 교체 없이 새 예산이 생긴다(2026-10-13, 23개 슬롯).
@@ -1693,6 +1794,10 @@ def _record_gate_blocker_decision(db, item: ContentItem, philosophy, code: str) 
         # 아직 문자열이면 한 번 다시 써서 `next_retry_at=None`(사람의 일)으로 굳힌다.
         return
     if code in _IMAGE_SYMPTOM_CODES and stored_reason in _STORED_IMAGE_CAUSE_CODES:
+        return
+    if code == "CONTENT_NOT_GENERATED" and stored.get(DAILY_RENEWAL_KEY):
+        # 일일 갱신이 소유한 빈 슬롯의 증상이다(갱신 대기·갱신 시작 기록). 덮으면 환경 창을 새로 열거나
+        # 갱신 표시를 잃는다 — 기록은 그대로 두고 보고(사고·요약)만 한다.
         return
     if code == "CONTENT_NOT_GENERATED" and stored_reason == TOPIC_SWAPPED_REASON:
         # 주제 교체 직후의 빈 슬롯도 증상이다. 교체 기록(SAMPLE_RECOVERABLE·다음 시도 시각)을
@@ -1754,6 +1859,13 @@ def _record_gate_blocker_decision(db, item: ContentItem, philosophy, code: str) 
                 "next_retry_at": None,
                 # 사람의 일로 남긴 기록에는 환경 창의 시작을 남기지 않는다.
                 ENVIRONMENT_SINCE_KEY: None,
+                # 덮는 기록이 갱신 대상이 아니면(Critical·입력 변경·사람 보류) 그 소유를 남긴다 — 증상
+                # 기록이 원인을 지워 일일 갱신이 되살리지 않게 한다.
+                **(
+                    {RENEWAL_EXCLUDED_KEY: True}
+                    if not record_is_renewable(stored)
+                    else {}
+                ),
             },
         )
         return
@@ -5856,10 +5968,19 @@ def generate_claimed_content_item(
         try:
             run = _resolve_claimed_item_run(db, self, item)
             recorder = GenerationItemRecorder(db, run)
-            # 예정일 D+3 이내 슬롯은 일정 경로 예산(schedule lane)을 쓴다(W1).
+            # 예정일 D+3 이내 슬롯은 일정 경로 예산(schedule lane)을 쓴다(W1). 비-Critical 일일 갱신 슬롯은
+            # 늦은 예정 글이라 schedule lane이되 병원별 하루 갱신 상한을 받는다.
+            renewal = in_renewal_mode(item)
             with cost_guard.cost_lane(
-                cost_guard.generation_cost_lane(getattr(item, "scheduled_date", None)),
+                cost_guard.LANE_SCHEDULE
+                if renewal
+                else cost_guard.generation_cost_lane(getattr(item, "scheduled_date", None)),
                 hospital_id=getattr(hospital, "id", None),
+                hospital_daily_cap=(
+                    max(int(settings.COST_GUARD_CONTENT_RENEWAL_HOSPITAL_DAILY), 0)
+                    if renewal
+                    else 0
+                ),
             ):
                 state, code, message = _run_generation_item(
                     db, recorder, item, hospital, notify=notify
@@ -5998,6 +6119,18 @@ def _run_generation_item(
     philosophy = None
 
     try:
+        if renewal_holds(item):
+            # 로더가 claim 전에 거르는 규칙(`_generation_retry_is_eligible`)과 같다. 오늘의 일일 갱신
+            # 구간을 열기 전·다음 갱신 대기 중에는 사지 않는다(재배달·직접 호출).
+            code = DAILY_RENEWAL_REASON
+            message = "일일 재시도 구간 밖이라 생성을 건너뛰었습니다."
+            recorder.record(
+                item.id,
+                GenerationItemState.SKIPPED,
+                safe_error_code=code,
+                safe_error_message=message,
+            )
+            return GenerationItemState.SKIPPED, code, message
         if _terminal_attempt_is_unchanged(
             item, _generation_philosophy_sync(db, hospital.id), hospital
         ):
@@ -6402,7 +6535,9 @@ def _run_generation_item(
             # 그 주제의 공신력 있는 문서는 생기지 않는다 — 표본 사다리·주제 교체가 아니라
             # 곧바로 사람의 결정(OPERATOR_REQUIRED, 기한 없는 OPEN)이다.
             code, message = "MISSING_REFERENCES", REFERENCES_OPERATOR_DECIDES_CAUSE
-        if unwritten:
+        if unwritten or (code == GENERATION_BUDGET_EXHAUSTED_CODE and in_renewal_mode(item)):
+            # 본문이 있는 갱신 슬롯이 구간 상한에 막힌 경우도 기록한다 — 남기지 않으면 지금 기한의 갱신
+            # 시작 기록이 그대로라 다음 스윕이 다시 집는다(공회전).
             _remember_generation_attempt(
                 db, item, philosophy, code, message=message, operator_decides=operator_decides
             )
@@ -7328,14 +7463,17 @@ def _generate_single_content_item(
                     "references_list",
                 )
             }
-            refreshed_review = _run_async(
-                review_generated_content(
-                    hospital=hospital,
-                    philosophy=philosophy,
-                    content=candidate,
-                    content_brief=getattr(item, "content_brief", None),
+            try:
+                refreshed_review = _run_async(
+                    _renewal_metered(db, item, "REVIEWER", review_generated_content)(
+                        hospital=hospital,
+                        philosophy=philosophy,
+                        content=candidate,
+                        content_brief=getattr(item, "content_brief", None),
+                    )
                 )
-            )
+            except GenerationBudgetExceeded:
+                return _renewal_budget_spent(db, item, philosophy)
             if refreshed_review.status == ContentAiReviewStatus.UNAVAILABLE:
                 code = _content_ai_unavailable_code(refreshed_review)
                 _remember_generation_attempt(db, item, philosophy, code)

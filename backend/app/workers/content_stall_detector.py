@@ -8,6 +8,8 @@
 - S1 다음 시도 시각이 미래인데 예정일 ≤ 내일: 시각을 지금으로 당긴다. 하루 예산·물러서기 판정
   (`retry_is_due`)은 그대로라 당겨도 예산 밖 구매는 없다.
 - S2/S3 주제 교체 후보(`topic_swap_fallback.exhausted_body_sample_reason`): 교체 pass를 그 창에 돌린다.
+- S4 비-Critical 일일 갱신 대상(`noncritical_renewal.renewal_due` — 교체·평생 상한 소진, 오늘 구간 없음):
+  같은 pass의 갱신 단계가 오늘 구간을 열고 곧바로 생성으로 보낸다. Critical 원인은 대상이 아니다.
   현재 주제의 작가 예산을 다 쓴 슬롯(`current_topic_writers_exhausted`)은 당기지도 보내지도 않고, 교체
   예산이 남았으면 곧바로 교체(`_swap_one`), 없으면 기존 사다리에 맡긴다 — 살 수 없는 생성은 보내지 않는다.
 - 그 밖에 지금 다시 시도할 수 있는 슬롯(`tasks._generation_retry_is_eligible`): claim하고 글 단위
@@ -15,7 +17,8 @@
 
 멱등: 행동마다 `CONTENT_STALL_ACTION` 실행 기록을 `CONTENT_STALL:{글}:{계단}:{KST 날짜}` 키로 남기고,
 같은 키가 있으면 다시 하지 않는다 — 슬롯·계단·날짜당 한 번이라 무한 루프가 없다. Slack은 만들지
-않는다. 계단이 끝까지 소진된 Critical 원인의 알림은 기존 생성 사고 규칙이 소유한다.
+않는다. 계단이 끝까지 소진된 Critical 원인의 알림은 기존 생성 사고 규칙이 소유하고, 비-Critical
+원인은 사람에게 가지 않고 일일 갱신이 잇는다.
 15분 `reconcile_essence_snapshots` 틱에 붙어 돈다(RedBeat 판 불변).
 """
 
@@ -70,6 +73,7 @@ RUNG_LEGACY = "LEGACY_RESET"
 RUNG_PULL = "PULL_RETRY"
 RUNG_SWAP = "TOPIC_SWAP"
 RUNG_DISPATCH = "DISPATCH"
+RUNG_RENEWAL = "DAILY_RENEWAL"
 
 
 @dataclass
@@ -306,6 +310,7 @@ def run_stall_detector(db: Session, *, now: datetime | None = None) -> StallRepo
 
     from app.workers import tasks
     from app.workers.generation_batch_run import GenerationBatchRecorder
+    from app.workers.noncritical_renewal import renewal_due, renewal_waiting
     from app.workers.topic_swap_fallback import (
         exhausted_body_sample_reason,
         swap_exhausted_topics,
@@ -342,6 +347,17 @@ def run_stall_detector(db: Session, *, now: datetime | None = None) -> StallRepo
                 swap_needed = True
                 swap_ids.append(item.id)
                 report.count(RUNG_SWAP)
+            continue
+        if renewal_due(item, observed):
+            # 교체·평생 상한을 다 쓴 비-Critical 슬롯 — 오늘의 일일 갱신 구간을 열고 곧바로 생성으로 보낸다.
+            # 갱신 단계는 교체 pass 안에서 돈다(구간은 슬롯·KST 날짜당 한 번).
+            if _claim_action(db, item, RUNG_RENEWAL, now=observed):
+                swap_needed = True
+                swap_ids.append(item.id)
+                report.count(RUNG_RENEWAL)
+            continue
+        if renewal_waiting(item, observed):
+            # 오늘 구간을 쓴 비-Critical 슬롯 — 다음 갱신까지 당기지도 보내지도 않는다(살 것이 없다).
             continue
         if current_topic_writers_exhausted(attempt):
             # 현재 주제가 작가 결과를 더 살 수 없다 — 당기거나 생성으로 보내면 공급자 호출 없이

@@ -298,9 +298,18 @@ def test_a_terminal_record_on_a_swapped_slot_is_handled_as_before(
     assert reported == [gate_code, gate_code]
     assert digested == _morning_digest(gate_code)
     assert after["reason"] == gate_code
-    if gate_code == "CONTENT_NOT_GENERATED":
+    if gate_code == "CONTENT_NOT_GENERATED" and (
+        stored["retry_class"] == GenerationRetryClass.OPERATOR_REQUIRED.value
+    ):
+        # 비-Critical 표본 소진(교체 이력이 있는 슬롯)은 사람의 일이 아니라 일일 갱신 대기다(2026-10-15).
+        assert after["retry_class"] == GenerationRetryClass.SAMPLE_RECOVERABLE.value
+        assert after["daily_renewal"] is True
+        assert isinstance(after.get("next_retry_at"), str)
+    elif gate_code == "CONTENT_NOT_GENERATED":
+        # 입력 변경 종착을 덮은 증상은 종전처럼 사람의 일이고, 갱신 대상에서도 빠진다.
         assert after["retry_class"] == GenerationRetryClass.OPERATOR_REQUIRED.value
         assert after.get("next_retry_at") is None
+        assert after["renewal_excluded"] is True
         _freeze(monkeypatch, _TOMORROW_SWEEP)
         assert tasks.retry_is_due(after) is False
     else:
@@ -358,6 +367,11 @@ def test_an_exhausted_environment_budget_is_handled_as_before(monkeypatch, swapp
     (`recovery_is_abandoned`). 덮은 원고 미생성 기록도 같은 3일 창을 이어 받아 사람의 일로
     남는다 — 증상 덮어쓰기가 새 3일 창을 열지 않는다.
     """
+    # 일일 갱신(2026-10-15)을 끈 설정의 종전 계약이다 — 켜면 비-Critical 끝은 갱신 대기다
+    # (`tests/test_noncritical_renewal.py`).
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "CONTENT_NONCRITICAL_DAILY_RENEWAL_SESSIONS", 0)
 
     philosophy = _approved_philosophy()
     item = _swapped_slot(philosophy)
@@ -555,6 +569,11 @@ def test_a_terminal_class_is_overwritten_even_with_a_stored_schedule(
     monkeypatch, reason, retry_class
 ):
     """다음 시도 시각이 있어도 판정 기준은 두 복구 분류다 — 종착 분류는 종전처럼 덮는다."""
+    # 일일 갱신(2026-10-15)을 끈 설정의 종전 계약이다 — 켜면 비-Critical 끝은 갱신 대기다
+    # (`tests/test_noncritical_renewal.py`).
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "CONTENT_NONCRITICAL_DAILY_RENEWAL_SESSIONS", 0)
 
     philosophy = _approved_philosophy()
     item = _swapped_slot(philosophy)

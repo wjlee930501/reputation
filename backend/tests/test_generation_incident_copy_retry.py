@@ -36,7 +36,7 @@ from app.services.notification_copy import display_time
 from app.workers import generation_incident_control, generation_retry_policy, tasks
 from app.workers.generation_attempt_state import GENERATION_ATTEMPT_KEY
 from app.workers.generation_incident_control import (
-    ENVIRONMENT_EXHAUSTED_OPERATOR_ACTION,
+    DAILY_RENEWAL_OPERATOR_ACTION,
     operator_retry_releases,
 )
 from app.workers.generation_retry_policy import GenerationRetryClass
@@ -87,7 +87,7 @@ def test_a_gate_recorded_slot_says_press_and_pressing_writes_it(monkeypatch):
 
 
 @pytest.mark.parametrize("code", ["PROVIDER_TIMEOUT", "PROVIDER_UNAVAILABLE"])
-def test_an_exhausted_provider_failure_says_press_now_and_pressing_writes_it(
+def test_an_exhausted_provider_failure_is_left_to_the_daily_renewal(
     monkeypatch, code
 ):
     """예산 소진은 07:45 전이어도 누르면 된다 — 게이트를 기다리라고 하지 않는다."""
@@ -97,14 +97,12 @@ def test_an_exhausted_provider_failure_says_press_now_and_pressing_writes_it(
     for day in (13, 14, 15):
         for hour in (1, 4, 7, 12):
             record = _remember(monkeypatch, item, philosophy, _kst(2026, 9, day, hour), code)
-    assert record["next_retry_at"] is None
-    assert generation_retry_policy.recovery_is_abandoned(record)
-
+    # 3일 창이 닫힌 환경 장애는 비-Critical — 일일 갱신이 소유하고 사람이 누를 것이 없다(2026-10-15).
+    assert record["daily_renewal"] is True
     action = _action(monkeypatch, item, code, _FAILED_AT)
-
-    assert action == ENVIRONMENT_EXHAUSTED_OPERATOR_ACTION
-    assert _PRESS_ANYTIME in action
-    assert "07시 45분" not in action and "기다리" not in action
+    assert action == DAILY_RENEWAL_OPERATOR_ACTION
+    assert "작업 다시 시도" not in action
+    # 사람이 눌러도 막지 않는다 — 운영자 재시도는 종전처럼 억제를 풀고 원장 상한 안에서 쓴다.
     before_gate = _kst(2026, 9, 16, 7, 10)
     assert _press_retry(monkeypatch, item, before_gate, operator=True) == [
         (OperationRunState.SUCCEEDED, None)

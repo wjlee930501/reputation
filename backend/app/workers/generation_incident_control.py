@@ -57,6 +57,7 @@ from app.workers.generation_run_control import (
     safe_generation_rejection_message,
 )
 from app.workers.nightly_generation_batch import generation_claim_is_active
+from app.workers.noncritical_renewal import renewal_owns_blocker, stored_renewal_deadline
 
 logger = logging.getLogger(__name__)
 
@@ -205,6 +206,9 @@ def scheduled_recovery_owns_blocker(code: str, item) -> bool:
     attempt = _stored_generation_attempt(item)
     if operator_decides_references(code, item):
         return False
+    if renewal_owns_blocker(code, item):
+        # 비-Critical 일일 갱신이 다음 날 새 예산으로 다시 쓴다 — 사람의 일이 아니다.
+        return True
     if code in _AUTOMATIC_BODY_REPAIR_CODES and not _stored_input_change(attempt, code):
         # 수리 예산이 저장된 분류보다 앞선다. 예산이 남아 있으면 아직 시스템의 일이다.
         return _body_repair_budget_remains(item)
@@ -265,6 +269,8 @@ def scheduled_recovery_deadline(item, code: str) -> datetime | None:
 
     if item is None:
         return None
+    if renewal_owns_blocker(code, item):
+        return stored_renewal_deadline(item)
     attempt = _stored_generation_attempt(item)
     if attempt.get("reason") == code:
         return _stored_retry_deadline(attempt)
@@ -435,6 +441,9 @@ def generation_block_is_terminal(code: str, item) -> bool:
     attempt = _stored_generation_attempt(item) if item is not None else {}
     if operator_decides_references(code, item):
         return True
+    if renewal_owns_blocker(code, item):
+        # 일일 갱신이 소유한 비-Critical 차단은 종착이 아니다(`scheduled_recovery_owns_blocker`와 같다).
+        return False
     if code in _AUTOMATIC_BODY_REPAIR_CODES and not _stored_input_change(attempt, code):
         # 수리 예산이 남아 있으면 종착이 아니다 — `scheduled_recovery_owns_blocker`와
         # 같은 술어를 쓴다. 두 판정이 갈리면 기한 없는 OPEN과 RETRYING이 동시에 참이 된다.
@@ -671,6 +680,13 @@ def _has_body(item) -> bool:
     return bool(str(getattr(item, "body", None) or "").strip())
 
 
+# 일일 갱신(2026-10-15)이 소유한 비-Critical 차단의 조치 문구.
+DAILY_RENEWAL_OPERATOR_ACTION = (
+    "Critical이 아닌 생성 실패라 자동 일일 재시도가 매일 새 예산으로 이 글을 다시 씁니다. 따로 조치할 "
+    "필요는 없고, 늦어진 글은 일일 운영 요약에 표시됩니다."
+)
+
+
 def _generation_operator_copy(
     code: str,
     message: str | None = None,
@@ -683,6 +699,7 @@ def _generation_operator_copy(
     unwritten: bool = False,
     recovery_owned: bool = False,
     review_exhausted: bool = False,
+    renewal_owned: bool = False,
 ) -> tuple[str, str]:
     """`retry_at`은 스윕이 아직 소유한 원고 미생성 슬롯의 다음 자동 복구 시각
     (`announced_recovery_time`), `retry_unscheduled`는 스윕이 시각을 정했던 기록인데 지금 말할 시각이
@@ -698,6 +715,9 @@ def _generation_operator_copy(
         if code in PUBLISHED_IMAGE_RECERTIFY_CODES
         else "발행 예정 콘텐츠가 저장되지 않아 병원 채널에 제때 공개되지 않습니다."
     )
+    if renewal_owned:
+        # 비-Critical 일일 갱신이 소유한 차단 — 사람이 누를 것이 없다(누르는 실행도 갱신 구간 밖이라 쓰지 않는다).
+        return impact, DAILY_RENEWAL_OPERATOR_ACTION
     actions = {
         "PROVIDER_TIMEOUT": (
             "일시적인 응답 지연입니다. 다음 예약 배치가 자동으로 다시 시도하므로 지금은 기다리세요."
@@ -1175,6 +1195,7 @@ async def open_generation_incident(
                 review_exhausted=review_retries_exhausted(code, swapped_item),
                 unwritten=swapped_item is not None and not _has_body(swapped_item),
                 recovery_owned=scheduled_recovery_owns_blocker(code, swapped_item),
+                renewal_owned=renewal_owns_blocker(code, swapped_item),
             )
             incident = await open_or_touch_incident(
                 db,

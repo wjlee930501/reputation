@@ -31,11 +31,12 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import and_, case, cast, func, literal, or_, select, tuple_, update
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import JSONB, JSONPATH
 
 from app.core.config import settings
 from app.core.database import get_async_sessionmaker
 from app.models.content import ContentItem
+from app.models.hospital import Hospital
 from app.models.operations import Incident, IncidentState
 from app.models.sov import ExposureAction
 from app.services.content_brief import PLANNING_REASON_KEY
@@ -51,18 +52,19 @@ from app.services.specialty_compatibility import target_conflicts_with_hospital
 from app.services.sync_async_bridge import SyncAsyncBridge
 from app.workers.generation_attempt_state import (
     GENERATION_ATTEMPT_KEY,
-    TOPIC_SWAP_LIMIT,
     GenerationBudgetExceeded,
     GenerationBudgetUnknown,
     budget_generation_attempt,
     current_topic_writers_exhausted,
+    open_renewal_segment,
     read_generation_attempt,
-    read_generation_budget,
     record_topic_swap,
+    renewal_feedback,
 )
 from app.workers.generation_incident_control import (
     _body_repair_budget_remains,
     generation_incident_dedupe_key,
+    generation_safe_cause,
 )
 from app.workers.generation_retry_policy import (
     AUTO_CORRECTION_EXHAUSTED_KEY,
@@ -71,6 +73,7 @@ from app.workers.generation_retry_policy import (
     OPERATOR_DECIDES_KEY,
     SAMPLE_BODY_CODES,
     SAMPLE_EXHAUSTED_DAY_LIMIT,
+    WINDOWED_ENVIRONMENT_CODES,
     GenerationRetryClass,
     environment_attempt_period,
     has_model_declared_hard_finding,
@@ -82,7 +85,19 @@ from app.workers.generation_retry_policy import (
 from app.workers.nightly_generation_batch import (
     GENERATION_WRITE_BACK_STATUSES,
     NIGHTLY_GENERATION_CLAIM_TTL_HOURS,
+    NIGHTLY_GENERATION_HOSPITAL_STATUSES,
     _nightly_generation_claim_filter,
+)
+from app.workers.noncritical_renewal import (
+    BODY_REPAIR_SWAP_CODES,
+    DAILY_RENEWAL_KEY,
+    DAILY_RENEWAL_REASON,
+    critical_swap_reason,
+    in_renewal_mode,
+    renewal_due,
+    renewal_sessions,
+    topic_swap_budget_left,
+    topic_swap_limit,
 )
 
 logger = logging.getLogger(__name__)
@@ -100,7 +115,7 @@ TOPIC_SWAP_MAX_PAGES = 5
 # 저장 본문 수리 세션 예산(3일)을 다 쓴 뒤 주제 교체 계단을 타는 코드. 같은 주제로 작가가 매일
 # 다시 써도 풀리지 않은 참고자료·FAQ 필드·운영 기준 불일치다. 금지 표현(FORBIDDEN_EXPRESSION)과
 # 검수 지문 불일치(CONTENT_AI_REVIEW_STALE)는 입력 변경 종착(INPUT_CHANGE_REQUIRED)이라 뺀다.
-BODY_REPAIR_SWAP_CODES = frozenset({"MISSING_REFERENCES", "FAQ_FIELDS_MISSING", "ESSENCE_NOT_ALIGNED"})
+# 정본은 `noncritical_renewal.BODY_REPAIR_SWAP_CODES`(갱신 단계와 같은 집합)다.
 REFERENCE_SWAP_REASON = "MISSING_REFERENCES"
 # 한 슬롯을 교체할 때 살펴보는 측정 질문 후보 수. 고른 질문이 진료과 불일치·수기 목록 문서 없음·
 # 기존 주제와 유사로 맞지 않으면 그 질문을 빼고 다음 후보를 고른다(`_choose_target`은 결정적이라
@@ -128,13 +143,27 @@ class SwapReport:
     similar_topic: int = 0
     write_conflicts: int = 0
     incidents_recovered: int = 0
+    # 비-Critical 일일 갱신(`renew_noncritical_slots`): 같은 주제로 다시 쓰는 구간·새 주제로 여는 구간.
+    renewed: int = 0
+    renewed_new_topic: int = 0
 
 
-def _history_length(column):
-    """JSONB `null`은 스칼라라 jsonb_array_length가 예외를 낸다. 배열일 때만 센다."""
+def _regular_swap_length(column):
+    """교체 예산을 쓴 정규 교체 수(`noncritical_renewal.regular_swap_count`의 SQL 짝).
+
+    일일 갱신의 주제 변경(`daily_renewal: true` 항목)은 세지 않는다 — 세면 갱신이 남은 Critical 교체를
+    차감한다. JSONB `null`은 스칼라라 jsonb_array_length가 예외를 내므로 배열일 때만 센다.
+    """
 
     return case(
-        (func.jsonb_typeof(column) == "array", func.jsonb_array_length(column)),
+        (
+            func.jsonb_typeof(column) == "array",
+            func.jsonb_array_length(
+                func.jsonb_path_query_array(
+                    column, literal("$[*] ? (!(@.daily_renewal == true))").cast(JSONPATH)
+                )
+            ),
+        ),
         else_=0,
     )
 
@@ -207,44 +236,6 @@ def _exhausted_body_sample_filter():
     return or_(*clauses)
 
 
-def topic_swap_limit(*, critical: bool = True) -> int:
-    """같은 슬롯의 자동 주제 교체 상한.
-
-    원인과 무관하게 `CONTENT_AUTO_TOPIC_SWAP_MAX`(기본 2)까지다. 2026-10-14 O5는 Critical이 아닌 원인을
-    한 번으로 묶었지만, 같은 날 누락 방지 5(대표 원칙 — Critical이 아닌 글은 예정일에 빠짐없이
-    나가야 한다)로 Critical과 같은 두 번을 준다. 예산 기록이 받아 주는 상한(`TOPIC_SWAP_LIMIT`)을
-    넘지 않는다. `critical` 인자는 호출부 호환을 위해 남긴다.
-    """
-
-    del critical
-    return max(0, min(int(settings.CONTENT_AUTO_TOPIC_SWAP_MAX), TOPIC_SWAP_LIMIT))
-
-
-def critical_swap_reason(attempt: dict[str, Any]) -> bool:
-    """이 시도 기록이 Critical 원인의 교체 요청인가 — 최소 교정 상한을 다 쓴 사실·안전 차단."""
-
-    return attempt.get("reason") == "CONTENT_AI_HARD_FINDING" and bool(
-        attempt.get(AUTO_CORRECTION_EXHAUSTED_KEY)
-    )
-
-
-def topic_swap_budget_left(item: ContentItem, *, critical: bool = False) -> bool:
-    """이 슬롯이 자동 주제 교체를 한 번 더 쓸 수 있는가 — 교체 상한의 단일 판정.
-
-    `critical`은 지금 교체를 요청하는 원인이 Critical인가다(`critical_swap_reason`).
-    """
-
-    limit = topic_swap_limit(critical=critical)
-    history = getattr(item, "topic_swap_history", None)
-    if (len(history) if isinstance(history, list) else 0) >= limit:
-        return False
-    try:
-        budget = read_generation_budget(budget_generation_attempt(item))
-    except GenerationBudgetUnknown:
-        return False
-    return budget.topic_swaps < limit and len(budget.topics) < limit + 1
-
-
 def _candidate_stmt(
     window_start: date, window_end: date, expiry: datetime, *, after: tuple | None = None
 ):
@@ -255,8 +246,8 @@ def _candidate_stmt(
         ContentItem.status.in_(GENERATION_WRITE_BACK_STATUSES),
         ContentItem.first_published_at.is_(None),
         ContentItem.human_edited_at.is_(None),
-        # 슬롯 상한(Critical 원인)으로 거른다 — 원인별 상한은 파이썬 술어가 본다.
-        _history_length(ContentItem.topic_swap_history) < topic_swap_limit(critical=True),
+        # 정규 교체 수(일일 갱신의 주제 변경 제외)로 거른다 — 판정의 정본은 파이썬 술어다.
+        _regular_swap_length(ContentItem.topic_swap_history) < topic_swap_limit(critical=True),
         _inactive_claim_filter(expiry),
         _exhausted_body_sample_filter(),
     ]
@@ -318,6 +309,12 @@ def exhausted_body_sample_reason(item: ContentItem) -> str | None:
     """
 
     attempt = read_generation_attempt(item)
+    if attempt.get(DAILY_RENEWAL_KEY) or (
+        in_renewal_mode(item) and not critical_swap_reason(attempt)
+    ):
+        # 일일 갱신이 소유한 비-Critical 슬롯이다 — 주제는 갱신 단계(`renew_noncritical_slots`)가 바꾼다.
+        # 갱신 중에 생긴 Critical 원인(교정 상한 소진)의 교체 요청은 남은 W6 계단을 그대로 탄다.
+        return None
     if not topic_swap_budget_left(item, critical=critical_swap_reason(attempt)):
         # 교체 상한(원인 무관 두 번)을 다 썼다. 후보 SQL과 같은 규칙을 파이썬에도
         # 둔 방어선이며, 그 뒤의 소진은 사람의 일이다.
@@ -398,14 +395,21 @@ def _carried_brief(item: ContentItem) -> dict[str, Any]:
     return carried
 
 
-def _reset_values(item: ContentItem, target_id: uuid.UUID, history_entry: dict) -> dict:
+def _reset_values(
+    item: ContentItem,
+    target_id: uuid.UUID,
+    history_entry: dict,
+    *,
+    attempt: dict | None = None,
+) -> dict:
     """새 주제로 다시 쓰기 위해 비워야 할 것 전부. 한 UPDATE로 나간다.
 
     `scheduled_date`·`sequence_no`·`content_type`·`schedule_id`·`carried_over_from`은
-    그대로 둔다 — 계약 월과 이월 회계는 주제와 무관하다.
+    그대로 둔다 — 계약 월과 이월 회계는 주제와 무관하다. ``attempt``는 일일 갱신이 연 구간의
+    시도 조각이다(교체 예산을 쓰지 않는다). 없으면 교체 한 번을 예산에 기록한다.
     """
 
-    swapped_attempt = record_topic_swap(
+    swapped_attempt = attempt or record_topic_swap(
         budget_generation_attempt(item),
         from_topic_id=str(item.query_target_id) if item.query_target_id else None,
         to_topic_id=str(target_id),
@@ -417,6 +421,15 @@ def _reset_values(item: ContentItem, target_id: uuid.UUID, history_entry: dict) 
         "brief_status": None,
         "brief_approved_at": None,
         "brief_approved_by": None,
+        **_generated_output_reset(swapped_attempt),
+        "topic_swap_history": [*list(item.topic_swap_history or []), history_entry],
+    }
+
+
+def _generated_output_reset(attempt: dict) -> dict:
+    """생성 산출물(본문·검수·이미지 결합)과 claim을 비우는 값. 주제 교체와 일일 갱신이 같이 쓴다."""
+
+    return {
         "title": None,
         "body": None,
         "meta_description": None,
@@ -427,7 +440,7 @@ def _reset_values(item: ContentItem, target_id: uuid.UUID, history_entry: dict) 
         "reference_checks": None,
         # 독립 검수 메타와 저장된 생성 시도 기록이 한 JSON에 있다. 새 주제에는 둘 다
         # 근거가 없으므로 통째로 비운다 — 시도 기록이 지워져야 로더 필터를 통과한다.
-        "essence_check_summary": {GENERATION_ATTEMPT_KEY: swapped_attempt},
+        "essence_check_summary": {GENERATION_ATTEMPT_KEY: attempt},
         "essence_status": None,
         "generated_at": None,
         # 이미지는 옛 주제에 결합된 인증이다. 빌린 이미지의 주제 hash를 새 제목으로
@@ -440,7 +453,6 @@ def _reset_values(item: ContentItem, target_id: uuid.UUID, history_entry: dict) 
         "image_policy_version": None,
         "image_reused_from_content_id": None,
         "image_fallback_source": None,
-        "topic_swap_history": [*list(item.topic_swap_history or []), history_entry],
         "content_revision": ContentItem.content_revision + 1,
         "generation_claimed_at": None,
         "generation_claim_token": None,
@@ -571,6 +583,251 @@ def _swap_one(db, item: ContentItem, reason: str, *, now: datetime) -> tuple[dic
     db.refresh(item)
     _record_topic_swapped_attempt(db, item, now=now, spent_today=spent_today)
     return entry, "swapped"
+
+
+RENEWAL_ACTOR = "system:daily-renewal"
+_RENEWAL_FEEDBACK_PREFIX = "직전 자동 생성이 통과하지 못한 이유: "
+
+
+def _renewal_filter():
+    """SQL로 표현할 수 있는 일일 갱신 후보 조건. 판정의 정본은 `noncritical_renewal.renewal_due`다."""
+
+    attempt = _stored_attempt_json()
+    repair_state = ContentItem.essence_check_summary[BODY_REPAIR_STATE_KEY]
+    return or_(
+        attempt[DAILY_RENEWAL_KEY].as_boolean().is_(True),
+        and_(
+            attempt["retry_class"].as_string() == GenerationRetryClass.OPERATOR_REQUIRED.value,
+            attempt["reason"].as_string().in_(sorted(SAMPLE_BODY_CODES)),
+        ),
+        attempt["reason"].as_string() == BUDGET_EXHAUSTED_REASON,
+        # W3 환경 장애의 창이 닫힌 빈 슬롯(파이썬 술어가 창·기한을 본다).
+        attempt["reason"].as_string().in_(sorted(WINDOWED_ENVIRONMENT_CODES)),
+        and_(
+            attempt["reason"].as_string().in_(sorted(BODY_REPAIR_SWAP_CODES)),
+            attempt["retry_class"].as_string()
+            != GenerationRetryClass.INPUT_CHANGE_REQUIRED.value,
+            attempt[OPERATOR_DECIDES_KEY].as_boolean().is_not(True),
+            repair_state["exhausted_days"].as_integer() >= SAMPLE_EXHAUSTED_DAY_LIMIT,
+        ),
+    )
+
+
+def _renewal_stmt(
+    window_start: date, window_end: date, expiry: datetime, *, after: tuple | None = None
+):
+    order_columns = _order_columns()
+    predicates = [
+        ContentItem.scheduled_date >= window_start,
+        ContentItem.scheduled_date <= window_end,
+        ContentItem.status.in_(GENERATION_WRITE_BACK_STATUSES),
+        ContentItem.first_published_at.is_(None),
+        ContentItem.human_edited_at.is_(None),
+        # 로더가 집는 병원만 연다 — 집히지 않을 구간을 열어 본문을 날마다 비우지 않는다.
+        ContentItem.hospital_id.in_(
+            select(Hospital.id).where(
+                Hospital.status.in_(NIGHTLY_GENERATION_HOSPITAL_STATUSES),
+                Hospital.site_live.is_(True),
+            )
+        ),
+        _inactive_claim_filter(expiry),
+        _renewal_filter(),
+    ]
+    if after is not None:
+        predicates.append(
+            tuple_(*order_columns)
+            > tuple_(
+                *(
+                    literal(value, column.type)
+                    for column, value in zip(order_columns, after, strict=True)
+                )
+            )
+        )
+    return (
+        select(ContentItem)
+        .where(*predicates)
+        .order_by(*order_columns)
+        .with_for_update(skip_locked=True, of=ContentItem)
+        .limit(TOPIC_SWAP_SELECT_LIMIT)
+        .execution_options(populate_existing=True)
+    )
+
+
+def _accumulated_feedback(item: ContentItem, attempt: dict[str, Any]) -> list[str]:
+    """같은 주제로 다시 쓸 때 작가에게 넘길 누적 거절 사유(분류기가 만든 안전 문구만)."""
+
+    reason = str(attempt.get("reason") or "")
+    message = attempt.get("message") if reason == "GENERATION_REJECTED" else None
+    latest = f"{_RENEWAL_FEEDBACK_PREFIX}{message or generation_safe_cause(reason)}"
+    merged: list[str] = []
+    for entry in [*renewal_feedback(item.essence_check_summary), latest]:
+        if entry in merged:
+            merged.remove(entry)
+        merged.append(entry)
+    return merged
+
+
+def _renew_one(db, item: ContentItem, *, now: datetime) -> str:
+    """한 슬롯에 오늘의 일일 갱신 구간을 연다. 결과 라벨을 돌려준다.
+
+    쓰지 않은 측정 질문 후보가 있으면 그 주제로(교체 예산을 쓰지 않는 새 주제 — 이력에는 남긴다),
+    없으면 같은 주제를 누적 거절 사유와 함께 다시 쓴다. 어느 쪽이든 생성 산출물을 비우고 구간을
+    연 시도 기록(지금 기한)을 남겨 같은 스윕의 로더가 곧바로 쓴다.
+    """
+
+    attempt = read_generation_attempt(item)
+    reason = str(attempt.get("reason") or "")
+    if getattr(item, "body", None) and _stored_body_is_publishable(db, item):
+        # 기록이 실패를 말해도 지금 본문이 발행 게이트를 통과하면(D37 선발행 등) 비우지 않는다.
+        return "body_publishable"
+    target, _label = _swap_target(db, item, reason)
+    changes_topic = target is not None and target.id != item.query_target_id
+    topic_id = target.id if changes_topic else item.query_target_id
+    try:
+        base = budget_generation_attempt(item)
+        if changes_topic:
+            # 같은 교체 함수로 원장의 주제 기록을 맞춘다(교체 예산 밖의 `renewal_topics`).
+            base = record_topic_swap(
+                base,
+                from_topic_id=str(item.query_target_id) if item.query_target_id else None,
+                to_topic_id=str(target.id),
+                renewal=True,
+            )
+        renewed = open_renewal_segment(
+            base,
+            period=environment_attempt_period(now),
+            sessions=renewal_sessions(),
+            topic_id=str(topic_id) if topic_id else None,
+            feedback=[] if changes_topic else _accumulated_feedback(item, attempt),
+        )
+    except (GenerationBudgetUnknown, GenerationBudgetExceeded):
+        return "unknown_budget"
+    revision_before = int(item.content_revision or 1)
+    previous_action_id = item.exposure_action_id
+    if changes_topic:
+        superseded = _superseded_incident(db, item, reason)
+        entry = {
+            "from_target_id": str(item.query_target_id) if item.query_target_id else None,
+            "from_title": item.title,
+            "to_target_id": str(target.id),
+            "reason_code": reason,
+            "swapped_at": now.isoformat(),
+            "revision_before": revision_before,
+            "revision_after": revision_before + 1,
+            "superseded_incident_id": str(superseded.id) if superseded is not None else None,
+            "superseded_episode_seq": (
+                int(superseded.episode_seq) if superseded is not None else None
+            ),
+            "incident_recovered": False,
+            # 교체 예산을 쓰지 않은 일일 갱신의 새 주제다(`topic_swap_limit`와 무관).
+            "daily_renewal": True,
+        }
+        values = _reset_values(item, target.id, entry, attempt=renewed)
+    else:
+        values = _generated_output_reset(renewed)
+    updated = db.execute(
+        update(ContentItem)
+        .where(
+            ContentItem.id == item.id,
+            ContentItem.content_revision == revision_before,
+            ContentItem.status == item.status,
+            ContentItem.first_published_at.is_(None),
+            ContentItem.human_edited_at.is_(None),
+            _inactive_claim_filter(_claim_expiry(now)),
+        )
+        .values(**values)
+        .execution_options(synchronize_session=False)
+    )
+    if updated.rowcount != 1:
+        return "write_conflict"
+    if changes_topic and previous_action_id is not None:
+        db.execute(
+            update(ExposureAction)
+            .where(
+                ExposureAction.id == previous_action_id,
+                ExposureAction.linked_content_id == item.id,
+            )
+            .values(linked_content_id=None)
+            .execution_options(synchronize_session=False)
+        )
+    db.refresh(item)
+    _record_renewal_attempt(db, item, now=now)
+    logger.info(
+        "daily renewal opened for non-critical slot %s (reason %s, new topic %s)",
+        item.id,
+        reason,
+        changes_topic,
+    )
+    return "renewed_new_topic" if changes_topic else "renewed"
+
+
+def _stored_body_is_publishable(db, item: ContentItem) -> bool:
+    """저장된 본문이 지금 발행 게이트를 통과하는가 — 갱신이 공개될 본문을 지우지 않게 하는 방어선."""
+
+    from app.services.content_publication import assess_content_publication
+
+    philosophy = _tasks()._generation_philosophy_sync(db, item.hospital_id)
+    if philosophy is None:
+        return False
+    return assess_content_publication(item, philosophy).code is None
+
+
+def _record_renewal_attempt(db, item: ContentItem, *, now: datetime) -> None:
+    """구간을 연 슬롯의 시도 기록 — 오늘 새 예산, 기한은 지금(같은 스윕의 로더가 쓴다)."""
+
+    tasks = _tasks()
+    philosophy = tasks._generation_philosophy_sync(db, item.hospital_id)
+    tasks._remember_generation_attempt(
+        db,
+        item,
+        philosophy,
+        DAILY_RENEWAL_REASON,
+        count_attempt=False,
+        extra={
+            "retry_class": GenerationRetryClass.SAMPLE_RECOVERABLE.value,
+            DAILY_RENEWAL_KEY: True,
+            "attempt_period": environment_attempt_period(now),
+            "provider_attempt_count": 0,
+            "attempt_count": 0,
+            "exhausted_days": 0,
+            "next_retry_at": now.isoformat(),
+        },
+    )
+
+
+def renew_noncritical_slots(
+    db, *, window_start: date, window_end: date, now: datetime
+) -> dict[str, int]:
+    """교체·평생 상한을 다 쓴 비-Critical 슬롯에 오늘의 일일 갱신 구간을 연다(교체 pass 뒤·로더 앞).
+
+    슬롯당 KST 하루 한 번(`renewal_due`가 오늘 구간을 연 슬롯을 거른다)이라 하루 지출의 끝은 구간
+    상한이다. 사람의 사고·Slack을 만들지 않는다.
+    """
+
+    if renewal_sessions() <= 0:
+        return {}
+    expiry = _claim_expiry(now)
+    outcomes: dict[str, int] = {}
+    after: tuple | None = None
+    for _page in range(TOPIC_SWAP_MAX_PAGES):
+        rows = list(
+            db.execute(_renewal_stmt(window_start, window_end, expiry, after=after))
+            .scalars()
+            .all()
+        )
+        if not rows:
+            break
+        for item in rows:
+            if not renewal_due(item, now):
+                continue
+            label = _renew_one(db, item, now=now)
+            outcomes[label] = outcomes.get(label, 0) + 1
+        after = _order_key(rows[-1])
+        db.commit()
+        if len(rows) < TOPIC_SWAP_SELECT_LIMIT:
+            break
+    db.commit()
+    return outcomes
 
 
 def _tasks():
@@ -845,9 +1102,16 @@ def swap_exhausted_topics(
             break
     db.commit()
 
+    # 교체가 끝난(또는 교체할 질문이 없는) 비-Critical 슬롯은 사람이 아니라 일일 갱신이 잇는다.
+    renewals = renew_noncritical_slots(
+        db, window_start=window_start, window_end=window_end, now=observed_at
+    )
+
     # 크래시로 남은 미완료 항목도 수렴시켜야 하므로 이번 pass가 아무것도 바꾸지 않아도 돈다.
     swapped_rows = list(db.execute(_unreconciled_stmt()).scalars().all())
     return SwapReport(
+        renewed=renewals.get("renewed", 0),
+        renewed_new_topic=renewals.get("renewed_new_topic", 0),
         considered=outcomes.get("considered", 0),
         swapped=outcomes.get("swapped", 0),
         no_candidate_target=outcomes.get("no_candidate_target", 0),

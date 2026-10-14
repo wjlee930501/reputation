@@ -676,7 +676,8 @@ def test_an_eligible_slot_behind_fifty_non_candidates_is_still_swapped(pg_conn, 
 
 
 def test_the_second_pass_never_swaps_the_same_slot_again(pg_conn, pg_session):
-    """교체는 한 번뿐이다 — 두 번째 소진은 사람의 일(OPERATOR_REQUIRED)로 남는다."""
+    """바꿀 질문이 남지 않은 두 번째 소진은 다시 교체하지 않는다 — 비-Critical이라 사람의 일이 아니라
+    일일 갱신이 같은 주제로 잇는다(2026-10-15). 같은 날 다시 돌아도 구간은 한 번이다."""
 
     hospital_id = _seed_hospital(pg_conn)
     item_id = _seed_item(pg_conn, hospital_id)
@@ -698,14 +699,19 @@ def test_the_second_pass_never_swaps_the_same_slot_again(pg_conn, pg_session):
         },
     )
 
-    assert _swap(pg_session).swapped == 0
+    second = _swap(pg_session)
+    assert second.swapped == 0
+    assert (second.renewed, second.renewed_new_topic) == (1, 0)
     row = pg_session.get(ContentItem, item_id)
     pg_session.refresh(row)
     assert len(row.topic_swap_history) == 1
-    # 같은 날의 두 번째 pass는 당일 1회를 다시 주지 않는다 — 기록은 소진 그대로다.
     attempt = row.essence_check_summary["generation_attempt"]
-    assert attempt["retry_class"] == GenerationRetryClass.OPERATOR_REQUIRED.value
-    assert generation_retry_policy.retry_is_due(attempt, NOW) is False
+    assert attempt["reason"] == "DAILY_RENEWAL"
+    assert attempt["retry_class"] == GenerationRetryClass.SAMPLE_RECOVERABLE.value
+    assert generation_retry_policy.retry_is_due(attempt, NOW) is True
+    # 같은 날의 세 번째 pass는 구간을 다시 열지 않는다.
+    third = _swap(pg_session)
+    assert (third.swapped, third.renewed, third.renewed_new_topic) == (0, 0, 0)
 
 
 def test_internal_medicine_slot_is_swapped_to_a_compatible_topic_not_radiology(

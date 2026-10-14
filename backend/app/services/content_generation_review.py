@@ -33,6 +33,7 @@ from app.services.content_review_feedback import (
     duplicate_topic_remediation,
     hard_removal_findings,
     non_reference_remediation_messages,
+    renewal_feedback,
     review_findings,
     screening_probe,
 )
@@ -113,7 +114,9 @@ async def generate_reviewed_content(
 ) -> tuple[dict[str, Any], EssenceScreeningResult]:
     """Generate, independently review, and rewrite without bypassing hard gates."""
 
-    findings = review_findings(getattr(item, "essence_check_summary", None))
+    summary = getattr(item, "essence_check_summary", None)
+    # 일일 갱신 구간이 같은 주제를 다시 쓰면 지난 날들의 거절 사유를 첫 회차부터 싣는다(누적 피드백).
+    findings = review_findings(summary) or renewal_feedback(summary)
     automatic_rewrites = int(bool(findings))
     reviewer_driven_rewrites = 0
     removal_rewrites = 0

@@ -12,6 +12,25 @@ from app.models.content import ContentItem
 logger = logging.getLogger(__name__)
 
 
+# 일일 갱신 구간의 누적 거절 사유 위치(`workers.generation_attempt_state`의 키·상한과 같다 — 서비스
+# 계층은 워커를 import하지 않으므로 이름만 복제하고 테스트로 묶는다).
+RENEWAL_FEEDBACK_PATH = ("generation_attempt", "budget", "renewal", "feedback")
+RENEWAL_FEEDBACK_LIMIT = 5
+
+
+def renewal_feedback(summary: object) -> list[str]:
+    """일일 갱신 구간이 다음 작가 세션에 넘기는 누적 거절 사유(같은 주제로 다시 쓸 때)."""
+
+    value: object = summary
+    for key in RENEWAL_FEEDBACK_PATH:
+        if not isinstance(value, dict):
+            return []
+        value = value.get(key)
+    if not isinstance(value, list):
+        return []
+    return [str(entry) for entry in value if str(entry).strip()][-RENEWAL_FEEDBACK_LIMIT:]
+
+
 def review_findings(summary: object) -> list[str]:
     if not isinstance(summary, dict):
         return []

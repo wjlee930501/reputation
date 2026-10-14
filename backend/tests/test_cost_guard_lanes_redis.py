@@ -218,3 +218,59 @@ def test_unknown_lane_is_rejected() -> None:
     with pytest.raises(ValueError):
         with cost_guard.cost_lane("nightly"):
             pass
+
+
+async def test_daily_renewal_scope_caps_one_hospital_inside_the_schedule_lane(lane_env, monkeypatch):
+    """비-Critical 일일 갱신(2026-10-15): schedule lane이되 병원별 하루 갱신 상한을 받는다.
+
+    일반 예정 글 생성(갱신 상한 없는 schedule)은 병원 상한을 받지 않고 갱신 카운터도 올리지 않는다.
+    """
+
+    url, sync = lane_env
+    monkeypatch.setattr(cost_guard.settings, "COST_GUARD_CONTENT_RENEWAL_HOSPITAL_DAILY", 4)
+    client = redis_async.from_url(url)
+    renewal_key = cost_guard._renewal_hospital_daily_key(HOSPITAL_A, DAY)
+    try:
+        with cost_guard.cost_lane(
+            cost_guard.LANE_SCHEDULE, hospital_id=HOSPITAL_A, hospital_daily_cap=4
+        ):
+            for _ in range(4):
+                assert (await cost_guard.check_and_increment("content", redis_client=client)).allowed
+            blocked = await cost_guard.check_and_increment("content", redis_client=client)
+            assert blocked.allowed is False and "일일 재시도" in blocked.reason
+            # 영수증 예약도 같은 상한을 받는다.
+            assert (await _reserve(client, None, hospital_id=HOSPITAL_A)).allowed is False
+        assert _int(sync, renewal_key) == 4
+        # 다른 병원의 갱신은 막히지 않는다.
+        with cost_guard.cost_lane(
+            cost_guard.LANE_SCHEDULE, hospital_id=HOSPITAL_B, hospital_daily_cap=4
+        ):
+            assert (await cost_guard.check_and_increment("content", redis_client=client)).allowed
+        # 같은 병원의 일반 예정 글 생성은 상한 밖이다(갱신 카운터 불변).
+        with cost_guard.cost_lane(cost_guard.LANE_SCHEDULE, hospital_id=HOSPITAL_A):
+            assert (await cost_guard.check_and_increment("content", redis_client=client)).allowed
+        assert _int(sync, renewal_key) == 4
+        assert _int(sync, cost_guard._lane_daily_key("schedule", DAY)) == 6
+        # 일정 외 병원 카운터와 섞이지 않는다.
+        assert _int(sync, cost_guard._hospital_daily_key(HOSPITAL_A, DAY)) == 0
+    finally:
+        await client.aclose()
+
+
+async def test_daily_renewal_settlement_returns_units_to_the_renewal_counter(lane_env):
+    url, sync = lane_env
+    client = redis_async.from_url(url)
+    try:
+        with cost_guard.cost_lane(
+            cost_guard.LANE_SCHEDULE, hospital_id=HOSPITAL_A, hospital_daily_cap=30
+        ):
+            decision = await _reserve(client, None, count=6)
+        assert decision.allowed and decision.receipt is not None
+        settled = await cost_guard.settle_reservation(
+            decision.receipt, consumed_units=2, redis_client=client
+        )
+        assert settled is not None and settled.released_units == 4
+        assert _int(sync, cost_guard._renewal_hospital_daily_key(HOSPITAL_A, DAY)) == 2
+    finally:
+        sync.delete(cost_guard._reservation_key(decision.receipt.id))
+        await client.aclose()

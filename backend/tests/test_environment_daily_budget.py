@@ -24,6 +24,7 @@ from app.workers.generation_retry_policy import (
     recovery_is_abandoned,
     retry_is_due,
 )
+from app.workers.noncritical_renewal import DAILY_RENEWAL_KEY, renewal_due
 
 _SLOT = date(2026, 9, 16)
 _DAY1 = (_kst(2026, 9, 16, 1), _kst(2026, 9, 16, 4), _kst(2026, 9, 16, 7), _kst(2026, 9, 16, 12))
@@ -116,9 +117,14 @@ def test_the_worker_hands_over_after_three_days(monkeypatch):
         for hour in (1, 4, 7, 12):
             last = _remember(monkeypatch, item, philosophy, _kst(2026, 9, day, hour), "PROVIDER_TIMEOUT")
 
-    assert last["next_retry_at"] is None
+    # 3일 창이 닫힌 환경 장애는 비-Critical이다 — 사람이 아니라 일일 갱신이 잇는다(2026-10-15).
+    assert last[DAILY_RENEWAL_KEY] is True
+    assert last["retry_class"] == GenerationRetryClass.SAMPLE_RECOVERABLE.value
+    assert isinstance(last["next_retry_at"], str)
+    assert recovery_is_abandoned(last, _kst(2026, 9, 19, 1)) is False
+    # 로더는 갱신 단계가 구간을 열기 전에는 집지 않는다(같은 술어 `renewal_holds`).
+    assert renewal_due(item, _kst(2026, 9, 19, 1)) is True
     assert not _loader_takes(monkeypatch, item, _kst(2026, 9, 19, 1))
-    assert recovery_is_abandoned(last, _kst(2026, 9, 19, 1)) is True
 
 
 # ── 0-4: 게이트의 원고 미생성은 복구 가능한 증상이다 ─────────────────────────────
@@ -151,26 +157,29 @@ def test_a_slot_whose_dispatch_keeps_getting_lost_reaches_the_operator_after_thr
     _gate(monkeypatch, item, philosophy, _kst(2026, 9, 19, 7, 45))
 
     record = _record(item)
-    assert record["next_retry_at"] is None
+    # 창이 닫히면 사람의 일이 아니라 일일 갱신 대기다(2026-10-15).
+    assert record[DAILY_RENEWAL_KEY] is True
+    assert isinstance(record["next_retry_at"], str)
+    assert recovery_is_abandoned(record, _kst(2026, 9, 19, 12)) is False
+    assert renewal_due(item, _kst(2026, 9, 19, 12)) is True
     assert not _loader_takes(monkeypatch, item, _kst(2026, 9, 19, 12))
-    assert recovery_is_abandoned(record, _kst(2026, 9, 19, 12)) is True
 
 
 def test_the_gate_overwrite_of_an_abandoned_provider_record_keeps_the_window(monkeypatch):
-    """3일을 다 쓴 공급자 기록을 게이트가 원고 미생성으로 덮어도 새 3일 창이 열리지 않는다."""
+    """3일을 다 쓴 공급자 기록은 일일 갱신 대기이고, 게이트는 그 기록을 덮지 않는다 — 새 3일 창이 열리지 않는다."""
 
     philosophy, item = _empty_slot(monkeypatch)
     for day in (16, 17, 18):
         for hour in (1, 4, 7, 12):
             exhausted = _remember(monkeypatch, item, philosophy, _kst(2026, 9, day, hour), "PROVIDER_TIMEOUT")
-    assert exhausted["next_retry_at"] is None
+    assert exhausted[DAILY_RENEWAL_KEY] is True
 
     _gate(monkeypatch, item, philosophy, _kst(2026, 9, 19, 7, 45))
 
     record = _record(item)
-    assert record["reason"] == "CONTENT_NOT_GENERATED"
+    assert record == exhausted
     assert record[ENVIRONMENT_SINCE_KEY] == exhausted[ENVIRONMENT_SINCE_KEY]
-    assert record["next_retry_at"] is None
+    assert renewal_due(item, _kst(2026, 9, 19, 12)) is True
     assert not _loader_takes(monkeypatch, item, _kst(2026, 9, 19, 12))
 
 
@@ -182,7 +191,9 @@ def test_a_gate_recorded_empty_slot_is_owned_by_the_sweep_until_the_window_ends(
     assert scheduled_recovery_owns_blocker("CONTENT_NOT_GENERATED", item) is True
 
     _gate(monkeypatch, item, philosophy, _kst(2026, 9, 19, 7, 45))
-    assert scheduled_recovery_owns_blocker("CONTENT_NOT_GENERATED", item) is False
+    # 창이 끝나면 스윕이 아니라 일일 갱신이 소유한다 — 여전히 사람의 일이 아니다(2026-10-15).
+    assert _record(item)[DAILY_RENEWAL_KEY] is True
+    assert scheduled_recovery_owns_blocker("CONTENT_NOT_GENERATED", item) is True
 
 
 def test_a_closed_window_with_a_stale_deadline_is_not_owned_by_the_sweep(monkeypatch):
@@ -237,11 +248,10 @@ def test_a_legacy_window_stays_closed_through_the_gate_and_the_next_failure(monk
 
     gate_record = _record(item)
     assert gate_record["reason"] == "CONTENT_NOT_GENERATED"
+    # 닫힌 창을 다시 열지 않는다 — 시작은 레거시 기록의 마지막 관측 그대로이고, 끝은 사람이 아니라
+    # 일일 갱신 대기다(2026-10-15).
     assert gate_record[ENVIRONMENT_SINCE_KEY] == legacy["observed_at"]
-    assert gate_record["next_retry_at"] is None
+    assert environment_window_closed(gate_record, _kst(2026, 9, 20, 12)) is True
+    assert gate_record[DAILY_RENEWAL_KEY] is True
+    assert renewal_due(item, _kst(2026, 9, 20, 12)) is True
     assert not _loader_takes(monkeypatch, item, _kst(2026, 9, 20, 12))
-
-    after = _remember(monkeypatch, item, philosophy, _kst(2026, 9, 20, 13), "PROVIDER_TIMEOUT")
-    assert after[ENVIRONMENT_SINCE_KEY] == legacy["observed_at"]
-    assert after["next_retry_at"] is None
-    assert environment_window_closed(after, _kst(2026, 9, 21, 1)) is True
