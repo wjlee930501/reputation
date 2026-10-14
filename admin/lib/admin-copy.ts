@@ -29,10 +29,18 @@ export const ADMIN_COPY = {
   aeOwner: '담당 AE',
   postPublishReview: '공개 후 확인',
   postPublishReviewed: '확인 완료',
-  // 계약 등록 직후 백그라운드로 찾아 둔 병원 정보(저장 전 제안).
-  storedAutofillApply: '등록 때 찾아 둔 정보 채우기',
-  storedAutofillMissing: '등록 때 찾아 둔 정보가 아직 없습니다.',
-  storedAutofillRetry: '잠시 뒤 다시 불러오거나 ‘병원 정보 자동 입력’을 실행하세요.',
+  // 병원 정보 자동 입력 — 시스템이 채운 칸의 출처 표시와 선택 항목 표시.
+  autofillBadge: '자동 입력',
+  optionalMark: '(선택)',
+  // 원장 인터뷰 설문 카드.
+  surveyTitle: '원장 인터뷰 설문',
+  surveyHint: '설문 응답을 PDF·DOCX·TXT·HWPX 파일이나 공유 링크로 올리면 진료 철학과 병원 특성의 근거로 자동 반영됩니다.',
+  surveyFileLabel: '설문 파일 올리기',
+  surveyFileSave: '설문 파일 저장',
+  surveyLinkLabel: '설문 링크',
+  surveyLinkSave: '링크 추가',
+  surveyEmpty: '등록된 설문이 없습니다.',
+  surveyUnreadable: '글자를 읽을 수 없는 PDF입니다. 글자가 선택되는 파일이나 링크로 다시 올려 주세요.',
   ackSmsFailed: '원장 안내 문자 미발송 — 직접 연락이 필요합니다.',
   ackSmsUnconfirmed: '원장 안내 문자 수신 불명(재발송 안 함) — 원장에게 직접 확인하세요.',
 } as const

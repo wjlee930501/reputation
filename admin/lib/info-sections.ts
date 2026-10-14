@@ -137,7 +137,7 @@ export const TEXT_SOURCE_TYPE_OPTIONS: Array<{ value: string; label: string }> =
   { value: 'HOMEPAGE', label: '병원 홈페이지' },
   { value: 'NAVER_BLOG', label: '네이버 블로그' },
   { value: 'YOUTUBE', label: '유튜브' },
-  { value: 'INTERVIEW', label: '원장 인터뷰지' },
+  { value: 'INTERVIEW', label: '원장 인터뷰 설문' },
   { value: 'LANDING_PAGE', label: '랜딩 페이지' },
   { value: 'BROCHURE', label: '브로슈어' },
   { value: 'INTERNAL_NOTE', label: '내부 메모' },
@@ -261,4 +261,15 @@ export function processingSummary(run: SourceProcessingRunSummary | null): strin
   if (!run || !run.state || !ACTIVE_RUN_STATES.has(run.state)) return null
   if (run.total_count <= 0) return null
   return `자동 처리 중 ${run.total_count}건`
+}
+
+/** 원장 인터뷰 설문 파일로 받는 형식. 일반 문서 업로드와 같은 목록이다. */
+export const DOCUMENT_UPLOAD_ACCEPT =
+  'application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,.txt,.hwpx,.pdf,.docx'
+
+/** 자료 행의 본문 추출이 비었다고 서버가 표시했는지. 스캔 PDF 같은 경우다. */
+export function sourceTextUnreadable(source: {
+  source_metadata?: { text_extraction?: string } | null
+}): boolean {
+  return source.source_metadata?.text_extraction === 'EMPTY'
 }

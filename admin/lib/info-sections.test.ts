@@ -5,7 +5,9 @@ import {
   INFO_SECTION_ORDER,
   INFO_SECTION_TITLES,
   PHOTO_SOURCE_TYPE_OPTIONS,
+  DOCUMENT_UPLOAD_ACCEPT,
   TEXT_SOURCE_TYPE_OPTIONS,
+  sourceTextUnreadable,
   assetKindForPhotoType,
   brandDefaultsNotice,
   groupNotesByType,
@@ -270,4 +272,12 @@ test('끝났거나 없는 처리는 알릴 것이 없다', () => {
   assert.equal(processingSummary({ state: 'FAILED', total_count: 3 }), null)
   assert.equal(processingSummary({ state: null, total_count: 3 }), null)
   assert.equal(processingSummary({ state: 'RUNNING', total_count: 0 }), null)
+})
+
+test('설문 라벨과 업로드 형식, 빈 PDF 판정', () => {
+  assert.equal(TEXT_SOURCE_TYPE_OPTIONS.find((o) => o.value === 'INTERVIEW')?.label, '원장 인터뷰 설문')
+  assert.match(DOCUMENT_UPLOAD_ACCEPT, /\.hwpx/)
+  assert.match(DOCUMENT_UPLOAD_ACCEPT, /text\/plain/)
+  assert.equal(sourceTextUnreadable({ source_metadata: { text_extraction: 'EMPTY' } }), true)
+  assert.equal(sourceTextUnreadable({ source_metadata: null }), false)
 })
