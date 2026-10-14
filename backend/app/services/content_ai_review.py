@@ -277,6 +277,9 @@ class ContentAiReview:
     # 확신도 부족만으로 생긴 합성 UNCERTAIN을 같은 호출 안에서 한 번 재검수했을 때의 기록.
     escalated_model: str | None = None
     review_rounds: int = 1
+    # 첫 검수 모델이 연속 두 번 장애(UNAVAILABLE)라 다른 공급사의 대체 검수 모델
+    # (`CONTENT_AI_REVIEW_FALLBACK_MODEL`)로 한 번 더 받았을 때 그 장애 모델. 판정 모델은 `model`이다.
+    fallback_from_model: str | None = None
 
     def _typed_findings(self) -> tuple[ContentAiFinding, ...]:
         # Rolling workers/tests may still construct the pre-v2 string shape.
@@ -344,6 +347,12 @@ class ContentAiReview:
             ),
             "escalated_model": self.escalated_model,
             "review_rounds": self.review_rounds,
+            # 대체 검수를 시도한 기록에만 싣는다 — 옛 기록의 모양을 바꾸지 않는다.
+            **(
+                {"fallback_from_model": self.fallback_from_model}
+                if self.fallback_from_model
+                else {}
+            ),
         }
 
 
@@ -393,6 +402,9 @@ def review_from_payload(payload: dict[str, Any]) -> ContentAiReview:
             str(payload["escalated_model"]) if payload.get("escalated_model") else None
         ),
         review_rounds=int(payload.get("review_rounds") or 1),
+        fallback_from_model=(
+            str(payload["fallback_from_model"]) if payload.get("fallback_from_model") else None
+        ),
     )
 
 
@@ -1132,6 +1144,116 @@ async def _provider_review(
         )
 
 
+# 대체 검수로 넘어가는 장애 사유 — D37이 먼저 발행하는 사유와 같다(공급자 오류·형식 오류).
+# 비용 보류·설정 없음은 공급자에게 묻지 않은 상태라 다른 모델로도 풀리지 않는다.
+_FALLBACK_UNAVAILABLE_REASONS = frozenset(
+    {
+        ContentAiReviewUnavailableReason.PROVIDER_ERROR,
+        ContentAiReviewUnavailableReason.INVALID_RESPONSE,
+    }
+)
+
+
+def _fallback_eligible(review: ContentAiReview) -> bool:
+    return (
+        review.status == ContentAiReviewStatus.UNAVAILABLE
+        and bool(review.provider_attempted)
+        and review.unavailable_reason in _FALLBACK_UNAVAILABLE_REASONS
+    )
+
+
+async def _metered_round(
+    *,
+    model: str,
+    attempt_label: str,
+    client: OpenAI,
+    payload: str,
+    hospital: Hospital,
+    content: dict[str, Any],
+    logical_call_id: str,
+    must_use_messages: list[str] | None,
+    attempt_counter: dict[str, int],
+    transport_observer: Callable[[], None] | None,
+) -> ContentAiReview | None:
+    """장애 뒤의 검수 1회. 예산·전송 상한에 막히면 ``None``(직전 장애를 유지한다)."""
+
+    decision = await cost_guard.reserve("content")
+    if not decision.allowed:
+        return None
+    http_attempt = attempt_counter["http_attempt"] + 1
+    try:
+        return await _provider_review(
+            client=client,
+            payload=payload,
+            model=model,
+            hospital=hospital,
+            content=content,
+            decision=decision,
+            logical_call_id=logical_call_id,
+            attempt_id=f"{logical_call_id}:{attempt_label}:http:{http_attempt}",
+            http_attempt=http_attempt,
+            must_use_messages=must_use_messages,
+            attempt_counter=attempt_counter,
+            transport_observer=transport_observer,
+        )
+    except Exception as exc:  # noqa: BROAD_EXCEPT_OK -- 슬롯 전송 상한 등: 직전 장애 기록을 유지한다
+        # 전송 관찰자(슬롯 예산)가 HTTP 전에 거절하면 예약을 쓰지 않은 채 돌려준다.
+        await cost_guard.settle_reservation(decision.receipt, consumed_units=0)
+        logger.warning(
+            "Independent content AI review %s round skipped: %s",
+            attempt_label,
+            type(exc).__name__,
+        )
+        return None
+
+
+async def _review_after_unavailable(
+    first: ContentAiReview,
+    *,
+    client: OpenAI,
+    payload: str,
+    model: str,
+    hospital: Hospital,
+    content: dict[str, Any],
+    logical_call_id: str,
+    must_use_messages: list[str] | None,
+    attempt_counter: dict[str, int],
+    transport_observer: Callable[[], None] | None,
+) -> ContentAiReview:
+    """첫 검수가 장애면: 같은 모델 1회 더 → 그래도 장애면 대체 모델 1회(W7)."""
+
+    common = {
+        "client": client,
+        "payload": payload,
+        "hospital": hospital,
+        "content": content,
+        "logical_call_id": logical_call_id,
+        "must_use_messages": must_use_messages,
+        "attempt_counter": attempt_counter,
+        "transport_observer": transport_observer,
+    }
+    second = await _metered_round(model=model, attempt_label="repeat", **common)
+    if second is None:
+        return first
+    if not _fallback_eligible(second):
+        # 두 번째에 판정을 받았다(PASS·REVISE) 또는 예산 상태다 — 그대로 쓴다.
+        return second
+    fallback_model = (settings.CONTENT_AI_REVIEW_FALLBACK_MODEL or "").strip()
+    if not fallback_model or fallback_model == model:
+        return second
+    third = await _metered_round(model=fallback_model, attempt_label="fallback", **common)
+    if third is None:
+        # 대체 검수를 사지 못했다(비용 보류·슬롯 전송 상한) — 시도하지 않은 기록이다.
+        return second
+    logger.info(
+        "Independent content AI review fallback %s -> %s: %s",
+        model,
+        fallback_model,
+        third.status.value,
+    )
+    return replace(third, fallback_from_model=model, review_rounds=3)
+
+
 async def review_generated_content(
     *,
     hospital: Hospital,
@@ -1158,7 +1280,9 @@ async def review_generated_content(
 
     first_model = model or settings.CLAUDE_MODEL_REVIEW
 
-    decision = cost_decision or await cost_guard.reserve("content")
+    decision = cost_decision or await cost_guard.reserve(
+        "content", hospital_id=getattr(hospital, "id", None)
+    )
     if not decision.allowed:
         return _unavailable_review(
             content=content,
@@ -1220,6 +1344,23 @@ async def review_generated_content(
         attempt_counter=counter,
         transport_observer=transport_observer,
     )
+    if _fallback_eligible(first):
+        # W7: 첫 검수 모델의 장애가 일시적일 수 있으므로 같은 모델로 한 번 더 받고(연속 두 번째),
+        # 그래도 장애면 다른 공급사의 대체 검수 모델로 한 번 받는다. 대체 모델의 판정은 같은
+        # 프롬프트·스키마·후보 hash에 묶인 진짜 판정이다(PASS·REVISE·HARD). 대체 모델도 장애일 때만
+        # 저장된 UNAVAILABLE이 D37(먼저 발행·사후 검수)로 이어진다.
+        return await _review_after_unavailable(
+            first,
+            client=client,
+            payload=payload,
+            model=first_model,
+            hospital=hospital,
+            content=content,
+            logical_call_id=logical_call_id,
+            must_use_messages=must_use_messages,
+            attempt_counter=counter,
+            transport_observer=transport_observer,
+        )
     if not first.escalation_eligible:
         return first
 
@@ -1231,7 +1372,9 @@ async def review_generated_content(
     escalated_model = settings.CLAUDE_MODEL_REVIEW
     if not escalated_model:
         return first
-    escalation_decision = await cost_guard.reserve("content")
+    escalation_decision = await cost_guard.reserve(
+        "content", hospital_id=getattr(hospital, "id", None)
+    )
     if not escalation_decision.allowed:
         # 예산이 막으면 첫 판정을 그대로 유지한다(차단은 풀리지 않는다).
         return first

@@ -443,6 +443,7 @@ from app.services.site_revalidation_control import (
 from app.services.source_processing_runs import (
     SOURCE_PROCESSING_OPERATION,
     SOURCE_PROCESSING_RETRY_DELAY_SECONDS,
+    SOURCE_PROCESSING_VERSION,
     processing_claim,
     processing_input_hash,
     run_dispatch_matches,
@@ -973,7 +974,8 @@ def _escalate_exhausted_correction(
         summary[AUTO_CORRECTION_KEY] = exhausted_state
         item.essence_check_summary = summary
         db.commit()
-    if topic_swap_budget_left(item) and not swap_requested:
+    # Critical 원인(교정 상한을 다 쓴 사실·안전 차단)이라 교체를 두 번까지 쓴다(O5, W6).
+    if topic_swap_budget_left(item, critical=True) and not swap_requested:
         deadline = next_recovery_deadline(
             {
                 "reason": code,
@@ -3444,6 +3446,8 @@ async def _metered_process_source_asset(
         category="content",
         count=reserved_units,
         reservation_id=reservation_id,
+        lane=cost_guard.LANE_EVIDENCE,
+        hospital_id=source.hospital_id,
     )
     if not decision.allowed:
         raise _SourceProcessingCostBlocked(
@@ -3464,6 +3468,43 @@ async def _metered_process_source_asset(
             decision.receipt,
             consumed_units=min(reserved_units, counter.count if counter is not None else 0),
         )
+
+
+SOURCE_EVIDENCE_UNCHANGED = "UNCHANGED"
+
+
+def _source_evidence_is_current(db, source, current_content_hash: str) -> bool:
+    """마지막으로 성공한 근거 추출이 지금 본문과 같은 본문을 읽었는가.
+
+    정본은 추출 결과를 쓸 때 남기는 `extraction_content_hash`다. 그 표지가 없는 옛 행은 PROCESSED
+    상태와 행의 `content_hash`가 근거다 — 본문을 바꾸는 경로(수집·PATCH)는 모두 상태를 PENDING으로
+    되돌리므로 PROCESSED면 노트가 지금 본문에서 나왔다. PROCESSED가 아닌 행은 노트가 남아 있고 처리
+    시각이 있을 때만 믿는다(PATCH는 노트를 지우고 처리 시각을 비운다). 처리 판(`SOURCE_PROCESSING_VERSION`)이
+    바뀌었으면 다시 추출한다.
+    """
+
+    if not current_content_hash or not (source.raw_text or "").strip():
+        return False
+    metadata = source.source_metadata or {}
+    if int(metadata.get("extraction_processing_version") or SOURCE_PROCESSING_VERSION) != int(
+        SOURCE_PROCESSING_VERSION
+    ):
+        return False
+    extracted_hash = metadata.get("extraction_content_hash")
+    if source.status == SourceStatus.PROCESSED:
+        return (extracted_hash or source.content_hash) == current_content_hash
+    if extracted_hash != current_content_hash or source.processed_at is None:
+        return False
+    if source.status not in (SourceStatus.PENDING, SourceStatus.ERROR):
+        return False
+    return (
+        db.scalar(
+            select(HospitalSourceEvidenceNote.id)
+            .where(HospitalSourceEvidenceNote.source_asset_id == source.id)
+            .limit(1)
+        )
+        is not None
+    )
 
 
 def _claim_source_processing(
@@ -3492,6 +3533,18 @@ def _claim_source_processing(
             and extraction_input_hash == current_input_hash
         ):
             return None, SourceStatus.PROCESSED.value, current_input_hash
+        if _source_evidence_is_current(db, source, current_content_hash):
+            # 본문(제목·주소·원문·운영자 메모)이 마지막 추출 때와 같다 — 메타데이터(수집 시각 등)만
+            # 바뀌었다. 근거 노트를 그대로 두고 공급자 호출 없이 끝낸다(W2, 10/13 재추출 107회).
+            metadata = without_processing_claim(source.source_metadata)
+            metadata["extraction_input_hash"] = current_input_hash
+            metadata["extraction_content_hash"] = current_content_hash
+            source.source_metadata = metadata
+            source.content_hash = current_content_hash
+            source.status = SourceStatus.PROCESSED
+            source.process_error = None
+            db.commit()
+            return None, SOURCE_EVIDENCE_UNCHANGED, current_input_hash
         if not source.raw_text or not source.raw_text.strip():
             raise ValueError("자료 본문이 없는 URL 전용 자료는 처리할 수 없습니다.")
         existing_claim = processing_claim(source.source_metadata)
@@ -3576,6 +3629,8 @@ def _write_source_processing_result(
         metadata = without_processing_claim(source.source_metadata)
         metadata["extraction_coverage"] = source_processing_coverage(source.raw_text)
         metadata["extraction_input_hash"] = input_hash
+        metadata["extraction_content_hash"] = current_content_hash
+        metadata["extraction_processing_version"] = SOURCE_PROCESSING_VERSION
         source.source_metadata = metadata
         source.status = SourceStatus.PROCESSED
         source.process_error = None
@@ -3713,7 +3768,12 @@ def _complete_source_processing_run_item(
         run.request_payload = payload
         if outcome == SourceStatus.PROCESSED.value:
             run.success_count = int(run.success_count or 0) + 1
-        elif outcome in {"NOT_FOUND", SourceStatus.EXCLUDED.value, "SUPERSEDED"}:
+        elif outcome in {
+            "NOT_FOUND",
+            SourceStatus.EXCLUDED.value,
+            "SUPERSEDED",
+            SOURCE_EVIDENCE_UNCHANGED,
+        }:
             run.skipped_count = int(run.skipped_count or 0) + 1
         else:
             run.failure_count = int(run.failure_count or 0) + 1
@@ -5764,9 +5824,14 @@ def generate_claimed_content_item(
         try:
             run = _resolve_claimed_item_run(db, self, item)
             recorder = GenerationItemRecorder(db, run)
-            state, code, message = _run_generation_item(
-                db, recorder, item, hospital, notify=notify
-            )
+            # 예정일 D+3 이내 슬롯은 일정 경로 예산(schedule lane)을 쓴다(W1).
+            with cost_guard.cost_lane(
+                cost_guard.generation_cost_lane(getattr(item, "scheduled_date", None)),
+                hospital_id=getattr(hospital, "id", None),
+            ):
+                state, code, message = _run_generation_item(
+                    db, recorder, item, hospital, notify=notify
+                )
         except BaseException:
             # 예외로 빠져나온 실행의 미커밋 쓰기는 버린다. 깨진 트랜잭션을 그대로 두면
             # 아래 해제 UPDATE도 실패해 claim이 TTL까지 남는다. rollback 자체가 실패해도
@@ -6391,11 +6456,12 @@ def regenerate_content_item(self, content_id: str):
     item_id = uuid.UUID(content_id)
     if explicit_run_context(self) is None:
         require_dispatch(self, "regenerate-content", str(item_id))
-    with SyncSessionLocal() as db:
+    with SyncSessionLocal() as db, cost_guard.cost_lane(cost_guard.LANE_ADHOC) as cost_scope:
         item = db.get(ContentItem, item_id)
         if not item:
             finish_explicit_run(db, self, item_id, OperationRunState.CANCELLED)
             return
+        cost_scope.hospital_id = str(item.hospital_id)
         if explicit_run_context(self) is not None and not explicit_run_matches(
             db, self, item_id, item.hospital_id
         ):
@@ -6760,7 +6826,7 @@ def recertify_published_content_image(self, content_id: str):
     item_id = uuid.UUID(content_id)
     if explicit_run_context(self) is None:
         require_dispatch(self, "recertify-published-image", str(item_id))
-    with SyncSessionLocal() as db:
+    with SyncSessionLocal() as db, cost_guard.cost_lane(cost_guard.LANE_POST_PUBLISH):
         # 유료 재검수 구간 전체를 이 행 잠금 안에서 돈다. 같은 (글, 판)에 PATCH가 건
         # 기본 키 실행과 sweep의 재실행이 겹치면 뒤에 온 쪽은 여기서 기다렸다가 이미
         # 복구된 인증을 보고 돈을 쓰지 않고 끝난다. update_content도 같은 행을
@@ -6949,12 +7015,13 @@ def recertify_published_content_image(self, content_id: str):
 def generate_content_image(self, content_id: str):
     """Regenerate only the cover image while preserving operator-reviewed text."""
     item_id = uuid.UUID(content_id)
-    with SyncSessionLocal() as db:
+    with SyncSessionLocal() as db, cost_guard.cost_lane(cost_guard.LANE_ADHOC) as cost_scope:
         notify_failure = not _is_auto_image_regeneration_run(db, self)
         item = db.get(ContentItem, item_id)
         if not item:
             finish_explicit_run(db, self, item_id, OperationRunState.CANCELLED)
             return
+        cost_scope.hospital_id = str(item.hospital_id)
         if item.status in (
             ContentStatus.PUBLISHED,
             ContentStatus.CANCELLED,

@@ -69,8 +69,9 @@ class FakeRedis:
     async def eval(self, _script, _numkeys, *keys_and_args):
         await self._guard()
         if _script == cost_guard._RESERVE_WITH_RECEIPT_SCRIPT:
+            # lane 키·인자(W1)는 실제 Redis 통합 테스트가 본다 — 이 가짜는 카테고리 판정만 흉내 낸다.
             daily_key, monthly_key, receipt_key = keys_and_args[:3]
-            argv = keys_and_args[3:]
+            argv = keys_and_args[_numkeys:]
             count, daily_limit, monthly_limit = map(int, argv[:3])
             category, daily_period, monthly_period = argv[5:8]
             existing = self.store.get(receipt_key)

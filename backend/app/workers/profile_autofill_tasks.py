@@ -181,7 +181,8 @@ async def _autofill_once(
             return {"status": "ALREADY_RUNNING"}
 
     try:
-        decision = await cost_guard.check_and_increment("content")
+        with cost_guard.cost_lane(cost_guard.LANE_EVIDENCE, hospital_id=hospital_id):
+            decision = await cost_guard.check_and_increment("content")
         if not decision.allowed:
             await _release_claim(run_id, owner)
             return {"status": "COST_BLOCKED"}

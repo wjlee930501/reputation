@@ -897,7 +897,9 @@ async def propose_sentence_corrections(
 
     if not targets:
         return {}
-    decision = await cost_guard.check_and_increment("content")
+    decision = await cost_guard.check_and_increment(
+        "content", hospital_id=getattr(hospital, "id", None)
+    )
     if not decision.allowed:
         raise CorrectionProviderUnavailable("cost_blocked")
     if not settings.OPENROUTER_API_KEY:

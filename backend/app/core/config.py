@@ -64,6 +64,7 @@ _OPENROUTER_MODEL_FIELDS = (
     "OPENAI_MODEL_QUERY",
     "OPENAI_MODEL_PARSE",
     "GEMINI_MODEL",
+    "CONTENT_AI_REVIEW_FALLBACK_MODEL",
 )
 
 
@@ -554,7 +555,10 @@ class Settings(BaseSettings):
     # 0이면 그 단계를 끈다.
     CONTENT_AUTO_CORRECTION_MAX_PASSES: int = 2
     CONTENT_AUTO_CORRECTION_MAX_REREVIEWS: int = 2
-    CONTENT_AUTO_TOPIC_SWAP_MAX: int = 1
+    # 같은 슬롯의 자동 주제 교체 상한. Critical 원인(교정 상한을 다 쓴 사실·안전 차단)은 이 값까지,
+    # 그 밖의 원인(표본 소진·저장 본문 수리 소진 등)은 min(1, 이 값)까지다(2026-10-14 O5, W6).
+    # 새 주제마다 작가·검수·본문 전송 예산을 새로 받고 이미지 전송 상한은 슬롯 단위 그대로다.
+    CONTENT_AUTO_TOPIC_SWAP_MAX: int = 2
     # 진료비·병원 선택 글의 참고자료 보류(사람이 정함, `operator_decides`)도 주제 교체 계단에
     # 넣는가. 켜면 수기 목록 문서가 있는 의료 주제의 다른 측정 질문으로 한 번 바꿔 쓴다.
     # 기본은 꺼짐 — 계약(CLAUDE.md "곧바로 OPERATOR_REQUIRED(사람이 정함)") 변경이라 대표 결정 뒤에 켠다.
@@ -575,6 +579,11 @@ class Settings(BaseSettings):
     # 같은 원고 후보의 독립 검수가 공급자 장애·잘린 응답으로 연속 실패할 때 자동 재검수를
     # 사는 최대 횟수(KST 날을 넘어 누적). 닿으면 사람의 일(OPERATOR_REQUIRED)로 넘긴다.
     CONTENT_AI_REVIEW_UNAVAILABLE_MAX_RETRIES: int = 6
+    # 독립 검수가 같은 후보에 연속 두 번 장애(공급자 오류·형식 오류)면 한 번 더 받는 **다른 공급사**의
+    # 대체 검수 모델(W7, 2026-10-14 O4). 같은 프롬프트·스키마이며 그 판정은 후보 hash에 묶인 진짜
+    # 판정이다(`ai_review.model`에 남는다). 대체 모델도 장애일 때만 D37(먼저 발행·사후 검수)이다.
+    # 측정 답변 모델과 같은 최신 정식 OpenAI 모델을 쓴다. 비우면 대체 검수를 끈다. 비용 카테고리는 content.
+    CONTENT_AI_REVIEW_FALLBACK_MODEL: str = "openai/gpt-6-luna"
     # 공개된 글의 미확인 사후 검수 표본을 하루에 독립 AI 검수하는 최대 편수(하루 한 번 실행이라
     # 실행당 상한이기도 하다). 0이면 스윕을 끈다. 표본은 매달 병원별 첫 글과 공개 뒤 고친 글이라
     # 밀린 표본(2026-10 기준 95편)을 다 처리하면 한 달에 10~20편 수준이다.
@@ -632,6 +641,21 @@ class Settings(BaseSettings):
     COST_GUARD_DAILY_LEADGEN_CALLS: int = 500
     # 월간: 정상분 360/일 × 30일 = 10,800 + 여유
     COST_GUARD_MONTHLY_LEADGEN_CALLS: int = 12000
+    # content 카테고리 안의 lane(Full-Automatic W1, O1 기본값). 카테고리 상한은 그대로이고 lane은
+    # 그 안의 하위 예산이다. `schedule`(예정일 D+3 이내 슬롯의 생성 경로)은 lane 상한이 없고 일 상한 중
+    # SCHEDULE_RESERVE건을 혼자 쓴다 — 나머지 lane은 `일 상한 − 예약`을 넘지 못하고, 월 사용이
+    # 월 상한의 NON_SCHEDULE_MONTHLY_PAUSE_RATIO를 넘으면 멈춘다. 0은 그 lane 상한 없음.
+    COST_GUARD_CONTENT_LANES_ENABLED: bool = True
+    COST_GUARD_CONTENT_SCHEDULE_RESERVE: int = 150
+    COST_GUARD_CONTENT_NON_SCHEDULE_MONTHLY_PAUSE_RATIO: float = 0.85
+    COST_GUARD_CONTENT_POST_PUBLISH_DAILY: int = 90
+    COST_GUARD_CONTENT_POST_PUBLISH_MONTHLY: int = 1200
+    COST_GUARD_CONTENT_EVIDENCE_DAILY: int = 80
+    COST_GUARD_CONTENT_EVIDENCE_MONTHLY: int = 600
+    COST_GUARD_CONTENT_ADHOC_DAILY: int = 40
+    COST_GUARD_CONTENT_ADHOC_MONTHLY: int = 400
+    # 병원 하나가 일정 외 lane 전체에서 하루에 쓸 수 있는 호출(온보딩 병원 1곳이 일 예산의 32%를 쓴 10/13).
+    COST_GUARD_CONTENT_NON_SCHEDULE_HOSPITAL_DAILY: int = 30
 
     # Slack
     SLACK_WEBHOOK_URL: str = ""

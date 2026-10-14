@@ -1,3 +1,4 @@
+import json
 from datetime import UTC, date, datetime, timedelta
 
 import pytest
@@ -1046,17 +1047,60 @@ def test_swapped_topic_can_buy_a_writer_after_the_old_topic_spent_all_six() -> N
     assert reserved["budget"]["acquisitions"][-1]["status"] == "RESERVED"
 
 
-def test_swapped_topic_has_its_own_six_and_the_slot_lifetime_stays_twelve() -> None:
+def test_swapped_topic_has_its_own_six_and_the_slot_lifetime_stays_eighteen() -> None:
+    # W6(2026-10-14 O5): 주제는 처음 것을 합쳐 셋까지, 주제마다 작가 6회를 새로 받는다.
     attempt = _buy(
         fresh_generation_attempt(topic_id="topic-a"), kind="WRITER", topic="topic-a", count=6
     )
     attempt = record_topic_swap(attempt, from_topic_id="topic-a", to_topic_id="topic-b")
     attempt = _buy(attempt, kind="WRITER", topic="topic-b", count=6)
-
-    budget = read_generation_budget(attempt)
-    assert budget.writer_results == LIFETIME_WRITER_RESULT_LIMIT == 12
     with pytest.raises(GenerationBudgetExceeded, match="WRITER_RESULTS_EXHAUSTED"):
         reserve_acquisition(attempt, acquisition_id="writer:ctx:topic-b:7", kind="WRITER")
+    attempt = record_topic_swap(attempt, from_topic_id="topic-b", to_topic_id="topic-c")
+    attempt = _buy(attempt, kind="WRITER", topic="topic-c", count=6)
+
+    budget = read_generation_budget(attempt)
+    assert budget.writer_results == LIFETIME_WRITER_RESULT_LIMIT == 18
+    assert (budget.topics, budget.topic_swaps) == (("topic-a", "topic-b", "topic-c"), 2)
+    with pytest.raises(GenerationBudgetExceeded, match="WRITER_RESULTS_EXHAUSTED"):
+        reserve_acquisition(attempt, acquisition_id="writer:ctx:topic-c:7", kind="WRITER")
+    # 세 번째 교체는 없다 — 예산 기록이 받아 주지 않는다.
+    with pytest.raises(GenerationBudgetExceeded, match="TOPIC_SWAP_EXHAUSTED"):
+        record_topic_swap(attempt, from_topic_id="topic-c", to_topic_id="topic-d")
+
+
+def test_second_swap_keeps_the_slot_image_transport_cap() -> None:
+    attempt = fresh_generation_attempt(topic_id="topic-a")
+    attempt = _buy(attempt, kind="IMAGE", topic="topic-a", count=4, transports=3)
+    attempt = record_topic_swap(attempt, from_topic_id="topic-a", to_topic_id="topic-b")
+    attempt = record_topic_swap(attempt, from_topic_id="topic-b", to_topic_id="topic-c")
+    reserve_acquisition(attempt, acquisition_id="writer:ctx:topic-c:0", kind="WRITER")
+    with pytest.raises(GenerationBudgetExceeded, match="IMAGE_HTTP_ATTEMPTS_EXHAUSTED"):
+        reserve_acquisition(attempt, acquisition_id="image:new", kind="IMAGE")
+
+
+def test_raising_the_topic_limit_keeps_existing_records_valid() -> None:
+    """상한 상향이지 리셋이 아니다 — 교체 한 번을 쓴 옛 기록이 LEGACY_SPEND_UNKNOWN이 되지 않는다."""
+
+    # 운영 표본 모양: 옛 주제 6회 소진 → 교체 1회 → 새 주제 6회 소진(옛 상한 TOPIC_LIMIT=2 시절 기록).
+    attempt = _buy(
+        fresh_generation_attempt(topic_id="topic-a"), kind="WRITER", topic="topic-a", count=6
+    )
+    attempt = record_topic_swap(attempt, from_topic_id="topic-a", to_topic_id="topic-b")
+    attempt = _buy(attempt, kind="WRITER", topic="topic-b", count=6)
+    stored = json.loads(json.dumps(attempt))
+
+    budget = read_generation_budget(stored)
+    assert (budget.writer_results, budget.topic_swaps, len(budget.topics)) == (12, 1, 2)
+    # 그 기록에 두 번째 교체를 더할 수 있다.
+    record_topic_swap(stored, from_topic_id="topic-b", to_topic_id="topic-c")
+
+
+def test_topic_list_past_the_new_limit_is_still_unknown_spend() -> None:
+    attempt = fresh_generation_attempt(topic_id="topic-a")
+    attempt["budget"]["topics"] = ["t1", "t2", "t3", "t4"]
+    with pytest.raises(GenerationBudgetUnknown):
+        read_generation_budget(attempt)
 
 
 def test_swap_reopens_reviewer_and_text_transport_but_not_image_transport() -> None:
