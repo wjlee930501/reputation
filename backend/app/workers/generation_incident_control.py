@@ -57,7 +57,11 @@ from app.workers.generation_run_control import (
     safe_generation_rejection_message,
 )
 from app.workers.nightly_generation_batch import generation_claim_is_active
-from app.workers.noncritical_renewal import renewal_owns_blocker, stored_renewal_deadline
+from app.workers.noncritical_renewal import (
+    operator_release_renewal_wait,
+    renewal_owns_blocker,
+    stored_renewal_deadline,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -336,6 +340,8 @@ def operator_retry_releases(item) -> bool:
     return (
         attempt.get("reason") == "CONTENT_NOT_GENERATED"
         or attempt.get("retry_class") == GenerationRetryClass.ENVIRONMENT_RECOVERABLE.value
+        # 환경 원인이 일일 갱신 대기로 바뀐 기록 — 태스크의 해제 조건과 같다(2026-10-15).
+        or operator_release_renewal_wait(attempt)
     )
 
 

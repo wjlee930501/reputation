@@ -358,6 +358,20 @@ def renewal_wait_fields(
     }
 
 
+def operator_release_renewal_wait(attempt: Mapping[str, Any]) -> bool:
+    """운영자 “작업 다시 시도”가 이 갱신 대기 기록의 억제를 푸는가.
+
+    환경 원인(공급자 장애·원고 미생성·비용 보류)이 갱신 대기로 바뀐 기록은 종전 환경 실패 기록처럼
+    운영자 재시도가 억제를 푼다(다음 갱신 시각 전이어도). 해제는 억제만 걷고 예산 원장은 그대로라,
+    살 수 있는 예산(정상 상한 또는 열린 갱신 구간)이 없으면 공급자 호출 없이 다시 갱신 대기로 끝난다.
+    표본 실패에서 온 갱신 대기는 종전 표본 기록처럼 풀지 않는다.
+    """
+
+    return bool(attempt.get(DAILY_RENEWAL_KEY)) and (
+        attempt.get("reason") in _RENEWAL_MODE_ENVIRONMENT_CODES
+    )
+
+
 def renewal_owns_blocker(code: str, item: Any) -> bool:
     """이 생성 차단을 일일 갱신이 소유하는가 — 사고는 사람의 일이 아니라 RETRYING이다."""
 
@@ -405,6 +419,7 @@ __all__ = [
     "RENEWAL_EXCLUDED_KEY",
     "record_is_renewable",
     "regular_swap_count",
+    "operator_release_renewal_wait",
     "renewal_sessions",
     "renewal_wait_fields",
     "stored_renewal_deadline",
