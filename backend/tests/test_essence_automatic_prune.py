@@ -97,7 +97,18 @@ def _positive_text(payload) -> str:
         "treatment_narratives",
         "local_context",
     ):
-        parts.extend(essence_engine._iter_field_texts(payload.get(field)))
+        value = payload.get(field)
+        # 근거 노트 id(무작위 UUID)는 문장이 아니다 — 숫자 조합이 운영 사실 패턴에 우연히 걸린다.
+        if isinstance(value, list):
+            value = [
+                {k: v for k, v in item.items() if k != "evidence_note_ids"}
+                if isinstance(item, dict)
+                else item
+                for item in value
+            ]
+        elif isinstance(value, dict):
+            value = {k: v for k, v in value.items() if k != "evidence_note_ids"}
+        parts.extend(essence_engine._iter_field_texts(value))
     return " ".join(parts)
 
 

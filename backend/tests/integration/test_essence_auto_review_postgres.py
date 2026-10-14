@@ -453,6 +453,11 @@ def test_survey_upload_resynthesizes_after_the_debounce_with_verbatim_must_use(p
         (2, PhilosophyStatus.APPROVED, True),
     ]
     assert rows[1].must_use_messages == [SURVEY_SENTENCE]
+    # 소비 단계(작가 요구·검수 면제)도 현재 정책 판의 원문 문구를 그대로 받는다.
+    from app.services.must_use_verbatim import must_use_requirement
+
+    assert must_use_requirement(rows[1]).messages == (SURVEY_SENTENCE,)
+    assert rows[1].synthesis_metadata["policy_version"]
     assert rows[1].synthesis_metadata["must_use"]["mode"] == "SURVEY_VERBATIM"
     assert rows[1].synthesis_metadata["must_use"]["items"][0]["evidence_note_ids"] == [
         str(survey_note.id)

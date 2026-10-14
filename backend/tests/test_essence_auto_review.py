@@ -13,10 +13,12 @@ from app.services.essence_auto_review import (
     TRIGGER_FALLBACK_UPGRADE,
     TRIGGER_NO_ESSENCE,
     TRIGGER_PENDING_INPUTS_PROCESSED,
+    TRIGGER_POLICY_UPGRADE,
     TRIGGER_PROFILE_FACTS_CHANGED,
     TRIGGER_SURVEY_CHANGED,
     partition_automatic_inputs,
 )
+from app.services.essence_claims import AUTOMATIC_ESSENCE_POLICY_VERSION
 from app.services.knowledge_changes import AUTHORITY_CHANGE_FIELD
 from app.services.profile_facts_source import (
     PROFILE_FACTS_ACTOR,
@@ -58,7 +60,15 @@ def _base(*, automatic=True, approved_at=None, source_ids=(), gaps=(), **metadat
         approved_at=approved_at or NOW - timedelta(days=1),
         source_asset_ids=[str(value) for value in source_ids],
         unsupported_gaps=list(gaps),
-        synthesis_metadata=({"mode": AUTOMATIC_ESSENCE_MODE, **metadata} if automatic else {}),
+        synthesis_metadata=(
+            {
+                "mode": AUTOMATIC_ESSENCE_MODE,
+                "policy_version": AUTOMATIC_ESSENCE_POLICY_VERSION,
+                **metadata,
+            }
+            if automatic
+            else {}
+        ),
     )
 
 
@@ -291,3 +301,17 @@ def test_terminal_marker_is_server_owned() -> None:
 
     assert AUTO_RECOVERY_TERMINAL_GAP_FIELD == "automatic_recovery_terminal"
     assert AUTO_RECOVERY_TERMINAL_GAP_FIELD in SERVER_OWNED_GAP_FIELDS
+
+
+def test_an_automatic_base_built_under_an_older_policy_is_rebuilt() -> None:
+    """정리 정책이 바뀌면 옛 정책 자동 판은 다음 정기 조정에서 현재 규칙으로 다시 만든다(T7)."""
+
+    old = _base(policy_version="2026-10-14.1")
+    missing = _base()
+    missing.synthesis_metadata.pop("policy_version")
+    assert _trigger(old, []) == TRIGGER_POLICY_UPGRADE
+    assert _trigger(missing, []) == TRIGGER_POLICY_UPGRADE
+    assert _trigger(_base(), []) is None
+    # 옛 승인본(레거시)은 정책 판과 무관하다.
+    assert _trigger(_base(automatic=False), []) is None
+

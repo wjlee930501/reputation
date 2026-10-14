@@ -81,6 +81,12 @@ _TEMPLATE_PREFIXES = (
     "원문 톤을 유지합니다:",
 )
 
+#: 자동 판을 만든 정리 정책의 판. 이 값이 바뀌면 옛 정책으로 만든 자동 판은 다음 정기 조정에서
+#: 다시 만들어지고(T7), 그 전에도 소비 단계(`must_use_verbatim`·공개 소개)가 현재 규칙으로 다시 거른다.
+AUTOMATIC_ESSENCE_POLICY_VERSION = "2026-10-14.3"
+#: 원문 문장만 담은 자동 판의 필수 문구 방식(`essence_engine`의 MUST_USE_MODE_*와 같은 값).
+VERBATIM_MUST_USE_MODES = frozenset({"SURVEY_VERBATIM", "SOURCE_VERBATIM"})
+
 GENERAL_SUPPORT_RATIO = 0.5
 CLAIM_SUPPORT_RATIO = 0.8
 
@@ -119,12 +125,43 @@ def without_template_prefix(text: str) -> str:
     return stripped
 
 
+# 띄어쓰기·하이픈·조사 변형을 접은 글(`_folded`)에서 찾는 주장 꼴. "통증이 없습니다"·"부작용 걱정
+# 없는"·"한 번으로 끝"·"pain-free"·"zero side effects"·"single session"이 모두 같은 판정을 받는다.
+_FOLDED_CLAIM_PATTERNS = (
+    re.compile(
+        r"(?:통증|아픔|부작용|흉터|회복기간|다운타임|붓기|멍|재발|출혈|절개)"
+        r"(?:이|가|은|는|도|의|에|에대한|걱정|부담|염려|걱정이|부담이|위험|위험이)*"
+        r"(?:없|제로|zero|0)"
+    ),
+    re.compile(r"무통|무절개|무흉터|무부작용|노다운타임"),
+    re.compile(
+        r"(?:1|한|단한|단1)(?:회|번|차례)(?:만에|만으로|으로|로|에|만)?(?:끝|완료|해결|완성|충분|끝나|마무리)"
+    ),
+    re.compile(
+        r"painfree|painless|withoutpain|nopain|zerosideeffect|nosideeffect|sideeffectfree|"
+        r"nodowntime|zerodowntime|singlesession|onesession|onevisit|singlevisit|guarantee|"
+        r"noscar|scarless|norecovery|cure|eliminat|heal|efficac|effective"
+    ),
+)
+
+
+def _folded(text: str) -> str:
+    return re.sub(r"[\s\-_·・/]+", "", (text or "").lower())
+
+
 def claim_words(text: str) -> list[str]:
-    """문장에 든 의료 효능·결과·보장·비교 어휘와 수치(`MEDICAL_CLAIM_LEXICON`)."""
+    """문장에 든 의료 효능·결과·보장·비교 어휘와 수치(`MEDICAL_CLAIM_LEXICON`).
+
+    원문과 함께 띄어쓰기·하이픈을 접은 글에서도 찾는다 — 표기 변형이 판정을 피하지 못하게 한다.
+    """
 
     lowered = (text or "").lower()
-    found = [word for word in MEDICAL_CLAIM_LEXICON if word in lowered]
+    folded = _folded(text)
+    found = [
+        word for word in MEDICAL_CLAIM_LEXICON if word in lowered or _folded(word) in folded
+    ]
     found.extend(match.group(0) for match in _QUANTITY.finditer(text or ""))
+    found.extend(match.group(0) for pattern in _FOLDED_CLAIM_PATTERNS for match in pattern.finditer(folded))
     return found
 
 
@@ -136,7 +173,10 @@ def has_critical_terms(*texts: str | None) -> bool:
     """의료 주장 어휘나 안전 어휘가 하나라도 들었는가(필수 문구 지적 면제의 fail-closed 판정)."""
 
     joined = " ".join(text for text in texts if text).lower()
-    return bool(claim_words(joined)) or any(term in joined for term in SAFETY_TERMS)
+    folded = _folded(joined)
+    return bool(claim_words(joined)) or any(
+        term in joined or _folded(term) in folded for term in SAFETY_TERMS
+    )
 
 
 def normalize_sentence(text: str) -> str:
@@ -220,7 +260,31 @@ def split_sentences(text: str) -> list[str]:
     return [part.strip() for part in _SENTENCE_END.split(text or "") if part.strip()]
 
 
+def automatic_version_verbatim_texts(philosophy: object) -> set[str] | None:
+    """자동 판이면 현재 정책으로 원문 대조를 마친 필수 문구 집합, 레거시 판이면 None.
+
+    옛 정책 판·원문 방식이 아닌 판은 빈 집합이다 — 소비 단계가 그 판의 필수 문구를 쓰지 않는다.
+    """
+
+    metadata = getattr(philosophy, "synthesis_metadata", None) or {}
+    if not isinstance(metadata, dict) or metadata.get("mode") != "AUTOMATIC":
+        return None
+    must_use = metadata.get("must_use") if isinstance(metadata.get("must_use"), dict) else {}
+    if (
+        metadata.get("policy_version") != AUTOMATIC_ESSENCE_POLICY_VERSION
+        or must_use.get("mode") not in VERBATIM_MUST_USE_MODES
+    ):
+        return set()
+    return {
+        normalize_sentence(item.get("text"))
+        for item in must_use.get("items") or []
+        if isinstance(item, dict) and item.get("text")
+    }
+
+
 __all__ = (
+    "AUTOMATIC_ESSENCE_POLICY_VERSION",
+    "automatic_version_verbatim_texts",
     "CLAIM_SUPPORT_RATIO",
     "GENERAL_SUPPORT_RATIO",
     "claim_is_supported",

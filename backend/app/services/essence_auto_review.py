@@ -20,6 +20,7 @@ Essence는 사람·AI 검수자의 승인을 기다리지 않는다. 마케터�
 - T4 판이 입력으로 쓴 병원 정보(PROFILE_FACTS)가 바뀌었다.
 - T5 판을 만들 때 아직 처리 중이던 자료가 처리됐다(한 번 흡수).
 - T6 공급자 장애로 결정적 폴백 판이 적용됐다 — 24시간 뒤 한 번 다시 합성한다.
+- T7 옛 정리 정책(`AUTOMATIC_ESSENCE_POLICY_VERSION`)으로 만든 자동 판 — 현재 규칙으로 다시 만든다.
 
 홈페이지·블로그의 일반 drift는 다시 합성하지 않는다(stable base — 공개 글의 판 교체 churn 방지).
 이 컬럼 이전의 승인본(`synthesis_metadata`가 빈 판)은 그 판 승인 뒤 처리된 설문(T3)·근거 철회(T2)가
@@ -57,6 +58,7 @@ from app.services.content_provenance import (
 )
 from app.services.content_publication import apply_essence_revalidation
 from app.services.enum_values import enum_value
+from app.services.essence_claims import AUTOMATIC_ESSENCE_POLICY_VERSION
 from app.services.essence_engine import (
     ESSENCE_STATUS_ALIGNED,
     SYNTHESIS_MODE_DETERMINISTIC,
@@ -113,6 +115,7 @@ TRIGGER_SURVEY_CHANGED = "T3_SURVEY_CHANGED"
 TRIGGER_PROFILE_FACTS_CHANGED = "T4_PROFILE_FACTS_CHANGED"
 TRIGGER_PENDING_INPUTS_PROCESSED = "T5_PENDING_INPUTS_PROCESSED"
 TRIGGER_FALLBACK_UPGRADE = "T6_FALLBACK_UPGRADE"
+TRIGGER_POLICY_UPGRADE = "T7_POLICY_UPGRADE"
 #: 생성이 멈춰 있는 트리거 — 비용 보류여도 결정적 폴백 판을 바로 적용한다.
 _GENERATION_BLOCKING_TRIGGERS = frozenset({TRIGGER_NO_ESSENCE, TRIGGER_AUTHORITY_CHANGE})
 
@@ -761,6 +764,9 @@ def _trigger_for(
     pending = {str(value) for value in metadata.get("pending_inputs") or []}
     if pending and any(str(source.id) in pending for source in processed):
         return TRIGGER_PENDING_INPUTS_PROCESSED
+    if metadata.get("policy_version") != AUTOMATIC_ESSENCE_POLICY_VERSION:
+        # 옛 정리 정책으로 만든 자동 판 — 현재 규칙으로 다시 만든다(그 전에도 소비 단계가 거른다).
+        return TRIGGER_POLICY_UPGRADE
     if (
         metadata.get("fallback")
         and int(metadata.get("fallback_upgrade_attempts") or 0) < FALLBACK_UPGRADE_MAX_ATTEMPTS
@@ -1131,6 +1137,7 @@ def refresh_essence_snapshot(
     previous_metadata = _metadata(current_previous)
     metadata = {
         "mode": AUTOMATIC_ESSENCE_MODE,
+        "policy_version": AUTOMATIC_ESSENCE_POLICY_VERSION,
         "trigger": trigger,
         "synthesis": synthesis_mode,
         "fallback": fallback,

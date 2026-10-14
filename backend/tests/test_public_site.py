@@ -20,6 +20,7 @@ from app.api.public.site import (
 from app.models.content import ContentStatus
 from app.models.essence import PhilosophyStatus, SourceType
 from app.models.hospital import HospitalStatus
+from app.services.essence_claims import AUTOMATIC_ESSENCE_POLICY_VERSION
 from app.services.essence_engine import ESSENCE_STATUS_ALIGNED, ESSENCE_STATUS_NEEDS_REVIEW
 from app.services.image_engine import (
     IMAGE_POLICY_VERSION,
@@ -1214,11 +1215,28 @@ def test_automatic_essence_about_uses_only_verbatim_clean_source_sentences():
         patient_promise="가장 빠른 회복을 돕습니다.",
         synthesis_metadata={
             "mode": "AUTOMATIC",
-            "public_about": ["진료 전에 충분히 설명합니다.", "통증이 사라집니다."],
+            "policy_version": AUTOMATIC_ESSENCE_POLICY_VERSION,
+            "public_about": [
+                "진료 전에 충분히 설명합니다.",
+                "통증이 사라집니다.",
+                "본원의 시술은 통증이 없습니다.",
+                "Our treatment is pain-free.",
+            ],
         },
     )
     assert _vetted_public_about(philosophy) == "진료 전에 충분히 설명합니다."
-    philosophy.synthesis_metadata = {"mode": "AUTOMATIC", "public_about": []}
+    philosophy.synthesis_metadata = {
+        "mode": "AUTOMATIC",
+        "policy_version": AUTOMATIC_ESSENCE_POLICY_VERSION,
+        "public_about": [],
+    }
+    assert _vetted_public_about(philosophy) is None
+    # 옛 정리 정책으로 고른 문장은 쓰지 않는다.
+    philosophy.synthesis_metadata = {
+        "mode": "AUTOMATIC",
+        "policy_version": "2026-10-14.1",
+        "public_about": ["진료 전에 충분히 설명합니다."],
+    }
     assert _vetted_public_about(philosophy) is None
     # 옛 승인본(사람·AI 검수 승인)은 종전 그대로다.
     philosophy.synthesis_metadata = {}
