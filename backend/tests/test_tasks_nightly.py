@@ -2073,7 +2073,8 @@ def test_stored_style_finding_remains_sweep_repairable_within_budget():
     assert tasks._stored_ai_review_is_remediable(item) is False
 
 
-def test_only_a_sample_block_is_forced_into_a_body_repair():
+def test_only_a_sample_block_is_forced_into_a_body_repair(monkeypatch):
+    monkeypatch.setattr(tasks.settings, "CONTENT_FINDING_TIERS_ENABLED", True)
     """모델이 HARD로 단정한 차단은 표본 실패가 아니다 — 본문 재작성이 그것을 대신하지 못한다."""
 
     model_hard = SimpleNamespace(essence_check_summary={"ai_review": {"findings": [{

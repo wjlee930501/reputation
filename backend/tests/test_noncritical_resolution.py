@@ -372,3 +372,13 @@ def test_gate_still_requires_a_pass_bound_to_the_corrected_body() -> None:
     item.essence_check_summary["ai_review"]["candidate_sha256"] = "older-body"
 
     assert _blocking_ai_review_state(item)[0] == "STALE"
+
+
+@pytest.fixture(autouse=True)
+def _tiers_and_alerts_on(monkeypatch):
+    """이 파일은 기본 꺼짐인 W4 등급·D35 알림을 켠 동작을 고정한다(꺼진 동작은 main과 같다)."""
+
+    from app.core.config import settings as _settings
+
+    monkeypatch.setattr(_settings, "CONTENT_FINDING_TIERS_ENABLED", True)
+    monkeypatch.setattr(_settings, "POST_PUBLISH_CRITICAL_ALERTS_ENABLED", True)

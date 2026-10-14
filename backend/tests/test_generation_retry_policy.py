@@ -431,7 +431,14 @@ def test_stochastic_failures_are_sample_recoverable_not_input_change() -> None:
         assert retry_class_for(code) == GenerationRetryClass.INPUT_CHANGE_REQUIRED, code
 
 
-def test_hard_finding_class_depends_on_who_declared_it() -> None:
+def test_hard_finding_class_depends_on_who_declared_it(monkeypatch) -> None:
+    from app.core.config import settings as _settings
+
+    # 등급이 꺼져 있으면(기본) 모든 HARD가 종착이다 — main과 같다.
+    off = {"findings": [{"severity": "HARD", "kind": "HOSPITAL_FACT", "message": "진료 원칙",
+                         "quote": "q"}]}
+    assert has_model_declared_hard_finding(off, {"body": "q 문장입니다."}) is True
+    monkeypatch.setattr(_settings, "CONTENT_FINDING_TIERS_ENABLED", True)
     assert retry_class_for("CONTENT_AI_HARD_FINDING") == (
         GenerationRetryClass.SAMPLE_RECOVERABLE
     )

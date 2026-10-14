@@ -286,10 +286,12 @@ def has_model_declared_hard_finding(review: object, content: object = None) -> b
     findings = review.get("findings")
     if not isinstance(findings, list):
         return False
+    tiers = bool(settings.CONTENT_FINDING_TIERS_ENABLED)
     return any(
         isinstance(finding, Mapping)
         and str(finding.get("severity") or "").upper() == "HARD"
-        and classify_finding(finding, content) is Criticality.CRITICAL
+        # 등급이 꺼져 있으면(기본) 종전처럼 모든 HARD가 종착이다.
+        and (not tiers or classify_finding(finding, content) is Criticality.CRITICAL)
         for finding in findings
     )
 

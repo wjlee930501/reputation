@@ -472,7 +472,8 @@ def apply_review_outcome(item: ContentItem, review: ContentAiReview, *, now: dat
         summary[POST_PUBLISH_FLAG_KEY] = _flag_payload(
             review, review.candidate_sha256, now, summary.get(POST_PUBLISH_FLAG_KEY)
         )
-        _request_critical_alert(summary, item, now)
+        if critical_alerts_enabled():
+            _request_critical_alert(summary, item, now)
         item.essence_check_summary = summary
         return "FLAGGED"
     # 차단 지적이 없는 PASS(비차단 SOFT 포함). 현재 본문에 묶인 검수라 `ai_review`도 갱신해
@@ -799,6 +800,65 @@ def _open_critical_incident(
     )
 
 
+def critical_alerts_enabled() -> bool:
+    """D35 공개 글 Critical 알림을 쓰는가(`POST_PUBLISH_CRITICAL_ALERTS_ENABLED`, 기본 꺼짐)."""
+
+    return bool(settings.POST_PUBLISH_CRITICAL_ALERTS_ENABLED)
+
+
+# 알림이 꺼져 있을 때의 종전(main) 처리 — 조용한 POST_PUBLISH_REVIEW_FLAGGED 사고.
+def _open_flag_incident(
+    item: ContentItem,
+    hospital: Hospital,
+    run_async,
+    *,
+    needs_human_reason: str | None = None,
+) -> None:
+    from app.services.ops_incident_alerts import open_ops_incident
+
+    findings = (item.essence_check_summary or {}).get(POST_PUBLISH_FLAG_KEY, {}).get(
+        "findings"
+    ) or []
+    detail = f" 지적: {findings[0]}" if findings else ""
+    if needs_human_reason:
+        # 자동 교정을 이미 시도했거나 시도할 수 없는 글 — 사람이 직접 고쳐야 한다고 분명히 말한다.
+        copy = _NEEDS_HUMAN_COPY.get(needs_human_reason, _NEEDS_HUMAN_DEFAULT_COPY)
+        problem = (
+            f"공개된 글 「{item.title}」의 사후 검수 지적을 자동 교정으로 풀지 못했습니다. "
+            f"{copy}{detail}"
+        )
+        next_action = (
+            "콘텐츠 탭에서 해당 글을 직접 고치거나 비공개로 돌려 주세요. "
+            "문제가 없다고 판단하면 공개 내용 확인을 기록해 주세요."
+        )
+    else:
+        problem = f"공개된 글 「{item.title}」의 자동 사후 검수에서 확인이 필요한 지적이 나왔습니다.{detail}"
+        next_action = (
+            "콘텐츠 탭에서 해당 글을 확인하고, 문제가 있으면 고치거나 비공개로 돌려 주세요. "
+            "문제가 없으면 공개 내용 확인을 기록해 주세요."
+        )
+    run_async(
+        open_ops_incident(
+            pipeline=POST_PUBLISH_INCIDENT_PIPELINE,
+            object_type=POST_PUBLISH_INCIDENT_OBJECT,
+            object_id=str(item.id),
+            incident_type=POST_PUBLISH_INCIDENT_TYPE,
+            safe_error_code=POST_PUBLISH_INCIDENT_TYPE,
+            problem=problem,
+            customer_impact="글은 그대로 공개되어 있습니다. 자동으로 내리지 않았습니다.",
+            next_action=next_action,
+            source_type="POST_PUBLISH_AI_REVIEW",
+            hospital_name=hospital.name,
+            hospital_id=hospital.id,
+            admin_path=f"/hospitals/{hospital.id}/content",
+            fingerprint=IncidentFingerprint.SAFETY_BLOCKED,
+            actor=POST_PUBLISH_AI_REVIEWER,
+            # 이미 열린 인시던트의 문구만 새로 쓴다 — 같은 글의 두 번째 Slack 알림을 만들지 않는다.
+            notify=needs_human_reason is None,
+        )
+    )
+
+
 def _close_noncritical_flag(db, item_id, reviewed_hash: object, now: datetime) -> bool:
     """Critical이 아닌 지적만 남은 공개 글을 조용히 닫는다. 그 사이 표시·본문이 바뀌었으면 쓰지 않는다."""
 
@@ -846,6 +906,10 @@ def _settle_flag(
     옛 조용한 사고(`POST_PUBLISH_REVIEW_FLAGGED`)는 더 열지 않고 닫는다.
     """
 
+    if not critical_alerts_enabled():
+        # 종전(main) 그대로 — 조용한 사고를 열거나 문구만 갱신한다. 닫지도 알리지도 않는다.
+        _open_flag_incident(item, hospital, run_async, needs_human_reason=needs_human_reason)
+        return
     marker = (item.essence_check_summary or {}).get(POST_PUBLISH_FLAG_KEY)
     if not isinstance(marker, dict) or marker.get("status") != POST_PUBLISH_FLAGGED:
         return
@@ -956,7 +1020,7 @@ def _review_and_apply(db, item, hospital, philosophy, run_async, now: datetime) 
         return "CANDIDATE_PUBLISHED"
     outcome = apply_review_outcome(locked, review, now=now)
     db.commit()
-    if outcome == "FLAGGED":
+    if outcome == "FLAGGED" and critical_alerts_enabled():
         # Critical 판정은 교정 결과·장애·하루 상한과 무관하게 지금 알린다(글당 한 번).
         _alert_safely(db, item_id, run_async)
     return outcome
@@ -1006,8 +1070,12 @@ def senior_rereview_flagged(db, item, hospital, philosophy, run_async, now: date
     db.commit()
     if outcome == "REVIEWED":
         _recover_flag_incident(locked, hospital, run_async)
-    elif outcome == "FLAGGED":
+    elif outcome == "FLAGGED" and (
+        critical_alerts_enabled()
+        or not uncertain_only(locked.essence_check_summary[POST_PUBLISH_FLAG_KEY])
+    ):
         # 상위 재검수까지 받았다 — Critical이면 마케터 검토 사고, 아니면 조용히 닫는다(D35).
+        # 알림이 꺼져 있으면 종전처럼 HARD가 남았을 때만 조용한 사고 문구를 갱신한다.
         try:
             _settle_flag(
                 db,
@@ -1242,6 +1310,10 @@ def process_flagged_post(
     return _correct_flagged(db, item, hospital, philosophy, run_async, now)
 
 
+# 알림이 꺼져 있을 때(종전) 교정 결과가 이미 사고를 처리한 경우.
+_LEGACY_INCIDENT_HANDLED = frozenset({"CORRECTED", "REVIEWED", "NEEDS_HUMAN", "BLOCKED", "REJECTED"})
+
+
 def _bump(counts: dict[str, int], key: str) -> None:
     counts[key] = counts.get(key, 0) + 1
 
@@ -1302,12 +1374,14 @@ def review_post_publish_samples() -> dict[str, int]:
         # 0) 배포 전부터 남은 Critical 공개 글을 요약 한 통으로 알리고(글마다 쏟아내지 않는다), 미전달
         # 알림 의도를 가장 오래된 것부터 보낸다(사고 기록 실패 뒤 재시도·종결).
         try:
-            send_critical_backlog_digest(db)
+            if critical_alerts_enabled():
+                send_critical_backlog_digest(db)
         except Exception:  # noqa: BLE001 - 요약 실패가 하루 검수를 멈추지 않는다(다음 실행이 다시 본다).
             db.rollback()
             logger.exception("post-publish critical backlog digest failed")
         try:
-            deliver_pending_critical_alerts(db, _run_async)
+            if critical_alerts_enabled():
+                deliver_pending_critical_alerts(db, _run_async)
         except Exception:  # noqa: BLE001
             db.rollback()
             logger.exception("post-publish critical alert delivery failed")
@@ -1435,7 +1509,13 @@ def review_post_publish_samples() -> dict[str, int]:
                     tally(result)
                 # Critical 알림은 판정을 저장할 때 이미 나갔다(`_review_and_apply`). 교정이 이 글을 더
                 # 맡을 수 없을 때만 끝 처리(비-Critical 조용한 종결 판단)를 한다.
-                if result == "SKIPPED" or correction_cap <= 0:
+                settle = (
+                    result == "SKIPPED" or correction_cap <= 0
+                    if critical_alerts_enabled()
+                    # 종전(main): 교정이 사고를 처리하지 않은 결과면 조용한 사고를 연다.
+                    else result not in _LEGACY_INCIDENT_HANDLED
+                )
+                if settle:
                     try:
                         _settle_flag(db, locked, hospital, _run_async)
                     except Exception:  # noqa: BLE001 - 인시던트 기록 실패가 저장된 표시를 되돌리지 않는다.

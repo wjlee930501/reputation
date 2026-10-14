@@ -2032,6 +2032,8 @@ def test_noncritical_fact_sentence_is_deleted_without_a_proposal_or_correction_b
     """감사 실례(마포 수련기관 오기) — 병원 사실 지적은 Critical이 아니다. 지적 문장을 지우고 첫 판정
     모델로 재검수한다. 교정 제안(LLM)·교정 상한(passes·rereviews)·주제 교체 표시를 쓰지 않는다."""
 
+    monkeypatch.setattr(settings, "CONTENT_FINDING_TIERS_ENABLED", True)
+
     philosophy, calls = worker
     body = _body(NEUTRAL_A, WRONG_TRAINING)
     finding = _finding("HARD", "HOSPITAL_FACT", "수련기관이 프로필과 다릅니다.", WRONG_TRAINING)
@@ -2069,6 +2071,8 @@ def test_noncritical_number_mismatch_deletes_the_sentence_never_substitutes(work
     """감사 실례(2주 vs 승인 자료 3주) — 숫자를 승인 값으로 바꿔 넣지 않고 그 문장을 지운다
     (오케스트레이터 결정, Codex P1-3)."""
 
+    monkeypatch.setattr(settings, "CONTENT_FINDING_TIERS_ENABLED", True)
+
     philosophy, calls = worker
     philosophy.positioning_statement = "도수치료 뒤 일상 복귀까지 보통 3주가 걸린다고 안내합니다."
     wrong = "도수치료 뒤 일상 복귀까지는 보통 2주가 걸립니다."
@@ -2093,6 +2097,8 @@ def test_noncritical_number_mismatch_deletes_the_sentence_never_substitutes(work
 def test_unquoted_fact_is_critical_and_takes_the_existing_ladder(worker, monkeypatch):
     """인용 없는 지적은 문장으로 확인할 수 없다 — Critical(fail closed)이라 결정적 삭제가 아니라 기존
     계단(교정 불가 → 주제 교체 → 사람)으로 간다(Codex 2차 결정 A)."""
+
+    monkeypatch.setattr(settings, "CONTENT_FINDING_TIERS_ENABLED", True)
 
     philosophy, calls = worker
     finding = _finding("HARD", "HOSPITAL_FACT", "승인 자료에서 개원 연도를 확인할 수 없습니다.")
@@ -2124,6 +2130,8 @@ def test_unquoted_fact_is_critical_and_takes_the_existing_ladder(worker, monkeyp
 def test_medical_risk_reported_as_a_hospital_fact_takes_the_critical_ladder(worker, monkeypatch):
     """Codex P1-2: 종류 라벨이 병원 사실이어도 투약 내용이면 Critical — 결정적 삭제가 아니라 기존
     교정 계단(교정 제안 → 재검수)을 탄다."""
+
+    monkeypatch.setattr(settings, "CONTENT_FINDING_TIERS_ENABLED", True)
 
     philosophy, calls = worker
     dose = "증상이 있으면 하루 5mg을 복용합니다."

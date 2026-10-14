@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from app.core.config import settings
 from app.services import published_correction as pc
 from app.workers import post_publish_ai_review as sweep
@@ -161,3 +163,13 @@ def test_the_d37_phase_has_its_own_failure_budget(monkeypatch):
         ("deferred_review", item.id) for item in deferred[:3]
     ]
     assert ("flagged_correction", flagged.id) in order
+
+
+@pytest.fixture(autouse=True)
+def _tiers_and_alerts_on(monkeypatch):
+    """이 파일은 기본 꺼짐인 W4 등급·D35 알림을 켠 동작을 고정한다(꺼진 동작은 main과 같다)."""
+
+    from app.core.config import settings as _settings
+
+    monkeypatch.setattr(_settings, "CONTENT_FINDING_TIERS_ENABLED", True)
+    monkeypatch.setattr(_settings, "POST_PUBLISH_CRITICAL_ALERTS_ENABLED", True)

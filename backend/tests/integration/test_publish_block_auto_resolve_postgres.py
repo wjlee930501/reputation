@@ -449,6 +449,9 @@ def test_noncritical_fact_is_deleted_without_a_proposal_then_published(
     """W4(2026-10-14): 병원 사실(수련기관 오기) 지적은 Critical이 아니다 — 교정 제안 없이 문장을 지우고
     재검수 PASS가 그 본문 hash에 묶인 뒤 기존 발행기가 공개한다(실제 Postgres)."""
 
+    from app.core.config import settings as _settings
+
+    monkeypatch.setattr(_settings, "CONTENT_FINDING_TIERS_ENABLED", True)
     db = gate_db
     hospital, item = _blocked_post(db, kind="HOSPITAL_FACT")
     calls = _fake_providers(monkeypatch, verdict=ContentAiReviewStatus.PASS)

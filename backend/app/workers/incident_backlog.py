@@ -687,6 +687,9 @@ def _post_publish_flag_settled(db: Session, incident: Incident, _now: datetime) 
     (`POST_PUBLISH_REVIEW_FLAGGED`)도 같은 근거로 닫힌다 — Critical이 아닌 지적은 사고가 아니다.
     """
 
+    if not settings.POST_PUBLISH_CRITICAL_ALERTS_ENABLED:
+        # 알림이 꺼져 있으면 종전(main)처럼 이 근거로 닫지 않는다.
+        return None
     item = db.get(ContentItem, incident.source_id) if incident.source_id else None
     if item is None or item.status != ContentStatus.PUBLISHED:
         return "content_not_public"

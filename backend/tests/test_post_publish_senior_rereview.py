@@ -7,6 +7,8 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
+import pytest
+
 from app.core.config import settings
 from app.services.content_ai_review import (
     ContentAiFinding,
@@ -256,3 +258,13 @@ def test_a_new_flag_carries_a_numeric_checked_at_for_sql_selection():
     assert payload["checked_at_epoch"] == int(NOW.timestamp())
     assert sweep.settled_long_enough(payload, NOW + timedelta(days=7), 7)
     assert not sweep.settled_long_enough(payload, NOW + timedelta(days=6), 7)
+
+
+@pytest.fixture(autouse=True)
+def _tiers_and_alerts_on(monkeypatch):
+    """이 파일은 기본 꺼짐인 W4 등급·D35 알림을 켠 동작을 고정한다(꺼진 동작은 main과 같다)."""
+
+    from app.core.config import settings as _settings
+
+    monkeypatch.setattr(_settings, "CONTENT_FINDING_TIERS_ENABLED", True)
+    monkeypatch.setattr(_settings, "POST_PUBLISH_CRITICAL_ALERTS_ENABLED", True)

@@ -1083,7 +1083,9 @@ def _auto_correct_blocked_body(
     if waiting is not None:
         return waiting
     review = _stored_ai_review(item)
-    if not review_has_critical_finding(review, _stored_candidate(item)):
+    if settings.CONTENT_FINDING_TIERS_ENABLED and not review_has_critical_finding(
+        review, _stored_candidate(item)
+    ):
         # Critical이 아닌 지적(병원 사실·수치 불일치·확신 부족)은 교정 제안을 사지 않고 결정적으로
         # 지운다. 교정 상한·주제 교체 예산을 쓰지 않는다(W4). 맡지 못하면 기존 재검수·재작성 계단이다.
         return _resolve_noncritical_block(db, item, hospital, philosophy)
@@ -1237,7 +1239,7 @@ def _resolve_noncritical_block(
     `_auto_correct_blocked_body`와 같다. ``None``이면 맡을 수 없다(인용 없음 등) — 기존 경로가 맡는다.
     """
 
-    if not correction_allowed_for(item):
+    if not settings.CONTENT_FINDING_TIERS_ENABLED or not correction_allowed_for(item):
         return None
     review = _stored_ai_review(item)
     if review_has_critical_finding(review, _stored_candidate(item)):

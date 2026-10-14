@@ -204,3 +204,13 @@ def test_typical_philosophy_fact_on_a_plain_sentence_is_noncritical() -> None:
     finding = _finding("HARD", "HOSPITAL_FACT", "병원 철학 문장의 근거가 없음", quote=sentence)
 
     assert classify_finding(finding, content) is N
+
+
+@pytest.fixture(autouse=True)
+def _tiers_and_alerts_on(monkeypatch):
+    """이 파일은 기본 꺼짐인 W4 등급·D35 알림을 켠 동작을 고정한다(꺼진 동작은 main과 같다)."""
+
+    from app.core.config import settings as _settings
+
+    monkeypatch.setattr(_settings, "CONTENT_FINDING_TIERS_ENABLED", True)
+    monkeypatch.setattr(_settings, "POST_PUBLISH_CRITICAL_ALERTS_ENABLED", True)

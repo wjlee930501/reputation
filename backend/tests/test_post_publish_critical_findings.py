@@ -469,3 +469,49 @@ def test_pass_clears_the_deferral_marker() -> None:
 
     assert sweep.apply_review_outcome(item, _review(item), now=NOW) == "REVIEWED"
     assert AI_REVIEW_DEFERRED_KEY not in item.essence_check_summary
+
+
+@pytest.fixture(autouse=True)
+def _tiers_and_alerts_on(monkeypatch):
+    """이 파일은 기본 꺼짐인 W4 등급·D35 알림을 켠 동작을 고정한다(꺼진 동작은 main과 같다)."""
+
+    from app.core.config import settings as _settings
+
+    monkeypatch.setattr(_settings, "CONTENT_FINDING_TIERS_ENABLED", True)
+    monkeypatch.setattr(_settings, "POST_PUBLISH_CRITICAL_ALERTS_ENABLED", True)
+
+
+# ── 기본 꺼짐: 알림·등급을 끄면 종전(main)과 같다 ──────────────────────────────────
+
+
+def test_alerts_off_by_default_leave_the_legacy_quiet_incident(monkeypatch, calls) -> None:
+    from app.core.config import Settings
+    from app.core.config import settings as _settings
+
+    assert Settings.model_fields["POST_PUBLISH_CRITICAL_ALERTS_ENABLED"].default is False
+    assert Settings.model_fields["CONTENT_FINDING_TIERS_ENABLED"].default is False
+    monkeypatch.setattr(_settings, "POST_PUBLISH_CRITICAL_ALERTS_ENABLED", False)
+    legacy = []
+    monkeypatch.setattr(
+        sweep, "_open_flag_incident", lambda item, *_a, **k: legacy.append(k.get("needs_human_reason"))
+    )
+    item = _item()
+
+    assert sweep.apply_review_outcome(item, _critical_review(item), now=NOW) == "FLAGGED"
+    assert KEY not in item.essence_check_summary  # 알림 의도를 만들지 않는다
+    sweep._settle_flag(_DB(), item, item.hospital, asyncio.run, needs_human_reason="blocked", now=NOW)
+
+    assert legacy == ["blocked"] and calls["critical"] == [] and calls["recovered"] == 0
+    assert item.post_publish_reviewed_at is None
+    incident = SimpleNamespace(source_id=str(item.id))
+    assert incident_backlog._post_publish_flag_settled(_Session(item), incident, NOW) is None
+
+
+def test_tiers_off_by_default_keep_every_hard_terminal(monkeypatch) -> None:
+    from app.core.config import settings as _settings
+    from app.workers.generation_retry_policy import has_model_declared_hard_finding
+
+    monkeypatch.setattr(_settings, "CONTENT_FINDING_TIERS_ENABLED", False)
+    review = {"findings": [_finding("HARD", "HOSPITAL_FACT")]}
+
+    assert has_model_declared_hard_finding(review, {"body": PHILOSOPHY})
