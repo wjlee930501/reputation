@@ -372,3 +372,154 @@ def test_stall_dispatch_claims_and_hands_off_to_item_task(env, monkeypatch) -> N
         env.db.execute(delete(OperationRun).where(OperationRun.hospital_id == hospital.id))
         env.db.execute(delete(OperationRun).where(OperationRun.idempotency_key == batch_key))
         env.db.commit()
+
+
+def _writer_exhausted_attempt(now: datetime) -> dict:
+    from app.workers.generation_attempt_state import (
+        acquisition_completed,
+        fresh_generation_attempt,
+        reserve_acquisition,
+    )
+
+    attempt = fresh_generation_attempt(topic_id="topic-a")
+    for index in range(6):
+        acquisition_id = f"writer:ctx:topic-a:{index}"
+        attempt = reserve_acquisition(attempt, acquisition_id=acquisition_id, kind="WRITER")
+        attempt = acquisition_completed(
+            attempt,
+            acquisition_id=acquisition_id,
+            transport_attempts=1,
+            outcome="RESULT",
+            payload={"index": index},
+        )
+    return {
+        **attempt,
+        "reason": "GENERATION_REJECTED",
+        "retry_class": "SAMPLE_RECOVERABLE",
+        "observed_at": (now - timedelta(hours=8)).isoformat(),
+        "next_retry_at": (now + timedelta(hours=10)).isoformat(),
+    }
+
+
+def test_writer_exhausted_slot_goes_to_swap_never_pull_or_dispatch(env, monkeypatch) -> None:
+    from app.workers.generation_attempt_state import current_topic_writers_exhausted
+
+    now = datetime.now(UTC)
+    hospital = _hospital(env, active=True)
+    tomorrow = now.astimezone(KST).date() + timedelta(days=1)
+    item = _slot(
+        env,
+        hospital,
+        scheduled=tomorrow,
+        attempt=_writer_exhausted_attempt(now),
+        created_hours_ago=30,
+    )
+    assert current_topic_writers_exhausted(
+        env.db.get(ContentItem, item.id).essence_check_summary[GENERATION_ATTEMPT_KEY]
+    )
+    monkeypatch.setattr(
+        content_stall_detector,
+        "find_stalled_items",
+        lambda db, *, now: [db.get(ContentItem, item.id)],
+    )
+    swapped: list[uuid.UUID] = []
+    monkeypatch.setattr(
+        content_stall_detector,
+        "_swap_writer_exhausted",
+        lambda db, item_id, *, now: swapped.append(item_id) or False,
+    )
+    dispatched: list[uuid.UUID] = []
+    monkeypatch.setattr(
+        content_stall_detector,
+        "_dispatch",
+        lambda db, tasks, recorder_cls, ids, *rest: dispatched.extend(ids) or 0,
+    )
+
+    report = content_stall_detector.run_stall_detector(env.db, now=now)
+
+    assert swapped == [item.id]
+    assert dispatched == []
+    assert "PULL_RETRY" not in report.actions
+    env.db.expire_all()
+    attempt = env.db.get(ContentItem, item.id).essence_check_summary[GENERATION_ATTEMPT_KEY]
+    assert attempt["next_retry_at"] == (now + timedelta(hours=10)).isoformat()
+
+
+def test_writer_exhausted_slot_without_swap_budget_is_left_to_the_ladder(env, monkeypatch) -> None:
+    now = datetime.now(UTC)
+    hospital = _hospital(env, active=True)
+    item = _slot(
+        env,
+        hospital,
+        scheduled=now.astimezone(KST).date(),
+        attempt=_writer_exhausted_attempt(now),
+        created_hours_ago=30,
+    )
+    row = env.db.get(ContentItem, item.id)
+    row.topic_swap_history = [
+        {"from_target_id": None, "swapped_at": (now - timedelta(days=2)).isoformat()}
+    ]
+    env.db.commit()
+    monkeypatch.setattr(
+        content_stall_detector,
+        "find_stalled_items",
+        lambda db, *, now: [db.get(ContentItem, item.id)],
+    )
+    swapped: list[uuid.UUID] = []
+    monkeypatch.setattr(
+        content_stall_detector,
+        "_swap_writer_exhausted",
+        lambda db, item_id, *, now: swapped.append(item_id) or False,
+    )
+    dispatched: list[uuid.UUID] = []
+    monkeypatch.setattr(
+        content_stall_detector,
+        "_dispatch",
+        lambda db, tasks, recorder_cls, ids, *rest: dispatched.extend(ids) or 0,
+    )
+
+    report = content_stall_detector.run_stall_detector(env.db, now=now)
+
+    assert swapped == [] and dispatched == [] and report.actions == {}
+
+
+def test_dispatch_never_sends_a_writer_exhausted_slot(env, monkeypatch) -> None:
+    from app.workers import tasks as worker_tasks
+    from app.workers.generation_batch_run import GenerationBatchRecorder
+
+    now = datetime.now(UTC)
+    hospital = _hospital(env, active=True)
+    item = _slot(
+        env,
+        hospital,
+        scheduled=now.astimezone(KST).date(),
+        attempt={**_writer_exhausted_attempt(now), "next_retry_at": now.isoformat()},
+        created_hours_ago=30,
+    )
+    sent: list[dict] = []
+    monkeypatch.setattr(
+        worker_tasks.celery_app, "send_task", lambda name, **kwargs: sent.append(kwargs)
+    )
+    window = content_stall_detector.stall_window(now)
+    dispatched = content_stall_detector._dispatch(
+        env.db, worker_tasks, GenerationBatchRecorder, [item.id], now, *window
+    )
+    assert dispatched == 0 and sent == []
+    env.db.expire_all()
+    assert env.db.get(ContentItem, item.id).generation_claim_token is None
+
+
+def test_writer_exhausted_swap_without_a_candidate_topic_changes_nothing(env) -> None:
+    now = datetime.now(UTC)
+    hospital = _hospital(env, active=True)
+    item = _slot(
+        env,
+        hospital,
+        scheduled=now.astimezone(KST).date(),
+        attempt=_writer_exhausted_attempt(now),
+        created_hours_ago=30,
+    )
+    # 측정 질문이 없는 병원 — 교체 후보가 없으면 행을 바꾸지 않고 물러난다.
+    assert content_stall_detector._swap_writer_exhausted(env.db, item.id, now=now) is False
+    env.db.expire_all()
+    assert not env.db.get(ContentItem, item.id).topic_swap_history
