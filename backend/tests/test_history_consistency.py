@@ -13,6 +13,7 @@ from test_geo_autonomy_hardening import db as db
 from app.api.admin import content as content_api
 from app.models.content import ContentItem, ContentStatus
 from app.models.essence import HospitalContentPhilosophy, PhilosophyStatus
+from app.models.monthly_control import HospitalServiceInterval
 from app.models.operations import Incident, OperationRun
 from app.models.report import MonthlyReport
 from app.models.sov import SovRecord
@@ -23,7 +24,7 @@ from app.workers.nightly_generation_batch import write_back_generated_content
 
 
 def summary_tables(db):
-    for model in (Incident, MonthlyReport, SovRecord):
+    for model in (Incident, MonthlyReport, SovRecord, HospitalServiceInterval):
         model.__table__.create(db.get_bind(), checkfirst=True)
 
 

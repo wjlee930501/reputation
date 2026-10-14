@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from monthly_artifact_test_support import published
+from monthly_artifact_test_support import isolate_reconciler, published
 from sqlalchemy import create_engine, delete, select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -81,6 +81,7 @@ def test_committed_blocked_report_repairs_missing_incident_once(
             return False
 
     monkeypatch.setattr(monthly_artifact_reconciliation, "SyncSessionLocal", SessionContext)
+    repairs = isolate_reconciler(monkeypatch, monthly_artifact_reconciliation)
 
     try:
         hospital = Hospital(
@@ -205,11 +206,16 @@ def test_committed_blocked_report_repairs_missing_incident_once(
             "status": "completed",
             "opened_count": 2,
             "recovered_count": 0,
+            # 생성이 아직 도는 판(RUNNING 실행)은 재생성 대상이지만 실제 디스패처는 겹쳐 사지 않는다.
+            "repair_dispatched_count": 2,
+            "safety_net": {"status": "skipped"},
         }
-        assert incident is not None and incident.state == "OPEN"
+        assert {hospital for hospital, *_rest in repairs} == {hospital_id, invalid_hospital_id}
+        # 스윕 소유(재생성 창) — 열림 알림은 기한까지 보류되고 사고는 RETRYING이다.
+        assert incident is not None and incident.state == "RETRYING"
         assert incident.operation_run_id == run_id
         assert incident.safe_error_code == "DOCTOR_PDF_INCIDENT_RECONCILED"
-        assert incidents[invalid_hospital_id].state == "OPEN"
+        assert incidents[invalid_hospital_id].state == "RETRYING"
         assert incidents[invalid_hospital_id].operation_run_id == invalid_run_id
         assert incidents[invalid_hospital_id].safe_error_code == "DOCTOR_PDF_ARTIFACT_INVALID"
         assert len(notices) == 2
@@ -224,6 +230,8 @@ def test_committed_blocked_report_repairs_missing_incident_once(
             "status": "completed",
             "opened_count": 0,
             "recovered_count": 0,
+            "repair_dispatched_count": 0,
+            "safety_net": {"status": "skipped"},
         }
         assert len(
             list(
@@ -298,6 +306,7 @@ def test_valid_paginated_artifact_recovers_false_invalid_incident(
             return False
 
     monkeypatch.setattr(monthly_artifact_reconciliation, "SyncSessionLocal", SessionContext)
+    isolate_reconciler(monkeypatch, monthly_artifact_reconciliation)
 
     try:
         hospital = Hospital(
@@ -362,7 +371,13 @@ def test_valid_paginated_artifact_recovers_false_invalid_incident(
             )
         )
 
-        assert result == {"status": "completed", "opened_count": 0, "recovered_count": 1}
+        assert result == {
+            "status": "completed",
+            "opened_count": 0,
+            "recovered_count": 1,
+            "repair_dispatched_count": 0,
+            "safety_net": {"status": "skipped"},
+        }
         assert incident is not None and incident.state == "RECOVERED"
         assert [notice.notification_type for notice in notices] == [
             "INCIDENT_OPEN",
@@ -372,6 +387,8 @@ def test_valid_paginated_artifact_recovers_false_invalid_incident(
             "status": "completed",
             "opened_count": 0,
             "recovered_count": 0,
+            "repair_dispatched_count": 0,
+            "safety_net": {"status": "skipped"},
         }
     finally:
         session.rollback()

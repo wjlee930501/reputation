@@ -78,6 +78,52 @@ def validate_persisted_doctor_artifact(
     return ArtifactValidationResult("VALID", None, metadata)
 
 
+# V0는 원장용 판본과 렌더 경로가 다른 단일 PDF라 가벼운 시스템 검증 메타데이터를 쓴다.
+V0_ARTIFACT_VALIDATION_VERSION = "v0-pdf-v1"
+
+
+def validate_persisted_v0_artifact(
+    report: Any, artifact: Any | None
+) -> ArtifactValidationResult:
+    """V0 artifact identity — 월간 원장용 계약(`DoctorArtifactMetadata`)을 V0에 적용하지 않는다.
+
+    2026-10-08 이전 대조 작업이 V0에 월간 계약을 적용해 파일과 hash가 일치하는 V0 PDF를
+    'hash 불일치'로 판정했다(장보고·뉴플랜 V0, 장앤김·신기한 9월 — 실제 GCS 바이트 SHA-256은
+    모두 저장값과 같았다). V0와 월간이 같은 판정 함수(`validate_persisted_report_artifact`)를 쓴다.
+    """
+    if artifact is None:
+        return ArtifactValidationResult("MISSING", "DOCTOR_ARTIFACT_MISSING", None)
+    metadata = artifact.validation_metadata if isinstance(artifact.validation_metadata, dict) else {}
+    sha = artifact.sha256
+    valid = bool(
+        artifact.report_id == report.id
+        and artifact.audience == "DOCTOR"
+        and artifact.path == report.doctor_pdf_path == report.pdf_path
+        and artifact.validated is True
+        and metadata.get("validation_version") == V0_ARTIFACT_VALIDATION_VERSION
+        and metadata.get("validation_source") == "SYSTEM"
+        and metadata.get("sha256") == sha
+        and metadata.get("byte_size") == artifact.byte_size
+        and isinstance(sha, str)
+        and len(sha) == 64
+        and all(character in "0123456789abcdef" for character in sha)
+        and type(artifact.byte_size) is int
+        and artifact.byte_size > 0
+    )
+    if not valid:
+        return ArtifactValidationResult("INVALID", "DOCTOR_ARTIFACT_INVALID", None)
+    return ArtifactValidationResult("VALID", None, None)
+
+
+def validate_persisted_report_artifact(
+    report: Any, artifact: Any | None
+) -> ArtifactValidationResult:
+    """보고서 종류에 맞는 계약으로 저장된 원장 전달 artifact를 판정한다(V0·월간 공통 진입점)."""
+    if getattr(report, "report_type", "MONTHLY") == "V0":
+        return validate_persisted_v0_artifact(report, artifact)
+    return validate_persisted_doctor_artifact(report, artifact)
+
+
 def _metadata_is_canonical(value: object, metadata: DoctorArtifactMetadata) -> bool:
     if not isinstance(value, dict):
         return False

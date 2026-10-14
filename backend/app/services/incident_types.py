@@ -248,6 +248,16 @@ def _monthly_sov_window(
     return next_start + timedelta(days=7, hours=9)
 
 
+# 원장 PDF 검증 실패는 월간 PDF 대조 작업이 사람을 기다리지 않고 다시 만든다 — 병원·월마다 2회,
+# 6시간 간격(`monthly_report_safety_net.REPAIR_BUDGET`·`REPAIR_SPACING`). 두 번째 시도의 결과까지
+# 볼 여유(6시간)를 더한 창이 지나도 남으면 개발 확인이다.
+MONTHLY_ARTIFACT_REPAIR_WINDOW = timedelta(hours=18)
+
+
+def _artifact_repair_window(_request: IncidentOpenRequest, episode_start: datetime) -> datetime:
+    return episode_start + MONTHLY_ARTIFACT_REPAIR_WINDOW
+
+
 _DEVELOPER = IncidentTypePolicy(audience=IncidentAudience.DEVELOPER)
 _DEFAULT_POLICY = IncidentTypePolicy()
 
@@ -267,7 +277,14 @@ INCIDENT_TYPE_POLICIES: dict[str, IncidentTypePolicy] = {
         audience=IncidentAudience.DEVELOPER, quiet=True
     ),
     "CACHE_REVALIDATION_FAILED": _DEVELOPER,
-    "MONTHLY_DOCTOR_PDF_BLOCKED": _DEVELOPER,
+    "MONTHLY_DOCTOR_PDF_BLOCKED": IncidentTypePolicy(
+        audience=IncidentAudience.DEVELOPER,
+        sweep_owned=True,
+        retry_window=_artifact_repair_window,
+    ),
+    # 8일 09:00 최종 판정 뒤 월간 보고서 안전망이 두 번 다시 만들어도 전달 가능한 보고서가 없는
+    # 병원·월(I2). 전달 가능해지면 같은 안전망이 닫는다(`monthly_report_safety_net`).
+    "MONTHLY_REPORT_SAFETY_NET_FAILED": _DEVELOPER,
     # 같은 점검에서 여러 병원 주소가 공유 공개 서비스의 5xx를 받은 상태. AE가 병원 정보에서 고칠
     # 수 있는 일이 아니다(`domain_health_control.record_public_site_check`).
     "PUBLIC_SITE_UNAVAILABLE": _DEVELOPER,
