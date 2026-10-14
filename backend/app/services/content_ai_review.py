@@ -501,10 +501,16 @@ def restamp_review_after_system_reference_change(item: Any, before_sha: str) -> 
     )
     if status not in ("PASS", "REVISE", "UNAVAILABLE") or blocking:
         return
-    restamped = {**review, "candidate_sha256": candidate_sha256(item)}
+    after_sha = candidate_sha256(item)
+    restamped = {**review, "candidate_sha256": after_sha}
     if "coverage" in review:
         restamped["coverage"] = candidate_review_coverage(item)
-    item.essence_check_summary = {**summary, "ai_review": restamped}
+    updated = {**summary, "ai_review": restamped}
+    correction = summary.get("auto_correction")
+    if isinstance(correction, dict) and correction.get("corrected_sha256") == before_sha:
+        # 교정본 표지도 같은 본문을 따라간다 — 참고자료 변경이 "교정본은 반드시 재검수"를 풀지 않게.
+        updated["auto_correction"] = {**correction, "corrected_sha256": after_sha}
+    item.essence_check_summary = updated
 
 
 def _parse_finding(value: object) -> ContentAiFinding | None:

@@ -1,8 +1,9 @@
-"""비-Critical 지적의 결정적 해소(W4) — 지적 문장 삭제·승인 수치 치환, 교정 제안(LLM) 없음.
+"""비-Critical 지적의 결정적 해소(W4) — 지적 문장 삭제, 교정 제안(LLM)·숫자 치환 없음.
 
 감사 실례(2026-10-14): 진료 철학 문장(근거 없는 병원 주장)과 회복 기간 2주 vs 승인 자료 3주가 교정·
-주제 교체 예산을 다 썼다. 이 둘은 Critical이 아니다 — 지우거나 승인 값으로 바꾸고 첫 판정 모델로
-재검수한다. 교정본은 여전히 그 hash에 묶인 PASS가 있어야 발행된다.
+주제 교체 예산을 다 썼다. 의료 내용이 없는 병원 사실은 Critical이 아니다 — 지적 문장을 지우고 첫 판정
+모델로 재검수한다. 숫자를 승인 값으로 바꿔 넣지 않는다(Codex P1-3: 5mg→20mg, 회복 8주←예약 8주,
+개원 20년←경력 20년). 교정본은 여전히 그 hash에 묶인 PASS가 있어야 발행된다.
 """
 
 from __future__ import annotations
@@ -102,29 +103,53 @@ def _sources(philosophy=None):
     return mc.approved_fact_texts(_hospital(), philosophy or _philosophy())
 
 
-def test_numeric_mismatch_takes_the_single_approved_value() -> None:
-    assert (
-        mc.numeric_replacement(RECOVERY_SENTENCE, _sources())
-        == "수술 후 일상생활 복귀까지는 보통 3주가 걸립니다."
-    )
+def test_numeric_replacement_is_gone() -> None:
+    """오케스트레이터 결정(2026-10-14): 결정적 숫자 치환은 없다."""
+
+    assert not hasattr(mc, "numeric_replacement")
 
 
 @pytest.mark.parametrize(
-    ("sentence", "philosophy"),
+    ("sentence", "message", "approved"),
     [
-        # 같은 단위의 승인 수치가 둘이면 애매하다.
-        (RECOVERY_SENTENCE, _philosophy(doctor_voice="재활은 6주, 복귀는 3주를 안내합니다.")),
-        # 단위 없는 숫자는 바꾸지 않는다.
-        ("수술 후 2번 내원합니다.", _philosophy()),
-        # 승인 자료에 없는 수치가 둘이면 어느 것인지 모른다.
-        ("수술 후 2주에서 5주가 걸립니다.", _philosophy()),
+        # 회복 기간 8주(본문) vs 승인 자료의 다음 예약 8주 — 다른 사실의 같은 단위.
+        ("수술 후 일상생활 복귀까지 회복 기간은 보통 6주입니다.", "회복 기간이 승인 자료와 다릅니다",
+         "다음 예약은 8주 뒤로 안내합니다."),
+        # 개원 20년(본문) vs 승인 자료의 경력 20년.
+        ("본원은 개원 15년째 같은 자리를 지키고 있습니다.", "개원 연도가 승인 자료와 다릅니다",
+         "원장은 경력 20년의 전문의입니다."),
     ],
 )
-def test_ambiguous_numbers_are_not_replaced(sentence, philosophy) -> None:
-    assert mc.numeric_replacement(sentence, _sources(philosophy)) is None
+def test_noncritical_number_mismatch_deletes_the_sentence(sentence, message, approved) -> None:
+    content = _content(sentence)
+    review = _review(content, _finding("HARD", "HOSPITAL_FACT", message, sentence))
+
+    fix = mc.plan_noncritical_fixes(content, review)
+
+    assert fix is not None
+    [target] = fix.plan.targets
+    assert fix.decisions[target.key].replacement is None
+    corrected = mc.apply_corrections(content, fix.plan, fix.decisions)
+    mc.verify_correction_scope(
+        content, corrected, fix.plan, sources=_sources(_philosophy(doctor_voice=approved))
+    )
+    assert sentence not in corrected["body"]
+    assert "8주" not in corrected["body"] and "20년" not in corrected["body"]
 
 
-def test_plan_deletes_unsupported_philosophy_and_replaces_the_number() -> None:
+def test_dosage_mismatch_is_critical_and_never_resolved_here() -> None:
+    """투약량(5mg vs 승인 자료 20mL)은 종류가 병원 사실이어도 Critical이다 — 이 계단이 맡지 않는다."""
+
+    sentence = "증상이 있으면 하루 5mg을 복용합니다."
+    content = _content(sentence)
+    review = _review(
+        content, _finding("HARD", "HOSPITAL_FACT", "투약량이 승인 자료(20mL)와 다릅니다", sentence)
+    )
+
+    assert mc.plan_noncritical_fixes(content, review) is None
+
+
+def test_plan_deletes_unsupported_philosophy_and_recovery_sentences() -> None:
     content = _content(PHILOSOPHY_SENTENCE, RECOVERY_SENTENCE)
     review = _review(
         content,
@@ -132,29 +157,24 @@ def test_plan_deletes_unsupported_philosophy_and_replaces_the_number() -> None:
         _finding("HARD", "HOSPITAL_FACT", "회복 기간이 승인 자료와 다릅니다", RECOVERY_SENTENCE),
     )
 
-    fix = mc.plan_noncritical_fixes(content, review, sources=_sources())
+    fix = mc.plan_noncritical_fixes(content, review)
 
     assert fix is not None
-    decisions = {target.sentence: fix.decisions[target.key] for target in fix.plan.targets}
-    assert decisions[PHILOSOPHY_SENTENCE].replacement is None
-    assert decisions[RECOVERY_SENTENCE].replacement == "수술 후 일상생활 복귀까지는 보통 3주가 걸립니다."
+    assert {fix.decisions[t.key].replacement for t in fix.plan.targets} == {None}
     corrected = mc.apply_corrections(content, fix.plan, fix.decisions)
     mc.verify_correction_scope(content, corrected, fix.plan, sources=_sources())
     assert PHILOSOPHY_SENTENCE not in corrected["body"]
-    assert "보통 3주가 걸립니다" in corrected["body"]
+    assert RECOVERY_SENTENCE not in corrected["body"] and "3주" not in corrected["body"]
 
 
-def test_uncertain_medical_sentence_is_deleted_not_rewritten() -> None:
+def test_uncertain_medical_sentence_is_critical_and_left_to_the_existing_ladder() -> None:
+    """의료 안전 지적은 확신 부족이어도 Critical이다(fail closed) — 결정적 삭제 계단이 맡지 않는다."""
+
     sentence = "이 통증은 대부분 2주 안에 저절로 낫습니다."
     content = _content(sentence)
     review = _review(content, _finding("UNCERTAIN", "MEDICAL_SAFETY", "근거가 불분명합니다", sentence))
 
-    fix = mc.plan_noncritical_fixes(content, review, sources=_sources())
-
-    assert fix is not None
-    [target] = fix.plan.targets
-    # 의료 안전 지적은 수치를 바꾸지 않고 지운다(승인 자료는 병원 사실이다).
-    assert fix.decisions[target.key].replacement is None
+    assert mc.plan_noncritical_fixes(content, review) is None
 
 
 @pytest.mark.parametrize(
@@ -162,40 +182,39 @@ def test_uncertain_medical_sentence_is_deleted_not_rewritten() -> None:
     [
         # Critical(의료 안전 HARD)이 하나라도 있으면 이 계단이 맡지 않는다.
         [
-            _finding("HARD", "HOSPITAL_FACT", "철학", PHILOSOPHY_SENTENCE),
+            _finding("HARD", "HOSPITAL_FACT", "진료 철학", PHILOSOPHY_SENTENCE),
             _finding("HARD", "MEDICAL_SAFETY", "위험한 오정보", RECOVERY_SENTENCE),
         ],
         # 응급 안내 누락은 Critical이다.
         [_finding("UNCERTAIN", "MEDICAL_SAFETY", EMERGENCY_MESSAGE)],
         # 인용 없는 지적은 문장으로 짚을 수 없다.
-        [_finding("HARD", "HOSPITAL_FACT", "심장 초음파를 확인할 수 없습니다")],
+        [_finding("HARD", "HOSPITAL_FACT", "개원 연도를 확인할 수 없습니다")],
         # 일부만 짚히면 나머지가 재검수를 다시 막는다 — 맡지 않는다.
         [
-            _finding("HARD", "HOSPITAL_FACT", "철학", PHILOSOPHY_SENTENCE),
+            _finding("HARD", "HOSPITAL_FACT", "진료 철학", PHILOSOPHY_SENTENCE),
             _finding("UNCERTAIN", "HOSPITAL_FACT", "장비 확인 불가"),
         ],
+        # 내용을 모르는 병원 사실은 Critical이다(fail closed).
+        [_finding("HARD", "HOSPITAL_FACT", "승인 자료에서 확인할 수 없습니다", RECOVERY_SENTENCE)],
     ],
 )
 def test_plan_refuses_anything_it_cannot_resolve_deterministically(findings) -> None:
     content = _content(PHILOSOPHY_SENTENCE, RECOVERY_SENTENCE)
 
-    assert mc.plan_noncritical_fixes(content, _review(content, *findings), sources=_sources()) is None
+    assert mc.plan_noncritical_fixes(content, _review(content, *findings)) is None
 
 
 def test_must_use_sentence_is_never_deleted() -> None:
     must_use = "본원은 진단부터 재활까지 의료진이 정보를 공유하는 것을 진료 원칙으로 합니다."
     content = _content(PHILOSOPHY_SENTENCE)
-    review = _review(content, _finding("HARD", "HOSPITAL_FACT", "철학", PHILOSOPHY_SENTENCE))
+    review = _review(content, _finding("HARD", "HOSPITAL_FACT", "진료 철학", PHILOSOPHY_SENTENCE))
 
-    assert (
-        mc.plan_noncritical_fixes(content, review, must_use_messages=[must_use], sources=_sources())
-        is None
-    )
+    assert mc.plan_noncritical_fixes(content, review, must_use_messages=[must_use]) is None
 
 
 async def test_run_deletes_rereviews_with_the_first_judgement_model_and_never_proposes() -> None:
     content = _content(PHILOSOPHY_SENTENCE)
-    review = _review(content, _finding("HARD", "HOSPITAL_FACT", "철학", PHILOSOPHY_SENTENCE))
+    review = _review(content, _finding("HARD", "HOSPITAL_FACT", "진료 철학", PHILOSOPHY_SENTENCE))
     calls: list[dict] = []
 
     async def fake_review(**kwargs):
@@ -226,7 +245,7 @@ async def test_run_deletes_rereviews_with_the_first_judgement_model_and_never_pr
 
 async def test_run_stops_at_its_own_rereview_limit() -> None:
     content = _content(PHILOSOPHY_SENTENCE, RECOVERY_SENTENCE)
-    review = _review(content, _finding("HARD", "HOSPITAL_FACT", "철학", PHILOSOPHY_SENTENCE))
+    review = _review(content, _finding("HARD", "HOSPITAL_FACT", "진료 철학", PHILOSOPHY_SENTENCE))
 
     async def flags_the_next_sentence(**kwargs):
         corrected = kwargs["content"]
@@ -238,7 +257,7 @@ async def test_run_stops_at_its_own_rereview_limit() -> None:
                 ContentAiFinding(
                     ContentAiFindingSeverity.HARD,
                     ContentAiFindingKind.HOSPITAL_FACT,
-                    "다음 문장",
+                    "승인 자료에 없는 진료 원칙 문장",
                     quote=quote,
                 ),
             ),
@@ -274,7 +293,7 @@ async def test_run_stops_at_its_own_rereview_limit() -> None:
 
 async def test_run_hands_a_critical_rereview_back_to_the_existing_ladder() -> None:
     content = _content(PHILOSOPHY_SENTENCE, RECOVERY_SENTENCE)
-    review = _review(content, _finding("HARD", "HOSPITAL_FACT", "철학", PHILOSOPHY_SENTENCE))
+    review = _review(content, _finding("HARD", "HOSPITAL_FACT", "진료 철학", PHILOSOPHY_SENTENCE))
 
     async def critical(**kwargs):
         return _result(
@@ -316,7 +335,7 @@ def test_gate_still_requires_a_pass_bound_to_the_corrected_body() -> None:
         first_published_at=None,
         content_brief={},
         essence_check_summary={
-            "ai_review": _review(content, _finding("HARD", "HOSPITAL_FACT", "철학", PHILOSOPHY_SENTENCE)),
+            "ai_review": _review(content, _finding("HARD", "HOSPITAL_FACT", "진료 철학", PHILOSOPHY_SENTENCE)),
             "auto_correction": {"corrected_sha256": candidate_sha256(content)},
         },
     )

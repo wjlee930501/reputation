@@ -77,7 +77,10 @@ from app.services.content_minimal_correction import (
     published_correction_allowed_for,
     run_published_correction,
 )
-from app.services.content_publication import AI_REVIEW_DEFERRED_KEY
+from app.services.content_publication import (
+    AI_REVIEW_DEFERRED_KEY,
+    POST_PUBLISH_CRITICAL_ALERT_KEY,
+)
 from app.services.finding_criticality import flag_findings_are_critical
 from app.services.incident_types import IncidentFingerprint
 from app.services.must_use_verbatim import required_must_use_messages
@@ -106,6 +109,11 @@ POST_PUBLISH_CRITICAL_INCIDENT_PIPELINE = "post_publish_critical_review"
 POST_PUBLISH_CRITICAL_INCIDENT_TYPE = "POST_PUBLISH_CRITICAL_FINDING"
 # Critical이 아닌 지적만 남은 공개 글을 조용히 닫을 때의 확인 기록(사람 확인·검수 PASS와 구분한다).
 POST_PUBLISH_NONCRITICAL_CLOSER = "system:ai-review-noncritical"
+# 글당 Critical 알림 의도(요청·전달 시각, 어느 본문의 판정인가). Critical 판정을 저장하는 같은 커밋에
+# 요청을 남기고, 사고를 연 뒤 전달 시각을 적는다 — 교정 성공·장애·하루 상한과 무관하다. 같은 본문에는
+# 다시 알리지 않고, 본문이 바뀌어 새 Critical이 나올 때만 다시 알린다(Codex P1-4).
+# D37 선발행 글 검수 단계의 자기 예산 — 뒤 단계(교정·상위 재검수·표본)와 시간·연속 장애를 나누지 않는다.
+_DEFERRED_RUN_BUDGET_SECONDS = 600
 
 # 공급자가 연달아 이만큼 못 보면 오늘은 접는다 — 장애 중에 상한만큼 두드리지 않는다.
 _CONSECUTIVE_UNAVAILABLE_LIMIT = 3
@@ -463,6 +471,7 @@ def apply_review_outcome(item: ContentItem, review: ContentAiReview, *, now: dat
         summary[POST_PUBLISH_FLAG_KEY] = _flag_payload(
             review, review.candidate_sha256, now, summary.get(POST_PUBLISH_FLAG_KEY)
         )
+        _request_critical_alert(summary, now)
         item.essence_check_summary = summary
         return "FLAGGED"
     # 차단 지적이 없는 PASS(비차단 SOFT 포함). 현재 본문에 묶인 검수라 `ai_review`도 갱신해
@@ -474,6 +483,96 @@ def apply_review_outcome(item: ContentItem, review: ContentAiReview, *, now: dat
     item.post_publish_reviewed_at = now
     item.post_publish_reviewed_by = POST_PUBLISH_AI_REVIEWER
     return "REVIEWED"
+
+
+def _request_critical_alert(summary: dict[str, Any], now: datetime) -> bool:
+    """표시가 Critical이고 이 본문에 대한 알림 의도가 아직 없으면 요청을 적는다(같은 커밋)."""
+
+    marker = summary.get(POST_PUBLISH_FLAG_KEY)
+    if not isinstance(marker, dict) or not flag_is_critical(marker):
+        return False
+    alert = summary.get(POST_PUBLISH_CRITICAL_ALERT_KEY)
+    if isinstance(alert, dict) and alert.get("candidate_sha256") == marker.get("candidate_sha256"):
+        return False
+    summary[POST_PUBLISH_CRITICAL_ALERT_KEY] = {
+        "candidate_sha256": marker.get("candidate_sha256"),
+        "requested_at": now.isoformat(),
+        "sent_at": None,
+    }
+    return True
+
+
+def _pending_critical_alert_stmt(limit: int):
+    """요청됐지만 아직 전달하지 못한 Critical 알림(사고 기록 실패 등) — 다음 실행 첫머리에 다시 보낸다."""
+
+    alert = ContentItem.essence_check_summary[POST_PUBLISH_CRITICAL_ALERT_KEY]
+    return (
+        select(ContentItem)
+        .join(Hospital, ContentItem.hospital_id == Hospital.id)
+        .where(
+            ContentItem.status == ContentStatus.PUBLISHED,
+            alert["requested_at"].as_string().is_not(None),
+            alert["sent_at"].as_string().is_(None),
+        )
+        .order_by(ContentItem.published_at, ContentItem.id)
+        .options(joinedload(ContentItem.hospital))
+        .limit(limit)
+    )
+
+
+def ensure_critical_alert(db, item_id, hospital: Hospital, run_async, *, now: datetime | None = None) -> bool:
+    """이 글의 지금 Critical 판정에 대해 "마케터 검토 필요"를 정확히 한 번 보낸다(D35).
+
+    1. 잠근 행의 표시가 Critical이 아니면 아무것도 하지 않는다.
+    2. 이 본문(표시의 후보 hash)에 대한 알림을 이미 보냈으면 아무것도 하지 않는다 — 사고가 그 사이 복구·
+       확인됐어도 다시 열지 않는다(글 평생 한 번, 본문이 바뀐 새 Critical만 다시 알린다).
+    3. 요청이 없으면 요청을 먼저 커밋하고, 사고를 연 뒤 전달 시각을 같은 hash일 때만 적는다. 사고 기록이
+       실패하면 요청이 남아 다음 실행 첫머리(`_pending_critical_alert_stmt`)가 다시 보낸다.
+    보냈으면 True.
+    """
+
+    observed = now or datetime.now(UTC)
+    locked = _lock_item(db, item_id)
+    summary = dict(locked.essence_check_summary or {}) if locked is not None else {}
+    marker = summary.get(POST_PUBLISH_FLAG_KEY)
+    if (
+        locked is None
+        or locked.status != ContentStatus.PUBLISHED
+        or not isinstance(marker, dict)
+        or marker.get("status") != POST_PUBLISH_FLAGGED
+        or not flag_is_critical(marker)
+    ):
+        db.rollback()
+        return False
+    alert = summary.get(POST_PUBLISH_CRITICAL_ALERT_KEY)
+    target_sha = marker.get("candidate_sha256")
+    if isinstance(alert, dict) and alert.get("candidate_sha256") == target_sha and alert.get("sent_at"):
+        db.rollback()
+        return False
+    if _request_critical_alert(summary, observed):
+        locked.essence_check_summary = summary
+        db.commit()
+    else:
+        db.rollback()
+    _open_critical_incident(locked, hospital, run_async)
+    relocked = _lock_item(db, item_id)
+    current = dict(relocked.essence_check_summary or {}) if relocked is not None else {}
+    pending = current.get(POST_PUBLISH_CRITICAL_ALERT_KEY)
+    if not isinstance(pending, dict) or pending.get("candidate_sha256") != target_sha:
+        db.rollback()
+        return True
+    current[POST_PUBLISH_CRITICAL_ALERT_KEY] = {**pending, "sent_at": observed.isoformat()}
+    relocked.essence_check_summary = current
+    db.commit()
+    return True
+
+
+def _alert_safely(db, item_id, hospital, run_async) -> None:
+    try:
+        ensure_critical_alert(db, item_id, hospital, run_async)
+    except Exception:  # noqa: BLE001 - 알림 실패가 저장된 판정을 되돌리지 않는다(요청은 남아 다시 보낸다).
+        db.rollback()
+        logger.exception("post-publish critical alert failed for %s", item_id)
 
 
 _NEEDS_HUMAN_COPY = {
@@ -582,7 +681,7 @@ def _settle_flag(
 ) -> None:
     """FLAGGED로 남은 공개 글의 끝 처리(D35). 글은 어느 경우에도 내리지 않는다.
 
-    - Critical: "마케터 검토 필요" 사고(글당 하나, Slack).
+    - Critical: "마케터 검토 필요" 사고(글당 한 번, Slack) — 판정 저장 때 이미 보냈으면 그대로다.
     - Critical 아님: 사고 없음. 자동 교정이 끝났으면(`needs_human_reason`) 조용히 닫는다 — 단 UNCERTAIN만
       남았고 상위 재검수를 아직 받지 않았으면 그 재검수(며칠 뒤)를 기다린다.
     옛 조용한 사고(`POST_PUBLISH_REVIEW_FLAGGED`)는 더 열지 않고 닫는다.
@@ -593,7 +692,8 @@ def _settle_flag(
         return
     _recover_flag_incident(item, hospital, run_async)
     if flag_is_critical(marker):
-        _open_critical_incident(item, hospital, run_async, needs_human_reason=needs_human_reason)
+        # 판정을 저장할 때 이미 알렸다면 아무것도 하지 않는다 — 글당 한 번(`ensure_critical_alert`).
+        ensure_critical_alert(db, item.id, hospital, run_async, now=now)
         return
     awaiting_senior = uncertain_only(marker) and not marker.get(POST_PUBLISH_SENIOR_REREVIEW_KEY)
     if needs_human_reason and not awaiting_senior:
@@ -697,6 +797,9 @@ def _review_and_apply(db, item, hospital, philosophy, run_async, now: datetime) 
         return "CANDIDATE_PUBLISHED"
     outcome = apply_review_outcome(locked, review, now=now)
     db.commit()
+    if outcome == "FLAGGED":
+        # Critical 판정은 교정 결과·장애·하루 상한과 무관하게 지금 알린다(글당 한 번).
+        _alert_safely(db, item_id, hospital, run_async)
     return outcome
 
 
@@ -990,7 +1093,8 @@ def _bump(counts: dict[str, int], key: str) -> None:
     time_limit=2700,
 )
 def review_post_publish_samples() -> dict[str, int]:
-    """FLAGGED 공개 글을 먼저 자동 교정하고, 미확인 사후 표본을 하루 상한 안에서 독립 검수한다."""
+    """선발행(D37) 글을 먼저 자기 예산으로 검수하고, FLAGGED 공개 글을 자동 교정하고, 미확인 사후
+    표본을 하루 상한 안에서 독립 검수한다."""
 
     require_dispatch(current_task, POST_PUBLISH_AI_REVIEW_PURPOSE)
     cap = int(settings.POST_PUBLISH_AI_REVIEW_DAILY_CAP)
@@ -1036,6 +1140,38 @@ def review_post_publish_samples() -> dict[str, int]:
             _bump(counts, key)
 
     with SyncSessionLocal() as db:
+        # 0) 요청됐지만 전달하지 못한 Critical 알림을 먼저 보낸다(사고 기록 실패 뒤 재시도).
+        for item in db.execute(_pending_critical_alert_stmt(50)).unique().scalars().all():
+            _alert_safely(db, item.id, item.hospital, _run_async)
+        # 0b) 검수 장애로 판정 없이 먼저 발행된 글(D37) — 실제 첫 단계다. 자기 시간·연속 장애·상한을 쓰고
+        # 뒤 단계(교정·상위 재검수·표본)와 나누지 않는다. 공개 중인데 아무 검수도 받지 않은 글이다.
+        seen: set[uuid.UUID] = set()
+        if cap > 0:
+            deferred_started = time.monotonic()
+            deferred_done = deferred_unavailable = 0
+            for item in list(db.execute(_deferred_review_stmt(cap)).unique().scalars().all()):
+                if (
+                    deferred_done >= cap
+                    or deferred_unavailable >= _CONSECUTIVE_UNAVAILABLE_LIMIT
+                    or time.monotonic() - deferred_started > _DEFERRED_RUN_BUDGET_SECONDS
+                ):
+                    break
+                hospital = item.hospital
+                if hospital.id not in philosophies:
+                    philosophies[hospital.id] = _generation_philosophy_sync(db, hospital.id)
+                if philosophies[hospital.id] is None:
+                    counts["skipped"] += 1
+                    continue
+                deferred_done += 1
+                seen.add(item.id)
+                item_id = item.id
+                outcome = _review_and_apply(
+                    db, item, hospital, philosophies[hospital.id], _run_async, datetime.now(UTC)
+                )
+                deferred_unavailable = deferred_unavailable + 1 if outcome == "UNAVAILABLE" else 0
+                _bump(counts, f"deferred_{outcome.lower()}")
+                if outcome == "REVIEWED":
+                    _recover_flag_incident(db.get(ContentItem, item_id), hospital, _run_async)
         # 1) 이미 FLAGGED인 공개 글 — 표본 검수보다 먼저 푼다(글을 고치는 일이 새 표본보다 급하다).
         if correction_cap > 0:
             flagged = list(
@@ -1094,14 +1230,13 @@ def review_post_publish_samples() -> dict[str, int]:
         if cap <= 0:
             logger.info("post-publish AI review sweep finished: %s", counts)
             return counts
-        # 검수 장애로 판정 없이 먼저 발행된 글(D37)이 맨 앞이다 — 공개 중인데 아무 검수도 받지 않았다.
-        # 그다음 비공개 글(드물다) — restore가 막혀 있는 글이라 표본보다 급하다.
-        candidates = list(db.execute(_deferred_review_stmt(cap)).unique().scalars().all())
-        candidates += list(db.execute(_withheld_stmt(cap)).unique().scalars().all())
+        # 비공개 글(드물다)을 먼저 — restore가 막혀 있는 글이라 표본보다 급하다. 선발행 단계가 본 글은 빼고,
+        # 그 단계의 연속 장애 계수는 여기로 넘어오지 않는다.
+        consecutive_unavailable = 0
+        candidates = list(db.execute(_withheld_stmt(cap)).unique().scalars().all())
         candidates += list(
             db.execute(_review_stmt(cap * _SCAN_MULTIPLIER)).unique().scalars().all()
         )
-        seen: set[uuid.UUID] = set()
         candidates = [item for item in candidates if not (item.id in seen or seen.add(item.id))]
         for item in candidates:
             if attempted >= cap or out_of_budget():
@@ -1130,8 +1265,8 @@ def review_post_publish_samples() -> dict[str, int]:
                     if result != "SKIPPED":
                         corrections += 1
                     tally(result)
-                # 교정이 아직 이 글을 맡을 수 있으면(오늘 상한·장애·경합) 다음 실행의 교정을 기다린다 —
-                # Critical 알림은 자동 교정 계단을 거친 뒤에도 남을 때만 나간다(D35).
+                # Critical 알림은 판정을 저장할 때 이미 나갔다(`_review_and_apply`). 교정이 이 글을 더
+                # 맡을 수 없을 때만 끝 처리(비-Critical 조용한 종결 판단)를 한다.
                 if result == "SKIPPED" or correction_cap <= 0:
                     try:
                         _settle_flag(db, locked, hospital, _run_async)

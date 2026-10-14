@@ -77,8 +77,11 @@ BEGIN
                      )))
             AND NOT coalesce((item.essence_check_summary ->> 'blocking')::boolean, false)
             AND NOT coalesce((item.essence_check_summary ->> 'authority_change')::boolean, false)
-            -- 0091 (D37): an UNAVAILABLE review (no verdict) may publish first when the publish
-            -- path stamped its deferral marker for the same candidate hash. coalesce keeps a
+            -- 0091 (D37): an UNAVAILABLE review (no verdict) may publish first only when the
+            -- publish path stamped its deferral marker for the same candidate hash AND for the
+            -- CURRENT public text (title/body/meta/FAQ joined by U+001F, the same hash as
+            -- `content_publication.publication_text_sha256`), and the body is not an automatic
+            -- correction (a corrected body always needs a PASS bound to it). coalesce keeps a
             -- missing marker false (never NULL).
             AND NOT coalesce(
                 item.essence_check_summary -> 'ai_review' ->> 'status' = 'UNAVAILABLE'
@@ -86,7 +89,13 @@ BEGIN
                     jsonb_typeof(item.essence_check_summary -> 'ai_review_deferred') = 'object'
                     AND btrim(coalesce(item.essence_check_summary -> 'ai_review_deferred' ->> 'candidate_sha256', '')) <> ''
                     AND item.essence_check_summary -> 'ai_review_deferred' ->> 'candidate_sha256'
-                        = item.essence_check_summary -> 'ai_review' ->> 'candidate_sha256',
+                        = item.essence_check_summary -> 'ai_review' ->> 'candidate_sha256'
+                    AND item.essence_check_summary -> 'ai_review_deferred' ->> 'text_sha256'
+                        = encode(digest(convert_to(concat_ws(chr(31),
+                            coalesce(item.title, ''), coalesce(item.body, ''),
+                            coalesce(item.meta_description, ''), coalesce(item.faq_question, ''),
+                            coalesce(item.faq_answer_summary, '')), 'UTF8'), 'sha256'), 'hex')
+                    AND btrim(coalesce(item.essence_check_summary -> 'auto_correction' ->> 'corrected_sha256', '')) = '',
                     false),
                 false)
             AND NOT coalesce(

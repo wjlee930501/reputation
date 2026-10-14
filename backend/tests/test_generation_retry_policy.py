@@ -441,8 +441,13 @@ def test_hard_finding_class_depends_on_who_declared_it() -> None:
     ) is True
     # W4: 병원 사실 HARD는 Critical이 아니라 교정·교체 계단의 종착이 아니다.
     assert has_model_declared_hard_finding(
-        {"findings": [{"severity": "SOFT"}, {"severity": "HARD", "kind": "HOSPITAL_FACT"}]}
+        {"findings": [{"severity": "SOFT"}, {"severity": "HARD", "kind": "HOSPITAL_FACT",
+                       "message": "진료 철학 문장이 승인 자료에 없습니다."}]}
     ) is False
+    # 내용을 모르는 병원 사실 HARD는 Critical이다(fail closed).
+    assert has_model_declared_hard_finding(
+        {"findings": [{"severity": "HARD", "kind": "HOSPITAL_FACT"}]}
+    ) is True
     assert has_model_declared_hard_finding(None) is False
 
 

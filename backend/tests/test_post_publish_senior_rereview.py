@@ -90,11 +90,11 @@ def test_senior_pass_closes_the_flag_with_the_review_model(monkeypatch):
 
 
 def test_senior_still_uncertain_is_recorded_once_and_closes_quietly(monkeypatch):
-    """상위 재검수 뒤에도 Critical이 아닌 확신 부족만 남았다 — 사고 없이 조용히 닫는다(D35)."""
+    """상위 재검수 뒤에도 의료 내용 없는 확신 부족만 남았다 — 사고 없이 조용히 닫는다(D35)."""
 
     item = _flagged()
     uncertain = ContentAiFinding(
-        ContentAiFindingSeverity.UNCERTAIN, ContentAiFindingKind.MEDICAL_SAFETY, "확신 부족"
+        ContentAiFindingSeverity.UNCERTAIN, ContentAiFindingKind.HOSPITAL_FACT, "확인할 수 없는 장비 보유"
     )
     calls = _wire(monkeypatch, item, _review(item, status=ContentAiReviewStatus.REVISE, findings=[uncertain]))
 
@@ -118,7 +118,23 @@ def test_senior_critical_finding_asks_the_marketer_once(monkeypatch):
 
     sweep.senior_rereview_flagged(_DB(), item, object(), object(), asyncio.run, NOW)
 
-    assert calls["needs_human"] == ["SENIOR_REREVIEW_HARD"]
+    assert len(calls["needs_human"]) == 1
+    assert item.essence_check_summary[sweep.POST_PUBLISH_CRITICAL_ALERT_KEY]["sent_at"]
+
+
+def test_senior_uncertain_medical_finding_is_critical_and_alerts(monkeypatch):
+    """의료 안전 지적은 확신 부족이어도 Critical이다(fail closed) — 조용히 닫지 않고 알린다."""
+
+    item = _flagged()
+    uncertain = ContentAiFinding(
+        ContentAiFindingSeverity.UNCERTAIN, ContentAiFindingKind.MEDICAL_SAFETY, "확신 부족"
+    )
+    calls = _wire(monkeypatch, item, _review(item, status=ContentAiReviewStatus.REVISE, findings=[uncertain]))
+
+    sweep.senior_rereview_flagged(_DB(), item, object(), object(), asyncio.run, NOW)
+
+    assert len(calls["needs_human"]) == 1
+    assert item.post_publish_reviewed_at is None
 
 
 def test_senior_rereview_marker_keeps_the_item_out_of_tomorrows_selection(monkeypatch):

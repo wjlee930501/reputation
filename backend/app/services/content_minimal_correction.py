@@ -40,7 +40,6 @@ from app.services.content_ai_review import (
     hospital_review_profile,
 )
 from app.services.content_engine import CONTENT_BODY_MIN_CHARS, body_plain_length
-from app.services.finding_criticality import blocking_findings as criticality_blocking_findings
 from app.services.finding_criticality import review_blocks_only_noncritically
 from app.services.must_use_verbatim import (
     appears_as_standalone_sentence,
@@ -1179,9 +1178,10 @@ async def run_minimal_correction(
 
 
 # ── 비-Critical 지적의 결정적 해소 (W4) ─────────────────────────────────────────
-# 근거 없는 병원 주장·승인 자료와 다른 수치·확신 부족처럼 Critical이 아닌 지적(`finding_criticality`)은
-# 교정 제안(LLM)을 사지 않는다. 지적 문장을 지우거나, 승인 자료에 같은 단위의 수치가 하나뿐이면 그
-# 값으로 바꾼다 — 지우기·승인 값 치환은 새 주장을 만들 수 없다. 교정본은 여전히 독립 재검수 PASS가
+# 의료 내용이 없는 병원 사실처럼 Critical이 아닌 지적(`finding_criticality`)은 교정 제안(LLM)을 사지
+# 않고 지적 문장을 지운다. 숫자를 승인 값으로 바꿔 넣지 않는다(2026-10-14 오케스트레이터 결정 — 단위
+# 첫 글자·숫자만 맞춘 치환이 투약량·다른 사실의 기간을 지어냈다, Codex P1-3). 지우기는 새 주장을
+# 만들 수 없다. 교정본은 여전히 독립 재검수 PASS가
 # 그 hash에 묶여야 발행된다(계약 그대로). 재검수는 첫 판정 모델(`POST_PUBLISH_AI_REVIEW_MODEL`)로
 # 하며, 이 계단의 재검수 수는 Critical 교정의 상한(`CONTENT_AUTO_CORRECTION_*`)과 따로 센다.
 NONCRITICAL_REREVIEW_LIMIT = 2
@@ -1194,40 +1194,16 @@ class NoncriticalFixPlan:
     decisions: dict[str, SentenceDecision]
 
 
-def numeric_replacement(sentence: str, sources: Iterable[object]) -> str | None:
-    """문장의 수치 하나가 승인 자료에 없고, 같은 단위의 승인 수치가 하나뿐이면 그 값으로 바꾼 문장.
-
-    단위 없는 숫자, 승인 자료에 없는 수치가 둘 이상인 문장, 같은 단위의 승인 수치가 여럿인 경우는
-    애매하므로 ``None``이다(호출부가 문장을 지운다).
-    """
-
-    approved = _number_terms(" ".join(str(source or "") for source in sources))
-    unsupported = [
-        match
-        for match in _NUMBER.finditer(sentence)
-        if (match.group(1).replace(",", ""), match.group(2)) not in approved
-    ]
-    if len(unsupported) != 1 or not unsupported[0].group(2):
-        return None
-    match = unsupported[0]
-    values = {number for number, unit in approved if unit == match.group(2)}
-    if len(values) != 1:
-        return None
-    return sentence[: match.start(1)] + values.pop() + sentence[match.end(1) :]
-
-
 def plan_noncritical_fixes(
     content: Mapping[str, Any],
     review: Mapping[str, Any] | None,
     *,
     must_use_messages: Iterable[str] = (),
-    sources: Iterable[object] = (),
 ) -> NoncriticalFixPlan | None:
     """차단 지적이 모두 Critical이 아니고 모두 문장 하나로 짚혀 있을 때의 결정적 교정 계획.
 
     하나라도 결정적으로 풀 수 없으면(인용 없음·여러 곳·제목·필수 문구 문장·응급 안내) ``None``이다 —
-    그 글은 기존 경로(재검수·재작성 계단)가 맡는다. 병원 사실(HOSPITAL_FACT) 지적 문장은 승인 수치로
-    바꿀 수 있으면 바꾸고, 나머지는 지운다.
+    그 글은 기존 경로(재검수·재작성 계단)가 맡는다. 짚힌 문장은 모두 지운다(숫자 치환 없음).
     """
 
     if not review_blocks_only_noncritically(review):
@@ -1236,25 +1212,10 @@ def plan_noncritical_fixes(
     plan = plan_corrections(content, review, must_use_messages=must_use, include_uncertain=True)
     if not plan.targets or plan.insertions or plan.uncorrectable:
         return None
-    source_list = list(sources)
-    fact_spans: set[tuple[str, int, int]] = set()
-    for finding in criticality_blocking_findings(review):
-        quote = str(finding.get("quote") or "").strip()
-        if _label(finding.get("kind")) == "HOSPITAL_FACT" and quote:
-            located = _locate(content, quote)
-            if located is not None:
-                fact_spans.add(located)
-    decisions: dict[str, SentenceDecision] = {}
-    for target in plan.targets:
-        replacement = (
-            numeric_replacement(target.sentence, source_list)
-            if (target.field, target.start, target.end) in fact_spans
-            else None
-        )
-        if replacement is not None and replacement_problem(target, replacement, source_list) is None:
-            decisions[target.key] = SentenceDecision(target.key, replacement, "approved_number")
-        else:
-            decisions[target.key] = SentenceDecision(target.key, None, "noncritical_delete")
+    decisions = {
+        target.key: SentenceDecision(target.key, None, "noncritical_delete")
+        for target in plan.targets
+    }
     return NoncriticalFixPlan(plan=plan, decisions=decisions)
 
 
@@ -1270,7 +1231,7 @@ async def run_noncritical_resolution(
     review_fn: Callable[..., Awaitable[ContentAiReview]],
     max_rereviews: int = NONCRITICAL_REREVIEW_LIMIT,
 ) -> CorrectionOutcome:
-    """비-Critical 지적을 결정적으로 지우고(또는 승인 수치로 바꾸고) 독립 재검수한다.
+    """비-Critical 지적 문장을 결정적으로 지우고 독립 재검수한다.
 
     공급자 교정 제안을 사지 않는다. 결과의 ``rereviews``는 이 계단의 누적 재검수 수다(Critical 교정
     상한과 따로 센다). 재검수가 다시 비-Critical만 짚으면 남은 수 안에서 한 번 더 지운다. Critical이
@@ -1287,9 +1248,7 @@ async def run_noncritical_resolution(
     addressed: list[dict[str, str]] = []
     status = "NOT_APPLICABLE"
     while True:
-        fix = plan_noncritical_fixes(
-            current, current_review, must_use_messages=must_use, sources=sources
-        )
+        fix = plan_noncritical_fixes(current, current_review, must_use_messages=must_use)
         if fix is None:
             status = "BLOCKED" if last_review is not None else "NOT_APPLICABLE"
             break

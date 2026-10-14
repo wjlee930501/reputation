@@ -7,7 +7,9 @@ reference-count clause (`NOTICE OR references > 0 OR optional-reference marker`)
 D37 (2026-10-14) lets a post whose independent review produced no verdict (UNAVAILABLE —
 provider error/timeout) publish on schedule and be reviewed after publication. The function
 accepts UNAVAILABLE only when the publish path stamped `essence_check_summary.ai_review_deferred`
-for the same candidate hash as the stored review. Every other eligibility check is unchanged.
+for the same candidate hash as the stored review and for the current public text hash (recomputed
+here), and the body carries no automatic-correction record. Every other eligibility check is
+unchanged.
 
 Downgrade reinstalls the 0090 function. The publish path keeps stamping the 0089 reference marker
 (`block_when_empty=false`), so D36 posts still receive revisions under the 0090 function.

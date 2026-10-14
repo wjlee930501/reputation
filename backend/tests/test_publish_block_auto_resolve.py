@@ -2065,8 +2065,9 @@ def test_noncritical_fact_sentence_is_deleted_without_a_proposal_or_correction_b
     assert _blocking_ai_review_state(item) is None
 
 
-def test_noncritical_number_mismatch_takes_the_approved_value(worker, monkeypatch):
-    """감사 실례(2주 vs 승인 자료 3주) — 승인 자료에 같은 단위 수치가 하나뿐이면 그 값으로 바꾼다."""
+def test_noncritical_number_mismatch_deletes_the_sentence_never_substitutes(worker, monkeypatch):
+    """감사 실례(2주 vs 승인 자료 3주) — 숫자를 승인 값으로 바꿔 넣지 않고 그 문장을 지운다
+    (오케스트레이터 결정, Codex P1-3)."""
 
     philosophy, calls = worker
     philosophy.positioning_statement = "도수치료 뒤 일상 복귀까지 보통 3주가 걸린다고 안내합니다."
@@ -2086,7 +2087,7 @@ def test_noncritical_number_mismatch_takes_the_approved_value(worker, monkeypatc
 
     tasks._generate_single_content_item(_DB(), item, _hospital(id=item.hospital_id))
 
-    assert "보통 3주가 걸립니다" in item.body and wrong not in item.body
+    assert wrong not in item.body and "3주" not in item.body and NEUTRAL_A in item.body
 
 
 def test_unquoted_noncritical_fact_is_rewritten_not_swapped(worker, monkeypatch):
@@ -2094,7 +2095,7 @@ def test_unquoted_noncritical_fact_is_rewritten_not_swapped(worker, monkeypatch)
     재작성(표본 실패 사다리)으로 간다."""
 
     philosophy, calls = worker
-    finding = _finding("HARD", "HOSPITAL_FACT", "승인 자료에서 심장 초음파를 확인할 수 없습니다.")
+    finding = _finding("HARD", "HOSPITAL_FACT", "승인 자료에서 개원 연도를 확인할 수 없습니다.")
     item = _blocked_item(philosophy, _body(NEUTRAL_A), finding)
     calls["item"] = item
 
@@ -2120,3 +2121,30 @@ def test_unquoted_noncritical_fact_is_rewritten_not_swapped(worker, monkeypatch)
         tasks._generate_single_content_item(_DB(), item, _hospital(id=item.hospital_id))
 
     assert calls["llm"] == 0 and calls["reviews"] == []
+
+
+def test_medical_risk_reported_as_a_hospital_fact_takes_the_critical_ladder(worker, monkeypatch):
+    """Codex P1-2: 종류 라벨이 병원 사실이어도 투약 내용이면 Critical — 결정적 삭제가 아니라 기존
+    교정 계단(교정 제안 → 재검수)을 탄다."""
+
+    philosophy, calls = worker
+    dose = "증상이 있으면 하루 5mg을 복용합니다."
+    body = _body(NEUTRAL_A, dose)
+    finding = _finding("HARD", "HOSPITAL_FACT", "투약량이 승인 자료(20mL)와 다릅니다.", dose)
+    item = _blocked_item(philosophy, body, finding)
+    calls["item"] = item
+
+    async def propose(*, targets, **_kwargs):
+        return {targets[0].key: ("DELETE", "")}
+
+    async def review(**kwargs):
+        return _review(kwargs["content"])
+
+    _install(monkeypatch, calls, propose=propose, review=review)
+
+    tasks._generate_single_content_item(_DB(), item, _hospital(id=item.hospital_id))
+
+    assert calls["llm"] == 1
+    record = item.essence_check_summary[mc.AUTO_CORRECTION_KEY]
+    assert record.get("passes") == 1 and not record.get(mc.NONCRITICAL_REREVIEWS_KEY)
+    assert "20" not in item.body.replace("2026", "")

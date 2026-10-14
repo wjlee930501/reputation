@@ -185,3 +185,37 @@ async def test_review_unavailable_published_post_stays_visible(pg_async_session)
     loaded = await _reload(pg_async_session, item)
     visibility = assess_public_visibility(loaded, loaded.content_philosophy_id)
     assert visibility.visible, visibility.blockers
+
+
+async def test_marker_for_older_public_text_is_ignored(pg_async_session):
+    """Codex P1-1: 함수는 표지를 검수 hash뿐 아니라 지금 공개 텍스트 hash와도 비교한다."""
+
+    item = await _seed(pg_async_session, content_type=ContentType.DISEASE, title=MEDICAL_TITLE)
+    item.essence_check_summary = {
+        **item.essence_check_summary,
+        "ai_review": _unavailable_review(item),
+    }
+    item.essence_check_summary = {
+        **item.essence_check_summary,
+        AI_REVIEW_DEFERRED_KEY: ai_review_deferral_marker(item),
+    }
+    item.body = item.body + " 표지 뒤에 바뀐 문장."
+    _mark_published(item)
+
+    assert await _created(pg_async_session, item) == 0
+
+
+async def test_corrected_body_never_publishes_on_an_unavailable_review(pg_async_session):
+    item = await _seed(pg_async_session, content_type=ContentType.DISEASE, title=MEDICAL_TITLE)
+    item.essence_check_summary = {
+        **item.essence_check_summary,
+        "ai_review": _unavailable_review(item),
+        "auto_correction": {"corrected_sha256": candidate_sha256(item), "passes": 1},
+    }
+    item.essence_check_summary = {
+        **item.essence_check_summary,
+        AI_REVIEW_DEFERRED_KEY: ai_review_deferral_marker(item),
+    }
+    _mark_published(item)
+
+    assert await _created(pg_async_session, item) == 0

@@ -5,12 +5,14 @@
 
 등급:
 
-- ``CRITICAL``: 불법 의료광고(금지 표현 필터, 할인·유인 포함), 의료 안전 HARD(응급 안내 누락·위험한
-  의학 오정보). 감지 자체가 Critical-blocked는 아니다 — 먼저 기존 교정·재작성·주제 교체 계단을 탄다.
+- ``CRITICAL``: 불법 의료광고(금지 표현 필터, 할인·유인 포함), 의료 내용을 다루는 모든 검수 지적
+  (응급 안내·용량·금기·시술 위험·긴급 증상·의학적 오정보 — 종류 라벨이 아니라 내용으로 정한다), 등급을
+  알 수 없는 지적(fail closed). 감지 자체가 Critical-blocked는 아니다 — 먼저 기존 교정·재작성·주제 교체
+  계단을 탄다.
   (출력 주입·tenant 혼입의 결정적 검사는 아직 없다 — 생기면 여기 코드로 더한다.)
-- ``NONCRITICAL``: 근거 없는 병원 주장(HOSPITAL_FACT)·승인 자료와 다른 수치·확신 부족(UNCERTAIN)·
-  문체·참고자료·검수 장애·공급자 장애 등. 결정적으로 고치고(문장 삭제·승인 수치 치환) 진행하며
-  교정·주제 교체 예산을 쓰지 않는다.
+- ``NONCRITICAL``: 의료 내용이 없는 병원 사실(진료 철학 문장·경력·개원 연도·시설·예약·홍보 문구)·
+  문체·참고자료·검수 장애·공급자 장애 등. 지적 문장을 결정적으로 지우고 진행하며(숫자를 바꿔 넣지
+  않는다) 교정·주제 교체 예산을 쓰지 않는다.
 - ``RESPECT``: 사람이 만든 공개 권한 상태(근거 철회·PAUSED·비공개). Critical처럼 막지만 자동으로
   풀지 않고 알리지도 않는다.
 - ``SYSTEM``: 시스템 결함(검수 설정 오류·예산 기록 판독 불가). 개발 확인 대상이다.
@@ -33,12 +35,55 @@ class Criticality(StrEnum):
 # 지적 문구가 응급 안내(119·응급실) 누락을 말하는지 보는 표지 — 최소 교정의 응급 템플릿 판정과 같다.
 EMERGENCY_GUIDANCE_MARKERS = ("응급", "119", "구급", "즉시 내원", "즉시 병원")
 _BLOCKING_SEVERITIES = frozenset({"HARD", "UNCERTAIN"})
-# HARD여도 Critical이 아닌 지적 종류. 근거 없는 병원 주장·수치 불일치(HOSPITAL_FACT)와 문체·참고자료.
-_NONCRITICAL_HARD_KINDS = frozenset({"HOSPITAL_FACT", "STYLE", "REFERENCE"})
+
+# ── 내용으로 정하는 등급(2026-10-14 Codex P1-2) ───────────────────────────────────────
+# 등급은 지적의 종류 라벨이 아니라 **내용**(지적 문구 + 인용 문장)이 정한다. 아래 의료 위험 표지가
+# 하나라도 있으면 종류와 무관하게 Critical이다 — 응급 안내·119, 약의 용량·횟수·복용, 금기·위험군,
+# 시술 위험·합병증, 바로 진료가 필요한 증상, 의학적 오정보. 모르면 Critical이다(fail closed).
+_MEDICAL_RISK_MARKERS = (
+    *EMERGENCY_GUIDANCE_MARKERS,
+    "응급실", "구급차",
+    # 약의 용량·횟수·복용
+    "용량", "용법", "복용", "복약", "투약", "투여", "처방", "약물", "약을", "약은", "약이", "주사",
+    "mg", "ml", "mcg", "㎎", "㎖", "밀리그램", "밀리리터", "하루 ", "1일 ", "회분",
+    # 금기·위험군
+    "금기", "임산부", "임신", "수유", "영유아", "소아", "어린이", "고령", "노인", "기저질환",
+    "당뇨 환자", "고혈압 환자", "신장 질환", "간 질환", "알레르기", "과민",
+    # 시술 위험·합병증
+    "부작용", "합병증", "위험", "출혈", "감염", "마취", "쇼크", "아나필락시스", "사망", "후유증",
+    # 바로 진료가 필요한 증상
+    "흉통", "가슴 통증", "호흡곤란", "숨이 차", "의식", "마비", "경련", "실신", "토혈", "혈변",
+    "흑색변", "검은 변", "고열",
+    # 의학적 오정보·효과 단정
+    "오정보", "잘못된 의학", "의학적 근거", "의학적으로", "효과", "완치", "부정확한 의학",
+    "진단 기준", "오진", "질환의 원인", "치료법",
+)
+# 의료 내용이 없는 병원 사실임을 **적극적으로** 말하는 표지. 병원 사실(HOSPITAL_FACT) 지적은 이 표지가
+# 있고 의료 위험 표지가 없을 때만 Critical이 아니다 — 진료 철학 문장·경력·수련·개원 연도·시설 설명·
+# 예약·기간 같은 운영 정보·의료 내용 없는 홍보 문구.
+_NONMEDICAL_FACT_MARKERS = (
+    "철학", "원칙", "가치", "비전", "슬로건", "약속", "신념", "진료 방침",
+    "경력", "수련", "학력", "졸업", "전공의", "전문의 자격", "약력", "이력", "출신",
+    "개원", "설립", "연혁", "년째", "주년",
+    "시설", "장비", "병상", "규모", "주차", "위치", "층", "인테리어", "공간",
+    "예약", "진료 시간", "진료시간", "운영 시간", "휴진", "대기", "기간",
+    "홍보", "마케팅", "수상", "인증", "언론", "소개",
+)
+# 의료 내용이 없을 때 Critical이 아닌 종류(문체·참고자료). 병원 사실은 위 표지로 따로 본다.
+_NONMEDICAL_KINDS = frozenset({"STYLE", "REFERENCE"})
 
 
 def _label(value: object) -> str:
     return str(getattr(value, "value", value) or "").strip().upper()
+
+
+def _finding_text(finding: Mapping[str, Any]) -> str:
+    return f"{finding.get('message') or ''} {finding.get('quote') or ''}"
+
+
+def _mentions(text: str, markers: Iterable[str]) -> bool:
+    lowered = text.lower()
+    return any(marker.lower() in lowered for marker in markers)
 
 
 def finding_blocks(finding: Mapping[str, Any]) -> bool:
@@ -50,33 +95,36 @@ def finding_blocks(finding: Mapping[str, Any]) -> bool:
 
 
 def is_emergency_guidance_finding(finding: Mapping[str, Any]) -> bool:
-    """응급 안내(119·응급실)가 빠졌다는 차단 의료 안전 지적인가."""
+    """응급 안내(119·응급실)를 말하는 차단 지적인가 — 종류 라벨과 무관하다."""
 
-    if _label(finding.get("kind")) != "MEDICAL_SAFETY" or not finding_blocks(finding):
+    if not finding_blocks(finding):
         return False
-    message = str(finding.get("message") or "")
-    return any(marker in message for marker in EMERGENCY_GUIDANCE_MARKERS)
+    return _mentions(str(finding.get("message") or ""), EMERGENCY_GUIDANCE_MARKERS)
 
 
 def classify_finding(finding: Mapping[str, Any]) -> Criticality:
-    """독립 검수 지적 하나의 등급.
+    """독립 검수 지적 하나의 등급 — 내용이 정하고, 모르면 Critical이다(fail closed).
 
-    의료 안전 HARD와 응급 안내 누락(HARD·UNCERTAIN)만 Critical이다. 병원 사실(HOSPITAL_FACT)은
-    HARD여도 근거 없는 병원 주장·수치 불일치라 Critical이 아니다 — 지우거나 승인 수치로 바꾸면 된다.
-    확신 부족(UNCERTAIN) 의료 안전, SOFT·문체·참고자료, 필수 문구를 짚은 지적도 Critical이 아니다.
+    1. 발행을 막지 않는 지적(SOFT·필수 문구를 짚은 지적)은 Critical이 아니다.
+    2. 지적 문구나 인용 문장에 의료 위험 표지(응급·용량·금기·위험·긴급 증상·의학적 오정보)가 있으면
+       종류와 무관하게 Critical이다.
+    3. 의료 안전(MEDICAL_SAFETY)·종류를 읽을 수 없는 지적은 Critical이다.
+    4. 병원 사실(HOSPITAL_FACT)은 의료 내용이 없는 병원 사실(철학·경력·개원·시설·예약·홍보)임을
+       말하는 표지가 있을 때만 Critical이 아니다. 아니면 Critical이다.
+    5. 의료 내용이 없는 문체·참고자료 지적은 Critical이 아니다.
     """
 
     if not finding_blocks(finding):
         return Criticality.NONCRITICAL
-    if is_emergency_guidance_finding(finding):
+    text = _finding_text(finding)
+    if _mentions(text, _MEDICAL_RISK_MARKERS):
         return Criticality.CRITICAL
-    if (
-        _label(finding.get("severity")) == "HARD"
-        and _label(finding.get("kind")) not in _NONCRITICAL_HARD_KINDS
-    ):
-        # 의료 안전 HARD — 종류를 읽을 수 없는 HARD도 안전한 쪽(Critical)으로 본다.
-        return Criticality.CRITICAL
-    return Criticality.NONCRITICAL
+    kind = _label(finding.get("kind"))
+    if kind in _NONMEDICAL_KINDS:
+        return Criticality.NONCRITICAL
+    if kind == "HOSPITAL_FACT" and _mentions(text, _NONMEDICAL_FACT_MARKERS):
+        return Criticality.NONCRITICAL
+    return Criticality.CRITICAL
 
 
 def blocking_findings(review: object) -> list[Mapping[str, Any]]:

@@ -44,7 +44,7 @@ def _flag(item, *findings, finished=True, senior=False):
     return item
 
 
-def _finding(severity, kind, message="지적", quote="q"):
+def _finding(severity, kind, message="승인 자료에 없는 진료 철학 문장", quote="q"):
     return {"severity": severity, "kind": kind, "message": message, "quote": quote}
 
 
@@ -89,7 +89,8 @@ def test_critical_flag_asks_the_marketer_and_keeps_the_post_public(monkeypatch, 
 
     sweep._settle_flag(_DB(), item, object(), asyncio.run, needs_human_reason="blocked", now=NOW)
 
-    assert calls["critical"] == [(item.id, "blocked")]
+    assert [item_id for item_id, _reason in calls["critical"]] == [item.id]
+    assert item.essence_check_summary[sweep.POST_PUBLISH_CRITICAL_ALERT_KEY]["sent_at"]
     assert item.status == ContentStatus.PUBLISHED
     assert item.post_publish_reviewed_at is None
     # 옛 조용한 사고는 더 쌓지 않는다.
@@ -132,14 +133,14 @@ def test_noncritical_flag_waits_while_correction_can_still_run(monkeypatch, call
 
 
 def test_uncertain_only_flag_waits_for_the_senior_rereview(monkeypatch, calls):
-    item = _flag(_item(), _finding("UNCERTAIN", "HOSPITAL_FACT"))
+    item = _flag(_item(), _finding("UNCERTAIN", "HOSPITAL_FACT", "확인할 수 없는 장비 보유"))
     monkeypatch.setattr(sweep, "_lock_item", lambda _db, _id: item)
 
     sweep._settle_flag(_DB(), item, object(), asyncio.run, needs_human_reason="blocked", now=NOW)
 
     assert item.post_publish_reviewed_at is None
 
-    _flag(item, _finding("UNCERTAIN", "HOSPITAL_FACT"), senior=True)
+    _flag(item, _finding("UNCERTAIN", "HOSPITAL_FACT", "확인할 수 없는 장비 보유"), senior=True)
     sweep._settle_flag(_DB(), item, object(), asyncio.run, needs_human_reason="blocked", now=NOW)
 
     assert item.post_publish_reviewed_at == NOW
@@ -239,3 +240,137 @@ def test_pass_clears_the_deferral_marker() -> None:
     assert sweep.apply_review_outcome(item, _review(item), now=NOW) == "REVIEWED"
     assert AI_REVIEW_DEFERRED_KEY not in item.essence_check_summary
     assert item.essence_check_summary["ai_review"]["status"] == "PASS"
+
+
+# ── Codex P1-4: Critical 알림은 판정을 저장할 때 글당 한 번 ─────────────────────────────
+
+
+def _critical_review(item):
+    from app.services.content_ai_review import (
+        ContentAiFinding,
+        ContentAiFindingKind,
+        ContentAiFindingSeverity,
+        ContentAiReviewStatus,
+    )
+
+    return _review(
+        item,
+        status=ContentAiReviewStatus.REVISE,
+        findings=[
+            ContentAiFinding(
+                ContentAiFindingSeverity.HARD,
+                ContentAiFindingKind.MEDICAL_SAFETY,
+                "흑색변을 소화불량으로 안내했습니다",
+                quote="q",
+            )
+        ],
+    )
+
+
+def test_storing_a_critical_verdict_requests_the_alert_in_the_same_write() -> None:
+    item = _item()
+
+    assert sweep.apply_review_outcome(item, _critical_review(item), now=NOW) == "FLAGGED"
+
+    alert = item.essence_check_summary[sweep.POST_PUBLISH_CRITICAL_ALERT_KEY]
+    assert alert["candidate_sha256"] == candidate_sha256(item)
+    assert alert["requested_at"] == NOW.isoformat() and alert["sent_at"] is None
+
+
+def test_noncritical_verdict_requests_no_alert() -> None:
+    from app.services.content_ai_review import (
+        ContentAiFinding,
+        ContentAiFindingKind,
+        ContentAiFindingSeverity,
+        ContentAiReviewStatus,
+    )
+
+    item = _item()
+    review = _review(
+        item,
+        status=ContentAiReviewStatus.REVISE,
+        findings=[
+            ContentAiFinding(
+                ContentAiFindingSeverity.HARD,
+                ContentAiFindingKind.HOSPITAL_FACT,
+                "승인 자료에 없는 진료 철학 문장",
+                quote="q",
+            )
+        ],
+    )
+
+    assert sweep.apply_review_outcome(item, review, now=NOW) == "FLAGGED"
+    assert sweep.POST_PUBLISH_CRITICAL_ALERT_KEY not in item.essence_check_summary
+
+
+def test_alert_goes_out_exactly_once_per_body_even_after_the_incident_recovers(
+    monkeypatch, calls
+):
+    item = _item()
+    sweep.apply_review_outcome(item, _critical_review(item), now=NOW)
+    monkeypatch.setattr(sweep, "_lock_item", lambda _db, _id: item)
+
+    assert sweep.ensure_critical_alert(_DB(), item.id, object(), asyncio.run, now=NOW)
+    # 사고가 복구·확인된 뒤 같은 본문의 Critical을 다시 봐도(재검수·끝 처리) 다시 알리지 않는다.
+    sweep.apply_review_outcome(item, _critical_review(item), now=NOW)
+    assert not sweep.ensure_critical_alert(_DB(), item.id, object(), asyncio.run, now=NOW)
+    sweep._settle_flag(_DB(), item, object(), asyncio.run, needs_human_reason="blocked", now=NOW)
+
+    assert len(calls["critical"]) == 1
+
+
+def test_a_changed_body_with_a_new_critical_alerts_again(monkeypatch, calls):
+    item = _item()
+    sweep.apply_review_outcome(item, _critical_review(item), now=NOW)
+    monkeypatch.setattr(sweep, "_lock_item", lambda _db, _id: item)
+    sweep.ensure_critical_alert(_DB(), item.id, object(), asyncio.run, now=NOW)
+
+    item.body = item.body + "\n\n새 문단입니다."
+    item.post_publish_reviewed_at = None
+    sweep.apply_review_outcome(item, _critical_review(item), now=NOW)
+    sweep.ensure_critical_alert(_DB(), item.id, object(), asyncio.run, now=NOW)
+
+    assert len(calls["critical"]) == 2
+
+
+def test_a_failed_incident_write_leaves_the_request_for_the_next_run(monkeypatch, calls):
+    item = _item()
+    sweep.apply_review_outcome(item, _critical_review(item), now=NOW)
+    monkeypatch.setattr(sweep, "_lock_item", lambda _db, _id: item)
+
+    def broken(*_a, **_k):
+        raise RuntimeError("incident store down")
+
+    monkeypatch.setattr(sweep, "_open_critical_incident", broken)
+    sweep._alert_safely(_DB(), item.id, object(), asyncio.run)
+
+    alert = item.essence_check_summary[sweep.POST_PUBLISH_CRITICAL_ALERT_KEY]
+    assert alert["requested_at"] and alert["sent_at"] is None
+    sql = str(
+        sweep._pending_critical_alert_stmt(5).compile(
+            dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
+        )
+    )
+    assert "post_publish_critical_alert" in sql
+
+
+def test_the_critical_alert_survives_gate_rewrites_of_the_summary() -> None:
+    from app.services import content_publication
+
+    item = _item()
+    item.essence_check_summary = {
+        sweep.POST_PUBLISH_CRITICAL_ALERT_KEY: {"candidate_sha256": "x", "sent_at": "t"}
+    }
+    assessment = content_publication.PublicationAssessment(
+        publishable=True,
+        code=None,
+        message=None,
+        violations=(),
+        essence_status="ALIGNED",
+        essence_summary={},
+        philosophy_id=None,
+    )
+
+    content_publication.apply_publication_assessment(item, assessment)
+
+    assert item.essence_check_summary[sweep.POST_PUBLISH_CRITICAL_ALERT_KEY]["sent_at"] == "t"

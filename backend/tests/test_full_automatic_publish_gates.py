@@ -274,3 +274,51 @@ def test_system_reference_change_keeps_the_outage_deferral() -> None:
     restamp_review_after_system_reference_change(item, before)
 
     assert ai_review_deferred(item)
+
+
+def test_correction_then_outage_then_reference_removal_never_publishes_first(aligned) -> None:
+    """Codex P1-1 조합: 자동 교정 → 재검수 장애 → 시스템 참고자료 제거. 교정본은 지금 본문에 묶인
+    PASS가 생길 때까지 선발행하지 않는다 — 참고자료 변경이 hash를 옮겨도 같다."""
+
+    item = _item(references_list=[{"title": "위염", "url": "https://health.kdca.go.kr/x"}])
+    _with_review(
+        item,
+        _unavailable(item),
+        auto_correction={"corrected_sha256": candidate_sha256(item), "passes": 1},
+    )
+    assert not ai_review_deferred(item)
+    before = candidate_sha256(item)
+
+    item.references_list = []
+    restamp_review_after_system_reference_change(item, before)
+
+    summary = item.essence_check_summary
+    assert summary["ai_review"]["candidate_sha256"] == candidate_sha256(item)
+    # 교정본 표지도 새 본문을 따라간다 — "교정본은 반드시 재검수"가 그대로다.
+    assert summary["auto_correction"]["corrected_sha256"] == candidate_sha256(item)
+    assert not ai_review_deferred(item)
+    assessment = assess_content_publication(item, SimpleNamespace(id=uuid.uuid4()))
+    assert assessment.code == "CONTENT_AI_REVIEW_UNAVAILABLE"
+    assert AI_REVIEW_DEFERRED_KEY not in assessment.essence_summary
+
+
+def test_any_correction_record_blocks_the_deferral_even_for_an_older_body(aligned) -> None:
+    item = _item()
+    _with_review(item, _unavailable(item), auto_correction={"corrected_sha256": "older-body"})
+
+    assert not ai_review_deferred(item)
+
+
+def test_deferral_marker_binds_the_current_public_text() -> None:
+    from app.services.content_publication import (
+        ai_review_deferral_marker,
+        publication_text_sha256,
+    )
+
+    item = _item()
+    _with_review(item, _unavailable(item))
+    marker = ai_review_deferral_marker(item)
+
+    assert marker["text_sha256"] == publication_text_sha256(item)
+    item.body = item.body + " 수정"
+    assert publication_text_sha256(item) != marker["text_sha256"]

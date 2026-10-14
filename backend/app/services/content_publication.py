@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -191,6 +192,8 @@ def fallback_narrative_requires_bound_review(item: ContentItem) -> bool:
 # 계약대로 그 hash에 묶인 PASS가 있어야 한다. 선발행된 글은 03:10 사후 검수가 맨 앞에서 본다
 # (`post_publish_ai_review._deferred_review_stmt`).
 AI_REVIEW_DEFERRED_KEY = "ai_review_deferred"
+# D35 글당 Critical 알림 기록(`post_publish_ai_review.POST_PUBLISH_CRITICAL_ALERT_KEY`와 같은 열쇠).
+POST_PUBLISH_CRITICAL_ALERT_KEY = "post_publish_critical_alert"
 _DEFERRABLE_UNAVAILABLE_REASONS = frozenset({"", "PROVIDER_ERROR", "INVALID_RESPONSE"})
 
 
@@ -199,7 +202,9 @@ def ai_review_deferred(item: ContentItem) -> bool:
 
     - 공개 중인 글: 검수 장애로 숨기지 않는다(D35와 같은 원칙) — 사후 검수가 맡는다.
     - 공개 전 글: 장애 사유가 공급자 오류·형식 오류(옛 기록의 빈 사유 포함)이고, 그 기록이 지금
-      본문 hash에 묶여 있고, 지금 본문이 자동 교정본이 아니어야 한다.
+      본문 hash에 묶여 있고, 자동 교정 기록이 없어야 한다. 교정본은 "교정본은 반드시 재검수" 계약대로
+      지금 본문에 묶인 PASS가 생길 때까지 선발행하지 않는다 — 시스템이 참고자료를 바꿔 hash가 옮겨져도
+      같다(Codex P1-1: 교정 → 재검수 장애 → 참고자료 제거가 교정본을 선발행시켰다).
     """
 
     summary = getattr(item, "essence_check_summary", None)
@@ -214,15 +219,31 @@ def ai_review_deferred(item: ContentItem) -> bool:
     if not review.get("candidate_sha256") or review.get("candidate_sha256") != current_sha:
         return False
     correction = summary.get(AUTO_CORRECTION_KEY)
-    return not (isinstance(correction, dict) and correction.get("corrected_sha256") == current_sha)
+    return not (isinstance(correction, dict) and correction.get("corrected_sha256"))
+
+
+PUBLICATION_TEXT_FIELDS = ("title", "body", "meta_description", "faq_question", "faq_answer_summary")
+
+
+def publication_text_sha256(item: object) -> str:
+    """승인 판 SQL(0091)이 다시 계산할 수 있는 공개 텍스트 hash — 선발행 표지를 지금 본문에 묶는다.
+
+    다섯 필드(없으면 빈 문자열)를 단위 구분 문자(U+001F)로 이은 UTF-8의 sha256. SQL은
+    ``concat_ws(chr(31), coalesce(title,''), …)``로 같은 값을 만든다.
+    """
+
+    text = "\x1f".join(str(getattr(item, field, None) or "") for field in PUBLICATION_TEXT_FIELDS)
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def ai_review_deferral_marker(item: ContentItem) -> dict[str, Any]:
-    """발행 판정에 남기는 선발행 표지. 승인 판 SQL(0091)이 검수 기록의 hash와 같을 때만 읽는다."""
+    """발행 판정에 남기는 선발행 표지. 승인 판 SQL(0091)은 검수 기록의 hash와 같고, 지금 공개 텍스트의
+    hash(`publication_text_sha256`)와 같고, 자동 교정 기록이 없을 때만 읽는다."""
 
     review = (getattr(item, "essence_check_summary", None) or {}).get("ai_review") or {}
     return {
         "candidate_sha256": review.get("candidate_sha256"),
+        "text_sha256": publication_text_sha256(item),
         "unavailable_reason": review.get("unavailable_reason"),
         "deferred_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -524,6 +545,8 @@ def apply_publication_assessment(item: ContentItem, assessment: PublicationAsses
             # D36 참고자료 없이 저장·발행한 사실의 기록과 D37 선발행 표지 — 감사·운영 조회용이다.
             REFERENCES_OMITTED_KEY,
             AI_REVIEW_DEFERRED_KEY,
+            # D35 글당 Critical 알림 기록. 지우면 같은 본문의 Critical을 다시 알린다.
+            POST_PUBLISH_CRITICAL_ALERT_KEY,
         ):
             value = previous_summary.get(key)
             if value is not None:
@@ -569,6 +592,9 @@ def apply_essence_revalidation(
             "image_recertification",
             # 자동 교정 기록 — 지우면 글(주제)당 교정 상한이 초기화된다.
             AUTO_CORRECTION_KEY,
+            # 사후 검수 FLAGGED 표시와 D35 글당 Critical 알림 기록 — 지우면 같은 본문을 다시 사고 알린다.
+            "post_publish_ai_review",
+            POST_PUBLISH_CRITICAL_ALERT_KEY,
         ):
             if key in previous:
                 summary[key] = previous[key]
