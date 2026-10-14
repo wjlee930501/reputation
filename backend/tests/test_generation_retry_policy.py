@@ -458,8 +458,8 @@ def test_hard_finding_class_depends_on_who_declared_it(monkeypatch) -> None:
                           "message": "승인 자료에 없는 진료 원칙", "quote": sentence,
                           "critical": False}]}
     assert has_model_declared_hard_finding(fact, {"body": f"## 안내\n{sentence}"}) is False
-    # 본문을 모르거나 인용이 없는 병원 사실 HARD는 Critical이다(fail closed).
-    assert has_model_declared_hard_finding(fact) is True
+    # 등급은 검수 모델이 정한다(2026-10-14) — 본문을 몰라도 false 판정은 비-Critical이다.
+    assert has_model_declared_hard_finding(fact) is False
     assert has_model_declared_hard_finding(
         {"findings": [{"severity": "HARD", "kind": "HOSPITAL_FACT"}]}
     ) is True

@@ -104,6 +104,29 @@ def mentions_medical_safety(text: object) -> bool:
     return _LEXICON_RE.search(str(text or "")) is not None
 
 
+# ── Critical 판정의 안전망 어휘(2026-10-14 대표 결정) ─────────────────────────────────────
+# 검수 모델의 판정을 덮는 어휘는 이 넷뿐이다 — 완치·보장·최저가·할인(활용·띄어쓰기 포함)과 영어 대응어.
+# 위 `MEDICAL_SAFETY_LEXICON`은 등급 어휘가 아니라 결정적 삭제의 편집 안전 검사(응급 안내·의료 문장을
+# 지우지 않는다)에만 쓴다.
+CRITICAL_OVERRIDE_PATTERNS: tuple[str, ...] = (
+    r"완\s*치",
+    r"보\s*장(?!\s*성)",
+    r"최\s*저\s*가",
+    r"할\s*인",
+    r"(?<![a-z])cure(?:d|s)?(?![a-z])",
+    r"(?<![a-z])guarantee",
+    r"(?<![a-z])lowest\s+price",
+    r"(?<![a-z])discount",
+)
+_OVERRIDE_RE = re.compile("|".join(CRITICAL_OVERRIDE_PATTERNS), re.IGNORECASE)
+
+
+def mentions_critical_override(text: object) -> bool:
+    """Critical 안전망 어휘(완치·보장·최저가·할인)가 있는가 — 검수 모델이 false라 해도 Critical이다."""
+
+    return _OVERRIDE_RE.search(str(text or "")) is not None
+
+
 def _quote_spans(text: str, quote: str) -> list[tuple[int, int]]:
     parts = [re.escape(part) for part in quote.split()]
     if not parts:
@@ -161,33 +184,26 @@ def reviewer_marked_noncritical(finding: Mapping[str, Any]) -> bool:
     return finding.get("critical") is False
 
 
+def _override_hit(finding: Mapping[str, Any], content: object) -> bool:
+    sentence = locate_body_sentence(content, finding.get("quote")) or ""
+    return mentions_critical_override(
+        f"{finding.get('message') or ''} {finding.get('quote') or ''} {sentence}"
+    )
+
+
 def classify_finding(finding: Mapping[str, Any], content: object = None) -> Criticality:
-    """독립 검수 지적 하나의 등급 — 허용 목록이다. 아래를 **모두** 만족할 때만 비-Critical이다.
+    """독립 검수 지적 하나의 등급(2026-10-14 대표 결정 — 등급은 검수 모델이 정한다).
 
-    0. 독립 검수 모델이 그 지적에 `critical: false`를 명시했다(2026-10-14 W4 재설계 — 등급은 검수 모델이
-       정한다). 필드가 없으면(옛 v2 기록·합성 지적) Critical이다 — 그 이유만으로 다시 사지 않는다.
-    1. 종류가 `NONCRITICAL_KINDS`(병원 사실·문체·참고자료)다 — 의료 안전 종류에 false는 모순이라 Critical.
-    2. 인용(`quote`)이 있고, 그 인용이 본문의 정확히 한 문장을 가리킨다(제목·메타·FAQ가 아니다).
-       `content`(후보 본문)가 없으면 확인할 수 없으므로 Critical이다.
-    3. 안전망: 지적 문구·인용·그 문장 전체 어디에도 의료·안전 어휘(`MEDICAL_SAFETY_LEXICON`)가 없다 —
-       어휘가 걸리면 검수 모델이 false라 해도 Critical이다.
-
-    그 밖은 모두 Critical이다(fail closed) — 의료 안전(확신 부족 포함)·종류 불명·제목 지적·인용 없는
-    지적·혼합 언어. 발행을 막지 않는 지적(SOFT·필수 문구를 짚은 지적)은 등급을 매기지 않는다(비-Critical).
+    발행을 막는 지적은 검수 모델이 `critical: false`를 명시했고 지적 문구·인용·인용이 가리키는 본문
+    문장에 안전망 어휘(완치·보장·최저가·할인, `mentions_critical_override`)가 없을 때만 비-Critical이다.
+    `critical`이 true이거나 없으면(null·옛 기록·합성 지적) Critical이다. 발행을 막지 않는 지적(SOFT·필수
+    문구를 짚은 지적)은 등급을 매기지 않는다(비-Critical). 비-Critical이어도 결정적으로 지울 수 없으면
+    (인용 없음·제목 등) 삭제 계획(`content_minimal_correction.plan_noncritical_fixes`)이 맡지 않는다.
     """
 
     if not finding_blocks(finding):
         return Criticality.NONCRITICAL
-    if not reviewer_marked_noncritical(finding):
-        return Criticality.CRITICAL
-    if _label(finding.get("kind")) not in NONCRITICAL_KINDS:
-        return Criticality.CRITICAL
-    sentence = locate_body_sentence(content, finding.get("quote"))
-    if sentence is None:
-        return Criticality.CRITICAL
-    if mentions_medical_safety(
-        f"{finding.get('message') or ''} {finding.get('quote') or ''} {sentence}"
-    ):
+    if not reviewer_marked_noncritical(finding) or _override_hit(finding, content):
         return Criticality.CRITICAL
     return Criticality.NONCRITICAL
 
@@ -224,18 +240,17 @@ def review_blocks_only_noncritically(review: object, content: object = None) -> 
 
 
 def legacy_finding_is_critical(finding: Mapping[str, Any], content: object = None) -> bool:
-    """검수 모델의 `critical` 판정이 **없던** 옛 저장 지적(v3 이전)의 등급 — 어휘 안전망만 쓴다.
+    """검수 모델의 `critical` 판정이 **없던** 옛 저장 지적(v3 이전)의 등급(2026-10-14 대표 결정).
 
-    2026-10-14 대표 지시: 판정받은 적 없는 옛 지적을 모두 Critical로 올리지 않는다. 지적 문구·인용·
-    인용이 가리키는 본문 문장 어디에든 의료·안전 어휘가 있으면 Critical, 아니면 조용히 닫는다.
-    v3 이후의 검수 출력은 언제나 `critical` 키를 싣는다(값이 없으면 null = Critical).
+    판정받은 적 없는 옛 지적을 모두 Critical로 올리지 않는다. HARD이고 안전망 어휘(완치·보장·최저가·
+    할인)가 지적 문구·인용·인용 문장에 있을 때만 Critical이고, 나머지는 조용히 닫는다. v3 이후의 검수
+    출력은 언제나 `critical` 키를 싣는다(값이 없으면 null = Critical).
     """
 
-    if not finding_blocks(finding):
-        return False
-    sentence = locate_body_sentence(content, finding.get("quote")) or ""
-    return mentions_medical_safety(
-        f"{finding.get('message') or ''} {finding.get('quote') or ''} {sentence}"
+    return bool(
+        finding_blocks(finding)
+        and _label(finding.get("severity")) == "HARD"
+        and _override_hit(finding, content)
     )
 
 

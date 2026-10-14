@@ -51,8 +51,11 @@ def _item(**extra):
 
 
 def _finding(
-    severity, kind, message="승인 자료에 없는 진료 원칙 문장", quote=PHILOSOPHY, critical=False
+    severity, kind, message="승인 자료에 없는 진료 원칙 문장", quote=PHILOSOPHY, critical="auto"
 ):
+    # 검수 모델의 판정(v3): 기본은 의료 안전 종류면 Critical, 아니면 비-Critical로 판정했다고 둔다.
+    if critical == "auto":
+        critical = kind == "MEDICAL_SAFETY"
     return {
         "severity": severity, "kind": kind, "message": message, "quote": quote, "critical": critical
     }
@@ -178,12 +181,12 @@ def test_uncertain_only_flag_waits_for_the_senior_rereview(monkeypatch, calls):
 @pytest.mark.parametrize(
     "finding",
     [
-        # Codex 2차 재현 — 영어·혼합 언어로 쓴 의료 지적은 종류와 무관하게 Critical이다.
-        _finding("HARD", "STYLE", "Missing emergency care instructions for chest pain"),
-        _finding("HARD", "HOSPITAL_FACT", "진료 원칙: contraindication for pregnancy is omitted"),
+        # 2026-10-14 대표 결정 — 검수 모델이 Critical로 판정했거나(판정 없음 포함) 안전망 어휘가 있다.
+        _finding("HARD", "STYLE", "Missing emergency care instructions for chest pain", critical=True),
+        _finding("HARD", "HOSPITAL_FACT", "판정 없음", critical=None),
         _finding("UNCERTAIN", "MEDICAL_SAFETY", "확신 부족"),
-        _finding("HARD", "HOSPITAL_FACT", "제목 지적", quote="치질 진료 전"),
-        _finding("HARD", "HOSPITAL_FACT", "인용 없음", quote=""),
+        _finding("HARD", "HOSPITAL_FACT", "100% 완치를 보장한다는 문장"),
+        _finding("HARD", "STYLE", "할인 유인 문구"),
     ],
 )
 def test_medical_or_unverifiable_flags_are_never_closed_quietly(monkeypatch, calls, finding):
@@ -389,14 +392,14 @@ def test_backlog_is_announced_in_one_digest_across_every_page(monkeypatch, calls
     critical = [
         _flag(_item(), _finding("HARD", "MEDICAL_SAFETY", "위험한 오정보")) for _ in range(560)
     ]
-    # 옛 저장 지적(`critical` 키 없음)은 어휘 안전망만 — 의료 어휘가 있으면 Critical, 아니면 조용히 닫는다.
+    # 옛 저장 지적(`critical` 키 없음)은 HARD + 완치·보장·최저가·할인일 때만 Critical, 아니면 조용히 닫는다.
     legacy = [
-        _flag(_item(), {"severity": "HARD", "kind": "MEDICAL_SAFETY", "message": "응급 안내 누락",
+        _flag(_item(), {"severity": "HARD", "kind": "HOSPITAL_FACT", "message": "완치를 보장한다는 표현",
                         "quote": PHILOSOPHY})
         for _ in range(5)
     ]
     legacy_quiet = [
-        _flag(_item(), {"severity": "HARD", "kind": "MEDICAL_SAFETY", "message": "근거 없는 진료 원칙",
+        _flag(_item(), {"severity": "HARD", "kind": "HOSPITAL_FACT", "message": "통증 효과 표현의 근거 없음",
                         "quote": PHILOSOPHY})
         for _ in range(7)
     ]

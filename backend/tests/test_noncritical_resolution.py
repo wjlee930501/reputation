@@ -137,12 +137,15 @@ def test_noncritical_number_mismatch_deletes_the_sentence(sentence, message, app
     assert "12석" not in corrected["body"] and "20년" not in corrected["body"]
 
 
-def test_recovery_period_mismatch_is_critical_because_it_is_about_surgery() -> None:
-    """회복 기간 8주(본문) vs 승인 자료의 다음 예약 8주 — 수술 회복은 의료 내용이라 Critical이다."""
+def test_recovery_period_mismatch_is_critical_when_the_reviewer_says_so() -> None:
+    """회복 기간 8주(본문) vs 승인 자료의 다음 예약 8주 — 수술 회복은 의료 내용이다. 등급은 검수 모델이
+    정하므로(일반 의료 낱말은 안전망이 아니다) 검수 모델이 Critical로 판정하면 이 계단이 맡지 않는다."""
 
     sentence = "수술 후 회복 기간은 보통 6주입니다."
     content = _content(sentence)
-    review = _review(content, _finding("HARD", "HOSPITAL_FACT", "회복 기간이 다릅니다", sentence))
+    review = _review(
+        content, _finding("HARD", "HOSPITAL_FACT", "회복 기간이 다릅니다", sentence, critical=True)
+    )
 
     assert mc.plan_noncritical_fixes(content, review) is None
 
@@ -225,7 +228,7 @@ def test_uncertain_medical_sentence_is_critical_and_left_to_the_existing_ladder(
             _finding("UNCERTAIN", "HOSPITAL_FACT", "장비 확인 불가"),
         ],
         # 내용을 모르는 병원 사실은 Critical이다(fail closed).
-        [_finding("HARD", "HOSPITAL_FACT", "승인 자료에서 확인할 수 없습니다", RECOVERY_SENTENCE)],
+        [_finding("HARD", "HOSPITAL_FACT", "승인 자료에서 확인할 수 없습니다", RECOVERY_SENTENCE, None)],
     ],
 )
 def test_plan_refuses_anything_it_cannot_resolve_deterministically(findings) -> None:
