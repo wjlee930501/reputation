@@ -95,7 +95,11 @@ def _stored_deadline(attempt: dict) -> datetime | None:
 
 
 def test_a_body_sample_failure_stays_automatic_until_the_third_exhausted_day(monkeypatch):
-    """D-2 23:00 → D-1 23:00 → D 01:00·04:00 실패 뒤에도 사람의 일이 아니다."""
+    """D-2 23:00 → D-1 23:00 → D 01:00·04:00·07:00 실패 뒤에도 사람의 일이 아니다.
+
+    예정일 당일(임박) 슬롯은 하루 2세션에 한 세션을 더 받는다 — 04:00에 2세션째를 써도 같은
+    날 07:00이 세 번째를 쓴다.
+    """
 
     db = _CommitOnlyDB()
     item = _slot_item()
@@ -114,9 +118,13 @@ def test_a_body_sample_failure_stays_automatic_until_the_third_exhausted_day(mon
     assert _stored_deadline(third) == _kst(2026, 9, 16, 4, 0).astimezone(UTC)
 
     fourth = _remember(monkeypatch, db, item, _kst(2026, 9, 16, 4, 0))
-    assert fourth["exhausted_days"] == 1  # 당일 예산(2회) 소진
-    assert fourth["retry_class"] == GenerationRetryClass.SAMPLE_RECOVERABLE.value
-    deadline = _stored_deadline(fourth)
+    assert fourth["exhausted_days"] == 0  # 임박 슬롯의 오늘 예산(2+1회)이 아직 남았다
+    assert _stored_deadline(fourth) == _kst(2026, 9, 16, 7, 0).astimezone(UTC)
+
+    fifth = _remember(monkeypatch, db, item, _kst(2026, 9, 16, 7, 0))
+    assert fifth["exhausted_days"] == 1  # 당일 예산(2+1회) 소진
+    assert fifth["retry_class"] == GenerationRetryClass.SAMPLE_RECOVERABLE.value
+    deadline = _stored_deadline(fifth)
     assert deadline == _kst(2026, 9, 17, 1, 0).astimezone(UTC)
 
     # 07:00 스윕 직후·07:45 마감·08:00 발행·23:00 배치 뒤·자정을 넘겨서도 자동 복구가
@@ -144,12 +152,13 @@ def test_the_promised_sweep_actually_selects_and_claims_the_slot(monkeypatch):
         _kst(2026, 9, 15, 23, 0),
         _kst(2026, 9, 16, 1, 0),
         _kst(2026, 9, 16, 4, 0),
+        _kst(2026, 9, 16, 7, 0),
     ):
         attempt = _remember(monkeypatch, db, item, moment)
     assert _stored_deadline(attempt) == _kst(2026, 9, 17, 1, 0).astimezone(UTC)
 
-    # 예산이 남아 있던 04:00 직후에는 같은 슬롯을 다시 사지 않는다.
-    _freeze(monkeypatch, _kst(2026, 9, 16, 4, 30))
+    # 오늘 예산을 다 쓴 07:00 직후에는 같은 슬롯을 다시 사지 않는다.
+    _freeze(monkeypatch, _kst(2026, 9, 16, 7, 30))
     monkeypatch.setattr(tasks, "_generation_philosophy_sync", lambda *_args: SimpleNamespace(id="p1"))
     assert tasks._generation_retry_is_eligible(db)(item) is False
 
@@ -175,7 +184,8 @@ def test_the_third_exhausted_day_becomes_operator_work_without_a_deadline(monkey
             "context": tasks._generation_attempt_context(item, SimpleNamespace(id="p1")),
             "reason": "GENERATION_REJECTED",
             "retry_class": GenerationRetryClass.SAMPLE_RECOVERABLE.value,
-            "provider_attempt_count": 1,
+            # 지난 슬롯(임박)의 하루 예산은 2+1회 — 세 번째가 그날을 소진으로 센다.
+            "provider_attempt_count": 2,
             "exhausted_days": 2,
             "attempt_period": "2026-09-17",
         }

@@ -542,9 +542,9 @@ class Settings(BaseSettings):
     GEMINI_MODEL: str = "google/gemini-3.6-flash"
 
     # 야간 콘텐츠 생성 창과 처리량
-    # 23:00 배치는 내일만이 아니라 그 다음 날까지 생성한다. 한 밤이 통째로 실패해도
-    # 두 번째 밤이 남아 같은 슬롯을 아침 전에 채울 수 있다. 1이면 종전과 같이 내일만.
-    NIGHTLY_GENERATION_LOOKAHEAD_DAYS: int = 2
+    # 생성 리드 타임(D-3). 23:00 배치는 내일부터 사흘 뒤까지, 복구 스윕은 같은 앞쪽 끝까지
+    # 생성한다. 슬롯마다 첫 시도부터 발행까지 밤 3회와 낮 스윕이 생긴다. 1이면 내일만.
+    NIGHTLY_GENERATION_LOOKAHEAD_DAYS: int = 3
     # 한 편(작가 최대 3회 + 독립 검수 + 이미지)의 관측 소요 시간. 배치가 07:45까지
     # 남은 시간 안에 처리될 수 있는지 경고할 때만 쓰는 용량 추정값이다.
     CONTENT_GENERATION_ITEM_MINUTES: int = 6

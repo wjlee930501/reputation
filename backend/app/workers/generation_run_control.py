@@ -29,6 +29,7 @@ from app.services.operation_run_payloads import (
 from app.workers.generation_attempt_state import (
     GenerationBudgetExceeded,
     GenerationBudgetUnknown,
+    is_acquisition_transport_exhausted,
 )
 from app.workers.generation_retry_policy import (
     GENERATION_BUDGET_EXHAUSTED_CODE,
@@ -182,6 +183,11 @@ def classify_generation_failure(error: BaseException) -> tuple[str, str]:
         case GenerationBudgetUnknown():
             code = "LEGACY_SPEND_UNKNOWN"
             message = "기존 생성 비용 기록을 확인할 수 없어 자동 재시도를 중단했습니다."
+        case GenerationBudgetExceeded() if is_acquisition_transport_exhausted(error):
+            # 한 작가 호출 안의 전송 재시도가 그 호출의 몫을 다 썼다(거절 없이). 슬롯 예산 소진이
+            # 아니라 공급자 쪽 불안정이다 — 하루 예산이 다시 열리는 환경 장애로 다룬다.
+            code = "GENERATION_FAILED"
+            message = _SAFE_FAILURE_MESSAGE
         case GenerationBudgetExceeded():
             code = GENERATION_BUDGET_EXHAUSTED_CODE
             message = "이 콘텐츠의 자동 생성 예산을 모두 사용했습니다."
