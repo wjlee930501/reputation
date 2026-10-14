@@ -516,15 +516,17 @@ def stored_body_awaits_only_optional_references(
 
 
 def _generation_order_columns():
-    """정렬 키. `carried_over_from IS NULL`은 이월 슬롯을 먼저 놓는다(false < true).
+    """정렬 키. 예정일 오름차순이 먼저다 — 지난 슬롯·오늘·내일 슬롯이 앞자리를 받는다.
 
+    리드 타임(D-3)으로 창이 넓어져도 상한(50)이 사흘 뒤 슬롯에 먼저 쓰이지 않게 한다. 같은
+    예정일 안에서는 `carried_over_from IS NULL`이 이월 슬롯을 먼저 놓는다(false < true).
     keyset 페이징이 같은 키로 이어붙일 수 있게 단방향(오름차순) 표현만 쓴다. id는
     같은 키를 가진 행 사이의 순서를 고정하는 tiebreak다.
     """
 
     return (
-        ContentItem.carried_over_from.is_(None),
         ContentItem.scheduled_date,
+        ContentItem.carried_over_from.is_(None),
         ContentItem.sequence_no,
         ContentItem.id,
     )
@@ -532,8 +534,8 @@ def _generation_order_columns():
 
 def _generation_order_key(item: ContentItem) -> tuple:
     return (
-        item.carried_over_from is None,
         item.scheduled_date,
+        item.carried_over_from is None,
         item.sequence_no,
         item.id,
     )
@@ -583,20 +585,24 @@ def _nightly_generation_stmt(
 def interleave_by_hospital(items: list[ContentItem]) -> list[ContentItem]:
     """Round-robin the ordered candidates by hospital before the cap is applied.
 
-    우선순위(이월 → 예정일 → 순번)는 병원 안에서 그대로 유지되고, 병원 간에는 한 편씩
-    번갈아 나간다. 섞지 않으면 이월 슬롯이 많은 병원 하나가 상한 50개를 통째로 가져가
-    나머지 병원은 아침까지 한 편도 받지 못한다.
+    라운드로빈은 **같은 예정일 안에서만** 한다. 예정일이 이른 슬롯이 언제나 앞이다 — 병원을
+    예정일과 무관하게 섞으면 사흘 뒤 슬롯이 많은 병원이 다른 병원의 지난·임박 슬롯보다
+    먼저 상한을 차지한다. 같은 예정일 안에서는 우선순위(이월 → 순번)가 병원 안에서 그대로
+    유지되고, 병원 간에는 한 편씩 번갈아 나간다. 섞지 않으면 이월 슬롯이 많은 병원 하나가
+    상한 50개를 통째로 가져가 나머지 병원은 아침까지 한 편도 받지 못한다.
     """
 
-    groups: dict[Any, list[ContentItem]] = {}
+    tiers: dict[Any, dict[Any, list[ContentItem]]] = {}
     for item in items:
-        groups.setdefault(item.hospital_id, []).append(item)
+        tier = tiers.setdefault(getattr(item, "scheduled_date", None), {})
+        tier.setdefault(item.hospital_id, []).append(item)
     ordered: list[ContentItem] = []
-    queues = list(groups.values())
-    while queues:
-        queues = [queue for queue in queues if queue]
-        for queue in queues:
-            ordered.append(queue.pop(0))
+    for groups in tiers.values():
+        queues = list(groups.values())
+        while queues:
+            queues = [queue for queue in queues if queue]
+            for queue in queues:
+                ordered.append(queue.pop(0))
     return ordered
 
 

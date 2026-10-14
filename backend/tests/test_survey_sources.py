@@ -104,6 +104,19 @@ def _patch_fetch(monkeypatch, responses):
         def raise_for_status(self):
             return None
 
+        async def aiter_bytes(self):
+            yield self.content
+
+    class _Stream:
+        def __init__(self, response):
+            self.response = response
+
+        async def __aenter__(self):
+            return self.response
+
+        async def __aexit__(self, *args):
+            return False
+
     class _Client:
         def __init__(self, *args, **kwargs):
             pass
@@ -114,8 +127,8 @@ def _patch_fetch(monkeypatch, responses):
         async def __aexit__(self, *args):
             return False
 
-        async def get(self, *args, **kwargs):
-            return _Resp(*queue.pop(0))
+        def stream(self, *args, **kwargs):
+            return _Stream(_Resp(*queue.pop(0)))
 
     monkeypatch.setattr(ax.httpx, "AsyncClient", _Client)
     return ax
@@ -141,3 +154,43 @@ async def test_exported_plain_text_keeps_its_lines(monkeypatch) -> None:
     )
     assert error is None
     assert text.splitlines()[:2] == ["Q1. 진료 철학은?", "A1. 환자의 이야기를 끝까지 듣습니다."]
+
+
+def test_spacing_dash_and_fullwidth_variants_are_masked() -> None:
+    from app.services.survey_sources import mask_personal_info
+
+    for raw in (
+        "010  1234  5678",
+        "010–1234–5678",
+        "010—1234—5678",
+        "800101–1234567",
+        "800101 - 1234567",
+        "０１０－１２３４－５６７８",
+    ):
+        assert mask_personal_info(f"연락 {raw} 끝") == "연락 [가림] 끝", raw
+    kept = "대표 02-123-4567, 진료 09:00-18:00, 2024-10-14"
+    assert mask_personal_info(kept) == kept
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "０１０．１２３４．５６７８",
+        "（０１０）１２３４－５６７８",
+        "０１０　１２３４　５６７８",
+        "(010)1234-5678",
+        "010.1234.5678",
+        "010 - 1234 - 5678",
+        "+82 10-1234-5678",
+        "+82 (0)10 1234 5678",
+        "+82-10-1234-5678",
+        "800101-1 234567",
+        "80 01 01-1 234 567",
+        "800101.1234567",
+        "８００１０１－１２３４５６７",
+    ],
+)
+def test_every_spacing_dot_paren_and_fullwidth_form_is_masked_whole(raw) -> None:
+    from app.services.survey_sources import mask_personal_info
+
+    assert mask_personal_info(f"연락 {raw} 끝") == "연락 [가림] 끝"

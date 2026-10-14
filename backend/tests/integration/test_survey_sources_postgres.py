@@ -161,3 +161,111 @@ async def test_google_forms_link_is_refused_before_any_fetch(
             db=pg_async_session,
         )
     assert exc.value.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_retyping_to_survey_masks_the_body_a_fetch_just_stored(
+    pg_async_session, hospital, started, monkeypatch
+):
+    """리뷰 재현의 반대 순서: 이 세션이 본문 없는 행을 읽어 둔 뒤 fetch 워커가 본문을 저장했다. 수정은
+    잠근 행을 다시 읽어야 방금 저장된 본문까지 가린다(낡은 읽기로는 가릴 본문이 없다)."""
+
+    from sqlalchemy import update
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from app.models.essence import HospitalSourceAsset, SourceStatus
+    from app.schemas.essence import SourceAssetPatch
+
+    db = pg_async_session
+    source = HospitalSourceAsset(
+        hospital_id=hospital.id,
+        source_type=SourceType.HOMEPAGE,
+        title="홈페이지",
+        url="https://clinic.example.com",
+        status=SourceStatus.PENDING,
+        source_metadata={"fetch_state": "QUEUED"},
+    )
+    db.add(source)
+    await db.commit()
+    await db.refresh(source)  # 이 세션은 raw_text=None을 들고 있다
+    assert source.raw_text is None
+
+    async with AsyncSession(bind=db.bind, join_transaction_mode="create_savepoint") as worker:
+        await worker.execute(
+            update(HospitalSourceAsset)
+            .where(HospitalSourceAsset.id == source.id)
+            .values(raw_text="원장 휴대전화 010-1234-5678")
+        )
+        await worker.commit()
+
+    response = await essence_api.patch_source(
+        hospital.id,
+        source.id,
+        SourceAssetPatch(source_type=SourceType.INTERVIEW),
+        db=db,
+    )
+
+    assert response["raw_text"] == "원장 휴대전화 [가림]"
+
+
+_TRICKY = "연락처 010  1234  5678 / 010–1234–5678 / 주민번호 800101–1234567 / 대표 02-123-4567"
+_TRICKY_MASKED = "연락처 [가림] / [가림] / 주민번호 [가림] / 대표 02-123-4567"
+
+
+async def _stored(db, source_id):
+    from app.models.essence import HospitalSourceAsset
+
+    db.expire_all()
+    return await db.get(HospitalSourceAsset, uuid.UUID(str(source_id)), populate_existing=True)
+
+
+def _hash_of(row):
+    from app.services.essence_engine import compute_source_content_hash
+
+    return compute_source_content_hash(row.title, row.url, row.raw_text, row.operator_note)
+
+
+@pytest.mark.asyncio
+async def test_spacing_and_unicode_dash_variants_are_masked_on_upload_crawl_and_patch(
+    pg_async_session, hospital, started, monkeypatch
+):
+    """리뷰 재현(2차): 여러 칸 공백·en dash 표기의 휴대전화·주민번호가 그대로 저장됐다."""
+
+    from app.schemas.essence import SourceAssetPatch
+
+    db = pg_async_session
+    hospital_id = hospital.id
+    monkeypatch.setattr(essence_api, "extract_pdf_text", lambda _data: _TRICKY)
+    uploaded = await _upload_pdf(db, hospital_id, _TRICKY)
+    row = await _stored(db, uploaded["id"])
+    assert row.raw_text == _TRICKY_MASKED and row.content_hash == _hash_of(row)
+
+    async def fake_fetch(url):
+        return _TRICKY * 3, None, None
+
+    monkeypatch.setattr(essence_sources, "fetch_url_text", fake_fetch)
+    crawled = await essence_api.crawl_source_url(
+        hospital_id,
+        essence_api.SourceCrawlRequest(
+            source_type=SourceType.INTERVIEW,
+            url="https://docs.google.com/document/d/1Tricky/edit",
+        ),
+        db=db,
+    )
+    row = await _stored(db, crawled["id"])
+    assert "010" not in row.raw_text.replace("02-123-4567", "") and "800101" not in row.raw_text
+    assert row.content_hash == _hash_of(row)
+
+    pasted = await essence_api.create_source(
+        hospital_id,
+        SourceAssetCreate(source_type=SourceType.HOMEPAGE, title="붙여넣기", raw_text="소개"),
+        db=db,
+    )
+    patched = await essence_api.patch_source(
+        hospital_id,
+        uuid.UUID(str(pasted["id"])),
+        SourceAssetPatch(source_type=SourceType.INTERVIEW, raw_text=_TRICKY),
+        db=db,
+    )
+    row = await _stored(db, patched["id"])
+    assert row.raw_text == _TRICKY_MASKED and row.content_hash == _hash_of(row)

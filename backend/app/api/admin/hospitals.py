@@ -51,8 +51,6 @@ from app.models.admin_user import AdminUser
 from app.models.content import ContentItem, ContentStatus
 from app.models.handoff import HandoffSource, HospitalHandoff
 from app.models.hospital import Hospital, HospitalStatus, Plan
-from app.models.lead import SalesLead
-from app.models.operations import OperationRun
 from app.models.report import V0_REPORT_TYPE, MonthlyReport
 from app.models.sov import SovRecord
 from app.schemas.hospital import HospitalDetail, HospitalListItem
@@ -138,7 +136,6 @@ from app.services.site_revalidate import (
 )
 from app.utils.db_locks import acquire_hospital_advisory_lock
 from app.utils.medical_filter import check_forbidden
-from app.workers.profile_autofill_tasks import PROFILE_AUTOFILL_OPERATION
 
 logger = logging.getLogger(__name__)
 
@@ -1211,50 +1208,6 @@ async def autofill_hospital_profile(
         "naver_identity": result.naver_identity,
         "conflicts": result.conflicts,
         "sources": [{"name": s.name, "ok": s.ok, "reason": s.reason} for s in result.sources],
-    }
-
-
-@router.get("/{hospital_id}/profile/autofill-draft")
-async def get_profile_autofill_draft(
-    hospital_id: uuid.UUID,
-    db: AsyncSession = Depends(get_db),
-):
-    """계약 등록 직후 만들어 둔 자동 입력 초안. POST /profile/autofill과 같은 모양이다.
-
-    **저장하지 않은 제안이다.** AE가 병원 정보 화면에서 불러와 확인한 뒤 PATCH /profile로
-    저장해야 반영된다. 상담 요청의 대표번호는 초안에 복사하지 않고 리드 행에서 그때그때
-    읽어 제안으로만 준다 — 리드가 파기되면 제안도 사라진다(PII-2·PII-3).
-    """
-
-    h = await _get_or_404(db, hospital_id)
-    run = await db.scalar(
-        select(OperationRun)
-        .where(
-            OperationRun.hospital_id == hospital_id,
-            OperationRun.operation_type == PROFILE_AUTOFILL_OPERATION,
-        )
-        .order_by(OperationRun.created_at.desc())
-        .limit(1)
-    )
-    lead_phone = None
-    if h.source_lead_id is not None:
-        lead = await db.get(SalesLead, h.source_lead_id)
-        if lead is not None and lead.purged_at is None:
-            lead_phone = (lead.clinic_phone or "").strip() or None
-    if run is None and lead_phone is None:
-        raise HTTPException(status_code=404, detail={"code": "AUTOFILL_DRAFT_NOT_FOUND"})
-    summary = dict(run.result_summary or {}) if run is not None else {}
-    return {
-        # 초안 없이 상담 요청 제안만 있는 응답과 저장된 초안을 구분한다.
-        "has_draft": run is not None,
-        "draft": summary.get("draft", {}),
-        "field_meta": summary.get("field_meta", {}),
-        "violations": summary.get("violations", []),
-        "rejected_fields": summary.get("rejected_fields", []),
-        "naver_place_id": summary.get("naver_place_id"),
-        "sources": summary.get("sources", []),
-        "created_at": run.created_at.isoformat() if run is not None else None,
-        "lead_suggestions": {"phone": lead_phone} if lead_phone else {},
     }
 
 

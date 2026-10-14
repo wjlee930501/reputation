@@ -669,7 +669,9 @@ async def patch_source(
     db: AsyncSession = Depends(get_db),
 ):
     await acquire_hospital_advisory_lock(db, hospital_id)
-    source = await _get_mutable_source_or_404(db, hospital_id, source_id)
+    # 행 잠금 — 채널 fetch 워커가 같은 행을 잠그고 본문을 저장한다. 잠근 뒤 다시 읽어야 유형을 설문으로
+    # 바꾸는 이 수정이 방금 저장된 본문까지 가린다(E6).
+    source = await _get_mutable_source_or_404(db, hospital_id, source_id, for_update=True)
     update = body.model_dump(exclude_unset=True)
     pending_source_type = update.get("source_type", source.source_type)
     if "source_metadata" in update and pending_source_type in PHOTO_SOURCE_TYPES:
@@ -1623,8 +1625,15 @@ async def _get_source_or_404(
     db: AsyncSession,
     hospital_id: uuid.UUID,
     source_id: uuid.UUID,
+    *,
+    for_update: bool = False,
 ) -> HospitalSourceAsset:
-    source = await db.get(HospitalSourceAsset, source_id)
+    if for_update:
+        source = await db.get(
+            HospitalSourceAsset, source_id, with_for_update=True, populate_existing=True
+        )
+    else:
+        source = await db.get(HospitalSourceAsset, source_id)
     if not source or source.hospital_id != hospital_id:
         raise HTTPException(status_code=404, detail="Source not found")
     return source
@@ -1634,10 +1643,12 @@ async def _get_mutable_source_or_404(
     db: AsyncSession,
     hospital_id: uuid.UUID,
     source_id: uuid.UUID,
+    *,
+    for_update: bool = False,
 ) -> HospitalSourceAsset:
     """사람이 바꿀 수 있는 자료만 돌려준다. 병원 정보(자동) 자료는 읽기 전용이다(409)."""
 
-    source = await _get_source_or_404(db, hospital_id, source_id)
+    source = await _get_source_or_404(db, hospital_id, source_id, for_update=for_update)
     if is_profile_facts_source(source):
         raise HTTPException(
             status_code=409,

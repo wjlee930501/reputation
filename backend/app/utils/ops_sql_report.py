@@ -296,86 +296,120 @@ QUERIES: dict[str, tuple[str, ...]] = {
         """,
     ),
     # (Phase 4, D31) 병원별 완료 술어 — 옛 술어(약력·철학·네이버+Google 필수)와 새 술어(철학·Google 선택)의
-    # 누락 키, 인수 수락 여부. `would_promote`가 참인 병원이 배포 뒤 15분 틱이 완료로 승격하고 사이트 준비·
-    # 기본 주소 자동 공개까지 가는 병원이다. 술어는 `hospital_lifecycle.profile_requirements`의 SQL 쌍둥이다
-    # (tests/integration/test_ops_sql_report_p4_postgres.py가 같은 답을 내는지 대조한다).
+    # 누락 키, 인수 수락 여부. `would_promote`는 배포 뒤 15분 틱이 **완료로 승격**할 병원이고, 실제로 공개가
+    # 새로 열리는지는 `would_publish_now`가 말한다 — 승격(또는 이미 완료) 뒤 사이트 준비가 기본 주소로 자동
+    # 활성화하는 병원(자동 전환 상태·자기 도메인 없음·최소 공개 사실 있음, `hospital_activation.
+    # evaluate_auto_activation`·`profile_publication_verdict`의 SQL 쌍둥이). 못 여는 이유는
+    # `activation_blockers`(PAUSED·ALREADY_LIVE·ACTIVE_NOT_LIVE·CUSTOM_DOMAIN_PENDING·PROFILE_INCOMPLETE·
+    # HANDOFF_NOT_ACCEPTED·SITE_NOT_BUILT·MINIMUM_PUBLIC_FACTS_MISSING). 술어는 `hospital_lifecycle.
+    # profile_requirements`의 SQL 쌍둥이다(tests/integration/test_ops_sql_report_p4_postgres.py가 대조한다).
     "q12": (
         """
-        SELECT p.id, p.name, p.status, p.profile_complete, p.site_built, p.site_live,
-               p.handoff_accepted,
+        SELECT r.id, r.name, r.status, r.aeo_domain, r.profile_complete, r.site_built, r.site_live,
+               r.handoff_accepted, r.missing_old, r.missing_new, r.would_promote,
                array_remove(ARRAY[
-                 CASE WHEN NOT (p.has_director_name AND p.has_career) THEN 'director_basic' END,
-                 CASE WHEN NOT p.has_philosophy THEN 'director_philosophy' END,
-                 CASE WHEN NOT p.contact_ok THEN 'contact' END,
-                 CASE WHEN NOT p.web_ok THEN 'web_channels' END,
-                 CASE WHEN NOT (p.has_naver AND p.has_google) THEN 'ai_channels' END,
-                 CASE WHEN NOT p.geo_ok THEN 'geo' END,
-                 CASE WHEN NOT p.targeting_ok THEN 'targeting' END,
-                 CASE WHEN NOT p.treatments_ok THEN 'treatments' END
-               ], NULL) AS missing_old,
-               array_remove(ARRAY[
-                 CASE WHEN NOT (p.has_director_name AND p.has_career) THEN 'director_basic' END,
-                 CASE WHEN NOT p.contact_ok THEN 'contact' END,
-                 CASE WHEN NOT p.web_ok THEN 'web_channels' END,
-                 CASE WHEN NOT p.has_naver THEN 'ai_channels' END,
-                 CASE WHEN NOT p.geo_ok THEN 'geo' END,
-                 CASE WHEN NOT p.targeting_ok THEN 'targeting' END,
-                 CASE WHEN NOT p.treatments_ok THEN 'treatments' END
-               ], NULL) AS missing_new,
-               (NOT p.profile_complete AND p.status <> 'PAUSED' AND p.handoff_accepted
-                AND p.has_director_name AND p.has_career AND p.contact_ok AND p.web_ok
-                AND p.has_naver AND p.geo_ok AND p.targeting_ok AND p.treatments_ok)
-                 AS would_promote
+                 CASE WHEN r.status = 'PAUSED' THEN 'PAUSED' END,
+                 CASE WHEN r.status = 'ACTIVE' AND r.site_live THEN 'ALREADY_LIVE' END,
+                 CASE WHEN r.status = 'ACTIVE' AND NOT r.site_live THEN 'ACTIVE_NOT_LIVE' END,
+                 CASE WHEN r.custom_domain THEN 'CUSTOM_DOMAIN_PENDING' END,
+                 CASE WHEN NOT r.profile_complete AND cardinality(r.missing_new) > 0
+                      THEN 'PROFILE_INCOMPLETE' END,
+                 CASE WHEN NOT r.profile_complete AND NOT r.handoff_accepted
+                      THEN 'HANDOFF_NOT_ACCEPTED' END,
+                 -- 이미 완료인데 준비가 안 된 병원은 이번 승격이 사이트 준비를 보내지 않는다.
+                 CASE WHEN r.profile_complete AND NOT r.site_built AND r.status <> 'ACTIVE'
+                      THEN 'SITE_NOT_BUILT' END,
+                 CASE WHEN NOT r.public_facts_ok THEN 'MINIMUM_PUBLIC_FACTS_MISSING' END
+               ], NULL) AS activation_blockers,
+               (r.status IN ('ONBOARDING', 'ANALYZING', 'BUILDING', 'PENDING_DOMAIN')
+                AND NOT r.custom_domain
+                AND r.public_facts_ok
+                AND (r.would_promote OR (r.profile_complete AND r.site_built)))
+                 AS would_publish_now
         FROM (
-          SELECT h.id, h.name, h.status, coalesce(h.profile_complete, false) AS profile_complete,
-                 coalesce(h.site_built, false) AS site_built,
-                 coalesce(h.site_live, false) AS site_live,
-                 EXISTS (
-                   SELECT 1 FROM hospital_handoffs ho
-                   WHERE ho.hospital_id = h.id AND ho.state = 'HANDOFF_ACCEPTED'
-                 ) AS handoff_accepted,
-                 coalesce(h.director_name, '') ~ '[^[:space:]]' AS has_director_name,
-                 coalesce(h.director_career, '') ~ '[^[:space:]]' AS has_career,
-                 coalesce(h.director_philosophy, '') ~ '[^[:space:]]' AS has_philosophy,
-                 (coalesce(h.address, '') ~ '[^[:space:]]'
-                  AND coalesce(h.phone, '') ~ '[^[:space:]]'
-                  AND EXISTS (
-                    SELECT 1
-                    FROM jsonb_each(
-                      CASE WHEN jsonb_typeof(CAST(h.business_hours AS jsonb)) = 'object'
-                           THEN CAST(h.business_hours AS jsonb) ELSE '{}'::jsonb END
-                    ) AS bh(day, hours)
-                    WHERE jsonb_typeof(bh.hours) = 'string'
-                      AND (bh.hours #>> '{}') ~ '[^[:space:]]'
-                  )) AS contact_ok,
-                 (coalesce(h.website_url, '') ~ '[^[:space:]]'
-                  OR coalesce(h.blog_url, '') ~ '[^[:space:]]') AS web_ok,
-                 coalesce(h.naver_place_url, '') ~ '[^[:space:]]' AS has_naver,
-                 (coalesce(h.google_maps_url, '') ~ '[^[:space:]]'
-                  OR coalesce(h.google_business_profile_url, '') ~ '[^[:space:]]') AS has_google,
-                 (coalesce(h.latitude BETWEEN -90 AND 90, false)
-                  AND coalesce(h.longitude BETWEEN -180 AND 180, false)
-                  AND jsonb_typeof(CAST(h.region AS jsonb)) = 'array'
-                  AND jsonb_array_length(CAST(h.region AS jsonb)) > 0) AS geo_ok,
-                 (jsonb_typeof(CAST(h.specialties AS jsonb)) = 'array'
-                  AND jsonb_array_length(CAST(h.specialties AS jsonb)) > 0
-                  AND jsonb_typeof(CAST(h.keywords AS jsonb)) = 'array'
-                  AND jsonb_array_length(CAST(h.keywords AS jsonb)) > 0) AS targeting_ok,
-                 EXISTS (
-                   SELECT 1
-                   FROM jsonb_array_elements(
-                     CASE WHEN jsonb_typeof(CAST(h.treatments AS jsonb)) = 'array'
-                          THEN CAST(h.treatments AS jsonb) ELSE '[]'::jsonb END
-                   ) AS t(item)
-                   WHERE (jsonb_typeof(t.item) = 'string'
-                          AND (t.item #>> '{}') ~ '[^[:space:]]')
-                      OR (jsonb_typeof(t.item) = 'object'
-                          AND jsonb_typeof(t.item->'name') = 'string'
-                          AND (t.item->>'name') ~ '[^[:space:]]')
-                 ) AS treatments_ok
-          FROM hospitals h
-        ) p
-        ORDER BY would_promote DESC, p.name
+          SELECT p.*,
+                 (p.text_facts_ok AND p.treatments_ok) AS public_facts_ok,
+                 array_remove(ARRAY[
+                   CASE WHEN NOT (p.has_director_name AND p.has_career) THEN 'director_basic' END,
+                   CASE WHEN NOT p.has_philosophy THEN 'director_philosophy' END,
+                   CASE WHEN NOT p.contact_ok THEN 'contact' END,
+                   CASE WHEN NOT p.web_ok THEN 'web_channels' END,
+                   CASE WHEN NOT (p.has_naver AND p.has_google) THEN 'ai_channels' END,
+                   CASE WHEN NOT p.geo_ok THEN 'geo' END,
+                   CASE WHEN NOT p.targeting_ok THEN 'targeting' END,
+                   CASE WHEN NOT p.treatments_ok THEN 'treatments' END
+                 ], NULL) AS missing_old,
+                 array_remove(ARRAY[
+                   CASE WHEN NOT (p.has_director_name AND p.has_career) THEN 'director_basic' END,
+                   CASE WHEN NOT p.contact_ok THEN 'contact' END,
+                   CASE WHEN NOT p.web_ok THEN 'web_channels' END,
+                   CASE WHEN NOT p.has_naver THEN 'ai_channels' END,
+                   CASE WHEN NOT p.geo_ok THEN 'geo' END,
+                   CASE WHEN NOT p.targeting_ok THEN 'targeting' END,
+                   CASE WHEN NOT p.treatments_ok THEN 'treatments' END
+                 ], NULL) AS missing_new,
+                 (NOT p.profile_complete AND p.status <> 'PAUSED' AND p.handoff_accepted
+                  AND p.has_director_name AND p.has_career AND p.contact_ok AND p.web_ok
+                  AND p.has_naver AND p.geo_ok AND p.targeting_ok AND p.treatments_ok)
+                   AS would_promote
+          FROM (
+            SELECT h.id, h.name, h.status, h.aeo_domain,
+                   coalesce(h.aeo_domain, '') ~ '[^[:space:].]' AS custom_domain,
+                   coalesce(h.profile_complete, false) AS profile_complete,
+                   coalesce(h.site_built, false) AS site_built,
+                   coalesce(h.site_live, false) AS site_live,
+                   EXISTS (
+                     SELECT 1 FROM hospital_handoffs ho
+                     WHERE ho.hospital_id = h.id AND ho.state = 'HANDOFF_ACCEPTED'
+                   ) AS handoff_accepted,
+                   coalesce(h.director_name, '') ~ '[^[:space:]]' AS has_director_name,
+                   coalesce(h.director_career, '') ~ '[^[:space:]]' AS has_career,
+                   coalesce(h.director_philosophy, '') ~ '[^[:space:]]' AS has_philosophy,
+                   (coalesce(h.address, '') ~ '[^[:space:]]'
+                    AND coalesce(h.phone, '') ~ '[^[:space:]]'
+                    AND EXISTS (
+                      SELECT 1
+                      FROM jsonb_each(
+                        CASE WHEN jsonb_typeof(CAST(h.business_hours AS jsonb)) = 'object'
+                             THEN CAST(h.business_hours AS jsonb) ELSE '{}'::jsonb END
+                      ) AS bh(day, hours)
+                      WHERE jsonb_typeof(bh.hours) = 'string'
+                        AND (bh.hours #>> '{}') ~ '[^[:space:]]'
+                    )) AS contact_ok,
+                   (coalesce(h.website_url, '') ~ '[^[:space:]]'
+                    OR coalesce(h.blog_url, '') ~ '[^[:space:]]') AS web_ok,
+                   coalesce(h.naver_place_url, '') ~ '[^[:space:]]' AS has_naver,
+                   (coalesce(h.google_maps_url, '') ~ '[^[:space:]]'
+                    OR coalesce(h.google_business_profile_url, '') ~ '[^[:space:]]') AS has_google,
+                   (coalesce(h.latitude BETWEEN -90 AND 90, false)
+                    AND coalesce(h.longitude BETWEEN -180 AND 180, false)
+                    AND jsonb_typeof(CAST(h.region AS jsonb)) = 'array'
+                    AND jsonb_array_length(CAST(h.region AS jsonb)) > 0) AS geo_ok,
+                   (jsonb_typeof(CAST(h.specialties AS jsonb)) = 'array'
+                    AND jsonb_array_length(CAST(h.specialties AS jsonb)) > 0
+                    AND jsonb_typeof(CAST(h.keywords AS jsonb)) = 'array'
+                    AND jsonb_array_length(CAST(h.keywords AS jsonb)) > 0) AS targeting_ok,
+                   EXISTS (
+                     SELECT 1
+                     FROM jsonb_array_elements(
+                       CASE WHEN jsonb_typeof(CAST(h.treatments AS jsonb)) = 'array'
+                            THEN CAST(h.treatments AS jsonb) ELSE '[]'::jsonb END
+                     ) AS t(item)
+                     WHERE (jsonb_typeof(t.item) = 'string'
+                            AND (t.item #>> '{}') ~ '[^[:space:]]')
+                        OR (jsonb_typeof(t.item) = 'object'
+                            AND jsonb_typeof(t.item->'name') = 'string'
+                            AND (t.item->>'name') ~ '[^[:space:]]')
+                   ) AS treatments_ok,
+                   -- 공개 표면의 최소 사실(`minimum_public_fact_blockers`): 이름·slug·주소·전화·진료 항목.
+                   (coalesce(h.name, '') ~ '[^[:space:]]'
+                    AND coalesce(h.slug, '') ~ '[^[:space:]]'
+                    AND coalesce(h.address, '') ~ '[^[:space:]]'
+                    AND coalesce(h.phone, '') ~ '[^[:space:]]') AS text_facts_ok
+            FROM hospitals h
+          ) p
+        ) r
+        ORDER BY would_publish_now DESC, r.would_promote DESC, r.name
         """,
     ),
     # (Phase 4, D30·D33) 병원별 Essence 판·자료·자동 입력 상태. APPROVED 판 유무와 is_base, 보류 DRAFT 수,

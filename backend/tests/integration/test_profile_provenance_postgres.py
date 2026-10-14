@@ -52,13 +52,17 @@ async def test_backfill_from_audit_logs_is_idempotent_and_never_overwrites(pg_as
     summary = await prov.backfill_provenance_from_audit(db, hospital)
     await db.flush()
 
-    assert summary == {"operator": ["director_career", "phone"], "legacy": ["address", "director_name"]}
+    assert summary == {
+        "operator": ["director_career", "keywords", "phone"],
+        "legacy": ["address", "director_name"],
+    }
     ledger = hospital.profile_field_provenance
     assert ledger["phone"]["origin"] == "OPERATOR"
     # 사람이 비운 약력도 마케터 소유다 — 값이 없어도 자동 입력이 채우지 않는다.
     assert ledger["director_career"]["origin"] == "OPERATOR"
     assert ledger["address"]["origin"] == "LEGACY"  # system: 변경은 사람 입력이 아니다
-    assert ledger["keywords"]["origin"] == "AUTOFILL"  # 이미 있는 기록은 덮지 않는다
+    # 사람이 바꾼 증거는 먼저 적힌 AUTOFILL 기록보다 우선한다(배포 직후 원장 백필 전에 돈 적용).
+    assert ledger["keywords"]["origin"] == "OPERATOR"
     assert "physicians" not in ledger
 
     again = await prov.backfill_provenance_from_audit(db, hospital)

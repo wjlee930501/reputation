@@ -194,9 +194,12 @@ def serialize_ledger(hospital: Any) -> dict[str, dict[str, Any]]:
 async def backfill_provenance_from_audit(
     db: AsyncSession, hospital: Hospital, *, at: datetime | None = None
 ) -> dict[str, list[str]]:
-    """원장이 없는 옛 병원의 출처를 감사 로그로 복원한다(덮어쓰지 않는다, 멱등).
+    """감사 로그로 출처 원장을 복원한다(멱등). 자동 입력 적용은 매번 같은 잠금 안에서 이것부터 한다.
 
-    - 감사 로그 ``update_profile``의 사람 actor(``system:`` 아님)가 바꾼 필드 → OPERATOR.
+    - 감사 로그 ``update_profile``의 사람 actor(``system:`` 아님)가 바꾼 필드 → OPERATOR. 사람이 바꾼
+      증거(칸을 비운 저장 포함)는 AUTOFILL·LEGACY 기록보다 우선한다 — 원장보다 먼저 돈 자동 적용이
+      마케터가 지운 칸을 채우고 AUTOFILL로 적었더라도 그 칸은 마케터 소유로 돌아간다. 이미 OPERATOR인
+      기록은 그대로 둔다(충돌 기록도 보존한다).
     - 값은 있는데 기록이 없는 자동 입력 대상 필드 → LEGACY(어차피 '빈 칸만' 규칙에 걸린다).
     """
 
@@ -227,9 +230,14 @@ async def backfill_provenance_from_audit(
             }
     added_operator: list[str] = []
     for field, entry in operator_fields.items():
-        if field not in entries:
-            entries[field] = entry
-            added_operator.append(field)
+        existing = entries.get(field)
+        if existing and existing.get("origin") == ORIGIN_OPERATOR:
+            continue
+        restored = dict(entry)
+        if existing and existing.get("conflict"):
+            restored["conflict"] = existing["conflict"]
+        entries[field] = restored
+        added_operator.append(field)
     added_legacy: list[str] = []
     for field in AUTOFILL_APPLICABLE_FIELDS:
         if field in entries:

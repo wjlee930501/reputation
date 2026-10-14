@@ -193,9 +193,14 @@ def test_topic_swap_budget_is_one_function(monkeypatch):
             topic_swap_history=[{}], essence_check_summary=fresh.essence_check_summary
         )
     ) is False
+    # 기록 없이 생성 흔적만 남은 슬롯은 지출을 모른다 — 교체하지 않는다.
+    assert topic_swap_budget_left(
+        SimpleNamespace(topic_swap_history=None, essence_check_summary=None, body="## 본문")
+    ) is False
+    # 기록도 흔적도 없는 슬롯은 지출 0의 새 예산이다(2026-10-14 hotfix).
     assert topic_swap_budget_left(
         SimpleNamespace(topic_swap_history=None, essence_check_summary=None)
-    ) is False
+    ) is True
     assert tasks.topic_swap_budget_left is topic_swap_budget_left
 
 

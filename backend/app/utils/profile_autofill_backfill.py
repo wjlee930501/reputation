@@ -2,8 +2,9 @@
 
 병원마다 순서대로:
 
-1. **출처 원장 백필** — 감사 로그 ``update_profile``의 사람 actor가 바꾼 필드는 OPERATOR, 값은 있는데
-   기록이 없는 자동 입력 대상 필드는 LEGACY. 이미 있는 기록은 덮지 않는다(멱등).
+1. **출처 원장 백필** — 감사 로그 ``update_profile``의 사람 actor가 바꾼 필드는 OPERATOR(AUTOFILL·LEGACY
+   기록보다 우선), 값은 있는데 기록이 없는 자동 입력 대상 필드는 LEGACY(멱등). 적용 서비스도 같은
+   잠금 안에서 매번 이 복원부터 하므로, dry-run의 계획도 실제 적용과 같은 원장으로 나온다.
 2. **초안이 있는 병원** — 마지막 PROFILE_AUTOFILL 초안으로 **적용만** 한다(재수집 없음, 비용 0).
    E4 이전 초안의 네이버 값은 확인되지 않은 것으로 본다(초안의 place id가 병원 행의 저장 id와 같을
    때만 예외). 이미 적용된 초안은 건너뛴다.
@@ -109,26 +110,28 @@ async def _backfill_one(
                 ok = dispatch(hospital_id, "backfill", allow_live=include_live)
                 action = "DISPATCHED_COLLECTION" if ok else "DISPATCH_FAILED"
             return {**row, "action": action, "apply_live": include_live or not row["live"]}
+        run_id = run.id
         previous = summary.get("apply_status")
         if previous in _SETTLED_APPLY_STATUSES:
             return {
                 **row,
                 "action": "ALREADY_APPLIED",
-                "run_id": str(run.id),
+                "run_id": str(run_id),
                 "apply_status": previous,
             }
+        # dry-run도 적용과 같은 트랜잭션에서 감사 로그로 원장을 복원한 뒤 계획하고, 끝에 되돌린다.
         outcome = await apply_autofill_draft(
             db,
             hospital_id,
             summary,
-            run_id=run.id,
+            run_id=run_id,
             allow_live=include_live,
             dry_run=not apply,
         )
     return {
         **row,
         "action": "APPLY_STORED_DRAFT" if apply else "WOULD_APPLY_STORED_DRAFT",
-        "run_id": str(run.id),
+        "run_id": str(run_id),
         "naver_identity": summary.get("naver_identity", "LEGACY_DRAFT"),
         "apply_status": outcome.status,
         "applied_fields": outcome.applied_fields,
@@ -136,7 +139,7 @@ async def _backfill_one(
         "skipped_operator_fields": outcome.skipped_operator_fields,
         "skipped_unverified_fields": outcome.skipped_unverified_fields,
         "dropped_fields": outcome.dropped_fields,
-        "conflicts": [item["field"] for item in outcome.conflicts],
+        "profile_conflicts": [item["field"] for item in outcome.profile_conflicts],
         "completion": outcome.completion,
     }
 

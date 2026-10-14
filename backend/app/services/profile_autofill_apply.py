@@ -2,7 +2,8 @@
 
 순서(계획 §3.1b):
 
-1. 병원 advisory 잠금(사람 PATCH와 같은 잠금) 아래서 병원 행을 다시 읽는다.
+1. 병원 advisory 잠금(사람 PATCH와 같은 잠금) 아래서 병원 행을 다시 읽고, **같은 트랜잭션에서** 감사
+   로그로 출처 원장을 복원한다 — 사람이 바꾸거나 비운 칸은 원장 백필 전이라도 마케터 소유다.
 2. 대상 = 초안 키 ∩ 적용 허용 목록 중 **현재 값이 비어 있고** 마케터 소유(OPERATOR)가 아닌 필드.
    확인되지 않은 네이버 값(E4)은 적용하지 않는다. 값이 있는 칸·마케터 칸에서 자동 수집 값이 다르면
    원장에 ``conflict``로만 남긴다(사고·Slack 없음, Q1).
@@ -13,7 +14,12 @@
 6. 홈페이지·블로그를 채우면 같은 트랜잭션에서 근거 자료 행을 등록한다.
 7. 원장에 AUTOFILL·감사행 ``apply_profile_autofill``.
 8. 완료 재판정(승격만) — 인수 수락이 없으면 조용히 건너뛴다.
-9. 커밋 뒤: 채널 fetch, 완료 전환이면 사이트 준비 + V0, 공개 중이면 재검증.
+9. 공개 중이면 공개 표면 재검증 intent(``SITE_REVALIDATION``)를 같은 트랜잭션에 남긴다.
+10. 커밋 뒤: 채널 fetch, 완료 전환이면 사이트 준비 + V0, 공개 중이면 즉시 재검증(최선 노력 — 놓쳐도
+    intent를 reconcile이 보낸다). 커밋 뒤 부수효과의 실패는 이미 커밋된 적용을 실패로 바꾸지 않는다.
+
+``conflicts``(수집 단계에서 출처끼리 다른 값)와 ``profile_conflicts``(자동 수집 값 vs 지금 병원 값)는
+다른 사실이라 실행 요약에 따로 둔다.
 
 일시정지 병원은 손대지 않는다(배경 작업이 PAUSED를 바꾸지 않는다). 공개 중인 병원은 ``allow_live``가
 없으면 적용하지 않고 적용할 필드만 계획으로 돌려준다 — 빈 칸이 공개 페이지에 새로 나타나기 때문이다.
@@ -21,10 +27,13 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import re
+import unicodedata
 import uuid
-from collections.abc import Mapping
+from collections.abc import Awaitable, Mapping
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -48,12 +57,15 @@ from app.services.hospital_lifecycle import (
 from app.services.hospital_physicians import derive_director_fields
 from app.services.keyword_analysis import region_mixed_keywords
 from app.services.naver_place import VERIFIED_IDENTITIES, stored_place_id
+from app.services.public_surface_intents import enqueue_public_surface_intent
 from app.utils.db_locks import acquire_hospital_advisory_lock
 from app.utils.medical_filter import check_forbidden
 
 logger = logging.getLogger(__name__)
 
 APPLY_ACTOR = "system:profile-autofill"
+#: 수집 뒤 네이버 신원 입력이 바뀐 병원의 재수집 실행 키(지금 신원의 해시 — 신원마다 한 번).
+RECOLLECT_KEY_PREFIX = "identity:"
 
 STATUS_APPLIED = "APPLIED"
 STATUS_NOTHING = "NOTHING_TO_APPLY"
@@ -74,6 +86,7 @@ _TEXT_LIMITS: dict[str, int] = {
     "naver_place_url": 500,
     "naver_place_id": 100,
 }
+_NAVER_IDENTITY_FIELDS = frozenset({"naver_place_id", "naver_place_url"})
 _URL_FIELDS = frozenset({"website_url", "blog_url", "kakao_channel_url", "naver_place_url"})
 _LIST_FIELDS = frozenset({"region", "specialties", "keywords", "competitors"})
 _DIRECTOR_FIELDS = ("director_name", "director_career", "director_philosophy")
@@ -92,8 +105,10 @@ class AutofillPlan:
     skipped_operator_fields: list[str] = field(default_factory=list)
     skipped_filled_fields: list[str] = field(default_factory=list)
     skipped_unverified_fields: list[str] = field(default_factory=list)
-    conflicts: list[dict] = field(default_factory=list)
+    profile_conflicts: list[dict] = field(default_factory=list)
     create_representative: bool = False
+    identity_changed: bool = False
+    recollect_key: str | None = None
 
 
 @dataclass
@@ -105,13 +120,17 @@ class ApplyOutcome:
     skipped_operator_fields: list[str] = field(default_factory=list)
     skipped_filled_fields: list[str] = field(default_factory=list)
     skipped_unverified_fields: list[str] = field(default_factory=list)
-    conflicts: list[dict] = field(default_factory=list)
+    profile_conflicts: list[dict] = field(default_factory=list)
     geocode_warning: str | None = None
     channel_sources: list[dict] = field(default_factory=list)
     completion: dict[str, Any] | None = None
     followup_needed: bool = False
+    identity_changed: bool = False
+    recollect_key: str | None = None
 
     def summary(self) -> dict[str, Any]:
+        """실행 요약에 합칠 모양. 수집 단계의 ``conflicts``(출처 간)는 덮지 않는다."""
+
         payload = asdict(self)
         payload["apply_status"] = payload.pop("status")
         return payload
@@ -261,15 +280,114 @@ def summary_naver_verified(summary: Mapping[str, Any], hospital: Any) -> bool:
     return bool(draft_id) and draft_id == stored
 
 
+def _identity_name(value: Any) -> str:
+    return re.sub(r"\s+", "", unicodedata.normalize("NFC", str(value or ""))).lower()
+
+
+def _identity_regions(values: Any) -> list[str]:
+    items = values if isinstance(values, (list, tuple)) else []
+    return sorted({_identity_name(item) for item in items if _identity_name(item)})
+
+
+def collection_identity(
+    *, name: Any, naver_place_id: str | None, regions: Any
+) -> dict[str, Any]:
+    """수집할 때 네이버 신원을 정한 입력(병원명·저장 place id·지역). 초안에 함께 저장한다."""
+
+    return {
+        "name": _identity_name(name),
+        "naver_place_id": naver_place_id or None,
+        "regions": _identity_regions(regions),
+    }
+
+
+def _current_identity(hospital: Any) -> dict[str, Any]:
+    return collection_identity(
+        name=getattr(hospital, "name", None),
+        naver_place_id=stored_place_id(
+            getattr(hospital, "naver_place_id", None), getattr(hospital, "naver_place_url", None)
+        ),
+        regions=getattr(hospital, "region", None),
+    )
+
+
+def _has_naver_values(summary: Mapping[str, Any]) -> bool:
+    draft = summary.get("draft") if isinstance(summary.get("draft"), Mapping) else {}
+    field_meta = summary.get("field_meta") if isinstance(summary.get("field_meta"), Mapping) else {}
+    if any(not provenance.is_empty_value(draft.get(key)) for key in ("naver_place_id", "naver_place_url")):
+        return True
+    for key, meta in field_meta.items():
+        if key in draft and isinstance(meta, Mapping):
+            if meta.get("source") == "naver":
+                return True
+            if any(
+                isinstance(item, Mapping) and item.get("source") == "naver"
+                for item in meta.get("descriptions") or []
+            ):
+                return True
+    return False
+
+
+def identity_changed_since_collection(summary: Mapping[str, Any], hospital: Any) -> bool:
+    """수집 뒤 병원의 네이버 신원 입력이 바뀌었는가(fail-closed). 바뀌었으면 그 초안의 네이버 값은 다른
+    병원 것일 수 있다.
+
+    병원명·저장 place id·지역 중 **어느 하나라도** 수집 때와 다르면 바뀐 것이다 — 빈 값이 채워진 것도,
+    누가 채웠는지(출처)와도 무관하다. 신원 기록이 없는 초안은 네이버 값이 하나라도 있으면 바뀐 것으로 본다
+    (확인할 수 없으므로 네이버 값을 적용하지 않고 다시 수집한다).
+    """
+
+    recorded = summary.get("collection_identity")
+    if not isinstance(recorded, Mapping):
+        return _has_naver_values(summary)
+    current = _current_identity(hospital)
+    return (
+        (recorded.get("name") or "") != current["name"]
+        or (recorded.get("naver_place_id") or None) != current["naver_place_id"]
+        or list(recorded.get("regions") or []) != current["regions"]
+    )
+
+
+def recollect_key_for(hospital: Any) -> str:
+    digest = hashlib.sha256(
+        json.dumps(_current_identity(hospital), ensure_ascii=False, sort_keys=True).encode()
+    ).hexdigest()[:12]
+    return f"{RECOLLECT_KEY_PREFIX}{digest}"
+
+
+def _strip_naver_descriptions(value: Any, meta: Mapping[str, Any]) -> Any:
+    naver_names = {
+        str(item.get("name"))
+        for item in meta.get("descriptions") or []
+        if isinstance(item, Mapping) and item.get("source") == "naver"
+    }
+    if not naver_names or not isinstance(value, list):
+        return value
+    return [
+        {**item, "description": None}
+        if isinstance(item, Mapping) and str(item.get("name")) in naver_names
+        else item
+        for item in value
+    ]
+
+
 def plan_autofill(
     hospital: Any, summary: Mapping[str, Any], *, has_physicians: bool
 ) -> AutofillPlan:
-    """초안을 이 병원에 어떻게 적용할지 정한다(병원 행은 바꾸지 않는다)."""
+    """초안을 이 병원에 어떻게 적용할지 정한다(병원 행은 바꾸지 않는다).
+
+    수집 뒤 네이버 신원 입력(place id·병원명·지역)이 바뀌었으면 네이버에서 온 값과 네이버 설명을
+    필드의 ``verified``와 무관하게 모두 버리고 같은 신원으로 다시 수집하라고 표시한다.
+    """
 
     plan = AutofillPlan()
     draft = summary.get("draft") if isinstance(summary.get("draft"), Mapping) else {}
     field_meta = summary.get("field_meta") if isinstance(summary.get("field_meta"), Mapping) else {}
     naver_verified = summary_naver_verified(summary, hospital)
+    if identity_changed_since_collection(summary, hospital):
+        naver_verified = False
+        plan.identity_changed = True
+        plan.recollect_key = recollect_key_for(hospital)
     draft_regions = draft.get("region") if isinstance(draft.get("region"), list) else []
     current_regions = list(getattr(hospital, "region", None) or [])
 
@@ -282,11 +400,16 @@ def plan_autofill(
         meta = field_meta.get(field_name) if isinstance(field_meta.get(field_name), Mapping) else {}
         source = str(meta.get("source") or "unknown")
         verified = meta.get("verified")
-        if verified is None:
-            verified = source != "naver" or naver_verified
+        if verified is None or plan.identity_changed:
+            verified = (verified is not False) and (source != "naver" or naver_verified)
+        if plan.identity_changed and field_name in _NAVER_IDENTITY_FIELDS:
+            # 신원이 바뀌었으면 플레이스 주소·id는 출처 표시와 무관하게 네이버 신원 자체다.
+            verified = False
         if not verified:
             plan.skipped_unverified_fields.append(field_name)
             continue
+        if plan.identity_changed and field_name == "treatments":
+            value = _strip_naver_descriptions(value, meta)
         current = getattr(hospital, field_name, None)
         operator_owned = provenance.is_operator_owned(hospital, field_name)
         if operator_owned or not provenance.is_empty_value(current):
@@ -296,7 +419,9 @@ def plan_autofill(
                 plan.skipped_filled_fields.append(field_name)
             # 마케터가 비운 칸도 자동 수집 값과 다르면 충돌이다 — 값은 바꾸지 않는다(Q1).
             if provenance.semantically_changed(current, value):
-                plan.conflicts.append({"field": field_name, "source": source, "value": value})
+                plan.profile_conflicts.append(
+                    {"field": field_name, "source": source, "value": value}
+                )
             continue
         if field_name in _DIRECTOR_FIELDS and has_physicians:
             plan.dropped_fields.append({"field": field_name, "reason": "PHYSICIANS_PRESENT"})
@@ -393,6 +518,9 @@ async def apply_autofill_draft(
             await db.commit()
         return outcome
 
+    # 원장 백필 CLI를 기다리지 않는다 — 감사 로그의 사람 변경(칸 비우기 포함)을 먼저 원장에 올린 뒤
+    # 계획한다. 같은 advisory 잠금 안이라 PATCH와 엇갈리지 않는다.
+    await provenance.backfill_provenance_from_audit(db, hospital)
     has_physicians = await _has_physicians(db, hospital_id)
     plan = plan_autofill(hospital, summary, has_physicians=has_physicians)
     live = _is_live(hospital)
@@ -401,9 +529,13 @@ async def apply_autofill_draft(
         skipped_operator_fields=plan.skipped_operator_fields,
         skipped_filled_fields=plan.skipped_filled_fields,
         skipped_unverified_fields=plan.skipped_unverified_fields,
-        conflicts=plan.conflicts,
+        profile_conflicts=plan.profile_conflicts,
+        identity_changed=plan.identity_changed,
+        recollect_key=plan.recollect_key,
     )
     if dry_run:
+        # 복원한 원장으로 계획만 하고 아무것도 남기지 않는다.
+        await db.rollback()
         return ApplyOutcome(status=STATUS_DRY_RUN, would_apply_fields=sorted(plan.updates), **base)
     if live and not allow_live:
         outcome = ApplyOutcome(
@@ -415,7 +547,7 @@ async def apply_autofill_draft(
 
     now = datetime.now(UTC)
     missing_before = set(missing_profile_requirement_keys(hospital))
-    for item in plan.conflicts:
+    for item in plan.profile_conflicts:
         provenance.record_conflict(
             hospital, item["field"], source=item["source"], value=item["value"], at=now
         )
@@ -509,28 +641,49 @@ async def apply_autofill_draft(
             "dropped_fields": outcome.dropped_fields,
             "skipped_operator_fields": outcome.skipped_operator_fields,
             "skipped_unverified_fields": outcome.skipped_unverified_fields,
-            "conflicts": [item["field"] for item in outcome.conflicts],
+            "profile_conflicts": [item["field"] for item in outcome.profile_conflicts],
             **completion_detail,
         },
     )
     await _store_run_summary(db, run_id, outcome)
+    if live:
+        # 공개 값이 바뀌었다 — 재검증 의도를 공개 변경과 같은 커밋에 남긴다(커밋 직후 죽어도 남는다).
+        enqueue_public_surface_intent(db, hospital)
     slug, treatments, name = hospital.slug, hospital.treatments, hospital.name
     await db.commit()
 
-    # 커밋 뒤에만 보낸다 — 워커가 아직 없는 행을 찾아 헛돌지 않게 한다.
+    # 커밋 뒤에만 보낸다 — 워커가 아직 없는 행을 찾아 헛돌지 않게 한다. 여기서의 실패는 이미 커밋된
+    # 적용을 되돌리지 않는다(실패 기록으로 바꾸면 스윕이 같은 초안을 다시 적용하려 든다).
     profile_channel_sources.dispatch_channel_source_fetches(fetch_ids)
     # 채운 서술 값은 자동 요약 태스크가 병원 정보(자동) 근거 자료로 싣는다(Phase 4 D33).
     if profile_facts_source.touches_profile_facts(outcome.applied_fields):
         enqueue_essence_refresh_best_effort(hospital_id)
     if completion.transitioned:
-        await profile_completion.dispatch_completion_side_effects(
-            db, hospital_id, actor=APPLY_ACTOR
+        await _after_commit(
+            "completion side effects",
+            hospital_id,
+            profile_completion.dispatch_completion_side_effects(
+                db, hospital_id, actor=APPLY_ACTOR
+            ),
         )
     if live:
         from app.services.site_revalidate import trigger_hospital_site_revalidate_safe
 
-        await trigger_hospital_site_revalidate_safe(slug, treatments, hospital_name=name)
+        await _after_commit(
+            "site revalidation",
+            hospital_id,
+            trigger_hospital_site_revalidate_safe(slug, treatments, hospital_name=name),
+        )
     return outcome
+
+
+async def _after_commit(label: str, hospital_id: uuid.UUID, step: Awaitable[Any]) -> None:
+    try:
+        await step
+    except Exception:  # noqa: BLE001 — 커밋된 적용은 성공이다. 놓친 부수효과는 각자의 스윕이 회수한다.
+        logger.warning(
+            "Autofill post-commit %s failed for hospital %s", label, hospital_id, exc_info=True
+        )
 
 
 __all__ = (
@@ -538,6 +691,7 @@ __all__ = (
     "ApplyOutcome",
     "AutofillPlan",
     "apply_autofill_draft",
+    "collection_identity",
     "load_survey_text",
     "plan_autofill",
     "summary_naver_verified",

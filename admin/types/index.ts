@@ -53,6 +53,20 @@ export type HospitalStatusValue =
   | 'PAUSED'
 
 /** 서버가 판정해 내려주는 남은 필수 항목 한 건(키 + 화면 라벨). */
+/** 서버가 JSON 열에 저장한 값 그대로의 모양. */
+export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue }
+
+/** 서버가 칸마다 기록한 입력 출처. OPERATOR는 마케터가 직접 입력·수정한 값이다. */
+export interface FieldProvenance {
+  origin: 'OPERATOR' | 'AUTOFILL' | 'LEGACY'
+  actor?: string
+  source?: 'naver' | 'homepage' | 'blog' | 'survey'
+  run_id?: string
+  at?: string
+  // 자동 수집 값은 칸의 모양 그대로다 — 진료시간은 요일 객체, 지역·키워드는 목록, 나머지는 문자열.
+  conflict?: { source: string; value: JsonValue; observed_at?: string }
+}
+
 export interface MissingProfileRequirement {
   key: string
   label: string
@@ -111,6 +125,7 @@ export interface Hospital {
    * 선택 항목이 아니다 — 없으면 화면이 "남은 항목 없음"을 잘못 말한다.
    */
   missing_profile_requirements: MissingProfileRequirement[]
+  profile_field_provenance?: Record<string, FieldProvenance> | null
   /** 프로필 저장 응답에만 실린다. */
   source_registration?: ProfileSourceRegistration[]
   /** 승인이 남은 병원 공개 페이지 시각 항목 라벨. 비어 있으면 승인 완료(O-2). */
