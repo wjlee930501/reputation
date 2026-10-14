@@ -1,5 +1,30 @@
 # 현재 배포와 헬스체크
 
+## 최신 운영 배포 — 2026-10-14 Phase 4-B 자동 Essence + D36·D37 게이트
+
+main `5b13b02c`(PR #258 + #256; api `00253-nnp`, worker `00243-h45`, beat `00238-762`, admin `00109-d6r`, Site 그대로). DB head는
+`0092_publish_without_references_or_verdict`이고 13:23~13:37 KST에 배포했다(`--override-reason`, env 차이 0). 롤백 좌표는 `.omo/rollback-gates/backend`·`admin`
+(api `00252-qfn`·worker `00242-c5q`·beat `00237-vnd`·admin `00108-9hv`).
+- 배포 전 q16/q16b/q16c는 0092 이전 열만 쓰므로 migrate Job에서 base64 `python -c`로 돌렸다. P4-B 백필 dry-run은 새 이미지가 필요해
+  `deploy.sh migrate`로 migrate Job 이미지를 먼저 바꿨다. 이때 0092가 코드보다 먼저 적용된다 — 옛 코드와 0092의 조합은 롤백과 같은 조합이다.
+- 배포 뒤 `essence_autonomy_backfill --apply`를 돌렸다. 자동 입력은 공개 병원에 `--apply`(수집만, `SKIPPED_LIVE`) → `--include-live` dry-run
+  → `--apply --include-live` 순서로 지정 병원만 적용했다.
+- **롤백**: 트래픽만 되돌리면 옛 코드가 참고자료 0개 의료 글·검수 장애 선발행 글을 공개 표면에서 다시 숨긴다(롤백 전 q16c를 다시 뜬다).
+  카탈로그 판이 `2026-10-13.1`로 돌아가 종착 슬롯 재평가가 반복된다. 특수 롤백 이미지는 없다.
+- 후속으로 main `d5f8e333`(PR #259)을 14:41~14:51에 Backend만 배포했다(api `00254-qv8`·worker `00244-mhh`·beat `00239-9jc`, 롤백 좌표 `.omo/rollback-mufix/backend`).
+- readiness 18/18, 병원 헬스 11/11. 상세는 [배포 기록](../releases/2026-10-14-p4b-gates-production.md).
+
+## 이전 운영 배포 — 2026-10-14 Phase 4-A 온보딩 자율화
+
+main `c5ef4adf`(PR #257, W3 #254·W8 #255 포함; api `00252-qfn`, worker `00242-c5q`, beat `00237-vnd`, admin `00108-9hv`, Site 그대로) — DB head
+`0091_add_profile_provenance_and_essence_metadata`(추가형). 12:46~12:57 KST, 배치 시간대 밖, `--override-reason`, env 차이 0, 롤백 좌표
+`.omo/rollback-p4a/backend`·`admin`(api `00251-fq9`·worker `00241-8f8`·beat `00236-b2t`·admin `00107-d26`). 다른 PR이 같은 시각 main에 들어오므로
+배포 worktree는 `origin/main`이 아니라 병합 커밋(`git checkout --detach c5ef4adf`)으로 고정했다. 배포 전 읽기 전용 q12(0091 이전 열만 사용)를
+migrate Job에서 base64 `python -c`로 돌려 `would_publish_now` 0곳을 확인했다. 배포 뒤 `ops_sql_report --only=q12 --only=q13 --only=q14`,
+`profile_autofill_backfill`(기본 dry-run) → 비공개 병원만 `--apply --hospital=<id>`(`--include-live` 쓰지 않음 — 인자 없는 `--apply`는 공개
+병원에도 유료 수집을 보내고 출처 원장을 커밋하므로 병원을 지정한다). readiness 18/18, 병원 헬스 11/11, +30분 ERROR 0. 상세는
+[배포 기록](../releases/2026-10-14-autonomy-phase4a-production.md).
+
 ## 최신 운영 배포 — 2026-10-13 Phase 2 자율성 보완
 
 main `d6b85c96`(api `00243-mx4`, worker `00233-9k7`, beat `00228-jlm`, admin `00107-d26`, Site 그대로, **마이그레이션 없음** — DB head
