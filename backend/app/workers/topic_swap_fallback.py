@@ -52,6 +52,7 @@ from app.workers.generation_attempt_state import (
     GENERATION_ATTEMPT_KEY,
     GenerationBudgetExceeded,
     GenerationBudgetUnknown,
+    budget_generation_attempt,
     current_topic_writers_exhausted,
     read_generation_attempt,
     read_generation_budget,
@@ -67,12 +68,14 @@ from app.workers.generation_retry_policy import (
     GENERATION_BUDGET_EXHAUSTED_CODE,
     OPERATOR_DECIDES_KEY,
     SAMPLE_BODY_CODES,
-    SAMPLE_BODY_DAILY_BUDGET,
     SAMPLE_EXHAUSTED_DAY_LIMIT,
     GenerationRetryClass,
     environment_attempt_period,
     has_model_declared_hard_finding,
     next_recovery_deadline,
+    sample_daily_budget,
+    slot_is_urgent,
+    stored_attempt_period,
 )
 from app.workers.nightly_generation_batch import (
     GENERATION_WRITE_BACK_STATUSES,
@@ -84,9 +87,9 @@ logger = logging.getLogger(__name__)
 
 TOPIC_SWAP_ACTOR = "system:topic-swap"
 TOPIC_SWAP_REASON = "topic swapped"
-# 교체 직후 슬롯에 남기는 시도 기록의 원인. 실패가 아니라 "오늘 예산은 이미 썼고 새 주제로
-# 내일 다시 쓴다"(예정일 당일 교체면 "오늘 한 번만 새 주제로 쓴다")는 자동 복구 상태다
-# (`generation_incident_control`이 운영자 문구를 가진다).
+# 교체 직후 슬롯에 남기는 시도 기록의 원인. 실패가 아니라 "새 주제로 다시 쓴다"는 자동 복구
+# 상태다 — 오늘 하루 예산이 남았거나 임박 슬롯이면 같은 스윕이, 아니면 내일 첫 적격 스윕이
+# 쓴다(`generation_incident_control`이 운영자 문구를 가진다).
 TOPIC_SWAPPED_REASON = "TOPIC_SWAPPED"
 # 한 페이지가 읽는 행 상한과 그 페이지 수. 교체는 드문 종착 사건이지만, SQL이 거르지
 # 못하는 비후보가 한 페이지를 통째로 채울 수 있으므로 정렬 키로 그 뒤를 이어 읽는다.
@@ -215,7 +218,7 @@ def topic_swap_budget_left(item: ContentItem) -> bool:
     if (len(history) if isinstance(history, list) else 0) >= topic_swap_limit():
         return False
     try:
-        budget = read_generation_budget(read_generation_attempt(item))
+        budget = read_generation_budget(budget_generation_attempt(item))
     except GenerationBudgetUnknown:
         return False
     return budget.topic_swaps < 1 and len(budget.topics) < 2
@@ -381,7 +384,7 @@ def _reset_values(item: ContentItem, target_id: uuid.UUID, history_entry: dict) 
     """
 
     swapped_attempt = record_topic_swap(
-        read_generation_attempt(item),
+        budget_generation_attempt(item),
         from_topic_id=str(item.query_target_id) if item.query_target_id else None,
         to_topic_id=str(target_id),
     )
@@ -502,6 +505,8 @@ def _swap_one(db, item: ContentItem, reason: str, *, now: datetime) -> tuple[dic
         "incident_recovered": False,
     }
     previous_action_id = item.exposure_action_id
+    # 교체 UPDATE가 수리 세션 계수까지 비우므로 오늘 쓴 작가 세션 수는 그 전에 읽는다.
+    spent_today = writer_sessions_spent_today(item, now)
     try:
         reset_values = _reset_values(item, target.id, entry)
     except (GenerationBudgetUnknown, GenerationBudgetExceeded):
@@ -534,7 +539,7 @@ def _swap_one(db, item: ContentItem, reason: str, *, now: datetime) -> tuple[dic
         )
     # 교체한 행의 현재 값으로 시도 기록을 남겨야 한다 — 시도 지문에는 새 타깃이 들어간다.
     db.refresh(item)
-    _record_topic_swapped_attempt(db, item, now=now)
+    _record_topic_swapped_attempt(db, item, now=now, spent_today=spent_today)
     return entry, "swapped"
 
 
@@ -546,30 +551,107 @@ def _tasks():
     return tasks
 
 
-def _record_topic_swapped_attempt(db, item: ContentItem, *, now: datetime) -> None:
-    """교체한 슬롯이 **같은 KST 날에** 작가 예산을 다시 사지 못하게 한다.
+class _UnknownSpend(Exception):
+    """오늘 지출을 읽을 수 없다 — 호출부가 오늘 예산 소진으로 바꾼다."""
+
+
+def _spend_period(raw: object) -> date | None:
+    """저장된 KST 날짜. 없으면 ``None``, 있는데 날짜로 읽을 수 없으면 모르는 지출이다."""
+
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raise _UnknownSpend
+    try:
+        return date.fromisoformat(raw)
+    except ValueError as exc:
+        raise _UnknownSpend from exc
+
+
+def _spend_count(raw: object) -> int:
+    """오늘 계수. 없거나 정수가 아니거나 음수면 모르는 지출이다."""
+
+    if raw is None or isinstance(raw, bool):
+        raise _UnknownSpend
+    try:
+        count = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise _UnknownSpend from exc
+    if count < 0 or (isinstance(raw, float) and count != raw):
+        raise _UnknownSpend
+    return count
+
+
+def writer_sessions_spent_today(item: ContentItem, now: datetime) -> int:
+    """이 슬롯이 오늘(KST) 이미 산 작가 세션 수 — 표본 예산 계수와 본문 수리 세션 계수 중 큰 값.
+
+    날이 바뀐 기록은 0이다(하루 예산은 KST 날마다 다시 열린다). 기록의 날짜를 날짜로 읽을 수
+    없거나, 오늘 기록인데 계수가 없거나 정수가 아니거나 음수면 오늘 예산을 다 쓴 것으로 본다 —
+    모르는 지출을 0으로 바꾸지 않는다(임박 슬롯의 1세션 예외는 호출부가 따로 준다).
+    """
+
+    today = datetime.fromisoformat(environment_attempt_period(now)).date()
+    exhausted = sample_daily_budget(TOPIC_SWAPPED_REASON, scheduled_date=None)
+    attempt = read_generation_attempt(item)
+    summary = getattr(item, "essence_check_summary", None)
+    repair = summary.get(BODY_REPAIR_STATE_KEY) if isinstance(summary, dict) else None
+    try:
+        spent = 0
+        period = _spend_period(attempt.get("attempt_period"))
+        if period is None and attempt.get("reason"):
+            # 날짜 키가 없는 옛 기록은 관측 시각으로 날짜를 정한다(`stored_attempt_period`).
+            period = _spend_period(stored_attempt_period(attempt))
+            if period is None:
+                raise _UnknownSpend
+        if period == today:
+            spent = _spend_count(
+                attempt.get("provider_attempt_count", attempt.get("attempt_count"))
+            )
+        if repair is not None:
+            if not isinstance(repair, dict):
+                raise _UnknownSpend
+            if _spend_period(repair.get("period")) == today:
+                spent = max(spent, _spend_count(repair.get("count")))
+    except _UnknownSpend:
+        return exhausted
+    return spent
+
+
+def _record_topic_swapped_attempt(
+    db, item: ContentItem, *, now: datetime, spent_today: int | None = None
+) -> None:
+    """교체한 슬롯의 다음 시도 시각을 **오늘 남은 예산**으로 정한다.
 
     시도 기록을 그냥 지우면 로더의 unchanged/미도래 필터를 그대로 통과해 그날 남은 스윕이
-    새 주제로 곧바로 세션을 산다 — 소진된 하루 예산이 교체 한 번으로 되살아난다. 그래서
-    "오늘 예산은 이미 썼다"는 결정 1건을 정본 경로로 남긴다(예산은 쓰지 않으므로
-    `count_attempt=False`). 다음 적격 시각은 그 예산 규칙이 스스로 계산한다 — 오늘 예산이
-    소진으로 읽히므로 내일의 첫 적격 스윕이다. 날이 바뀌면 같은 지문이라도 하루 예산이
-    초기화되므로 새 주제의 첫 실패는 1회차부터 다시 센다.
+    새 주제로 하루 예산을 처음부터 다시 산다 — 소진된 하루 예산이 교체 한 번으로 되살아난다.
+    그래서 옛 주제가 오늘 이미 산 작가 세션 수(`spent_today`, 교체 전에 읽는다)를 오늘 계수로
+    이어받는 결정 1건을 정본 경로로 남긴다(예산은 쓰지 않으므로 `count_attempt=False`).
 
-    예외는 **예정일 당일(KST)의 교체**다. 내일로 미루면 그날 08:00 발행을 구조적으로
-    놓친다. 그래서 오늘 예산을 한 회만 남기고 기한을 지금으로 둔다 — 교체 pass 바로 뒤의
-    같은 스윕 로더가 새 주제를 한 번 쓴다. 그 1회가 실패하면 정상 예산 규칙이 오늘 예산을
-    소진으로 읽고(다음은 내일), 교체 자체가 슬롯 평생 한 번이라 이 1회도 다시 생기지 않는다.
+    - 오늘 예산이 남았으면(교체가 자정 뒤 01시 스윕에서 일어난 경우 등) 기한은 **지금**이다 —
+      교체 pass 바로 뒤의 같은 스윕 로더가 새 주제를 쓴다. 내일로 미루면 새 주제의 예산이
+      남아 있는데도 하루를 통째로 버린다(2026-10-14 abe0b28e: 01:00 교체 → 10/15 01:00).
+    - 임박 슬롯(예정일이 오늘·내일이거나 지난 슬롯, `slot_is_urgent`)은 옛 주제가 오늘 예산을
+      다 썼어도 오늘 계수를 하루 예산 − 1로 묶어 같은 스윕에서 한 번은 쓴다. 그 1회가 실패하면
+      정상 예산 규칙이 오늘 예산을 소진으로 읽고(다음은 내일), 교체가 슬롯 평생 한 번이라
+      이 1회도 다시 생기지 않는다.
+    - 그 밖(사흘 뒤 슬롯이 오늘 예산을 다 쓴 경우)은 내일의 첫 적격 스윕이다.
+
+    새 주제는 자기 작가·검수·전송 예산을 새로 받으므로(`prior_topic_spend`) 같은 날 다시 써도
+    주제당·평생 상한은 그대로다. 날이 바뀌면 하루 예산이 초기화되므로 새 주제의 첫 실패는
+    1회차부터 다시 센다. 예정일을 읽지 못한 행은 종전처럼 오늘 예산 소진·기한 없음이다.
     """
 
     tasks = _tasks()
     philosophy = tasks._generation_philosophy_sync(db, item.hospital_id)
     scheduled_date = getattr(item, "scheduled_date", None)
-    same_day = (
-        scheduled_date is not None
-        and environment_attempt_period(now) == scheduled_date.isoformat()
-    )
-    spent_count = SAMPLE_BODY_DAILY_BUDGET - 1 if same_day else SAMPLE_BODY_DAILY_BUDGET
+    budget = sample_daily_budget(TOPIC_SWAPPED_REASON, scheduled_date=scheduled_date, observed=now)
+    if scheduled_date is None:
+        spent_count = budget
+    else:
+        sessions = writer_sessions_spent_today(item, now) if spent_today is None else spent_today
+        spent_count = min(max(int(sessions), 0), budget)
+        if slot_is_urgent(scheduled_date, now):
+            spent_count = min(spent_count, budget - 1)
     spent = {
         "reason": TOPIC_SWAPPED_REASON,
         "retry_class": GenerationRetryClass.SAMPLE_RECOVERABLE.value,
@@ -581,7 +663,7 @@ def _record_topic_swapped_attempt(db, item: ContentItem, *, now: datetime) -> No
     }
     deadline = (
         now
-        if same_day
+        if scheduled_date is not None and spent_count < budget
         else next_recovery_deadline(spent, scheduled_date=scheduled_date, now=now)
     )
     tasks._remember_generation_attempt(

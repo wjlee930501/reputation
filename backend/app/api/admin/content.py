@@ -450,8 +450,9 @@ async def set_schedule(
             scheduled_date=slot.scheduled_date,
             status=ContentStatus.DRAFT,
             query_target_id=slot.query_target_id,
-            # Only slot creation may mint known-zero lifetime spend. Existing rows
-            # without this marker are legacy-unknown and require an audited reset.
+            # Slot creation mints known-zero lifetime spend. Existing rows without this
+            # marker are legacy-unknown (audited reset) unless they carry no generation
+            # trace at all (`generation_attempt_state.never_attempted_slot`).
             essence_check_summary={
                 "generation_attempt": fresh_generation_attempt(
                     topic_id=str(slot.query_target_id) if slot.query_target_id else None

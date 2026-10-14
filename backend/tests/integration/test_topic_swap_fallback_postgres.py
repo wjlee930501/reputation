@@ -184,12 +184,16 @@ def test_unclaimed_exhausted_slot_is_swapped_and_fully_reset(pg_conn, pg_session
     pg_session.refresh(row)
     assert row.title is None
     assert row.image_url is None
-    # 옛 시도 기록·독립 검수 메타는 사라지고, 그 자리에 "오늘 예산은 이미 썼다"는
-    # 결정 하나만 남는다 — 교체가 같은 날 작가 세션을 되살리지 않게 하는 기록이다.
+    # 옛 시도 기록·독립 검수 메타는 사라지고, 그 자리에 오늘 계수를 이어받은 결정 하나만
+    # 남는다. 옛 기록의 날짜를 모르면 오늘 예산을 다 쓴 것으로 본다(모르는 지출을 0으로 바꾸지
+    # 않는다). 지난 슬롯은 임박이라 오늘 한 세션(2+1의 마지막)이 남아 같은 스윕이 쓴다.
     attempt = row.essence_check_summary["generation_attempt"]
     assert attempt["reason"] == topic_swap_fallback.TOPIC_SWAPPED_REASON
     assert attempt["retry_class"] == GenerationRetryClass.SAMPLE_RECOVERABLE.value
     assert attempt["provider_attempt_count"] == SAMPLE_BODY_DAILY_BUDGET
+    assert datetime.fromisoformat(attempt["next_retry_at"]) == NOW
+    assert generation_retry_policy.retry_is_due(attempt, NOW, scheduled_date=past_slot) is True
+    # 예정일을 모르는 판독기는 기본 예산(2)으로 읽어 더 사지 않는다.
     assert generation_retry_policy.retry_is_due(attempt, NOW) is False
     assert row.content_revision == 5
     assert row.scheduled_date == past_slot  # 계약 월 회계는 그대로다
@@ -199,7 +203,7 @@ def test_unclaimed_exhausted_slot_is_swapped_and_fully_reset(pg_conn, pg_session
 
 
 def test_a_same_day_swap_leaves_exactly_one_writer_session_due_now(pg_conn, pg_session):
-    """예정일 당일 07:00 교체는 그날 작가 세션 1회를 남기고 지금 바로 집히게 한다."""
+    """예정일 당일 07:00 교체는 (오늘 예산을 다 쓴 옛 주제라도) 작가 세션 1회를 남기고 지금 바로 집히게 한다."""
 
     hospital_id = _seed_hospital(pg_conn)
     item_id = _seed_item(pg_conn, hospital_id)  # scheduled_date = SLOT
@@ -218,14 +222,17 @@ def test_a_same_day_swap_leaves_exactly_one_writer_session_due_now(pg_conn, pg_s
     attempt = row.essence_check_summary["generation_attempt"]
     assert attempt["reason"] == topic_swap_fallback.TOPIC_SWAPPED_REASON
     assert attempt["attempt_period"] == SLOT.isoformat()
-    assert attempt["provider_attempt_count"] == SAMPLE_BODY_DAILY_BUDGET - 1
+    urgent_budget = SAMPLE_BODY_DAILY_BUDGET + generation_retry_policy.SAMPLE_BODY_URGENT_EXTRA
+    assert attempt["provider_attempt_count"] == urgent_budget - 1
     assert datetime.fromisoformat(attempt["next_retry_at"]) == swapped_at
-    assert generation_retry_policy.retry_is_due(attempt, swapped_at + timedelta(seconds=1))
+    assert generation_retry_policy.retry_is_due(
+        attempt, swapped_at + timedelta(seconds=1), scheduled_date=SLOT
+    )
     # 그 1회를 쓰면 오늘 예산은 소진이다 — 정상 예산 규칙이 경계를 소유한다.
     count, _exhausted_days = generation_retry_policy.sample_budget_spent(
-        attempt, "GENERATION_REJECTED", swapped_at + timedelta(minutes=5)
+        attempt, "GENERATION_REJECTED", swapped_at + timedelta(minutes=5), scheduled_date=SLOT
     )
-    assert count == SAMPLE_BODY_DAILY_BUDGET
+    assert count == urgent_budget
 
 
 def _freeze(monkeypatch, moment: datetime) -> None:
@@ -265,7 +272,8 @@ def test_the_morning_gate_keeps_the_swap_record_and_the_next_sweep_claims_it(
     pg_session.refresh(row)
     swapped = dict(row.essence_check_summary[GENERATION_ATTEMPT_KEY])
     assert swapped["reason"] == topic_swap_fallback.TOPIC_SWAPPED_REASON
-    assert datetime.fromisoformat(swapped["next_retry_at"]) == datetime(2026, 9, 18, 1, 0, tzinfo=kst)
+    # 지난 슬롯은 같은 날 다시 쓴다 — 기한은 교체 시각(같은 스윕)이다.
+    assert datetime.fromisoformat(swapped["next_retry_at"]) == swapped_at
 
     incidents: list[tuple[uuid.UUID, str]] = []
     digested: list[tuple[uuid.UUID, str]] = []
@@ -297,7 +305,8 @@ def test_the_morning_gate_keeps_the_swap_record_and_the_next_sweep_claims_it(
     assert (item_id, "CONTENT_NOT_GENERATED") in incidents
     assert (item_id, "CONTENT_NOT_GENERATED") in digested
 
-    next_sweep = datetime(2026, 9, 18, 1, 0, tzinfo=kst)
+    # 같은 스윕 로더가 닿지 못했어도(상한) 그날 12시 스윕이 새 주제를 쓴다(다음 날로 밀리지 않는다).
+    next_sweep = datetime(2026, 9, 17, 12, 0, tzinfo=kst)
     _freeze(monkeypatch, next_sweep)
     claimed, _truncated, _complete = tasks._load_nightly_generation_batch(
         pg_session,

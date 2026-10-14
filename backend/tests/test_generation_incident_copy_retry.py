@@ -27,7 +27,7 @@ from test_operator_retry_gate_record import (
     _press_retry,
     _slot_with_writer,
     _spend_sample_budget_today,
-    _swap_a_slot_scheduled_tomorrow,
+    _swap_a_slot_scheduled_three_days_out,
 )
 from test_topic_swap_fallback import _kst, _WorkerDB
 
@@ -142,7 +142,7 @@ def test_a_gate_kept_sample_record_says_pressing_waits_and_pressing_writes_nothi
     """주제 교체 기록(표본 실패)은 하루 예산이 소유한다 — 기한 전에는 눌러도 쓰지 않는다고 말한다."""
 
     philosophy, item, writer_calls, _seen = _slot_with_writer(monkeypatch, swapped=True)
-    gate_code = _swap_a_slot_scheduled_tomorrow(item, philosophy, monkeypatch)
+    gate_code = _swap_a_slot_scheduled_three_days_out(item, philosophy, monkeypatch)
     record = dict(item.essence_check_summary[GENERATION_ATTEMPT_KEY])
     assert record["retry_class"] == GenerationRetryClass.SAMPLE_RECOVERABLE.value
     _gate(monkeypatch, item, philosophy, gate_code)
@@ -179,7 +179,7 @@ def _sample_spent(monkeypatch, item, philosophy) -> None:
 
 
 def _swapped(monkeypatch, item, philosophy) -> None:
-    _swap_a_slot_scheduled_tomorrow(item, philosophy, monkeypatch)
+    _swap_a_slot_scheduled_three_days_out(item, philosophy, monkeypatch)
 
 
 def _operator_decides(monkeypatch, item, philosophy) -> None:
@@ -305,7 +305,7 @@ def test_a_past_due_environment_record_names_the_next_sweep_and_pressing_writes_
 
 def test_a_future_sample_record_keeps_its_stored_time_and_wait_copy(monkeypatch):
     philosophy, item, writer_calls, _seen = _slot_with_writer(monkeypatch, swapped=True)
-    gate_code = _swap_a_slot_scheduled_tomorrow(item, philosophy, monkeypatch)
+    gate_code = _swap_a_slot_scheduled_three_days_out(item, philosophy, monkeypatch)
     record = dict(item.essence_check_summary[GENERATION_ATTEMPT_KEY])
     _gate(monkeypatch, item, philosophy, gate_code)
 

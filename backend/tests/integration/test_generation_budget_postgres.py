@@ -33,6 +33,7 @@ from app.workers import tasks
 from app.workers.generation_attempt_state import (
     GenerationBudgetExceeded,
     GenerationBudgetLedger,
+    GenerationBudgetUnknown,
     fresh_generation_attempt,
     read_generation_budget,
 )
@@ -623,7 +624,7 @@ def test_image_503_exhaustion_keeps_text_publishable(
             "_generation_philosophy_sync",
             lambda db, *_args: db.get(HospitalContentPhilosophy, philosophy_id),
         )
-        monkeypatch.setattr(tasks, "retry_is_due", lambda _attempt: True)
+        monkeypatch.setattr(tasks, "retry_is_due", lambda _attempt, *_args, **_kwargs: True)
         monkeypatch.setattr(
             tasks,
             "generate_content",
@@ -723,3 +724,143 @@ def test_image_503_exhaustion_keeps_text_publishable(
         # The outer test transaction rolls back the inserted immutable revision.
         # No revision DELETE or append-only bypass is used.
         pass
+
+
+def _wire_single_item_worker(monkeypatch, provider_server: str, philosophy_id) -> None:
+    wire_client = OpenAI(
+        api_key="loopback-only", base_url=f"{provider_server}/v1", max_retries=0
+    )
+    monkeypatch.setattr(content_engine, "client", wire_client)
+    monkeypatch.setattr(content_ai_review, "_llm_client", lambda: wire_client)
+    monkeypatch.setattr(content_engine.settings, "OPENROUTER_API_KEY", "loopback-only")
+
+    async def allowed(*_args, **_kwargs):
+        return CostGuardDecision(allowed=True)
+
+    async def noop(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(tasks.cost_guard, "check_and_increment", allowed)
+    monkeypatch.setattr(cost_guard, "reserve", allowed)
+    monkeypatch.setattr(cost_guard, "record_provider_call", noop)
+    monkeypatch.setattr(cost_guard, "settle_reservation", noop)
+    monkeypatch.setattr(provider_usage, "record_attempt", noop)
+    monkeypatch.setattr(
+        tasks,
+        "screen_content_against_philosophy",
+        lambda _item, _philosophy: EssenceScreeningResult(
+            status=ESSENCE_STATUS_ALIGNED, summary={}
+        ),
+    )
+    monkeypatch.setattr(
+        tasks, "prepare_automatic_content_brief_sync", lambda *_args, **_kwargs: None
+    )
+    monkeypatch.setattr(
+        tasks,
+        "_recover_missing_content_image",
+        lambda *_args, **_kwargs: tasks.GenerationItemState.SUCCEEDED,
+    )
+    monkeypatch.setattr(tasks, "_persist_publication_readiness", lambda *_args: None)
+    monkeypatch.setattr(
+        tasks,
+        "_generation_philosophy_sync",
+        lambda db, *_args: db.get(HospitalContentPhilosophy, philosophy_id),
+    )
+
+
+def _seed_slot_without_attempt_record(
+    factory: sessionmaker[Session], essence_check_summary: dict | None
+) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]:
+    """10/9 이전처럼 예산 표시 없이 만들어진 슬롯. 승인 Essence 하나를 함께 둔다."""
+
+    hospital_id, item_id = _seed(factory)
+    with factory() as db:
+        hospital = db.get(Hospital, hospital_id)
+        item = db.get(ContentItem, item_id)
+        assert hospital is not None and item is not None
+        hospital.director_name = "김예산"
+        item.content_type = ContentType.COLUMN
+        item.essence_check_summary = essence_check_summary
+        philosophy = HospitalContentPhilosophy(
+            hospital_id=hospital_id,
+            version=1,
+            status=PhilosophyStatus.APPROVED,
+            is_base=True,
+            positioning_statement="환자의 질문을 차분히 설명합니다.",
+            doctor_voice="차분한 설명",
+            patient_promise="확인 가능한 내용만 안내합니다.",
+            content_principles=[],
+            tone_guidelines=[],
+            must_use_messages=[],
+            avoid_messages=[],
+            treatment_narratives=[],
+            local_context={},
+            medical_ad_risk_rules=[],
+            evidence_map={},
+            source_asset_ids=[],
+            unsupported_gaps=[],
+            conflict_notes=[],
+            source_snapshot_hash="3" * 64,
+        )
+        db.add(philosophy)
+        db.commit()
+        return hospital_id, item_id, philosophy.id
+
+
+def test_never_attempted_slot_without_record_generates_on_a_fresh_budget(
+    pg_engine, monkeypatch, provider_server
+) -> None:
+    """2026-10-14: 시도 기록이 아예 없던 10/16 슬롯이 첫 생성에서 LEGACY_SPEND_UNKNOWN으로 굳었다."""
+
+    factory = _factory(pg_engine)
+    hospital_id, item_id, philosophy_id = _seed_slot_without_attempt_record(factory, None)
+    try:
+        _wire_single_item_worker(monkeypatch, provider_server, philosophy_id)
+        with factory() as worker:
+            item = worker.get(ContentItem, item_id)
+            hospital = worker.get(Hospital, hospital_id)
+            assert item is not None and hospital is not None
+            state, code, _message = tasks._generate_single_content_item(worker, item, hospital)
+            assert (state, code) == (tasks.GenerationItemState.SUCCEEDED, None)
+
+        assert len(_ProviderHandler.requests) == 2
+        with factory() as verify:
+            item = verify.get(ContentItem, item_id)
+            assert item is not None and item.body
+            budget = read_generation_budget(item.essence_check_summary["generation_attempt"])
+            assert budget.legacy_state == "KNOWN_ZERO"
+            assert (budget.writer_results, budget.reviewer_results) == (1, 1)
+            assert budget.text_http_attempts == 2
+    finally:
+        _cleanup(factory, hospital_id)
+
+
+def test_real_legacy_record_without_budget_still_stops_as_spend_unknown(
+    pg_engine, monkeypatch, provider_server
+) -> None:
+    """기록은 있는데 예산·계수가 없는 진짜 레거시 기록은 종전대로 지출 불명이다."""
+
+    factory = _factory(pg_engine)
+    hospital_id, item_id, philosophy_id = _seed_slot_without_attempt_record(
+        factory,
+        {
+            "generation_attempt": {
+                "reason": "GENERATION_REJECTED",
+                "retry_class": "SAMPLE_RECOVERABLE",
+                "observed_at": "2026-10-01T16:00:00+00:00",
+            }
+        },
+    )
+    try:
+        _wire_single_item_worker(monkeypatch, provider_server, philosophy_id)
+        with factory() as worker:
+            item = worker.get(ContentItem, item_id)
+            hospital = worker.get(Hospital, hospital_id)
+            assert item is not None and hospital is not None
+            # 호출부의 `classify_generation_failure`가 이 예외를 LEGACY_SPEND_UNKNOWN으로 기록한다.
+            with pytest.raises(GenerationBudgetUnknown, match="LEGACY_SPEND_UNKNOWN"):
+                tasks._generate_single_content_item(worker, item, hospital)
+
+        assert _ProviderHandler.requests == []
+    finally:
+        _cleanup(factory, hospital_id)

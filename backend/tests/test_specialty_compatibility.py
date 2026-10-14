@@ -218,7 +218,7 @@ def swap_side_effects(monkeypatch):
 
     recorded: list[uuid.UUID] = []
 
-    def record(_db, item, *, now):
+    def record(_db, item, *, now, spent_today=None):
         recorded.append(item.id)
 
     async def recover(_incident_id):
