@@ -78,6 +78,7 @@ from app.utils.medical_filter import (
     check_forbidden_markdown,
     forbidden_vocabulary_for_prompt,
 )
+from app.workers.generation_attempt_state import is_acquisition_transport_exhausted
 from app.workers.generation_retry_policy import generation_rejection_kind
 
 logger = logging.getLogger(__name__)
@@ -1711,6 +1712,13 @@ async def generate_content(
                 :GENERATION_REMEDIATION_FINDING_LIMIT
             ]
     except Exception as exc:
+        if last_error is not None and is_acquisition_transport_exhausted(exc):
+            # 앞 회차의 결정적 거절을 고쳐 쓰다 이 작가 호출의 전송 몫(획득 하나의 상한)을 다 썼다.
+            # 슬롯·주제 예산의 소진이 아니라 그 거절이 이 호출의 결과다 — 예산 소진으로 올리면
+            # 주제 교체 계단을 곧바로 탄다(2026-10-14 감사). 표본 실패(GENERATION_REJECTED)로 끝낸다.
+            if rejection_counts["rejected"]:
+                _attach_generation_rejections(last_error, _counts_snapshot())
+            raise last_error from None
         # 공급자 오류(시간 초과 등)처럼 결정적 거절이 아닌 예외로 루프를 떠나도, 앞 회차들의 누적
         # 거절 횟수를 예외에 싣는다 — 세션이 다음 후보의 횟수와 합친다.
         if rejection_counts["rejected"]:

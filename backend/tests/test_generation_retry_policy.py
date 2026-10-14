@@ -2,10 +2,13 @@ from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
+from app.core.config import settings
 from app.services.post_publish_review_policy import AUTO_PUBLISH_CATCHUP_DAYS
 from app.workers.generation_attempt_state import (
     LIFETIME_WRITER_RESULT_LIMIT,
     TEXT_HTTP_ATTEMPT_LIMIT,
+    TOPIC_LIMIT,
+    WRITER_RESULT_LIMIT,
     GenerationBudgetExceeded,
     GenerationBudgetUnknown,
     _topic_boundary,
@@ -23,13 +26,14 @@ from app.workers.generation_retry_policy import (
     BODY_REPAIR_DAILY_BUDGET,
     ENVIRONMENT_ATTEMPT_BUDGET,
     KST,
-    NIGHTLY_SWEEP_LOOKAHEAD_DAYS,
     RECOVERY_SWEEP_CATCHUP_DAYS,
     SAMPLE_BODY_DAILY_BUDGET,
+    SAMPLE_BODY_URGENT_EXTRA,
     SAMPLE_EXHAUSTED_DAY_LIMIT,
     SAMPLE_IMAGE_DAILY_BUDGET,
     GenerationRetryClass,
     environment_attempt_period,
+    generation_lookahead_days,
     has_model_declared_hard_finding,
     next_recovery_deadline,
     next_recovery_sweep,
@@ -40,6 +44,7 @@ from app.workers.generation_retry_policy import (
     sample_budget_spent,
     sample_daily_budget,
     spend_repair_session,
+    sweep_claims_slot,
 )
 
 
@@ -596,9 +601,115 @@ def test_spent_daily_sample_budget_moves_the_deadline_to_the_next_day() -> None:
     now = _kst(2026, 9, 14, 4, 5)
     spent = _sample_attempt("GENERATION_REJECTED", SAMPLE_BODY_DAILY_BUDGET, day=date(2026, 9, 14))
 
-    due = next_recovery_deadline(spent, scheduled_date=date(2026, 9, 14), now=now)
+    # 이틀 뒤 슬롯은 임박이 아니다 — 하루 2세션을 다 쓰면 내일이다.
+    due = next_recovery_deadline(spent, scheduled_date=date(2026, 9, 16), now=now)
 
     assert due == _kst(2026, 9, 15, 1, 0).astimezone(UTC)
+
+
+URGENT_BODY_BUDGET = SAMPLE_BODY_DAILY_BUDGET + SAMPLE_BODY_URGENT_EXTRA
+
+
+@pytest.mark.parametrize(
+    ("offset", "budget"),
+    [
+        (-3, URGENT_BODY_BUDGET),  # 지난 슬롯
+        (0, URGENT_BODY_BUDGET),  # 예정일 당일
+        (1, URGENT_BODY_BUDGET),  # 내일(48시간 안)
+        (2, SAMPLE_BODY_DAILY_BUDGET),
+        (3, SAMPLE_BODY_DAILY_BUDGET),
+        (None, SAMPLE_BODY_DAILY_BUDGET),  # 예정일을 모르면 기본 예산
+    ],
+)
+def test_urgent_slots_get_one_more_writer_session_per_day(offset, budget) -> None:
+    observed = _kst(2026, 9, 14, 23, 30)
+    slot = None if offset is None else date(2026, 9, 14) + timedelta(days=offset)
+
+    assert sample_daily_budget("GENERATION_REJECTED", scheduled_date=slot, observed=observed) == budget
+    # 이미지 예산은 임박과 무관하다.
+    assert (
+        sample_daily_budget("IMAGE_GENERATION_FAILED", scheduled_date=slot, observed=observed)
+        == SAMPLE_IMAGE_DAILY_BUDGET
+    )
+
+
+def test_an_urgent_slot_retries_the_same_day_after_the_normal_budget() -> None:
+    """예정일 당일 슬롯이 2세션을 쓰면 오늘 다음 스윕이 세 번째를 쓰고, 그것도 쓰면 내일이다."""
+
+    now = _kst(2026, 9, 14, 4, 5)
+    slot = date(2026, 9, 14)
+    normal_spent = _sample_attempt("GENERATION_REJECTED", SAMPLE_BODY_DAILY_BUDGET, day=slot)
+    urgent_spent = _sample_attempt("GENERATION_REJECTED", URGENT_BODY_BUDGET, day=slot)
+
+    assert next_recovery_deadline(normal_spent, scheduled_date=slot, now=now) == _kst(
+        2026, 9, 14, 7, 0
+    ).astimezone(UTC)
+    assert next_recovery_deadline(urgent_spent, scheduled_date=slot, now=now) == _kst(
+        2026, 9, 15, 1, 0
+    ).astimezone(UTC)
+
+    # 로더·워커의 기한 판정도 같은 예산을 읽는다. 예정일을 넘기지 않으면 기본 예산(더 적게 산다)이다.
+    normal_spent["next_retry_at"] = _kst(2026, 9, 14, 7, 0).isoformat()
+    at_seven = _kst(2026, 9, 14, 7, 0)
+    assert retry_is_due(normal_spent, at_seven, scheduled_date=slot) is True
+    assert retry_is_due(normal_spent, at_seven) is False
+    urgent_spent["next_retry_at"] = _kst(2026, 9, 14, 7, 0).isoformat()
+    assert retry_is_due(urgent_spent, at_seven, scheduled_date=slot) is False
+
+
+def test_an_urgent_day_counts_as_exhausted_only_after_the_extra_session() -> None:
+    observed = _kst(2026, 9, 14, 12, 0)
+    slot = date(2026, 9, 15)
+    previous = _sample_attempt("GENERATION_REJECTED", SAMPLE_BODY_DAILY_BUDGET, day=date(2026, 9, 14))
+
+    assert sample_budget_spent(
+        _sample_attempt("GENERATION_REJECTED", 1, day=date(2026, 9, 14)),
+        "GENERATION_REJECTED",
+        observed,
+        scheduled_date=slot,
+    ) == (2, 0)
+    assert sample_budget_spent(
+        previous, "GENERATION_REJECTED", observed, scheduled_date=slot
+    ) == (3, 1)
+    # 임박이 아닌 슬롯은 종전처럼 2세션째에 그날을 소진으로 센다.
+    assert sample_budget_spent(
+        _sample_attempt("GENERATION_REJECTED", 1, day=date(2026, 9, 14)),
+        "GENERATION_REJECTED",
+        observed,
+        scheduled_date=date(2026, 9, 18),
+    ) == (2, 1)
+
+
+def test_the_urgent_session_does_not_raise_the_per_topic_writer_ceiling() -> None:
+    """임박 세션은 하루 예산만 늘린다 — 주제당 작가 상한(6)·평생 상한은 그대로다."""
+
+    attempt = fresh_generation_attempt(topic_id="topic-a")
+    for index in range(WRITER_RESULT_LIMIT):
+        attempt = reserve_acquisition(attempt, acquisition_id=f"w-{index}", kind="WRITER")
+        attempt = acquisition_completed(
+            attempt, acquisition_id=f"w-{index}", transport_attempts=1, outcome="ERROR"
+        )
+    with pytest.raises(GenerationBudgetExceeded):
+        reserve_acquisition(attempt, acquisition_id="w-urgent", kind="WRITER")
+    assert LIFETIME_WRITER_RESULT_LIMIT == TOPIC_LIMIT * WRITER_RESULT_LIMIT
+
+
+def test_the_lookahead_window_reaches_three_days_and_follows_the_setting(monkeypatch) -> None:
+    """리드 타임 D-3: 23:00 창은 [내일, 사흘 뒤], 설정을 내리면 같은 값으로 줄어든다."""
+
+    assert generation_lookahead_days() == 3
+    tonight = _kst(2026, 9, 14, 23, 0)
+    three_days_out = date(2026, 9, 17)
+    assert sweep_claims_slot(tonight, three_days_out) is True
+    assert sweep_claims_slot(_kst(2026, 9, 14, 12, 0), three_days_out) is True
+    # 사흘 뒤 슬롯의 첫 실패도 기한이 있다(None으로 굳지 않는다).
+    attempt = _sample_attempt("GENERATION_REJECTED", 1, day=date(2026, 9, 14))
+    assert next_recovery_deadline(
+        attempt, scheduled_date=three_days_out, now=_kst(2026, 9, 14, 10, 0)
+    ) == _kst(2026, 9, 14, 12, 0).astimezone(UTC)
+
+    monkeypatch.setattr(settings, "NIGHTLY_GENERATION_LOOKAHEAD_DAYS", 2)
+    assert sweep_claims_slot(tonight, three_days_out) is False
 
 
 def test_image_budget_allows_four_attempts_before_the_day_moves() -> None:
@@ -741,7 +852,7 @@ def test_a_sample_slot_inside_the_sweep_windows_is_never_abandoned() -> None:
     ):
         for hour in range(24):
             observed = _kst(2026, 9, 14, hour, 10)
-            for offset in range(-RECOVERY_SWEEP_CATCHUP_DAYS, NIGHTLY_SWEEP_LOOKAHEAD_DAYS + 1):
+            for offset in range(-RECOVERY_SWEEP_CATCHUP_DAYS, generation_lookahead_days() + 1):
                 slot = today + timedelta(days=offset)
                 for spent in range(1, budget + 1):
                     case = (reason, hour, offset, spent)

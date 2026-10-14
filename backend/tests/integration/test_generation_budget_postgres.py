@@ -624,7 +624,7 @@ def test_image_503_exhaustion_keeps_text_publishable(
             "_generation_philosophy_sync",
             lambda db, *_args: db.get(HospitalContentPhilosophy, philosophy_id),
         )
-        monkeypatch.setattr(tasks, "retry_is_due", lambda _attempt: True)
+        monkeypatch.setattr(tasks, "retry_is_due", lambda _attempt, *_args, **_kwargs: True)
         monkeypatch.setattr(
             tasks,
             "generate_content",
