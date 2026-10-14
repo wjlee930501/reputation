@@ -732,6 +732,83 @@ def test_todays_spend_is_read_from_both_sample_and_repair_counters():
     assert topic_swap_fallback.writer_sessions_spent_today(yesterday, NOW) == 0
 
 
+@pytest.mark.parametrize(
+    "summary",
+    [
+        # 날짜를 날짜로 읽을 수 없다.
+        {GENERATION_ATTEMPT_KEY: {"reason": "GENERATION_REJECTED", "attempt_period": "unreadable",
+                                  "provider_attempt_count": 0}},
+        # 오늘 기록인데 계수가 없다.
+        {GENERATION_ATTEMPT_KEY: {"reason": "GENERATION_REJECTED", "attempt_period": "2026-09-16"}},
+        # 오늘 기록인데 계수가 음수다.
+        {GENERATION_ATTEMPT_KEY: {"reason": "GENERATION_REJECTED", "attempt_period": "2026-09-16",
+                                  "provider_attempt_count": -1}},
+        # 계수가 정수가 아니다(bool·소수).
+        {GENERATION_ATTEMPT_KEY: {"reason": "GENERATION_REJECTED", "attempt_period": "2026-09-16",
+                                  "provider_attempt_count": True}},
+        {GENERATION_ATTEMPT_KEY: {"reason": "GENERATION_REJECTED", "attempt_period": "2026-09-16",
+                                  "provider_attempt_count": 1.5}},
+        # 수리 세션 계수도 같은 규칙이다.
+        {generation_retry_policy.BODY_REPAIR_STATE_KEY: {"period": "2026-09-16", "count": -2}},
+        {generation_retry_policy.BODY_REPAIR_STATE_KEY: {"period": "not-a-date", "count": 0}},
+    ],
+    ids=[
+        "unreadable_period",
+        "today_without_count",
+        "negative_count",
+        "bool_count",
+        "fractional_count",
+        "negative_repair_count",
+        "unreadable_repair_period",
+    ],
+)
+def test_unknown_spend_today_counts_as_the_whole_daily_budget(summary):
+    """모르는 지출을 0으로 바꾸지 않는다 — 오늘 예산을 다 쓴 것으로 본다."""
+
+    item = _item(essence_check_summary=summary)
+
+    assert topic_swap_fallback.writer_sessions_spent_today(item, NOW) == SAMPLE_BODY_DAILY_BUDGET
+
+
+@pytest.mark.parametrize(
+    ("scheduled_date", "expected_count", "next_retry_at"),
+    [
+        # 사흘 뒤 슬롯: 소진으로 보고 내일 01시.
+        (SLOT + timedelta(days=3), SAMPLE_BODY_DAILY_BUDGET, datetime(2026, 9, 17, 1, 0, tzinfo=KST)),
+        # 임박 슬롯: 임박 예외 1세션만 남는다(지금).
+        (SLOT, SAMPLE_BODY_DAILY_BUDGET, NOW),
+    ],
+    ids=["distant", "urgent"],
+)
+def test_an_unreadable_record_swap_is_not_a_fresh_day(
+    monkeypatch, scheduled_date, expected_count, next_retry_at
+):
+    captured: dict = {}
+
+    def _remember(db, item, philosophy, reason, *, count_attempt, extra):
+        captured.update(extra)
+
+    monkeypatch.setattr(
+        topic_swap_fallback,
+        "_tasks",
+        lambda: SimpleNamespace(
+            _generation_philosophy_sync=lambda db, hospital_id: None,
+            _remember_generation_attempt=_remember,
+        ),
+    )
+    item = _item(
+        scheduled_date=scheduled_date,
+        essence_check_summary={
+            GENERATION_ATTEMPT_KEY: {"reason": "GENERATION_REJECTED", "attempt_period": "unreadable"}
+        },
+    )
+
+    _RECORD_ATTEMPT(_FakeDB([]), item, now=NOW)
+
+    assert captured["provider_attempt_count"] == expected_count
+    assert datetime.fromisoformat(captured["next_retry_at"]) == next_retry_at
+
+
 def test_a_slot_without_a_scheduled_date_gets_no_same_day_grant(monkeypatch):
     """예정일을 읽지 못한 행은 종전 기록 그대로다(당일 1회도, 기한도 없다)."""
 

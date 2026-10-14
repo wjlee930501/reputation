@@ -551,32 +551,70 @@ def _tasks():
     return tasks
 
 
+class _UnknownSpend(Exception):
+    """오늘 지출을 읽을 수 없다 — 호출부가 오늘 예산 소진으로 바꾼다."""
+
+
+def _spend_period(raw: object) -> date | None:
+    """저장된 KST 날짜. 없으면 ``None``, 있는데 날짜로 읽을 수 없으면 모르는 지출이다."""
+
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raise _UnknownSpend
+    try:
+        return date.fromisoformat(raw)
+    except ValueError as exc:
+        raise _UnknownSpend from exc
+
+
+def _spend_count(raw: object) -> int:
+    """오늘 계수. 없거나 정수가 아니거나 음수면 모르는 지출이다."""
+
+    if raw is None or isinstance(raw, bool):
+        raise _UnknownSpend
+    try:
+        count = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise _UnknownSpend from exc
+    if count < 0 or (isinstance(raw, float) and count != raw):
+        raise _UnknownSpend
+    return count
+
+
 def writer_sessions_spent_today(item: ContentItem, now: datetime) -> int:
     """이 슬롯이 오늘(KST) 이미 산 작가 세션 수 — 표본 예산 계수와 본문 수리 세션 계수 중 큰 값.
 
-    날이 바뀐 기록은 0이다(하루 예산은 KST 날마다 다시 열린다). 계수나 기록의 날짜를 읽지
-    못하면 오늘 예산을 다 쓴 것으로 본다 — 모르는 지출을 0으로 바꾸지 않는다.
+    날이 바뀐 기록은 0이다(하루 예산은 KST 날마다 다시 열린다). 기록의 날짜를 날짜로 읽을 수
+    없거나, 오늘 기록인데 계수가 없거나 정수가 아니거나 음수면 오늘 예산을 다 쓴 것으로 본다 —
+    모르는 지출을 0으로 바꾸지 않는다(임박 슬롯의 1세션 예외는 호출부가 따로 준다).
     """
 
-    today = environment_attempt_period(now)
+    today = datetime.fromisoformat(environment_attempt_period(now)).date()
+    exhausted = sample_daily_budget(TOPIC_SWAPPED_REASON, scheduled_date=None)
     attempt = read_generation_attempt(item)
-    period = stored_attempt_period(attempt)
-    if attempt.get("reason") and period is None:
-        return sample_daily_budget(TOPIC_SWAPPED_REASON, scheduled_date=None)
-    spent = 0
-    if period == today:
-        try:
-            spent = int(attempt.get("provider_attempt_count", attempt.get("attempt_count")) or 0)
-        except (TypeError, ValueError):
-            return sample_daily_budget(TOPIC_SWAPPED_REASON, scheduled_date=None)
     summary = getattr(item, "essence_check_summary", None)
     repair = summary.get(BODY_REPAIR_STATE_KEY) if isinstance(summary, dict) else None
-    if isinstance(repair, dict) and repair.get("period") == today:
-        try:
-            spent = max(spent, int(repair.get("count") or 0))
-        except (TypeError, ValueError):
-            return sample_daily_budget(TOPIC_SWAPPED_REASON, scheduled_date=None)
-    return max(spent, 0)
+    try:
+        spent = 0
+        period = _spend_period(attempt.get("attempt_period"))
+        if period is None and attempt.get("reason"):
+            # 날짜 키가 없는 옛 기록은 관측 시각으로 날짜를 정한다(`stored_attempt_period`).
+            period = _spend_period(stored_attempt_period(attempt))
+            if period is None:
+                raise _UnknownSpend
+        if period == today:
+            spent = _spend_count(
+                attempt.get("provider_attempt_count", attempt.get("attempt_count"))
+            )
+        if repair is not None:
+            if not isinstance(repair, dict):
+                raise _UnknownSpend
+            if _spend_period(repair.get("period")) == today:
+                spent = max(spent, _spend_count(repair.get("count")))
+    except _UnknownSpend:
+        return exhausted
+    return spent
 
 
 def _record_topic_swapped_attempt(
