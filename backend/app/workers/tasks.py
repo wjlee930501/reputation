@@ -623,6 +623,7 @@ from app.workers.noncritical_renewal import (
     DAILY_RENEWAL_REASON,
     RENEWAL_EXCLUDED_KEY,
     in_renewal_mode,
+    operator_release_renewal_wait,
     record_is_renewable,
     renewal_candidate,
     renewal_holds,
@@ -6684,6 +6685,8 @@ def regenerate_content_item(self, content_id: str):
                         stored_attempt.get("reason") == "CONTENT_NOT_GENERATED"
                         or stored_attempt.get("retry_class")
                         == GenerationRetryClass.ENVIRONMENT_RECOVERABLE.value
+                        # 환경 원인이 일일 갱신 대기로 바뀐 기록(2026-10-15) — 종전 환경 실패처럼 푼다.
+                        or operator_release_renewal_wait(stored_attempt)
                         # 감사된 레거시 예산 교체 뒤의 재시도. 교체 함수가 억제를 이미 풀지만,
                         # 억제를 남기던 이전 판의 교체로 바뀐 행도 여기서 푼다.
                         or (

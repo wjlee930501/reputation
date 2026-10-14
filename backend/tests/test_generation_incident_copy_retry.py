@@ -403,3 +403,81 @@ def test_the_press_now_choice_agrees_with_whether_pressing_writes(monkeypatch, r
     _press_retry(monkeypatch, item, _PRESS, operator=True)
 
     assert bool(writer_calls) is predicted
+
+
+# ── 2026-10-15 Codex 4차 P2: 갱신 대기로 바뀐 환경 원인도 운영자 재시도가 푼다 ─────────────
+
+
+def _renewal_waiting_environment_slot(monkeypatch, *, spend_today_segment: bool):
+    from app.workers import generation_attempt_state as ledger
+
+    philosophy, item, writer_calls, seen = _slot_with_writer(monkeypatch, swapped=False)
+    budget_attempt = ledger.fresh_generation_attempt(topic_id=str(item.query_target_id))
+    if spend_today_segment:
+        # 오늘(9/15) 갱신 구간을 이미 열어 정상 세션 하나를 다 썼다.
+        budget_attempt = ledger.open_renewal_segment(
+            budget_attempt, period="2026-09-15", sessions=1, topic_id=str(item.query_target_id)
+        )
+        for kind in ("WRITER", "WRITER", "WRITER", "REVIEWER", "REVIEWER", "REVIEWER"):
+            acquisition = f"spent:{kind}:{len(budget_attempt['budget']['acquisitions'])}"
+            budget_attempt = ledger.reserve_acquisition(
+                budget_attempt, acquisition_id=acquisition, kind=kind
+            )
+            budget_attempt = ledger.acquisition_completed(
+                budget_attempt, acquisition_id=acquisition, transport_attempts=1, outcome="RESULT"
+            )
+    item.essence_check_summary = {GENERATION_ATTEMPT_KEY: budget_attempt}
+    for day in (13, 14, 15):
+        for hour in (1, 4, 7, 12):
+            record = _remember(monkeypatch, item, philosophy, _kst(2026, 9, day, hour), "PROVIDER_TIMEOUT")
+    assert record["daily_renewal"] is True
+    assert record["retry_class"] == GenerationRetryClass.SAMPLE_RECOVERABLE.value
+    return philosophy, item, writer_calls, seen, record
+
+
+def test_a_click_before_the_renewal_deadline_releases_an_environment_wait(monkeypatch):
+    """예산이 남은 슬롯 — 다음 갱신 시각 전에 눌러도 쓴다. 억제만 걷고 예산 원장은 그대로다."""
+
+    _philosophy, item, writer_calls, seen, record = _renewal_waiting_environment_slot(
+        monkeypatch, spend_today_segment=False
+    )
+    press = _kst(2026, 9, 15, 13, 0)
+    assert press < generation_incident_control._stored_retry_deadline(record)
+    assert operator_retry_releases(item)
+
+    assert _press_retry(monkeypatch, item, press, operator=True) == [
+        (OperationRunState.SUCCEEDED, None)
+    ]
+    assert writer_calls == [item.id]
+    # 작가가 본 기록에 갱신 대기 억제는 없고 예산 원장은 그대로다.
+    assert not seen[0].get("daily_renewal")
+    assert seen[0]["budget"] == record["budget"]
+
+
+def test_a_click_before_the_renewal_deadline_buys_nothing_when_the_segment_is_spent(monkeypatch):
+    """오늘 갱신 구간을 다 쓴 슬롯 — 억제는 풀지만 원장이 공급자 호출 전에 막는다(지출 없음)."""
+
+    from app.workers.generation_attempt_state import writer_purchase_blocked
+
+    _philosophy, item, _writer_calls, seen, record = _renewal_waiting_environment_slot(
+        monkeypatch, spend_today_segment=True
+    )
+    press = _kst(2026, 9, 15, 13, 0)
+    assert press < generation_incident_control._stored_retry_deadline(record)
+    assert operator_retry_releases(item)
+
+    _press_retry(monkeypatch, item, press, operator=True)
+
+    # 원장이 넘어간 그대로라 실제 작가(`_generate_with_auto_review`)의 첫 예약에서 막힌다.
+    assert seen and seen[0]["budget"] == record["budget"]
+    assert writer_purchase_blocked(seen[0]) is True
+
+
+def test_a_sample_renewal_wait_is_still_not_released_by_the_operator():
+    """표본 실패에서 온 갱신 대기는 종전 표본 기록처럼 운영자 재시도가 풀지 않는다."""
+
+    from app.workers.noncritical_renewal import operator_release_renewal_wait
+
+    assert operator_release_renewal_wait({"reason": "PROVIDER_TIMEOUT", "daily_renewal": True})
+    assert not operator_release_renewal_wait({"reason": "GENERATION_REJECTED", "daily_renewal": True})
+    assert not operator_release_renewal_wait({"reason": "PROVIDER_TIMEOUT"})
