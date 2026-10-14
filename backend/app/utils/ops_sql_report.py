@@ -1,4 +1,5 @@
-"""읽기 전용 운영 조회: 자율 운영 지표(Q1~Q6), 배포 전 확인(Q7), 롤백 점검(Q8), 콘텐츠 게이트 지표(Q9~Q11), 월간 보고서 보장(Q15)을 JSON 한 줄씩 출력한다.
+"""읽기 전용 운영 조회: 자율 운영 지표(Q1~Q6), 배포 전 확인(Q7), 롤백 점검(Q8), 콘텐츠 게이트 지표(Q9~Q11),
+Phase 4 사전 조회(Q12~Q14), 월간 보고서 보장(Q15)을 JSON 한 줄씩 출력한다.
 
 새 세션의 트랜잭션에서 첫 문장으로 `SET TRANSACTION READ ONLY`를 실행해 DB 수준에서 쓰기를 막고,
 끝나면 롤백한다. 받은 세션에 이미 열린 트랜잭션이 있으면 먼저 롤백해 새로 시작한다::
@@ -292,6 +293,184 @@ QUERIES: dict[str, tuple[str, ...]] = {
                OR first_published_at >= now() - interval '3 days')
           AND status <> 'CANCELLED'
         ORDER BY scheduled_date, id
+        """,
+    ),
+    # (Phase 4, D31) 병원별 완료 술어 — 옛 술어(약력·철학·네이버+Google 필수)와 새 술어(철학·Google 선택)의
+    # 누락 키, 인수 수락 여부. `would_promote`는 배포 뒤 15분 틱이 **완료로 승격**할 병원이고, 실제로 공개가
+    # 새로 열리는지는 `would_publish_now`가 말한다 — 승격(또는 이미 완료) 뒤 사이트 준비가 기본 주소로 자동
+    # 활성화하는 병원(자동 전환 상태·자기 도메인 없음·최소 공개 사실 있음, `hospital_activation.
+    # evaluate_auto_activation`·`profile_publication_verdict`의 SQL 쌍둥이). 못 여는 이유는
+    # `activation_blockers`(PAUSED·ALREADY_LIVE·ACTIVE_NOT_LIVE·CUSTOM_DOMAIN_PENDING·PROFILE_INCOMPLETE·
+    # HANDOFF_NOT_ACCEPTED·SITE_NOT_BUILT·MINIMUM_PUBLIC_FACTS_MISSING). 술어는 `hospital_lifecycle.
+    # profile_requirements`의 SQL 쌍둥이다(tests/integration/test_ops_sql_report_p4_postgres.py가 대조한다).
+    "q12": (
+        """
+        SELECT r.id, r.name, r.status, r.aeo_domain, r.profile_complete, r.site_built, r.site_live,
+               r.handoff_accepted, r.missing_old, r.missing_new, r.would_promote,
+               array_remove(ARRAY[
+                 CASE WHEN r.status = 'PAUSED' THEN 'PAUSED' END,
+                 CASE WHEN r.status = 'ACTIVE' AND r.site_live THEN 'ALREADY_LIVE' END,
+                 CASE WHEN r.status = 'ACTIVE' AND NOT r.site_live THEN 'ACTIVE_NOT_LIVE' END,
+                 CASE WHEN r.custom_domain THEN 'CUSTOM_DOMAIN_PENDING' END,
+                 CASE WHEN NOT r.profile_complete AND cardinality(r.missing_new) > 0
+                      THEN 'PROFILE_INCOMPLETE' END,
+                 CASE WHEN NOT r.profile_complete AND NOT r.handoff_accepted
+                      THEN 'HANDOFF_NOT_ACCEPTED' END,
+                 -- 이미 완료인데 준비가 안 된 병원은 이번 승격이 사이트 준비를 보내지 않는다.
+                 CASE WHEN r.profile_complete AND NOT r.site_built AND r.status <> 'ACTIVE'
+                      THEN 'SITE_NOT_BUILT' END,
+                 CASE WHEN NOT r.public_facts_ok THEN 'MINIMUM_PUBLIC_FACTS_MISSING' END
+               ], NULL) AS activation_blockers,
+               (r.status IN ('ONBOARDING', 'ANALYZING', 'BUILDING', 'PENDING_DOMAIN')
+                AND NOT r.custom_domain
+                AND r.public_facts_ok
+                AND (r.would_promote OR (r.profile_complete AND r.site_built)))
+                 AS would_publish_now
+        FROM (
+          SELECT p.*,
+                 (p.text_facts_ok AND p.treatments_ok) AS public_facts_ok,
+                 array_remove(ARRAY[
+                   CASE WHEN NOT (p.has_director_name AND p.has_career) THEN 'director_basic' END,
+                   CASE WHEN NOT p.has_philosophy THEN 'director_philosophy' END,
+                   CASE WHEN NOT p.contact_ok THEN 'contact' END,
+                   CASE WHEN NOT p.web_ok THEN 'web_channels' END,
+                   CASE WHEN NOT (p.has_naver AND p.has_google) THEN 'ai_channels' END,
+                   CASE WHEN NOT p.geo_ok THEN 'geo' END,
+                   CASE WHEN NOT p.targeting_ok THEN 'targeting' END,
+                   CASE WHEN NOT p.treatments_ok THEN 'treatments' END
+                 ], NULL) AS missing_old,
+                 array_remove(ARRAY[
+                   CASE WHEN NOT (p.has_director_name AND p.has_career) THEN 'director_basic' END,
+                   CASE WHEN NOT p.contact_ok THEN 'contact' END,
+                   CASE WHEN NOT p.web_ok THEN 'web_channels' END,
+                   CASE WHEN NOT p.has_naver THEN 'ai_channels' END,
+                   CASE WHEN NOT p.geo_ok THEN 'geo' END,
+                   CASE WHEN NOT p.targeting_ok THEN 'targeting' END,
+                   CASE WHEN NOT p.treatments_ok THEN 'treatments' END
+                 ], NULL) AS missing_new,
+                 (NOT p.profile_complete AND p.status <> 'PAUSED' AND p.handoff_accepted
+                  AND p.has_director_name AND p.has_career AND p.contact_ok AND p.web_ok
+                  AND p.has_naver AND p.geo_ok AND p.targeting_ok AND p.treatments_ok)
+                   AS would_promote
+          FROM (
+            SELECT h.id, h.name, h.status, h.aeo_domain,
+                   coalesce(h.aeo_domain, '') ~ '[^[:space:].]' AS custom_domain,
+                   coalesce(h.profile_complete, false) AS profile_complete,
+                   coalesce(h.site_built, false) AS site_built,
+                   coalesce(h.site_live, false) AS site_live,
+                   EXISTS (
+                     SELECT 1 FROM hospital_handoffs ho
+                     WHERE ho.hospital_id = h.id AND ho.state = 'HANDOFF_ACCEPTED'
+                   ) AS handoff_accepted,
+                   coalesce(h.director_name, '') ~ '[^[:space:]]' AS has_director_name,
+                   coalesce(h.director_career, '') ~ '[^[:space:]]' AS has_career,
+                   coalesce(h.director_philosophy, '') ~ '[^[:space:]]' AS has_philosophy,
+                   (coalesce(h.address, '') ~ '[^[:space:]]'
+                    AND coalesce(h.phone, '') ~ '[^[:space:]]'
+                    AND EXISTS (
+                      SELECT 1
+                      FROM jsonb_each(
+                        CASE WHEN jsonb_typeof(CAST(h.business_hours AS jsonb)) = 'object'
+                             THEN CAST(h.business_hours AS jsonb) ELSE '{}'::jsonb END
+                      ) AS bh(day, hours)
+                      WHERE jsonb_typeof(bh.hours) = 'string'
+                        AND (bh.hours #>> '{}') ~ '[^[:space:]]'
+                    )) AS contact_ok,
+                   (coalesce(h.website_url, '') ~ '[^[:space:]]'
+                    OR coalesce(h.blog_url, '') ~ '[^[:space:]]') AS web_ok,
+                   coalesce(h.naver_place_url, '') ~ '[^[:space:]]' AS has_naver,
+                   (coalesce(h.google_maps_url, '') ~ '[^[:space:]]'
+                    OR coalesce(h.google_business_profile_url, '') ~ '[^[:space:]]') AS has_google,
+                   (coalesce(h.latitude BETWEEN -90 AND 90, false)
+                    AND coalesce(h.longitude BETWEEN -180 AND 180, false)
+                    AND jsonb_typeof(CAST(h.region AS jsonb)) = 'array'
+                    AND jsonb_array_length(CAST(h.region AS jsonb)) > 0) AS geo_ok,
+                   (jsonb_typeof(CAST(h.specialties AS jsonb)) = 'array'
+                    AND jsonb_array_length(CAST(h.specialties AS jsonb)) > 0
+                    AND jsonb_typeof(CAST(h.keywords AS jsonb)) = 'array'
+                    AND jsonb_array_length(CAST(h.keywords AS jsonb)) > 0) AS targeting_ok,
+                   EXISTS (
+                     SELECT 1
+                     FROM jsonb_array_elements(
+                       CASE WHEN jsonb_typeof(CAST(h.treatments AS jsonb)) = 'array'
+                            THEN CAST(h.treatments AS jsonb) ELSE '[]'::jsonb END
+                     ) AS t(item)
+                     WHERE (jsonb_typeof(t.item) = 'string'
+                            AND (t.item #>> '{}') ~ '[^[:space:]]')
+                        OR (jsonb_typeof(t.item) = 'object'
+                            AND jsonb_typeof(t.item->'name') = 'string'
+                            AND (t.item->>'name') ~ '[^[:space:]]')
+                   ) AS treatments_ok,
+                   -- 공개 표면의 최소 사실(`minimum_public_fact_blockers`): 이름·slug·주소·전화·진료 항목.
+                   (coalesce(h.name, '') ~ '[^[:space:]]'
+                    AND coalesce(h.slug, '') ~ '[^[:space:]]'
+                    AND coalesce(h.address, '') ~ '[^[:space:]]'
+                    AND coalesce(h.phone, '') ~ '[^[:space:]]') AS text_facts_ok
+            FROM hospitals h
+          ) p
+        ) r
+        ORDER BY would_publish_now DESC, r.would_promote DESC, r.name
+        """,
+    ),
+    # (Phase 4, D30·D33) 병원별 Essence 판·자료·자동 입력 상태. APPROVED 판 유무와 is_base, 보류 DRAFT 수,
+    # 자료 종류×상태 집계(INTERVIEW 포함), PROFILE_AUTOFILL 실행 유무와 마지막 초안의 키 수.
+    "q13": (
+        """
+        SELECT h.id, h.name, h.status, h.profile_complete,
+               (SELECT max(p.version) FROM hospital_content_philosophies p
+                 WHERE p.hospital_id = h.id AND p.status = 'APPROVED') AS approved_version,
+               EXISTS (SELECT 1 FROM hospital_content_philosophies p
+                        WHERE p.hospital_id = h.id AND p.status = 'APPROVED' AND p.is_base)
+                 AS has_approved_base,
+               (SELECT count(*) FROM hospital_content_philosophies p
+                 WHERE p.hospital_id = h.id AND p.status = 'DRAFT') AS draft_philosophies,
+               (SELECT coalesce(jsonb_object_agg(k.kind, k.n), '{}'::jsonb)
+                  FROM (SELECT CAST(a.source_type AS text) || ':' || CAST(a.status AS text) AS kind,
+                               count(*) AS n
+                          FROM hospital_source_assets a
+                         WHERE a.hospital_id = h.id
+                         GROUP BY 1) k) AS sources_by_type_status,
+               (SELECT count(*) FROM hospital_source_assets a
+                 WHERE a.hospital_id = h.id AND a.source_type = 'INTERVIEW') AS interview_sources,
+               (SELECT count(*) FROM operation_runs r
+                 WHERE r.hospital_id = h.id AND r.operation_type = 'PROFILE_AUTOFILL') AS autofill_runs,
+               (SELECT max(r.created_at) FROM operation_runs r
+                 WHERE r.hospital_id = h.id AND r.operation_type = 'PROFILE_AUTOFILL')
+                 AS last_autofill_at,
+               (SELECT (SELECT count(*) FROM jsonb_object_keys(
+                          CASE WHEN jsonb_typeof(r.result_summary->'draft') = 'object'
+                               THEN r.result_summary->'draft' ELSE '{}'::jsonb END))
+                  FROM operation_runs r
+                 WHERE r.hospital_id = h.id AND r.operation_type = 'PROFILE_AUTOFILL'
+                 ORDER BY r.created_at DESC LIMIT 1) AS last_draft_keys
+        FROM hospitals h
+        ORDER BY has_approved_base, h.name
+        """,
+    ),
+    # (Phase 4, D33) Essence 보류 사다리의 남은 사고·알림. 열린(OPEN·RETRYING) ESSENCE_AUTO_REVIEW_*·
+    # ESSENCE_MUST_USE_EXCLUDED·MISSING_APPROVED_ESSENCE 사고(유형×원인×상태), 보조: 아직 끝나지 않은
+    # MISSING_APPROVED_ESSENCE_DIGEST 알림 행.
+    "q14": (
+        """
+        SELECT incident_type, safe_error_code, state, count(*) AS n,
+               count(DISTINCT hospital_id) AS hospitals,
+               min(first_seen_at) AS oldest_first_seen, max(last_seen_at) AS latest_seen
+        FROM incidents
+        WHERE state IN ('OPEN','RETRYING')
+          AND (incident_type LIKE 'ESSENCE_AUTO_REVIEW_%'
+               OR incident_type = 'ESSENCE_MUST_USE_EXCLUDED'
+               OR incident_type = 'MISSING_APPROVED_ESSENCE'
+               OR safe_error_code = 'MISSING_APPROVED_ESSENCE')
+        GROUP BY incident_type, safe_error_code, state
+        ORDER BY n DESC, incident_type
+        """,
+        """
+        SELECT state, count(*) AS n, min(created_at) AS oldest_at, max(created_at) AS latest_at
+        FROM notification_outbox
+        WHERE notification_type = 'MISSING_APPROVED_ESSENCE_DIGEST'
+          AND state IN ('PENDING','SENDING','RETRYING','HOLD')
+        GROUP BY state
+        ORDER BY state
         """,
     ),
     # (W8) 지난달(KST) 서비스 구간 병원마다 최신 월간 보고서의 전달 게이트 입력. 전달 가능 여부의 정본은

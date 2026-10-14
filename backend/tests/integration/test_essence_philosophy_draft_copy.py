@@ -69,6 +69,8 @@ NOT_COPIED_COLUMNS = {
     "approved_at",
     "approval_note",
     "evidence_noise_hash",
+    # 자동 요약 판의 합성 메타데이터(0091)는 그 판의 입력·버린 주장 기록이다 — 사람이 고칠 초안의 것이 아니다.
+    "synthesis_metadata",
     "created_at",
     "updated_at",
 }

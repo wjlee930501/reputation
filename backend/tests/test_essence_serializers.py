@@ -36,7 +36,7 @@ def test_serialize_source_exposes_display_labels():
     serialized = _serialize_source(source, evidence_note_count=2)
 
     assert serialized["display"] == {
-        "source_type_label": "원장 인터뷰",
+        "source_type_label": "원장 인터뷰 설문",
         "status_label": "처리완료",
     }
     assert serialized["source_type"] == SourceType.INTERVIEW

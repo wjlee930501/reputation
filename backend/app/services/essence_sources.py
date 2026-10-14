@@ -341,25 +341,44 @@ async def register_url_source(
     않는다 — 채널 한 곳에 최대 12초가 걸리기 때문이다.
     """
     from app.services.essence_engine import compute_source_content_hash
+    from app.services.survey_sources import (
+        SURVEY_DEFAULT_TITLE,
+        SurveyLinkError,
+        mask_interview_text,
+        normalize_survey_url,
+    )
 
+    # Google 문서·스프레드시트 공유 링크는 내보내기 주소로 읽는다. 설문지 링크는 받지 않는다(D32).
     try:
-        fetched = await fetch_source_content(source_type=source_type, url=url, title=title)
+        fetch_url = normalize_survey_url(url)
+    except SurveyLinkError as exc:
+        raise SourceRegistrationError(str(exc), status_code=422) from exc
+    if source_type == SourceType.INTERVIEW and not (title or "").strip():
+        title = SURVEY_DEFAULT_TITLE
+    try:
+        fetched = await fetch_source_content(source_type=source_type, url=fetch_url, title=title)
     except TransientSourceFetchError as exc:
         raise SourceRegistrationError(str(exc)) from exc
 
     final_title = fetched.title
     text = fetched.text
-    crawled_text = normalized_optional_text(text)
+    # 설문 본문은 저장 전에 휴대전화·이메일·주민번호를 가린다(E6).
+    crawled_text = mask_interview_text(source_type, normalized_optional_text(text))
+    metadata = {"crawled_at": datetime.now(timezone.utc).isoformat()}
+    if fetch_url != url.strip():
+        metadata["original_url"] = url.strip()
     await acquire_hospital_advisory_lock(db, hospital_id)
     source = HospitalSourceAsset(
         hospital_id=hospital_id,
         source_type=source_type,
         title=final_title,
-        url=url.strip(),
+        url=fetch_url,
         raw_text=crawled_text,
         operator_note=normalized_optional_text(operator_note),
-        source_metadata={"crawled_at": datetime.now(timezone.utc).isoformat()},
-        content_hash=compute_source_content_hash(final_title, url, crawled_text, operator_note),
+        source_metadata=metadata,
+        content_hash=compute_source_content_hash(
+            final_title, fetch_url, crawled_text, operator_note
+        ),
         status=SourceStatus.PENDING,
         created_by=created_by,
     )
@@ -373,7 +392,7 @@ async def register_url_source(
         target_id=source.id,
         detail={
             "source_type": source_type.value,
-            "url": url,
+            "url": fetch_url,
             "extracted_chars": len(text),
         },
     )

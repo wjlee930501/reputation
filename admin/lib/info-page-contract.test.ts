@@ -308,7 +308,9 @@ test('처리·크롤·제목 수정·유형 변경 버튼은 없다', () => {
   // 처리는 자동이다 — 사람이 시작하거나 다시 거는 경로를 만들지 않는다.
   assert.doesNotMatch(sourcesSection, /sources\/\$\{[^}]+\}\/process/)
   assert.doesNotMatch(sourcesSection, /process-pending/)
-  assert.doesNotMatch(sourcesSection, /sources\/crawl/)
+  // 링크 추가는 원장 인터뷰 설문 카드 하나뿐이다(D32) — 일반 URL 자료 추가 경로는 만들지 않는다.
+  assert.equal(sourcesSection.match(/sources\/crawl/g)?.length, 1)
+  assert.match(sourcesSection, /sources\/crawl[\s\S]{0,120}source_type: 'INTERVIEW'/)
   assert.doesNotMatch(sourcesSection, /url-title/)
   assert.doesNotMatch(sourcesSection, /AssetTitleEditor/)
   assert.doesNotMatch(sourcesSection, /asset_kind/)
@@ -359,11 +361,43 @@ test('자동 입력 창은 대화상자로 열리고 키보드로 빠져나올 �
 
 test('파일 고르는 칸은 이름이 있다', () => {
   assert.match(photosSection, /id="info-photo-file"[\s\S]{0,80}aria-label="올릴 사진 파일"/)
-  assert.match(sourcesSection, /id="info-source-file"[\s\S]{0,80}aria-label="올릴 문서 파일/)
+  assert.match(
+    sourcesSection,
+    /id="info-source-file"[\s\S]{0,80}aria-label=\{ADMIN_COPY\.documentUploadLabel\}/,
+  )
 })
 
 test('근거 자료는 사람이 입력하는 섹션 뒤 마지막에 붙는다', () => {
   const domain = infoPage.indexOf('<DomainSetupPanel')
   const sources = infoPage.indexOf('<SourcesSection')
   assert.ok(domain >= 0 && sources > domain, '근거 자료 섹션이 마지막에 없다')
+})
+
+test('저장된 초안 불러오기 흐름은 없고, 수동 미리보기 버튼만 남는다', () => {
+  assert.doesNotMatch(infoPage, /getStoredAutofillDraft|handleStoredAutofill|storedAutofill/)
+  assert.doesNotMatch(readFileSync(new URL('./api.ts', import.meta.url), 'utf8'), /autofill-draft/)
+  assert.match(infoPage, /병원 정보 자동 입력/)
+})
+
+test('자동 입력 출처 배지와 충돌 안내가 서버 출처 기록에서 나온다', () => {
+  assert.match(infoPage, /provenance=\{hospital\?\.profile_field_provenance\}/)
+  assert.match(factsSection, /origin !== 'AUTOFILL'/)
+  assert.match(factsSection, /ProvenanceConflict info=\{provenance\?\.phone\}/)
+  assert.match(factsSection, /PROVENANCE_SOURCE_LABEL\[info\.source\]/)
+})
+
+test('진료 철학과 구글 칸은 선택 표시를 단다', () => {
+  assert.match(factsSection, /진료 철학 \{ADMIN_COPY\.optionalMark\}/)
+  assert.match(factsSection, /구글 병원 정보 URL \{ADMIN_COPY\.optionalMark\}/)
+  assert.match(factsSection, /구글 지도 URL \{ADMIN_COPY\.optionalMark\}/)
+})
+
+test('원장 인터뷰 설문 카드는 INTERVIEW로 파일 업로드와 링크를 보내고 빈 PDF를 경고한다', () => {
+  assert.match(sourcesSection, /data-testid="survey-card"/)
+  assert.match(sourcesSection, /body\.append\('source_type', 'INTERVIEW'\)/)
+  assert.match(sourcesSection, /essence\/sources\/upload/)
+  assert.match(sourcesSection, /essence\/sources\/crawl/)
+  assert.match(sourcesSection, /source_type: 'INTERVIEW'/)
+  assert.match(sourcesSection, /e\.status === 422/)
+  assert.match(sourcesSection, /sourceTextUnreadable\(survey\)/)
 })

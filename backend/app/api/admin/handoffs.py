@@ -81,10 +81,10 @@ def _hospital_exists(hospital_id: uuid.UUID | None) -> dict[str, object]:
 
 
 def _dispatch_profile_autofill(hospital_id: uuid.UUID) -> None:
-    """등록이 커밋된 뒤 자동 입력 초안을 백그라운드로 만든다. 실패해도 등록은 그대로다.
+    """등록이 커밋된 뒤 자동 입력(수집 → 빈 칸 자동 적용)을 백그라운드로 시작한다.
 
-    디스패치가 유실되면 회수하지 않는다 — 초안은 편의 기능이고 병원 정보 화면의
-    "자동 입력" 버튼이 같은 일을 사람이 즉시 할 수 있다.
+    실패해도 등록은 그대로다. 디스패치가 유실되면 15분 reconcile 틱의 자동 입력 스윕이
+    실행 기록 없는 병원을 ``backfill`` 키로 다시 보낸다(D30, 등록 30분 유예 뒤).
     """
 
     from app.workers.profile_autofill_tasks import autofill_registered_hospital_profile

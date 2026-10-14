@@ -6,6 +6,8 @@ from fastapi import BackgroundTasks, HTTPException
 
 from app.api.admin import hospitals as hospitals_api
 from app.models.handoff import HandoffState
+from app.services import profile_completion
+from app.workers.tasks import build_aeo_site
 
 
 def test_profile_completion_is_blocked_before_handoff_acceptance() -> None:
@@ -124,7 +126,7 @@ async def test_profile_completion_dispatches_site_build_independently_from_v0(
         dispatched.append(command.operation_type)
         return None
 
-    monkeypatch.setattr(hospitals_api, "dispatch_operation", _dispatch)
+    monkeypatch.setattr(profile_completion, "dispatch_operation", _dispatch)
 
     await hospitals_api.update_profile(
         hospital.id,
@@ -140,7 +142,7 @@ async def test_profile_completion_dispatches_site_build_independently_from_v0(
     assert len(background.tasks) == 1
     site_task = background.tasks[0]
     assert getattr(getattr(site_task.func, "__self__", None), "name", None) == (
-        hospitals_api.build_aeo_site.name
+        build_aeo_site.name
     )
     assert getattr(site_task.func, "__name__", None) == "apply_async"
     assert site_task.kwargs["args"] == [str(hospital.id)]

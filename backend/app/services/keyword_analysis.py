@@ -338,3 +338,27 @@ def lexicon_fingerprint() -> str:
     )
     rules = "|".join(pattern.pattern for pattern, _ in _SUFFIX_RULES)
     return hashlib.sha256(f"{material}#{rules}".encode()).hexdigest()[:16]
+
+
+def region_mixed_keywords(keywords: list[str], regions: list[str]) -> list[dict]:
+    """지역이 섞인 핵심 키워드 — 사람 PATCH는 422로 막고, 자동 입력은 그 키워드만 뺀다.
+
+    반환: [{"keyword", "suggested_keyword"}]. 제안은 지역을 뺀 표준 용어가 원문과 다를 때만 있다.
+    """
+
+    invalid: list[dict] = []
+    for keyword in keywords:
+        analysis = analyze_keyword(keyword, regions)
+        normalized = normalize(keyword)
+        if analysis.embedded_region is not None:
+            invalid.append(
+                {
+                    "keyword": keyword,
+                    "suggested_keyword": (
+                        analysis.canonical_term
+                        if analysis.canonical_term and analysis.canonical_term != normalized
+                        else None
+                    ),
+                }
+            )
+    return invalid

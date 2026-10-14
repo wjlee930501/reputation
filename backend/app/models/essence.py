@@ -263,6 +263,11 @@ class HospitalContentPhilosophy(Base):
     source_snapshot_hash: Mapped[str | None] = mapped_column(String(64))
     # 승인 시점에 노이즈로 제외돼 있던 근거 노트 집합의 hash. NULL은 이 컬럼 이전 승인.
     evidence_noise_hash: Mapped[str | None] = mapped_column(String(64))
+    # 자동 요약 판의 합성 메타데이터(0091): 만든 방식·입력 hash·제외 입력·버린 주장·충돌.
+    # 빈 객체는 이 컬럼 이전 판(사람·AI 검수 승인본)이다.
+    synthesis_metadata: Mapped[dict] = mapped_column(
+        _jsonb_type(), default=dict, server_default=text("'{}'"), nullable=False
+    )
 
     created_by: Mapped[str | None] = mapped_column(String(100))
     reviewed_by: Mapped[str | None] = mapped_column(String(100))
