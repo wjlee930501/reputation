@@ -1,6 +1,16 @@
 # Re:putation — 현재 프로젝트 개발 안내
 
-## 최신 운영 배포 — 2026-10-14 Phase 4-B 자동 Essence + D36·D37 게이트
+## 최신 운영 배포 — 2026-10-14~15 Full-Automatic (W1~W10·등급·누락 방지·대표 확정 Critical 정의)
+
+main `139bd07f`(PR #275)까지 2026-10-14 15:07 ~ 10-15 14:25 KST에 Backend를 열한 번, Site를 한 번 배포했다(PR #260·#261·#262·#263·#266·#267·#268·#269·#270·#271·#272·#273·#274·#275,
+모두 배치 시간대 밖·`--override-reason`·env 차이 0). **현재 리비전은 api `00266-86v`, worker `00256-ctr`, beat `00251-z5x`**, Admin `00109-d6r`·DB head
+`0092_publish_without_references_or_verdict` 그대로(이 기간 마이그레이션 없음), RedBeat `2026-10-14.1`(PR #268). 대표 결정: 첫 원칙 "글은 예정일에 올라간다"(Critical이 아니면
+사람에게 가지 않는다), 안전망 어휘는 완치·보장·최저가·할인 넷, **Critical 최종 정의(2026-10-15) = 환자유인·불법 의료광고 + 위험한 행동 권고·위험한 거짓 진술, 누락은 기록만**.
+롤백 좌표는 배포 worktree `.omo/rollback-w910`·`w67`·`w12`·`photo`·`tiers2`·`gaps`·`renewal`·`alertgroup`·`critdef`·`lexscope`·`induce`다. 밤샘 검증(10/15 08:15): 기한 지난 미발행 0건,
+10/16분 8편 전부 `PUBLISHABLE`. 열린 후속(세종다온 `must_use` 조각, 주제 교체 경로 운영 미검증, 라운드로빈 공정성, `admin_audit_logs` 인덱스, 옛 승인 판 소개문 verbatim, 테스트 fixture 누수 등)은
+[배포 기록](docs/releases/2026-10-14-15-full-automatic-production.md)에 있다.
+
+## 이전 운영 배포 — 2026-10-14 Phase 4-B 자동 Essence + D36·D37 게이트
 
 main `5b13b02c`(PR #258 `claude/autonomy-p4b` + PR #256 `claude/fa-gates`)을 API·Worker·Beat·Admin에 한 번에 배포했다(2026-10-14 13:23~13:37 KST,
 배치 시간대 밖, `--override-reason`). 리비전은 api `00253-nnp`, worker `00243-h45`, beat `00238-762`, admin `00109-d6r`, Site 그대로,
@@ -244,7 +254,7 @@ BaseEssence의 일반 자료 추가 drift는 재합성하지 않는다. 명시�
 Site/Admin IAM 분리는 단계적으로 적용한다. 구 revision 종료 전 legacy grants를 회수하지 않는다.
 
 
-문서 버전: **2.30** · 갱신일: **2026-10-14 (Asia/Seoul)**
+문서 버전: **2.31** · 갱신일: **2026-10-15 (Asia/Seoul)**
 소스 기준선: **`4db1b69` 이후 커밋 이력 정합성 보완**
 구현 상태: **체크포인트 2(`a774851`) 운영 배포 완료. 그 뒤 main의 stable-base Essence(`8c59141`) 등 31개 커밋과 콘텐츠 수율 버전업 v2.7(`claude/system-performance-review-x6vtn4`, [계획](docs/plans/2026-09-12-content-yield-versionup-plan.md))은 미배포**
 
