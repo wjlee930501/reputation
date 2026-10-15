@@ -1,6 +1,16 @@
 # 현재 배포와 헬스체크
 
-## 최신 운영 배포 — 2026-10-14 Phase 4-B 자동 Essence + D36·D37 게이트
+## 최신 운영 배포 — 2026-10-14~15 Full-Automatic
+
+main `139bd07f`(PR #275). **api `00266-86v`, worker `00256-ctr`, beat `00251-z5x`**, Admin `00109-d6r`, DB head `0092_publish_without_references_or_verdict`(마이그레이션 없음),
+RedBeat `2026-10-14.1`. Backend 11회·Site 1회를 하루 여러 번 배포했고(배치 시간대 밖, `--override-reason`, env 차이 0) 롤백 좌표는 배포 worktree
+`.omo/rollback-w910`·`w67`·`w12`·`photo`·`tiers2`·`gaps`·`renewal`·`alertgroup`·`critdef`·`lexscope`·`induce`의 `backend`(photo는 `site`도)다 — 각 파일은 그 배포 직전 리비전이다.
+- 코드만의 롤백은 정체 감지기가 당긴 일정·교체·디스패치, 보낸 Critical 알림, 일일 갱신 구간, 교체된 주제를 되돌리지 않는다. #260 롤백 전에는 세 번째 주제 슬롯 조회가 필요하고,
+  #269·#271 롤백은 소진된 비-Critical 슬롯을 `OPERATOR_REQUIRED`로 되돌린다.
+- 12:30·18:30·22:30·23:30 발행기(#268)로 그날의 마지막 발행기는 23:30이다. 배포 뒤에는 기한 지난 미발행 0건과 다음 날 슬롯의 `PUBLISHABLE`을 읽기 전용으로 확인한다.
+- 상세와 열린 후속은 [배포 기록](../releases/2026-10-14-15-full-automatic-production.md).
+
+## 이전 운영 배포 — 2026-10-14 Phase 4-B 자동 Essence + D36·D37 게이트
 
 main `5b13b02c`(PR #258 + #256; api `00253-nnp`, worker `00243-h45`, beat `00238-762`, admin `00109-d6r`, Site 그대로). DB head는
 `0092_publish_without_references_or_verdict`이고 13:23~13:37 KST에 배포했다(`--override-reason`, env 차이 0). 롤백 좌표는 `.omo/rollback-gates/backend`·`admin`
