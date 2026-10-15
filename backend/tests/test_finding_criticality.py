@@ -45,10 +45,12 @@ PHILOSOPHY = "본원은 환자 한 분 한 분의 이야기를 끝까지 듣는 
 TRAINING = "이현진 원장은 서울성모병원에서 정형외과 전공의 수련을 마쳤습니다."
 OPENING = "본원은 개원 15년째 같은 자리를 지키고 있습니다."
 CHEST = "본원은 환자의 이야기를 듣는 것을 원칙으로 하며, 흉통에는 즉시 119에 연락하셔야 합니다."
+GUARANTEE = "본원은 정확한 진단부터 완치까지 보장합니다."
 CONTENT = {
-    "title": "허리 통증, 언제 병원에 가야 할까요?",
+    "title": "허리 통증, 완치까지 함께하는 내원 시점",
     "body": f"## 안내\n{PHILOSOPHY} {TRAINING}\n{OPENING}\n{CHEST}\n같은 문장입니다. 같은 문장입니다.\n"
-    "첫 진료는 할인해 드립니다.",
+    f"첫 진료는 할인해 드립니다.\n{GUARANTEE}\n최저 가로 모십니다.\n"
+    "Guaranteed results at the lowest price. It cured the patient.",
     "meta_description": "허리 통증 내원 시점 안내",
     "faq_question": None,
     "faq_answer_summary": None,
@@ -67,15 +69,21 @@ CONTENT = {
                   critical=True), C),
         (_finding("HARD", "HOSPITAL_FACT", "x", quote=PHILOSOPHY, critical=None), C),
         ({"severity": "HARD", "kind": "HOSPITAL_FACT", "message": "x", "quote": PHILOSOPHY}, C),
-        # ── 안전망: 완치·보장·최저가·할인(활용·띄어쓰기·영어)은 false여도 Critical ──
-        (_finding("HARD", "HOSPITAL_FACT", "완치됩니다라는 표현", quote=OPENING), C),
-        (_finding("HARD", "HOSPITAL_FACT", "효과를 보장합니다", quote=OPENING), C),
-        (_finding("HARD", "HOSPITAL_FACT", "최저 가 문구", quote=OPENING), C),
-        (_finding("HARD", "STYLE", "할인해 드린다는 문장", quote=OPENING), C),
-        (_finding("HARD", "STYLE", "Guaranteed results, lowest price", quote=OPENING), C),
-        (_finding("HARD", "STYLE", "It cured the patient", quote=OPENING), C),
+        # ── 안전망: 글 자신의 문장의 완치·보장·최저가·할인(활용·띄어쓰기·영어)은 false여도 Critical ──
+        (_finding("HARD", "HOSPITAL_FACT", "근거 없음", quote=GUARANTEE), C),
+        (_finding("HARD", "HOSPITAL_FACT", "근거 없음", quote="최저 가로 모십니다"), C),
+        (_finding("HARD", "STYLE", "x", quote="Guaranteed results at the lowest price"), C),
+        (_finding("HARD", "STYLE", "x", quote="It cured the patient"), C),
+        (_finding("HARD", "STYLE", "제목 문구", quote="완치까지 함께"), C),  # 제목의 인용
         # 인용이 가리키는 본문 문장 전체도 본다.
         (_finding("HARD", "HOSPITAL_FACT", "진료 원칙", quote="첫 진료는"), C),
+        # ── 검수자의 지적 문구는 보지 않는다(2026-10-15 — fca90112) ──
+        (_finding("HARD", "HOSPITAL_FACT", "완치됩니다라는 표현", quote=OPENING), N),
+        (_finding("HARD", "HOSPITAL_FACT", "결과 보장으로 읽힐 수 있습니다", quote=OPENING), N),
+        (_finding("HARD", "STYLE", "할인해 드린다는 문장", quote=OPENING), N),
+        (_finding("HARD", "STYLE", "Guaranteed results, lowest price", quote=OPENING), N),
+        # 글에 없는 인용(검수자가 지어낸 말)도 글의 문장이 아니다.
+        (_finding("HARD", "HOSPITAL_FACT", "근거 없음", quote="효과를 보장합니다"), N),
         # 일반 의료 낱말·응급 어휘는 안전망이 아니다(검수 모델이 정한다).
         (_finding("HARD", "HOSPITAL_FACT", "응급 안내와 통증 효과 설명", quote=CHEST), N),
         (_finding("HARD", "STYLE", "보장성 보험 안내 문장", quote=OPENING), N),
@@ -97,11 +105,13 @@ def test_generic_and_emergency_words_do_not_override_the_reviewer(term) -> None:
     assert mentions_critical_override("완치를 보장하는 최저가 할인")
 
 
-def test_override_words_are_checked_even_without_the_body() -> None:
+def test_override_words_are_checked_in_the_quote_even_without_the_body() -> None:
     finding = _finding("HARD", "HOSPITAL_FACT", "승인 자료에 없는 진료 원칙", quote=PHILOSOPHY)
 
     assert classify_finding(finding) is N
-    assert classify_finding({**finding, "message": "100% 완치"}) is C
+    assert classify_finding({**finding, "quote": "완치를 보장합니다"}) is C
+    # 본문을 몰라도 지적 문구는 보지 않는다.
+    assert classify_finding({**finding, "message": "100% 완치로 읽힐 수 있습니다"}) is N
 
 
 @pytest.mark.parametrize(
@@ -258,9 +268,9 @@ def test_reviewer_critical_field_decides_and_missing_is_critical(critical, expec
 
 
 def test_lexicon_overrides_a_reviewer_false() -> None:
-    """검수 모델이 false라 해도 의료·안전 어휘가 걸리면 Critical이다(추가 안전망)."""
+    """검수 모델이 false라 해도 글의 문장에 안전망 어휘가 있으면 Critical이다(추가 안전망)."""
 
-    finding = _finding("HARD", "HOSPITAL_FACT", "100% 완치를 보장한다는 문장", quote=PHILOSOPHY)
+    finding = _finding("HARD", "HOSPITAL_FACT", "근거 없는 진료 원칙", quote=GUARANTEE)
 
     assert finding["critical"] is False
     assert classify_finding(finding, CONTENT) is C
@@ -307,11 +317,10 @@ def test_stored_flag_findings_without_the_key_use_only_the_override_words() -> N
 
     assert flag_findings_are_critical([legacy()], CONTENT) is False
     assert flag_findings_are_critical([legacy(kind="MEDICAL_SAFETY", message="응급 안내 누락")], CONTENT) is False
-    assert flag_findings_are_critical([legacy(message="완치를 보장한다는 표현")], CONTENT) is True
+    assert flag_findings_are_critical([legacy(quote=GUARANTEE)], CONTENT) is True
     assert flag_findings_are_critical([legacy(quote="첫 진료는")], CONTENT) is True  # 인용 문장에 할인
-    assert flag_findings_are_critical(
-        [legacy(message="완치를 보장한다는 표현", severity="UNCERTAIN")], CONTENT
-    ) is False
+    assert flag_findings_are_critical([legacy(message="완치를 보장한다는 표현")], CONTENT) is False
+    assert flag_findings_are_critical([legacy(quote=GUARANTEE, severity="UNCERTAIN")], CONTENT) is False
     # v3 출력은 키가 있다 — null·true는 Critical, false는 안전망 어휘가 없으면 비-Critical.
     nulled = _finding("HARD", "HOSPITAL_FACT", "근거 없는 진료 원칙", quote=PHILOSOPHY, critical=None)
     assert flag_findings_are_critical([nulled], CONTENT) is True

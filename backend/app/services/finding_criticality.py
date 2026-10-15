@@ -115,6 +115,7 @@ def mentions_medical_safety(text: object) -> bool:
 
 # ── Critical 판정의 안전망 어휘(2026-10-14 대표 결정) ─────────────────────────────────────
 # 검수 모델의 판정을 덮는 어휘는 이 넷뿐이다 — 완치·보장·최저가·할인(활용·띄어쓰기 포함)과 영어 대응어.
+# 글 자신의 문장(인용·인용 문장)에만 맞춘다 — 검수자의 지적 문구는 아니다(2026-10-15, `_override_hit`).
 # 위 `MEDICAL_SAFETY_LEXICON`은 등급 어휘가 아니다. 결정적 삭제의 보호 대상도 아니다 — 삭제는 응급 안내와
 # 필수 문구 문장만 지킨다(2026-10-15 대표 결정, 아래 `EMERGENCY_GUIDANCE_TERMS`).
 CRITICAL_OVERRIDE_PATTERNS: tuple[str, ...] = (
@@ -210,11 +211,25 @@ def reviewer_marked_noncritical(finding: Mapping[str, Any]) -> bool:
     return finding.get("critical") is False
 
 
+_POST_TEXT_FIELDS = ("body", *_NON_BODY_FIELDS)
+
+
 def _override_hit(finding: Mapping[str, Any], content: object) -> bool:
-    sentence = locate_body_sentence(content, finding.get("quote")) or ""
-    return mentions_critical_override(
-        f"{finding.get('message') or ''} {finding.get('quote') or ''} {sentence}"
-    )
+    """안전망 어휘가 **글 자신의 문장**에 있는가(2026-10-15 대표 결정).
+
+    검수 모델의 지적 문구(`message`)는 보지 않는다 — "결과 보장으로 읽힐 수 있다"처럼 검수자가 쓴 낱말로
+    글을 Critical로 만들지 않는다(fca90112). 본문을 알면 인용이 제목·본문·메타·FAQ에 실제로 있을 때만 그
+    인용과 인용이 가리키는 본문 문장을 보고, 본문을 모르면 인용(글의 원문을 옮긴 것)만 본다.
+    """
+
+    quote = str(finding.get("quote") or "").strip()
+    if not quote:
+        return False
+    if content is None:
+        return mentions_critical_override(quote)
+    in_post = any(_quote_spans(_field(content, name), quote) for name in _POST_TEXT_FIELDS)
+    sentence = locate_body_sentence(content, quote) or ""
+    return mentions_critical_override(f"{quote if in_post else ''} {sentence}")
 
 
 # ── 2026-10-15 대표 확정 정의 ─────────────────────────────────────────────────────────
@@ -420,8 +435,9 @@ def finding_is_record_only(finding: Mapping[str, Any], content: object = None) -
 def classify_finding(finding: Mapping[str, Any], content: object = None) -> Criticality:
     """독립 검수 지적 하나의 등급(2026-10-15 대표 확정 정의, 모듈 설명).
 
-    발행을 막지 않는 지적(SOFT·필수 문구를 짚은 지적)은 등급을 매기지 않는다(비-Critical). 지적 문구·인용·
-    인용이 가리키는 본문 문장에 안전망 어휘(완치·보장·최저가·할인)가 있으면 언제나 Critical이다. 나머지는
+    발행을 막지 않는 지적(SOFT·필수 문구를 짚은 지적)은 등급을 매기지 않는다(비-Critical). 글 자신의 문장(인용·
+    인용이 가리키는 본문 문장 — 지적 문구는 아니다, `_override_hit`)에 안전망 어휘(완치·보장·최저가·할인)가
+    있으면 언제나 Critical이다. 나머지는
     판정 세대(`_graded_critical`)가 정한다. 비-Critical이어도 지울 수 없으면 기록만 남는다
     (`finding_is_record_only`).
     """
@@ -486,7 +502,7 @@ def legacy_finding_is_critical(finding: Mapping[str, Any], content: object = Non
     """검수 모델의 `critical` 판정이 **없던** 옛 저장 지적(v3 이전)의 등급(2026-10-14 대표 결정).
 
     판정받은 적 없는 옛 지적을 모두 Critical로 올리지 않는다. HARD이고 안전망 어휘(완치·보장·최저가·
-    할인)가 지적 문구·인용·인용 문장에 있거나, 확정 정의 재등급(`_regraded_critical` — 유인 광고, 위험한
+    할인)가 글 자신의 문장(인용·인용 문장, `_override_hit`)에 있거나, 확정 정의 재등급(`_regraded_critical` — 유인 광고, 위험한
     권고·거짓 진술)이 Critical일 때만 Critical이고, 나머지는 조용히 닫는다. v3 이후의 검수 출력은 언제나
     `critical` 키를 싣는다(값이 없으면 null = Critical).
     """
