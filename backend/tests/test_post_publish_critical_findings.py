@@ -38,6 +38,8 @@ from tests.test_post_publish_ai_review import _published, _review
 
 NOW = datetime(2026, 10, 20, 3, 10, tzinfo=UTC)
 PHILOSOPHY = "본원은 환자 한 분 한 분의 이야기를 끝까지 듣는 것을 진료 원칙으로 삼습니다."
+GUARANTEE = "본원 치료는 허리 디스크의 완치를 보장합니다."
+DISCOUNT = "첫 방문은 진료비를 할인해 드립니다."
 KEY = sweep.POST_PUBLISH_CRITICAL_ALERT_KEY
 
 
@@ -195,12 +197,12 @@ def test_uncertain_only_flag_waits_for_the_senior_rereview(monkeypatch, calls):
         _finding("HARD", "STYLE", "Missing emergency care instructions for chest pain", critical=True),
         _finding("HARD", "HOSPITAL_FACT", "판정 없음", critical=None),
         _finding("UNCERTAIN", "MEDICAL_SAFETY", "확신 부족"),
-        _finding("HARD", "HOSPITAL_FACT", "100% 완치를 보장한다는 문장"),
-        _finding("HARD", "STYLE", "할인 유인 문구"),
+        _finding("HARD", "HOSPITAL_FACT", "근거 없음", quote=GUARANTEE),
+        _finding("HARD", "STYLE", "유인 문구", quote=DISCOUNT),
     ],
 )
 def test_medical_or_unverifiable_flags_are_never_closed_quietly(monkeypatch, calls, finding):
-    item = _flag(_item(), finding)
+    item = _flag(_item(body=f"## 안내\n{PHILOSOPHY}\n{GUARANTEE}\n{DISCOUNT}"), finding)
     _lock_to(monkeypatch, item)
 
     sweep._settle_flag(_DB(), item, item.hospital, asyncio.run, needs_human_reason="blocked", now=NOW)
@@ -524,10 +526,11 @@ def test_backlog_is_announced_in_one_digest_across_every_page(monkeypatch, calls
     critical = [
         _flag(_item(), _finding("HARD", "MEDICAL_SAFETY", "위험한 오정보")) for _ in range(560)
     ]
-    # 옛 저장 지적(`critical` 키 없음)은 HARD + 완치·보장·최저가·할인일 때만 Critical, 아니면 조용히 닫는다.
+    # 옛 저장 지적(`critical` 키 없음)은 HARD + 글의 문장에 완치·보장·최저가·할인일 때만 Critical, 아니면 조용히
+    # 닫는다(지적 문구의 어휘는 보지 않는다).
     legacy = [
-        _flag(_item(), {"severity": "HARD", "kind": "HOSPITAL_FACT", "message": "완치를 보장한다는 표현",
-                        "quote": PHILOSOPHY})
+        _flag(_item(body=f"## 안내\n{GUARANTEE}"),
+              {"severity": "HARD", "kind": "HOSPITAL_FACT", "message": "근거 없는 표현", "quote": GUARANTEE})
         for _ in range(5)
     ]
     legacy_quiet = [

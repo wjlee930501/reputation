@@ -53,7 +53,14 @@ STAFF = "본원에는 내과 전문의 6명과 영상의학과 전문의 1명이
 CHEST_REST = "흉통이 있어도 집에서 쉬면 됩니다."
 WEAK_ER = "가슴 통증이 심하면 필요하면 응급실 방문을 고려하세요."
 SUGAR = "공복혈당 100mg/dL은 정상 범위의 예입니다."
-BODY = "## 안내\n" + " ".join([SAFE] * 60) + f"\n{STAFF}\n{CHEST_REST}\n{WEAK_ER}\n{SUGAR}\n"
+PROMISE = "본원 치료는 효과를 보장합니다."
+DISCOUNT = "첫 방문은 진료비를 할인해 드립니다."
+LOWEST = "지역 최저가로 검사를 받으실 수 있습니다."
+CURE = "한 번이면 완치됩니다."
+BODY = (
+    "## 안내\n" + " ".join([SAFE] * 60) + f"\n{STAFF}\n{CHEST_REST}\n{WEAK_ER}\n{SUGAR}\n"
+    f"{PROMISE}\n{DISCOUNT}\n{LOWEST}\n{CURE}\n"
+)
 CONTENT = {
     "title": "가슴 통증, 언제 병원에 가야 할까요?",
     "body": BODY,
@@ -91,10 +98,15 @@ def _v3(severity, kind, message, quote="", critical=True):
         # Critical: 위험한 권고·거짓 진술(모델 true), 유인 어휘(모델 false여도)
         (_v4("HARD", "MEDICAL_SAFETY", "흉통에도 집에서 쉬라고 권합니다", CHEST_REST, True), C),
         (_v4("HARD", "MEDICAL_SAFETY", "약 용량이 틀렸습니다", SAFE, True), C),
-        (_v4("HARD", "HOSPITAL_FACT", "효과를 보장한다는 문장", SAFE), C),
-        (_v4("HARD", "STYLE", "첫 방문 할인 문구", SAFE), C),
-        (_v4("HARD", "STYLE", "지역 최저가 문구", SAFE), C),
-        (_v4("HARD", "MEDICAL_SAFETY", "한 번이면 완치된다는 문장", SAFE), C),
+        (_v4("HARD", "HOSPITAL_FACT", "근거 없음", PROMISE), C),
+        (_v4("HARD", "STYLE", "유인 문구", DISCOUNT), C),
+        (_v4("HARD", "STYLE", "유인 문구", LOWEST), C),
+        (_v4("HARD", "MEDICAL_SAFETY", "과장", CURE), C),
+        # 안전망 어휘가 검수자의 지적 문구에만 있으면 아니다 — 글의 문장이 아니다(2026-10-15, fca90112).
+        (_v4("HARD", "HOSPITAL_FACT", "효과를 보장한다는 문장", SAFE), N),
+        (_v4("HARD", "STYLE", "첫 방문 할인 문구", SAFE), N),
+        (_v4("HARD", "STYLE", "지역 최저가 문구", SAFE), N),
+        (_v4("HARD", "MEDICAL_SAFETY", "한 번이면 완치된다는 문장", SAFE), N),
         # 판정이 없으면(null) fail closed
         (_v4("HARD", "MEDICAL_SAFETY", "판정 없음", SAFE, None), C),
         # 비-Critical: 누락·병원 사실·사소한 오류·약한 응급 권고
@@ -151,10 +163,12 @@ SINGIHAN_V3 = {
             "증상을 추가하세요."),
     ],
 }
-# 같은 실행의 정기 건강검진 글(fca90112): 결과 보장 어휘가 지적 문구에 있다 — 안전망 어휘라 Critical로 남는다.
+# 같은 실행의 정기 건강검진 글(fca90112): 결과 보장 어휘는 검수자의 지적 문구에만 있고 글의 문장에는 없다 —
+# 안전망 어휘는 글 자신의 문장에만 맞추므로(2026-10-15) Critical이 아니다.
+FCA_SENTENCE = "정확한 진단부터 치료까지 책임지는 것이 본원이 지향하는 진료 방식입니다."
 GUARANTEE_V3 = _v3(
     "HARD", "HOSPITAL_FACT", "'정확한 진단부터 치료까지 책임진다'는 승인된 근거가 없습니다. 진단 정확성과 치료 "
-    "책임을 단정하는 표현이라 결과 보장으로 읽힐 수 있습니다."
+    "책임을 단정하는 표현이라 결과 보장으로 읽힐 수 있습니다.", FCA_SENTENCE
 )
 PROGNOSIS_V3 = _v3(
     "HARD", "MEDICAL_SAFETY", "모든 질환에 해당하는 것처럼 예후를 일반화했습니다. 질환별로 다르고 개인차가 있음을 "
@@ -170,10 +184,45 @@ def test_singihan_v3_findings_are_no_longer_critical(post) -> None:
     assert flag_findings_are_critical(findings) is False
 
 
-def test_v3_exaggeration_is_not_critical_but_a_guarantee_word_still_is() -> None:
+FCA_CONTENT = {
+    "title": "정기 건강검진, 왜 미루시나요?",
+    "body": "## 검진\n" + " ".join([SAFE] * 60) + f"\n{FCA_SENTENCE}\n",
+    "meta_description": "정기 건강검진 안내",
+    "faq_question": None,
+    "faq_answer_summary": None,
+}
+
+
+def test_v3_exaggeration_is_not_critical_and_a_guarantee_word_only_in_the_message_is_not_either() -> None:
     assert classify_finding(PROGNOSIS_V3) is N
-    assert classify_finding(GUARANTEE_V3) is C
-    assert flag_findings_are_critical([PROGNOSIS_V3, GUARANTEE_V3]) is True
+    for content in (None, FCA_CONTENT):
+        assert classify_finding(GUARANTEE_V3, content) is N
+        assert flag_findings_are_critical([PROGNOSIS_V3, GUARANTEE_V3], content) is False
+
+
+def test_fca90112_follows_the_reviewer_only_under_the_owner_definition() -> None:
+    """fca90112: 지적 문구의 '보장'은 등급을 바꾸지 않는다 — v4 검수가 직접 true라 했을 때만 Critical."""
+
+    v4_false = _v4("HARD", "HOSPITAL_FACT", GUARANTEE_V3["message"], FCA_SENTENCE)
+    v4_true = {**v4_false, "critical": True}
+
+    assert classify_finding(v4_false, FCA_CONTENT) is N
+    assert classify_finding(v4_true, FCA_CONTENT) is C
+    assert flag_findings_are_critical([v4_false], FCA_CONTENT) is False
+
+
+def test_a_quoted_post_sentence_with_a_cure_guarantee_is_critical() -> None:
+    sentence = "본원 치료로 허리 디스크의 완치를 보장합니다."
+    content = {**FCA_CONTENT, "body": FCA_CONTENT["body"] + f"{sentence}\n"}
+
+    for finding in (
+        _v4("HARD", "HOSPITAL_FACT", "근거 없음", "완치를 보장"),
+        _v3("HARD", "HOSPITAL_FACT", "근거 없음", "완치를 보장", critical=False),
+    ):
+        assert classify_finding(finding, content) is C
+        assert classify_finding(finding) is C  # 본문을 몰라도 인용은 글의 원문이다
+    # 인용이 글에 없으면(검수자가 지어낸 문장) 본문을 아는 경로에서는 Critical이 아니다.
+    assert classify_finding(_v4("HARD", "HOSPITAL_FACT", "근거 없음", "완치를 보장"), FCA_CONTENT) is N
 
 
 @pytest.mark.parametrize(
@@ -336,7 +385,16 @@ def test_resolver_quietly_closes_v3_flags_that_are_no_longer_critical() -> None:
         "flag_not_critical"
     )
 
-    still = _flag(_item(), PROGNOSIS_V3, GUARANTEE_V3)
+    # fca90112: 지적 문구에만 '보장'이 있는 v3 지적은 조용히 닫힌다(Slack 없음).
+    fca = _flag(_item(), PROGNOSIS_V3, GUARANTEE_V3)
+    assert incident_backlog._post_publish_flag_settled(_Session(fca), incident, NOW) == (
+        "flag_not_critical"
+    )
+
+    promise = "본원은 허리 디스크의 완치를 보장합니다."
+    still_item = _item()
+    still_item.body += f"\n{promise}"
+    still = _flag(still_item, PROGNOSIS_V3, {**GUARANTEE_V3, "quote": promise})
     assert incident_backlog._post_publish_flag_settled(_Session(still), incident, NOW) is None
 
 
