@@ -24,6 +24,7 @@ from app.services.content_ai_review import (
     candidate_sha256,
 )
 from app.services.content_publication import AI_REVIEW_DEFERRED_KEY
+from app.services.finding_criticality import CRITICAL_RULE, CRITICAL_RULE_KEY
 from app.services.incident_types import (
     IncidentAudience,
     incident_audience,
@@ -53,11 +54,17 @@ def _item(**extra):
 def _finding(
     severity, kind, message="승인 자료에 없는 진료 원칙 문장", quote=PHILOSOPHY, critical="auto"
 ):
-    # 검수 모델의 판정(v3): 기본은 의료 안전 종류면 Critical, 아니면 비-Critical로 판정했다고 둔다.
+    # 검수 모델의 판정(v4, 확정 정의 표지): 기본은 의료 안전 종류면 Critical, 아니면 비-Critical로 판정했다고
+    # 둔다. 옛 v3 판정(표지 없음)의 재등급은 `test_owner_critical_definition.py`가 본다.
     if critical == "auto":
         critical = kind == "MEDICAL_SAFETY"
     return {
-        "severity": severity, "kind": kind, "message": message, "quote": quote, "critical": critical
+        "severity": severity,
+        "kind": kind,
+        "message": message,
+        "quote": quote,
+        "critical": critical,
+        CRITICAL_RULE_KEY: CRITICAL_RULE,
     }
 
 

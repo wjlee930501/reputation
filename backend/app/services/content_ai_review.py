@@ -25,6 +25,12 @@ from app.services import cost_guard, llm_structured_output, openrouter
 from app.services.ai_prompt_boundary import untrusted_json_block
 from app.services.essence_claims import has_critical_terms
 from app.services.essence_engine import effective_safety_policy
+from app.services.finding_criticality import (
+    CRITICAL_RULE,
+    CRITICAL_RULE_KEY,
+    finding_is_record_only,
+    is_omission_finding,
+)
 from app.services.must_use_exclusions import approved_must_use_messages_with_record
 from app.services.must_use_verbatim import matched_must_use_message
 
@@ -50,7 +56,9 @@ _SYNTHETIC_UNCERTAIN_MESSAGES = frozenset(
 )
 # v3(2026-10-14 W4 재설계): 지적마다 검수 모델이 직접 판정한 `critical`을 싣는다. v2 기록(필드 없음)은
 # Critical로 읽는다 — 그 이유만으로 다시 사지 않는다(`finding_criticality.classify_finding`).
-REVIEW_SCHEMA_VERSION = "content-review-v3"
+# v4(2026-10-15 대표 확정 정의): `critical`은 환자유인·불법 의료광고와 위험한 권고·거짓 진술뿐이다. 지적마다
+# 판정 규칙 표지(`critical_rule`)를 싣고, v3 판정은 다시 사지 않고 결정적으로 재등급한다.
+REVIEW_SCHEMA_VERSION = "content-review-v4"
 REVIEWED_CANDIDATE_FIELDS = (
     "title",
     "body",
@@ -82,8 +90,10 @@ _SYSTEM_PROMPT = """\
 1. 병원 사실 근거: approved_essence(positioning_statement, treatment_narratives,
    content_principles, doctor_voice)와 hospital_profile에 없는 장비·술기·경력·성과·실적을
    병원 고유 사실처럼 주장하지 않는지
-2. 의료 안전: 단정적 진단·치료·예후 표현, 효과·완치 보장, 필요한 위험 정보 누락이 없는지
-3. 환자 위험 오해: 환자가 응급 또는 대면 진료가 필요한 상황을 오해하게 만들지 않는지
+2. 의료 안전: 단정적 진단·치료·예후 표현, 효과·완치 보장, 위험한 행동 권고·위험한 거짓 진술이
+   없는지(위험 정보·응급 안내의 누락은 아래 규칙대로 SOFT로 기록만 합니다)
+3. 환자 위험 오해: 글이 응급 또는 대면 진료가 필요한 상황을 괜찮다고 말해 환자를 오해하게
+   만들지 않는지
 4. 참고자료 주제 적합성: references의 제목·기관이 글의 주제와 명백히 어긋나는 경우에만
    kind REFERENCE, severity SOFT로 기록하세요(어긋난 자료의 제목을 message에 그대로
    인용하세요). 출처의 권위나 URL 유효성은 이미 규칙으로 검증됐으니 다시 판단하지 마세요.
@@ -104,16 +114,24 @@ DATA_BLOCK에 correction_context가 있으면 이 후보는 직전 검수의 지
 각 finding은 후보의 문장 하나만 다루고, quote에 그 문장을 후보에서 한 글자도 바꾸지 말고
 그대로 복사하세요. 특정 문장을 짚을 수 없는 지적이면 quote를 빈 문자열로 두세요.
 
-각 finding에는 critical(true/false)을 반드시 판정하세요. critical=true는 다음 중 하나입니다:
-(1) 불법 의료광고 — 치료 효과·결과 보장, 최고·최저가·가격 우위, 할인·이벤트·무료 유인,
-(2) 의료 안전 위험 — 응급 상황·119·응급실 안내의 누락이나 오안내, 약 용량·용법, 금기·주의 대상,
-시술·수술의 위험·부작용·합병증, 진단·치료·예후에 관한 위험한 오정보.
-병원 고유 사실(진료 철학·경력·개원 연도·시설·예약·홍보 문구)의 근거 부족, 문체, 참고자료처럼
-환자 안전·의료광고와 무관한 지적만 critical=false입니다. 조금이라도 확실하지 않으면 critical=true로 두세요.
+각 finding에는 critical(true/false)을 반드시 판정하세요. 이 글은 의학 논문이 아닙니다.
+critical=true는 아래 두 가지뿐입니다.
+(1) 환자유인·불법 의료광고 — 완치·효과 장담·결과 보장, 최저가·가격 우위, 할인·이벤트·무료 유인,
+유인형 광고 문구. 예: "한 번이면 완치됩니다", "효과를 보장합니다", "지역 최저가", "첫 방문 할인".
+(2) 병원으로서 무책임한 허위정보 — 글이 위험한 행동을 권하거나 당연한 것처럼 말하거나, 위험한 거짓을
+말합니다. 예: "흉통이 있어도 집에서 쉬면 됩니다", "혈변은 걱정할 필요 없습니다", 틀린 약 용량,
+"처방받은 약은 증상이 나아지면 끊어도 됩니다".
+그 밖은 모두 critical=false입니다. 예: 119·응급실 안내가 없음, 주의사항·금기·항응고제·조영제 안내가
+없음, 응급 권고가 약함("필요하면 응급실 방문"), 병원 사실과 다름(의료진 수·경력·시설·진료 철학),
+보장이 아닌 과장("조기 발견이 중요합니다"를 모든 질환에 일반화), 사소한 사실 오류(경계 검사 수치를
+정상 예시로 씀, 추적 검사 주기를 짧게 씀), 문체·참고자료.
+누락(무엇이 빠졌다·덧붙이라는 지적)은 어떤 경우에도 critical이 아니고 HARD도 UNCERTAIN도 아닙니다 —
+severity SOFT, critical=false, quote 빈 문자열로 기록만 하세요. 글에 실제로 쓰인 문장을 짚는 지적만
+HARD·UNCERTAIN이 될 수 있습니다.
 
 각 finding은 심각도와 종류를 내용 자체로 판정하세요. confidence 숫자만으로 hard/soft를
-나누지 마세요. 병원 고유 사실의 근거 부족, 의료적 위험, 환자 안전 오해는 HARD입니다.
-문체·가독성·구성 개선과 참고자료 주제 불일치는 SOFT입니다. 사실 또는 의료 안전을 판단할 근거가 부족하면
+나누지 마세요. 글에 쓰인 문장의 병원 고유 사실 근거 부족, 의료적 위험, 환자 안전 오해는 HARD입니다.
+문체·가독성·구성 개선, 참고자료 주제 불일치, 누락은 SOFT입니다. 사실 또는 의료 안전을 판단할 근거가 부족하면
 UNCERTAIN입니다. SOFT만 있으면 안전 게이트를 막지 않지만 구체적으로 기록하세요.
 
 반드시 JSON 객체만 출력하세요.
@@ -121,7 +139,7 @@ UNCERTAIN입니다. SOFT만 있으면 안전 게이트를 막지 않지만 구�
   "decision": "PASS 또는 REVISE",
   "confidence": 0.0,
   "findings": [
-    {"severity": "HARD 또는 SOFT 또는 UNCERTAIN", "kind": "HOSPITAL_FACT 또는 MEDICAL_SAFETY 또는 REFERENCE 또는 STYLE", "quote": "지적한 후보 문장 원문 또는 빈 문자열", "critical": true, "message": "수정 가능한 구체적 지적"}
+    {"severity": "HARD 또는 SOFT 또는 UNCERTAIN", "kind": "HOSPITAL_FACT 또는 MEDICAL_SAFETY 또는 REFERENCE 또는 STYLE", "quote": "지적한 후보 문장 원문 또는 빈 문자열", "critical": false, "message": "수정 가능한 구체적 지적"}
   ],
   "summary": "한 문장 검수 요약"
 }
@@ -167,9 +185,11 @@ REVIEW_TOOL = {
                         "critical": {
                             "type": "boolean",
                             "description": (
-                                "불법 의료광고(효과 보장·최저가·할인·무료 유인) 또는 의료 안전 위험"
-                                "(응급·119 안내, 용량, 금기, 시술 위험, 위험한 오정보)이면 true. "
-                                "병원 사실·문체·참고자료만의 지적이면 false. 확실하지 않으면 true."
+                                "환자유인·불법 의료광고(완치·효과 장담·보장, 최저가, 할인·이벤트·무료 "
+                                "유인) 또는 글이 위험한 행동을 권하거나 위험한 거짓을 말할 때(예: 흉통에도 "
+                                "집에서 쉬라, 혈변은 걱정 말라, 틀린 약 용량, 처방약 중단)만 true. "
+                                "누락(119·주의·금기 안내 없음)·병원 사실 불일치·보장이 아닌 과장·사소한 "
+                                "사실 오류·문체·참고자료는 false."
                             ),
                         },
                         "message": {"type": "string"},
@@ -233,6 +253,11 @@ class ContentAiFinding:
     original_severity: ContentAiFindingSeverity | None = None
     # 검수 모델이 판정한 Critical 여부(v3). None(필드 없음·옛 기록·합성 지적)은 Critical로 읽는다.
     critical: bool | None = None
+    # 판정 규칙 표지(v4, `finding_criticality.CRITICAL_RULE`). 검수 모델이 낸 지적에만 붙는다 — 없으면 옛
+    # 판정이라 `finding_criticality`가 결정적으로 재등급한다.
+    critical_rule: str | None = None
+    # 비-Critical인데 지울 문장이 없어(누락 등) 기록만 남기려 SOFT로 내린 이유(2026-10-15 대표 결정).
+    record_only: str | None = None
 
     @property
     def blocks_publication(self) -> bool:
@@ -261,6 +286,10 @@ class ContentAiFinding:
         # v3 출력은 언제나 키를 싣는다 — null(판정 없음)은 Critical이고, 키가 없는 옛 저장 지적과 구분된다
         # (`finding_criticality.flag_findings_are_critical`).
         payload["critical"] = self.critical
+        if self.critical_rule:
+            payload[CRITICAL_RULE_KEY] = self.critical_rule
+        if self.record_only:
+            payload["record_only"] = self.record_only
         return payload
 
 
@@ -379,6 +408,10 @@ def review_from_payload(payload: dict[str, Any]) -> ContentAiReview:
                     else None
                 ),
                 critical=raw["critical"] if isinstance(raw.get("critical"), bool) else None,
+                critical_rule=(
+                    str(raw[CRITICAL_RULE_KEY]) if raw.get(CRITICAL_RULE_KEY) else None
+                ),
+                record_only=str(raw["record_only"]) if raw.get("record_only") else None,
             )
         )
     unavailable = payload.get("unavailable_reason")
@@ -638,7 +671,45 @@ def _parse_finding(value: object) -> ContentAiFinding | None:
         message,
         quote=quote,
         critical=critical if isinstance(critical, bool) else None,
+        critical_rule=CRITICAL_RULE,
     )
+
+
+def _record_noncritical_without_sentence(
+    findings: list[ContentAiFinding],
+    *,
+    reviewed_content: dict[str, Any] | object | None,
+) -> list[ContentAiFinding]:
+    """지울 문장이 없는 비-Critical 차단 지적(누락·인용 없음·응급 안내 문장)을 기록용 SOFT로 내린다.
+
+    2026-10-15 대표 확정 정의: 비-Critical은 발행을 막지 않는다. 진술 문장을 짚은 지적은 차단으로 남아
+    결정적 삭제(W4)가 그 문장을 지우고, 지울 문장이 없으면 기록만 남기고 진행한다. 판정은
+    `finding_criticality.finding_is_record_only` 하나다(Critical은 언제나 그대로 막는다).
+    """
+
+    if not settings.CONTENT_FINDING_TIERS_ENABLED:
+        return findings
+    recorded: list[ContentAiFinding] = []
+    for finding in findings:
+        if (
+            finding.blocks_publication
+            and finding.critical_rule
+            and finding_is_record_only(finding.payload(), reviewed_content)
+        ):
+            finding = replace(
+                finding,
+                severity=ContentAiFindingSeverity.SOFT,
+                original_severity=finding.severity,
+                record_only=(
+                    "OMISSION"
+                    if is_omission_finding(finding.payload())
+                    else "NO_QUOTE"
+                    if not finding.quote
+                    else "NO_DELETABLE_SENTENCE"
+                ),
+            )
+        recorded.append(finding)
+    return recorded
 
 
 #: 필수 문구 원문 지적을 기록용으로 내릴 수 있는 종류. 마케터·원장이 준 병원 사실 문장이 발행을
@@ -880,6 +951,7 @@ def _build_review(
         must_use_messages=list(must_use_messages or []),
         reviewed_content=reviewed_content,
     )
+    parsed = _record_noncritical_without_sentence(parsed, reviewed_content=reviewed_content)
     # The response itself is already bounded by max_tokens. Classifying only
     # the first five entries lets a provider put a HARD fact finding after five
     # style notes and silently remove it from the publication policy.

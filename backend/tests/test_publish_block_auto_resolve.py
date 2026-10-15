@@ -31,6 +31,7 @@ from app.services.content_publication import (
     _blocking_ai_review_state,
     assess_content_publication,
 )
+from app.services.finding_criticality import CRITICAL_RULE, CRITICAL_RULE_KEY
 from app.services.specialty_compatibility import (
     target_conflicts_with_hospital,
     target_fits_hospital,
@@ -100,8 +101,24 @@ def _philosophy():
     )
 
 
+@pytest.fixture
+def emergency_templates_on(monkeypatch):
+    """응급 템플릿 삽입은 2026-10-15부터 기본 꺼짐이다 — 켰을 때의 결정적 동작을 본다."""
+
+    monkeypatch.setattr(settings, "CONTENT_EMERGENCY_TEMPLATE_INSERTION_ENABLED", True)
+
+
 def _finding(severity, kind, message, quote=""):
-    return {"severity": severity, "kind": kind, "message": message, "quote": quote}
+    # 검수 모델이 확정 정의(v4, 2026-10-15)로 Critical이라 판정한 지적 — 이 파일은 Critical 계단(최소 교정·
+    # 교체·사람)을 본다. 비-Critical은 각 테스트가 `critical`을 False로 바꾼다.
+    return {
+        "severity": severity,
+        "kind": kind,
+        "message": message,
+        "quote": quote,
+        "critical": True,
+        CRITICAL_RULE_KEY: CRITICAL_RULE,
+    }
 
 
 def _review_payload(content: dict, *findings: dict) -> dict:
@@ -163,7 +180,9 @@ def test_every_emergency_template_is_a_fixed_safe_sentence():
         ("응급 상황 안내가 부족합니다.", "general"),
     ],
 )
-async def test_emergency_template_inserted_deterministically_without_llm(message, group):
+async def test_emergency_template_inserted_deterministically_without_llm(
+    message, group, emergency_templates_on
+):
     body = _body(NEUTRAL_A, NERVE_SENTENCE)
     content = _content(body)
     # 일반 템플릿은 증상 신호가 없을 때다 — 인용 문장도 증상군 신호이므로 그 경우는 인용 없이 낸다.
@@ -725,7 +744,7 @@ def test_unswappable_slot_stays_with_operator_across_sweeps(worker, monkeypatch)
 
 
 def test_exhausted_uncertain_emergency_buys_no_rereview_and_reaches_operator(
-    worker, monkeypatch
+    worker, monkeypatch, emergency_templates_on
 ):
     """교정 상한을 다 쓴 뒤 남은 UNCERTAIN 응급 지적은 유료 재검수를 더 사지 않고 사람에게 간다."""
 
@@ -1791,7 +1810,7 @@ def test_scope_check_rejects_a_correction_that_breaks_a_must_use_message():
         )
 
 
-def test_emergency_template_is_not_inserted_inside_a_must_use_message():
+def test_emergency_template_is_not_inserted_inside_a_must_use_message(emergency_templates_on):
     body = _body(NEUTRAL_A, MUST_USE_TWO)
     content = _content(body)
     finding = _finding(

@@ -40,7 +40,12 @@ from app.services.content_ai_review import (
     hospital_review_profile,
 )
 from app.services.content_engine import CONTENT_BODY_MIN_CHARS, body_plain_length
-from app.services.finding_criticality import review_blocks_only_noncritically
+from app.services.finding_criticality import (
+    emergency_terms_in,
+    finding_is_record_only,
+    mentions_emergency_guidance,
+    review_blocks_only_noncritically,
+)
 from app.services.must_use_verbatim import (
     appears_as_standalone_sentence,
     normalize_verbatim,
@@ -226,16 +231,23 @@ def _label(value: object) -> str:
     return str(getattr(value, "value", value) or "").upper()
 
 
-def _blocking_findings(review: Mapping[str, Any] | None) -> list[Mapping[str, Any]]:
+def _blocking_findings(
+    review: Mapping[str, Any] | None, content: Mapping[str, Any] | None = None
+) -> list[Mapping[str, Any]]:
+    """교정이 맡을 차단 지적. 기록만 남길 비-Critical 지적(누락·지울 문장 없음)은 맡지 않는다
+    (2026-10-15 대표 결정, `finding_criticality.finding_is_record_only`)."""
+
     findings = (review or {}).get("findings")
     if not isinstance(findings, list):
         return []
+    tiers = settings.CONTENT_FINDING_TIERS_ENABLED
     return [
         finding
         for finding in findings
         if isinstance(finding, Mapping)
         and _label(finding.get("severity")) in _BLOCKING_SEVERITIES
         and _label(finding.get("target") or "CANDIDATE_TEXT") != "MUST_USE_MESSAGE"
+        and not (tiers and finding_is_record_only(finding, content))
     ]
 
 
@@ -438,12 +450,15 @@ def plan_corrections(
     uncorrectable: list[str] = []
     hard_left = False
     title = content.get("title")
-    for finding in _blocking_findings(review):
+    for finding in _blocking_findings(review, content):
         message = str(finding.get("message") or "").strip()
         quote = str(finding.get("quote") or "").strip()
         severity = _label(finding.get("severity"))
         located = _locate(content, quote) if quote else None
-        if is_emergency_guidance_finding(finding):
+        # 응급 안내 누락은 Critical이 아니다(2026-10-15 대표 결정) — 템플릿 삽입은 기본 꺼짐이다.
+        if settings.CONTENT_EMERGENCY_TEMPLATE_INSERTION_ENABLED and is_emergency_guidance_finding(
+            finding
+        ):
             group = emergency_template_group(message, quote, title)
             template = EMERGENCY_TEMPLATES[group]
             if any(template in str(content.get(name) or "") for name in CORRECTABLE_FIELDS):
@@ -1234,33 +1249,10 @@ def plan_noncritical_fixes(
     return NoncriticalFixPlan(plan=plan, decisions=decisions)
 
 
-# 결정적 삭제가 지키는 응급 안내 표현(2026-10-15 대표 결정). 영어는 대소문자를 가리지 않는다.
-EMERGENCY_GUIDANCE_TERMS = (
-    "119",
-    "응급",
-    "응급실",
-    "즉시 내원",
-    "구급차",
-    "emergency",
-    "ambulance",
-)
-
-
-def _emergency_terms_in(text: object) -> set[str]:
-    lowered = str(text or "").lower()
-    return {term for term in EMERGENCY_GUIDANCE_TERMS if term in lowered}
-
-
-def mentions_emergency_guidance(text: object) -> bool:
-    """응급 안내 표현(`EMERGENCY_GUIDANCE_TERMS`)이 하나라도 있는가 — 결정적 삭제의 보호 대상."""
-
-    return bool(_emergency_terms_in(text))
-
-
 def emergency_guidance_lost(before: Mapping[str, Any], after: Mapping[str, Any]) -> bool:
     """지우기 전 본문의 응급 안내 표현 가운데 지운 뒤에 사라진 것이 있는가."""
 
-    return bool(_emergency_terms_in(before.get("body")) - _emergency_terms_in(after.get("body")))
+    return bool(emergency_terms_in(before.get("body")) - emergency_terms_in(after.get("body")))
 
 
 async def run_noncritical_resolution(
@@ -1382,7 +1374,7 @@ def published_needs_human_reason(
     """
 
     title = str(content.get("title") or "")
-    for finding in _blocking_findings(review):
+    for finding in _blocking_findings(review, content):
         quote = str(finding.get("quote") or "").strip()
         if quote and _quote_matches(title, quote) and _locate(content, quote) is None:
             return "TITLE_FINDING"

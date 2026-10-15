@@ -24,6 +24,7 @@ from app.services.essence_engine import (
     ESSENCE_STATUS_NEEDS_REVIEW,
     screen_content_against_philosophy,
 )
+from app.services.finding_criticality import review_still_blocks
 from app.services.image_engine import (
     IMAGE_POLICY_VERSION,
     image_content_hash_from_url,
@@ -288,7 +289,13 @@ def _blocking_ai_review_state(item: ContentItem) -> tuple[str, dict[str, Any]] |
     # v2 explicitly distinguishes soft findings. Legacy REVISE payloads did not,
     # so they are safety-uncertain and require one automatic re-review.
     is_legacy = review_status == "REVISE" and review.get("schema_version") is None
-    if review_status == "PASS" or (not is_legacy and review.get("blocking") is not True):
+    # 옛 판정(v3)의 차단은 확정 정의(2026-10-15)로 다시 계산한다 — 남은 지적이 모두 기록만 남길
+    # 비-Critical(누락·지울 문장 없음)이면 막지 않는다(`finding_criticality.review_still_blocks`).
+    tiers = settings.CONTENT_FINDING_TIERS_ENABLED
+    still_blocking = review.get("blocking") is True and (
+        not tiers or review_still_blocks(review, item)
+    )
+    if review_status == "PASS" or (not is_legacy and not still_blocking):
         # PASS·비차단 REVISE는 그 검수가 본 본문에만 유효하다. 해시를 비교하지 않으면 PATCH로
         # 고친 본문·제목이 옛 PASS 덕에 검수 없이 발행된다. 해시가 없는 옛 기록은 그 이유만으로
         # 유료 재검수하지 않으므로 건드리지 않는다. 이미 공개된 글은 숨기지 않는다 — 편집된

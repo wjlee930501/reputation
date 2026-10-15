@@ -25,6 +25,7 @@ from app.services.content_ai_review import (
     candidate_sha256,
 )
 from app.services.content_publication import _blocking_ai_review_state
+from app.services.finding_criticality import CRITICAL_RULE, CRITICAL_RULE_KEY
 
 PHILOSOPHY_SENTENCE = "본원은 환자 한 분 한 분의 이야기를 끝까지 듣는 것을 진료 원칙으로 삼습니다."
 OPENING_SENTENCE = "본원은 개원 15년째 같은 자리를 지키고 있습니다."
@@ -73,7 +74,15 @@ def _philosophy(**extra):
 
 
 def _finding(severity, kind, message, quote="", critical=False):
-    return {"severity": severity, "kind": kind, "message": message, "quote": quote, "critical": critical}
+    # 확정 정의(v4)로 판정한 지적 — 옛 v3 판정의 재등급은 `test_owner_critical_definition.py`가 본다.
+    return {
+        "severity": severity,
+        "kind": kind,
+        "message": message,
+        "quote": quote,
+        "critical": critical,
+        CRITICAL_RULE_KEY: CRITICAL_RULE,
+    }
 
 
 def _review(content, *findings, status="REVISE"):
@@ -291,15 +300,10 @@ def test_uncertain_medical_sentence_is_critical_and_left_to_the_existing_ladder(
             _finding("HARD", "HOSPITAL_FACT", "진료 철학", PHILOSOPHY_SENTENCE),
             _finding("HARD", "MEDICAL_SAFETY", "위험한 오정보", RECOVERY_SENTENCE, critical=True),
         ],
-        # 응급 안내 누락은 Critical이다.
+        # 응급 안내 누락은 Critical이 아니지만 지울 문장이 없다 — 기록만 남고 이 계단은 할 일이 없다.
         [_finding("UNCERTAIN", "MEDICAL_SAFETY", EMERGENCY_MESSAGE)],
-        # 인용 없는 지적은 문장으로 짚을 수 없다.
+        # 인용 없는 지적은 문장으로 짚을 수 없다 — 기록만 남는다.
         [_finding("HARD", "HOSPITAL_FACT", "개원 연도를 확인할 수 없습니다")],
-        # 일부만 짚히면 나머지가 재검수를 다시 막는다 — 맡지 않는다.
-        [
-            _finding("HARD", "HOSPITAL_FACT", "진료 철학", PHILOSOPHY_SENTENCE),
-            _finding("UNCERTAIN", "HOSPITAL_FACT", "장비 확인 불가"),
-        ],
         # 내용을 모르는 병원 사실은 Critical이다(fail closed).
         [_finding("HARD", "HOSPITAL_FACT", "승인 자료에서 확인할 수 없습니다", RECOVERY_SENTENCE, None)],
     ],
@@ -459,3 +463,20 @@ def _tiers_and_alerts_on(monkeypatch):
 
     monkeypatch.setattr(_settings, "CONTENT_FINDING_TIERS_ENABLED", True)
     monkeypatch.setattr(_settings, "POST_PUBLISH_CRITICAL_ALERTS_ENABLED", True)
+
+
+def test_record_only_finding_does_not_stop_deleting_the_quoted_statement() -> None:
+    """2026-10-15 대표 확정 정의: 인용 없는 비-Critical 지적은 기록만 남고, 짚힌 진술 문장은 지운다."""
+
+    content = _content(PHILOSOPHY_SENTENCE, RECOVERY_SENTENCE)
+    review = _review(
+        content,
+        _finding("HARD", "HOSPITAL_FACT", "진료 철학", PHILOSOPHY_SENTENCE),
+        _finding("UNCERTAIN", "HOSPITAL_FACT", "장비 확인 불가"),
+    )
+
+    plan = mc.plan_noncritical_fixes(content, review)
+
+    assert plan is not None
+    assert [target.sentence for target in plan.plan.targets] == [PHILOSOPHY_SENTENCE]
+    assert plan.plan.uncorrectable == ()
