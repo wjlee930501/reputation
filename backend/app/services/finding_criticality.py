@@ -214,6 +214,19 @@ def reviewer_marked_noncritical(finding: Mapping[str, Any]) -> bool:
 _POST_TEXT_FIELDS = ("body", *_NON_BODY_FIELDS)
 
 
+def _post_own_text(finding: Mapping[str, Any], content: object) -> str:
+    """글 자신의 문장: 본문을 알면 글에 실제로 있는 인용 + 인용이 가리키는 본문 문장, 모르면 인용만."""
+
+    quote = str(finding.get("quote") or "").strip()
+    if not quote:
+        return ""
+    if content is None:
+        return quote
+    in_post = any(_quote_spans(_field(content, name), quote) for name in _POST_TEXT_FIELDS)
+    sentence = locate_body_sentence(content, quote) or ""
+    return f"{quote if in_post else ''} {sentence}"
+
+
 def _override_hit(finding: Mapping[str, Any], content: object) -> bool:
     """안전망 어휘가 **글 자신의 문장**에 있는가(2026-10-15 대표 결정).
 
@@ -222,14 +235,7 @@ def _override_hit(finding: Mapping[str, Any], content: object) -> bool:
     인용과 인용이 가리키는 본문 문장을 보고, 본문을 모르면 인용(글의 원문을 옮긴 것)만 본다.
     """
 
-    quote = str(finding.get("quote") or "").strip()
-    if not quote:
-        return False
-    if content is None:
-        return mentions_critical_override(quote)
-    in_post = any(_quote_spans(_field(content, name), quote) for name in _POST_TEXT_FIELDS)
-    sentence = locate_body_sentence(content, quote) or ""
-    return mentions_critical_override(f"{quote if in_post else ''} {sentence}")
+    return mentions_critical_override(_post_own_text(finding, content))
 
 
 # ── 2026-10-15 대표 확정 정의 ─────────────────────────────────────────────────────────
@@ -314,14 +320,6 @@ def is_omission_finding(finding: Mapping[str, Any]) -> bool:
     return _OMISSION_RE.search(str(finding.get("message") or "")) is not None
 
 
-# 환자유인(무료·이벤트·특가 등) 표지 — 안전망 어휘 넷 밖의 유인 광고를 옛 판정 재등급에서 놓치지 않는다.
-_INDUCEMENT_RE = re.compile(
-    r"무\s*료|이\s*벤\s*트|유\s*인|특\s*가|프로모션|공\s*짜|가격\s*우위|최\s*저|저렴|싸게|혜\s*택"
-    # 효과 장담(결과 보장의 다른 말) — 안전망 어휘 넷 밖의 꼴.
-    r"|장\s*담|확실히\s*낫|반드시\s*낫|100\s*%\s*(?:효과|성공|회복|개선)"
-    r"|(?<![a-z])(?:free|promotion|promo)(?![a-z])",
-    re.IGNORECASE,
-)
 # 검수 형식 때문에 붙은 합성 UNCERTAIN(`content_ai_review._SYNTHETIC_UNCERTAIN_MESSAGES`) — 재등급하지 않는다.
 _SYNTHETIC_PREFIX = "독립 AI 검수의 "
 
@@ -361,13 +359,11 @@ _INDUCEMENT_IN_TEXT_RE = re.compile(
 
 
 def describes_inducement(finding: Mapping[str, Any], content: object = None) -> bool:
-    """환자유인(무료·이벤트·특가·가격 우위·효과 장담 등)을 말하거나 인용하는가(옛 판정 재등급 표지)."""
+    """글 자신의 문장(인용·인용 문장)에 환자유인·효과 장담 꼴이 있는가(옛 판정 재등급 표지).
 
-    message, text = _finding_texts(finding, content)
-    return (
-        _INDUCEMENT_RE.search(message) is not None
-        or _INDUCEMENT_IN_TEXT_RE.search(text) is not None
-    )
+    검수자의 지적 문구는 보지 않는다(`_override_hit`과 같은 규칙, 2026-10-15)."""
+
+    return _INDUCEMENT_IN_TEXT_RE.search(_post_own_text(finding, content)) is not None
 
 
 def _regraded_critical(finding: Mapping[str, Any], content: object) -> bool:

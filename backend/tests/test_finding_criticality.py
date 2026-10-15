@@ -348,3 +348,19 @@ def test_review_schema_requires_the_critical_field_and_bumps_the_version() -> No
     # 옛 넓은 정의(응급 안내 누락 = Critical, 애매하면 true)는 남지 않는다.
     assert "확실하지 않으면 critical=true" not in prompt
     assert "안내의 누락이나 오안내" not in prompt
+
+
+def test_inducement_marker_reads_only_the_posts_own_text() -> None:
+    """옛 v3 재등급의 유인 표지도 검수자의 지적 문구가 아니라 글 자신의 문장만 본다(2026-10-15)."""
+
+    def v3(message: str, quote: str) -> dict:
+        return {"severity": "HARD", "kind": "HOSPITAL_FACT", "message": message, "quote": quote,
+                "critical": True}
+
+    content = {**CONTENT, "body": f"## 안내\n{PHILOSOPHY}\n첫 진료는 최저가로 모십니다.\n"}
+    # 지적 문구에만 '최저가'가 있고 인용 문장은 깨끗하다 → 비-Critical.
+    assert classify_finding(v3("최저가로 읽힐 수 있다", PHILOSOPHY), content) is N
+    # 인용 문장 자체에 '최저가'가 있다 → Critical.
+    assert classify_finding(v3("가격 표현", "첫 진료는 최저가로 모십니다."), content) is C
+    # 글에 없는 인용은 보지 않는다.
+    assert classify_finding(v3("가격 표현", "병원에 없는 최저가 문장"), content) is N

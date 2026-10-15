@@ -422,10 +422,12 @@ def test_pending_alert_intent_is_closed_without_slack_when_no_longer_critical(
 
 
 def test_v3_inducement_beyond_the_four_words_stays_critical() -> None:
-    assert classify_finding(_v3("HARD", "HOSPITAL_FACT", "첫 진료 무료 이벤트 문구입니다", SAFE)) is C
-    assert classify_finding(_v3("HARD", "STYLE", "특가 프로모션 안내", SAFE)) is C
+    # 유인 표지는 글 자신의 문장(인용)에서 읽는다 — 지적 문구는 보지 않는다(2026-10-15).
+    assert classify_finding(_v3("HARD", "HOSPITAL_FACT", "유인 문구입니다", "첫 진료는 이벤트로 모십니다.")) is C
+    assert classify_finding(_v3("HARD", "STYLE", "광고 문구", "이번 달은 특가 프로모션입니다.")) is C
+    assert classify_finding(_v3("HARD", "HOSPITAL_FACT", "무료 이벤트", SAFE)) is N
     # 모델이 false라 했어도 v3에서는 그대로다(v3 false는 옛 넓은 정의에서도 비-Critical).
-    assert classify_finding(_v3("HARD", "HOSPITAL_FACT", "무료 이벤트", SAFE, critical=False)) is N
+    assert classify_finding(_v3("HARD", "HOSPITAL_FACT", "x", "첫 진료는 이벤트로 모십니다.", critical=False)) is N
 
 
 def test_v3_dangerous_statement_is_caught_from_the_quoted_sentence() -> None:
