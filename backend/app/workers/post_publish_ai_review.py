@@ -23,7 +23,7 @@
   표시에 구조화 지적(인용)이 없는 옛 FLAGGED 글은 문구에서 인용을 짐작하지 않고 재검수로 구조를 얻는다.
 - 자동 교정이 끝나고도 UNCERTAIN(확신 부족)만 남은 글은 `POST_PUBLISH_UNCERTAIN_REREVIEW_DAYS` 뒤 검수
   모델로 한 번만 더 본다(표시의 `senior_rereview`가 재구매를 막는다). PASS면 확인 완료로 닫는다.
-- 지적의 등급(`finding_criticality`, 2026-10-14 D35): **Critical**(의료 안전 HARD·응급 안내 누락)이 남은
+- 지적의 등급(`finding_criticality`, 2026-10-14 D35): **Critical**(2026-10-15 확정 정의 — 환자유인·불법 의료광고, 위험한 권고·거짓 진술)이 남은
   공개 글은 내리지 않고 글당 한 번 "마케터 검토 필요" 사고(`POST_PUBLISH_CRITICAL_FINDING`, 운영 담당·
   Slack)를 연다. Critical이 아닌 지적만 남으면 사고를 열지 않고, 교정이 끝나면(UNCERTAIN만이면 상위 재검수
   뒤) `system:ai-review-noncritical` 확인으로 조용히 닫는다. 옛 조용한 `POST_PUBLISH_REVIEW_FLAGGED` 사고는
@@ -84,7 +84,7 @@ from app.services.content_publication import (
     AI_REVIEW_DEFERRED_KEY,
     POST_PUBLISH_CRITICAL_ALERT_KEY,
 )
-from app.services.finding_criticality import flag_findings_are_critical
+from app.services.finding_criticality import finding_is_record_only, flag_findings_are_critical
 from app.services.incident_types import IncidentFingerprint
 from app.services.must_use_verbatim import required_must_use_messages
 from app.services.post_publish_review_policy import (
@@ -380,9 +380,19 @@ def _save_uncertain_scan_cursor(cursor: uuid.UUID | None) -> None:
 
 
 def uncertain_only(marker: object) -> bool:
-    """표시의 구조화 지적이 모두 UNCERTAIN(확신 부족)인가. 구조를 모르면 아니다."""
+    """표시의 구조화 지적이 모두 UNCERTAIN(확신 부족)인가. 구조를 모르면 아니다.
+
+    기록만 남길 비-Critical 지적(누락 등, `finding_is_record_only`)은 상위 재검수로 풀 것이 아니므로 세지
+    않는다 — 그것만 남았으면 재검수를 기다리지 않는다(2026-10-15 대표 확정 정의).
+    """
 
     findings = marker.get("structured_findings") if isinstance(marker, dict) else None
+    if findings and settings.CONTENT_FINDING_TIERS_ENABLED:
+        findings = [
+            finding
+            for finding in findings
+            if not (isinstance(finding, dict) and finding_is_record_only(finding))
+        ]
     if not findings:
         return False
     return all(
@@ -696,8 +706,8 @@ def _deliver_hospital_critical_alerts(
 ) -> tuple[int, int]:
     """한 병원의 미전달 알림 의도를 outbox에 **한 통**으로 넣는다(같은 커밋에 글마다 `enqueued_at`).
 
-    한 건이면 종전의 글 단위 알림, 여러 건이면 병원 단위 묶음 알림이다. 공개 중이 아닌 글의 의도는
-    같은 커밋에 닫는다. ``(넣은 글 수, 닫은 글 수)``. outbox에 넣는 데 실패하면 예외가 그대로 나가고
+    한 건이면 종전의 글 단위 알림, 여러 건이면 병원 단위 묶음 알림이다. 공개 중이 아닌 글과 표시가 더는
+    Critical이 아닌 글의 의도는 같은 커밋에 닫는다. ``(넣은 글 수, 닫은 글 수)``. outbox에 넣는 데 실패하면 예외가 그대로 나가고
     의도는 남는다 — 다음 실행 첫머리가 다시 넣는다.
     """
 
@@ -720,6 +730,21 @@ def _deliver_hospital_critical_alerts(
                 **alert,
                 "closed_at": now.isoformat(),
                 "closed_reason": "not_public",
+            }
+            locked.essence_check_summary = summary
+            closed += 1
+            continue
+        marker = summary.get(POST_PUBLISH_FLAG_KEY)
+        if (
+            isinstance(marker, dict)
+            and marker.get("status") == POST_PUBLISH_FLAGGED
+            and not flag_is_critical(marker, locked)
+        ):
+            # 의도를 적은 뒤 등급 정의가 바뀌어(2026-10-15 대표 확정 정의) 더는 Critical이 아니다 — 알리지 않는다.
+            summary[POST_PUBLISH_CRITICAL_ALERT_KEY] = {
+                **alert,
+                "closed_at": now.isoformat(),
+                "closed_reason": "not_critical",
             }
             locked.essence_check_summary = summary
             closed += 1

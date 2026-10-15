@@ -555,6 +555,9 @@ class Settings(BaseSettings):
     # 0이면 그 단계를 끈다.
     CONTENT_AUTO_CORRECTION_MAX_PASSES: int = 2
     CONTENT_AUTO_CORRECTION_MAX_REREVIEWS: int = 2
+    # 응급 안내 누락 지적에 표준 응급 템플릿 문장을 넣는가(`content_minimal_correction.EMERGENCY_TEMPLATES`).
+    # 2026-10-15 대표 확정 정의: 누락은 Critical이 아니고 발행을 막지 않는다 — 기본 꺼짐.
+    CONTENT_EMERGENCY_TEMPLATE_INSERTION_ENABLED: bool = False
     # 같은 슬롯의 자동 주제 교체 상한 — 원인과 무관하게 이 값까지다(2026-10-14 누락 방지 5).
     # 새 주제마다 작가·검수·본문 전송 예산을 새로 받고 이미지 전송 상한은 슬롯 단위 그대로다.
     CONTENT_AUTO_TOPIC_SWAP_MAX: int = 2

@@ -21,6 +21,7 @@ import pytest
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.services.finding_criticality import CRITICAL_RULE, CRITICAL_RULE_KEY
 from app.workers import generation_incident_control, tasks, topic_swap_fallback
 from app.workers.generation_attempt_state import (
     GENERATION_ATTEMPT_KEY,
@@ -53,12 +54,14 @@ def _review(*, critical: bool) -> dict:
     return {
         "status": "REVISE",
         "blocking": True,
-        "schema_version": "content-review-v3",
+        "schema_version": "content-review-v4",
         "findings": [
             {
                 "kind": "HOSPITAL_FACT",
                 "severity": "HARD",
                 "critical": critical,
+                # 확정 정의(2026-10-15)로 판정한 v4 지적 — 표지 없는 v3 병원 사실은 재등급으로 비-Critical이다.
+                CRITICAL_RULE_KEY: CRITICAL_RULE,
                 "target": "CANDIDATE_TEXT",
                 "quote": SPECIALTY_SENTENCE,
                 "message": "'방문하는 분이 많은'은 승인 자료에 근거가 없습니다.",

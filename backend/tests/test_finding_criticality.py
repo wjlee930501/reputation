@@ -5,6 +5,8 @@ from __future__ import annotations
 import pytest
 
 from app.services.finding_criticality import (
+    CRITICAL_RULE,
+    CRITICAL_RULE_KEY,
     MEDICAL_SAFETY_LEXICON,
     Criticality,
     classify_block,
@@ -27,8 +29,16 @@ C, N = Criticality.CRITICAL, Criticality.NONCRITICAL
 
 
 def _finding(severity: str, kind: str, message: str = "지적", **extra) -> dict:
-    # 검수 모델이 `critical: false`로 판정한 지적이 기본이다(v3) — 필드 없음·true는 따로 본다.
-    return {"severity": severity, "kind": kind, "message": message, "critical": False, **extra}
+    # 검수 모델이 확정 정의(v4, `critical_rule`)로 `critical: false`를 판정한 지적이 기본이다 — 필드 없음·
+    # true·옛 v3 판정(규칙 표지 없음)은 따로 본다.
+    return {
+        "severity": severity,
+        "kind": kind,
+        "message": message,
+        "critical": False,
+        CRITICAL_RULE_KEY: CRITICAL_RULE,
+        **extra,
+    }
 
 
 PHILOSOPHY = "본원은 환자 한 분 한 분의 이야기를 끝까지 듣는 것을 진료 원칙으로 삼습니다."
@@ -318,5 +328,14 @@ def test_review_schema_requires_the_critical_field_and_bumps_the_version() -> No
     item = car.REVIEW_TOOL["input_schema"]["properties"]["findings"]["items"]
     assert item["properties"]["critical"]["type"] == "boolean"
     assert "critical" in item["required"]
-    assert car.REVIEW_SCHEMA_VERSION == "content-review-v3"
-    assert "critical" in car._SYSTEM_PROMPT and "확실하지 않으면 critical=true" in car._SYSTEM_PROMPT
+    assert car.REVIEW_SCHEMA_VERSION == "content-review-v4"
+    prompt = car._SYSTEM_PROMPT
+    # 2026-10-15 대표 확정 정의 — 두 가지뿐이고, 누락은 어떤 경우에도 Critical·차단이 아니다.
+    assert "critical=true는 아래 두 가지뿐입니다" in prompt
+    assert "환자유인·불법 의료광고" in prompt and "무책임한 허위정보" in prompt
+    assert "흉통이 있어도 집에서 쉬면 됩니다" in prompt and "혈변은 걱정할 필요 없습니다" in prompt
+    assert "누락(무엇이 빠졌다·덧붙이라는 지적)은 어떤 경우에도 critical이 아니고" in prompt
+    assert "HARD도 UNCERTAIN도 아닙니다" in prompt
+    # 옛 넓은 정의(응급 안내 누락 = Critical, 애매하면 true)는 남지 않는다.
+    assert "확실하지 않으면 critical=true" not in prompt
+    assert "안내의 누락이나 오안내" not in prompt
