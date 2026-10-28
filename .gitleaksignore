@@ -21,3 +21,9 @@ a3158b8b1f493fa64d5f226f4543d9af63cb2bb2:docs/plans/2026-10-11-p2-infra-deploy.m
 # Limit the exceptions to the exact migration/test findings that seed and verify daonneuro.co.kr.
 2740b4398464b42a1d7450dbe06fc97da322562d:backend/alembic/versions/0093_add_hospital_search_verification.py:generic-api-key:26
 2740b4398464b42a1d7450dbe06fc97da322562d:backend/tests/test_search_verification_migration.py:generic-api-key:28
+
+# The 0094 recovery commit rewires and re-tests the same deliberately public Naver value.
+# Keep the exceptions pinned to that exact commit, paths, rule, and lines.
+9ad43c7b431dd8db1f021da1b12652ead107250a:backend/alembic/versions/0093_add_hospital_search_verification.py:generic-api-key:27
+9ad43c7b431dd8db1f021da1b12652ead107250a:backend/tests/test_search_verification_migration.py:generic-api-key:29
+9ad43c7b431dd8db1f021da1b12652ead107250a:backend/tests/test_migration_0094_operating_changes_postgres.py:generic-api-key:23
