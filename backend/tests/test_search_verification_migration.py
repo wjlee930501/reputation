@@ -24,6 +24,7 @@ def _module():
 def test_0093_seeds_exact_daonneuro_ownership_values():
     migration = _module()
 
+    assert migration.down_revision == "0094_add_hospital_operating_changes"
     assert migration._SLUG == "sejongdaonsingyeonggwayiweon"
     assert migration._NAVER_TOKEN == "bb6f7e8f49eb178c06769cb81c16174c8a07a69a"
     assert migration._DAUM_PHRASE == (

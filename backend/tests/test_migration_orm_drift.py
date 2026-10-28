@@ -79,3 +79,13 @@ def test_hospitals_has_search_verification_columns():
         assert isinstance(column.type, sa.String)
         assert column.type.length == length
         assert column.nullable is True
+
+
+def test_hospitals_has_operating_policy_version_column():
+    """migration 0094: durable operating-policy generation, starting at zero."""
+    table = Base.metadata.tables["hospitals"]
+    assert "operating_policy_version" in table.c
+    column = table.c["operating_policy_version"]
+    assert isinstance(column.type, sa.Integer)
+    assert column.nullable is False
+    assert column.server_default is not None
