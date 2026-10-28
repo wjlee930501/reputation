@@ -15,6 +15,7 @@ Revises: 0092_publish_without_references_or_verdict
 from __future__ import annotations
 
 import sqlalchemy as sa
+
 from alembic import op
 
 revision: str = "0093_add_hospital_search_verification"
