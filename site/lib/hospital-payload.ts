@@ -41,6 +41,8 @@ export interface Hospital {
   google_business_profile_url: string | null
   google_maps_url: string | null
   naver_place_url: string | null
+  naver_site_verification: string | null
+  daum_webmaster_verification: string | null
   latitude: number | null
   longitude: number | null
   wikidata_qid: string | null
@@ -110,6 +112,8 @@ type HospitalPayload = Omit<
   | 'director_career'
   | 'latitude'
   | 'longitude'
+  | 'naver_site_verification'
+  | 'daum_webmaster_verification'
   | HospitalExternalUrlField
 > & {
   address: string | null
@@ -125,6 +129,8 @@ type HospitalPayload = Omit<
   google_business_profile_url?: string | null
   google_maps_url?: string | null
   naver_place_url?: string | null
+  naver_site_verification?: string | null
+  daum_webmaster_verification?: string | null
 }
 
 const DEV_ASSETS_BACKEND_BASE = 'http://localhost:8000'
@@ -262,6 +268,10 @@ function isHospitalPayload(value: unknown): value is HospitalPayload {
     HOSPITAL_EXTERNAL_URL_FIELDS.every(
       (field) => value[field] === undefined || isNullableString(value[field]),
     ) &&
+    (value.naver_site_verification === undefined ||
+      isNullableString(value.naver_site_verification)) &&
+    (value.daum_webmaster_verification === undefined ||
+      isNullableString(value.daum_webmaster_verification)) &&
     (value.latitude === undefined || isNullableNumber(value.latitude)) &&
     (value.longitude === undefined || isNullableNumber(value.longitude)) &&
     isNullableString(value.wikidata_qid) &&
@@ -316,6 +326,8 @@ function normalizeHospitalPayload(hospital: HospitalPayload): Hospital {
     google_business_profile_url: null,
     google_maps_url: null,
     naver_place_url: null,
+    naver_site_verification: hospital.naver_site_verification ?? null,
+    daum_webmaster_verification: hospital.daum_webmaster_verification ?? null,
     // 구버전 응답에 필드가 없으면 null로 정규화 (다운스트림은 string | null만 본다).
     public_about: hospital.public_about ?? null,
     brand_primary_color: hospital.brand_primary_color ?? null,

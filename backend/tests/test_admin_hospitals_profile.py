@@ -159,6 +159,41 @@ async def test_missing_requirements_are_labelled():
     assert db.committed is True
 
 
+async def test_search_verification_values_are_saved_and_serialized():
+    hospital = _hospital()
+    db = FakeDB(hospital)
+    daum = "#DaumWebMasterTool:abc123:token=="
+
+    result = await hospitals_api.update_profile(
+        hospital.id,
+        hospitals_api.HospitalProfileUpdate(
+            naver_site_verification="naver-token-123",
+            daum_webmaster_verification=daum,
+        ),
+        BackgroundTasks(),
+        db=db,
+    )
+
+    assert hospital.naver_site_verification == "naver-token-123"
+    assert hospital.daum_webmaster_verification == daum
+    assert result["naver_site_verification"] == "naver-token-123"
+    assert result["daum_webmaster_verification"] == daum
+    assert db.committed is True
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("naver_site_verification", "token with spaces"),
+        ("daum_webmaster_verification", "#DaumWebMasterTool:abc:token==\nDisallow: /"),
+        ("daum_webmaster_verification", "ec0bfd6a:token=="),
+    ],
+)
+def test_search_verification_rejects_malformed_or_multiline_values(field, value):
+    with pytest.raises(ValueError):
+        hospitals_api.HospitalProfileUpdate(**{field: value})
+
+
 async def test_body_profile_complete_is_ignored_and_derivation_wins(caplog):
     """body의 완료 플래그는 버리고 경고만 남긴다 — 저장 결과에서 파생한 값이 이긴다.
 

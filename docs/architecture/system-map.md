@@ -200,9 +200,11 @@ Site는 병원별 별도 코드 대신 공통 `/{slug}` 페이지·원장 소개
 
 플랫폼 sitemap은 플랫폼 자체 URL만 포함하고 병원 호스트 sitemap은 해당 병원만 포함한다. sitemap/llms는 500개를 넘는 글도 페이지를 나누어 읽는다. llms.txt는 실제 미존재 404와 upstream 장애 503을 구분하고 실패 응답은 no-store다. sitemap은 모든 page를 모은 뒤 응답하며 중간 page가 실패하면 부분 200을 반환하지 않고, 비공개 병원은 빈 sitemap을 반환한다. 공개 이미지의 검증된 인물·시설·생성 편집 이미지 역할을 구분하며 생성 인물을 원장 신원으로 사용하지 않는다. JSON-LD 직렬화는 `<`를 escape한다.
 
+검색엔진 소유 확인의 병원별 정본은 `hospitals` 행이다. Admin 병원 정보의 **검색엔진 소유 확인**에서 저장한 `naver_site_verification`은 병원 레이아웃의 `naver-site-verification` 메타로, `daum_webmaster_verification`은 요청 host가 그 행의 `aeo_domain`과 일치하는 자기 도메인 `robots.txt`의 Sitemap 다음 마지막 줄로 나간다. Daum 문구는 줄바꿈을 허용하지 않는 `#DaumWebMasterTool:...` 한 줄만 저장·렌더해 robots 지시 주입을 막는다. Site는 공개 도메인 역조회 API에서 이 공개 증명값을 읽으며, 조회 장애 때는 기존 Allow/Disallow/Sitemap을 그대로 응답하고 Daum 줄만 생략한다. Google 확인은 병원별 값이 아니라 플랫폼 도메인 전체의 `NEXT_PUBLIC_GOOGLE_SITE_VERIFICATION` 빌드 환경값이다. 2026-10-28 조사에서 `daonneuro.co.kr`의 Naver 메타는 LIVE HTML에 있었지만 해당 코드·토큰은 main과 모든 원격 Git 이력에 없었으므로, 마이그레이션 `0093`이 관측된 Naver 값과 요청된 Daum 값을 slug `sejongdaonsingyeonggwayiweon`의 같은 제품 경로로 시드한다.
+
 이 기능들은 검색·AI가 읽을 표면의 정확성·접근성을 높이는 구현이다. 실제 색인, 검색 순위, 특정 모델의 인용·노출을 보증하지 않는다. 측정 응답과 인용 근거를 별도로 확인해야 한다.
 
-근거: [host routing](../../site/lib/host-routing.ts), [canonical](../../site/lib/site-url.ts), [sitemap](../../site/lib/sitemap-builder.ts), [robots](../../site/app/robots.ts), [콘텐츠 상세](../../site/app/[slug]/contents/[contentId]/page.tsx), [JSON-LD](../../site/app/[slug]/_components/JsonLd.tsx), [캐시 갱신](../../backend/app/services/site_revalidate.py), [헬스 계약](../../site/lib/reputation-health.ts).
+근거: [host routing](../../site/lib/host-routing.ts), [canonical](../../site/lib/site-url.ts), [sitemap](../../site/lib/sitemap-builder.ts), [robots](../../site/app/robots.txt/route.ts), [소유 확인 렌더](../../site/lib/ownership-verification.ts), [콘텐츠 상세](../../site/app/[slug]/contents/[contentId]/page.tsx), [JSON-LD](../../site/app/[slug]/_components/JsonLd.tsx), [캐시 갱신](../../backend/app/services/site_revalidate.py), [헬스 계약](../../site/lib/reputation-health.ts).
 
 ## 10. Admin 인증과 운영 화면
 

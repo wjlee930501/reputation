@@ -106,6 +106,10 @@ class Hospital(Base):
     google_business_profile_url: Mapped[str | None] = mapped_column(String(500))
     google_maps_url: Mapped[str | None] = mapped_column(String(500))
     naver_place_url: Mapped[str | None] = mapped_column(String(500))
+    # 검색엔진 소유 확인 값. 토큰 자체가 공개 HTML/robots.txt에 실리는 공개 증명값이며,
+    # 비밀이 아니다. 병원별 값은 배포 환경변수나 Site 하드코딩이 아니라 이 행이 소유한다.
+    naver_site_verification: Mapped[str | None] = mapped_column(String(255))
+    daum_webmaster_verification: Mapped[str | None] = mapped_column(String(500))
     # 연결된 AEO 도메인 — 공개 /site 미들웨어가 요청 호스트로 병원을 역조회하므로
     # 인덱스 필수 (ix_hospitals_aeo_domain, migration 0025). 저장 시 정규화(소문자).
     aeo_domain: Mapped[str | None] = mapped_column(String(200), index=True)

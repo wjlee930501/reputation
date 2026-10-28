@@ -30,6 +30,7 @@ import { DomainSetupPanel } from '../DomainSetupPanel'
 import { AutofillModal } from './AutofillModal'
 import { BrandSection } from './BrandSection'
 import { FactsSection, sourceLabel } from './FactsSection'
+import { OwnershipVerificationSection } from './OwnershipVerificationSection'
 import { PhotosSection } from './PhotosSection'
 import { SourcesSection } from './SourcesSection'
 import type { HospitalInfoProfile, Treatment } from './FactsSection'
@@ -540,6 +541,12 @@ export default function HospitalInfoPage() {
         heroImageUrl={hospital.hero_image_url ?? null}
         physicians={profile.physicians ?? []}
         onHeroChanged={() => void refetchHeader()}
+      />
+
+      <OwnershipVerificationSection
+        hospital={hospital}
+        hospitalId={hospitalId}
+        onSaved={() => void refetchHeader()}
       />
 
       {hospital.site_built && (

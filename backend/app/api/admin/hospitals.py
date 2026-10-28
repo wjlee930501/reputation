@@ -196,6 +196,8 @@ class HospitalProfileUpdate(BaseModel):
     google_business_profile_url: str | None = Field(None, max_length=500)
     google_maps_url: str | None = Field(None, max_length=500)
     naver_place_url: str | None = Field(None, max_length=500)
+    naver_site_verification: str | None = Field(None, max_length=255)
+    daum_webmaster_verification: str | None = Field(None, max_length=500)
     latitude: float | None = Field(None, ge=-90, le=90)
     longitude: float | None = Field(None, ge=-180, le=180)
     # True by default: an address change resolves coordinates once during this save.
@@ -323,6 +325,31 @@ class HospitalProfileUpdate(BaseModel):
             raise ValueError("URL must be absolute http(s)")
         return cleaned
 
+    @field_validator("naver_site_verification")
+    @classmethod
+    def validate_naver_site_verification(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
+        cleaned = value.strip()
+        if not re.fullmatch(r"[A-Za-z0-9._:-]+", cleaned):
+            raise ValueError("네이버 소유 확인 코드는 공백 없는 코드만 입력해 주세요.")
+        return cleaned
+
+    @field_validator("daum_webmaster_verification")
+    @classmethod
+    def validate_daum_webmaster_verification(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
+        cleaned = value.strip()
+        if not re.fullmatch(
+            r"#DaumWebMasterTool:[A-Za-z0-9+/=_-]+:[A-Za-z0-9+/=_-]+",
+            cleaned,
+        ):
+            raise ValueError(
+                "다음 확인 문구는 #DaumWebMasterTool:로 시작하는 한 줄 전체를 입력해 주세요."
+            )
+        return cleaned
+
     @field_validator("hero_image_url")
     @classmethod
     def validate_hero_image_url(cls, value: str | None) -> str | None:
@@ -434,6 +461,8 @@ PUBLIC_PROFILE_FIELDS = {
     "google_business_profile_url",
     "google_maps_url",
     "naver_place_url",
+    "naver_site_verification",
+    "daum_webmaster_verification",
     "latitude",
     "longitude",
     "region",
@@ -807,6 +836,8 @@ async def update_profile(
         "google_business_profile_url",
         "google_maps_url",
         "naver_place_url",
+        "naver_site_verification",
+        "daum_webmaster_verification",
         "latitude",
         "longitude",
         "wikidata_qid",
@@ -844,6 +875,8 @@ async def update_profile(
         "google_business_profile_url",
         "google_maps_url",
         "naver_place_url",
+        "naver_site_verification",
+        "daum_webmaster_verification",
         "latitude",
         "longitude",
         "wikidata_qid",
@@ -960,6 +993,7 @@ async def update_profile(
             field
             for field in changed_fields
             if field in values_before
+            and field not in {"naver_site_verification", "daum_webmaster_verification"}
             and profile_provenance.semantically_changed(
                 values_before[field], getattr(h, field, None)
             )
@@ -1696,6 +1730,8 @@ def serialize_hospital_detail(h: Hospital) -> dict:
         "google_business_profile_url": h.google_business_profile_url,
         "google_maps_url": h.google_maps_url,
         "naver_place_url": h.naver_place_url,
+        "naver_site_verification": getattr(h, "naver_site_verification", None),
+        "daum_webmaster_verification": getattr(h, "daum_webmaster_verification", None),
         "aeo_domain": h.aeo_domain,
         "domain_management_mode": _enum_value(
             getattr(h, "domain_management_mode", None), "HOSPITAL_MANAGED"

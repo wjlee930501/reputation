@@ -64,3 +64,18 @@ def test_content_items_has_reference_checks_column():
     column = table.c["reference_checks"]
     assert isinstance(column.type, sa.JSON)
     assert column.nullable is True
+
+
+def test_hospitals_has_search_verification_columns():
+    """migration 0093: public per-hospital ownership proof values."""
+    table = Base.metadata.tables["hospitals"]
+    expected_lengths = {
+        "naver_site_verification": 255,
+        "daum_webmaster_verification": 500,
+    }
+    for name, length in expected_lengths.items():
+        assert name in table.c
+        column = table.c[name]
+        assert isinstance(column.type, sa.String)
+        assert column.type.length == length
+        assert column.nullable is True
