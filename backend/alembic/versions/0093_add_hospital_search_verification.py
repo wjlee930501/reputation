@@ -9,7 +9,7 @@ The data update restores the Naver token already observed on daonneuro.co.kr and
 phrase requested for that same hospital. Future hospitals use the Admin profile path.
 
 Revision ID: 0093_add_hospital_search_verification
-Revises: 0092_publish_without_references_or_verdict
+Revises: 0094_add_hospital_operating_changes
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "0093_add_hospital_search_verification"
-down_revision: str | None = "0092_publish_without_references_or_verdict"
+down_revision: str | None = "0094_add_hospital_operating_changes"
 branch_labels: str | None = None
 depends_on: str | None = None
 
@@ -32,15 +32,24 @@ _DAUM_PHRASE = (
 )
 
 
+def _has_column(column: str) -> bool:
+    return any(
+        item["name"] == column
+        for item in sa.inspect(op.get_bind()).get_columns("hospitals")
+    )
+
+
 def upgrade() -> None:
-    op.add_column(
-        "hospitals",
-        sa.Column("naver_site_verification", sa.String(length=255), nullable=True),
-    )
-    op.add_column(
-        "hospitals",
-        sa.Column("daum_webmaster_verification", sa.String(length=500), nullable=True),
-    )
+    if not _has_column("naver_site_verification"):
+        op.add_column(
+            "hospitals",
+            sa.Column("naver_site_verification", sa.String(length=255), nullable=True),
+        )
+    if not _has_column("daum_webmaster_verification"):
+        op.add_column(
+            "hospitals",
+            sa.Column("daum_webmaster_verification", sa.String(length=500), nullable=True),
+        )
     op.get_bind().execute(
         sa.text(
             "UPDATE hospitals "

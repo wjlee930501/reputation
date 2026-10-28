@@ -11,6 +11,7 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Index,
+    Integer,
     String,
     Text,
     func,
@@ -83,6 +84,10 @@ class Hospital(Base):
         Enum(HospitalStatus), default=HospitalStatus.ONBOARDING
     )
     plan: Mapped[Plan | None] = mapped_column(Enum(Plan))
+    # 0094에서 복구한 운영 정책 세대. 변경 이력이 없는 기존 병원은 0부터 시작한다.
+    operating_policy_version: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
     source_lead_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("sales_leads.id", ondelete="SET NULL"),
