@@ -25,11 +25,11 @@ test('robots appends the exact stored Daum phrase after Sitemap', () => {
 })
 
 test('robots omits malformed or multiline Daum values without changing directives', () => {
-  const baseline = renderRobotsText(SITEMAP)
+  const plainRobots = renderRobotsText(SITEMAP)
 
   assert.equal(
     renderRobotsText(SITEMAP, `${DAUM}\nDisallow: /`),
-    baseline,
+    plainRobots,
   )
-  assert.equal(renderRobotsText(SITEMAP, 'not-a-daum-phrase'), baseline)
+  assert.equal(renderRobotsText(SITEMAP, 'not-a-daum-phrase'), plainRobots)
 })
