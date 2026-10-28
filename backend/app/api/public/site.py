@@ -133,7 +133,14 @@ async def get_hospital_by_domain(request: Request, domain: str, db: AsyncSession
     h = result.scalars().first()
     if not h:
         raise HTTPException(status_code=404, detail="Hospital not found")
-    return {"slug": h.slug, "name": h.name, "aeo_domain": h.aeo_domain}
+    return {
+        "slug": h.slug,
+        "name": h.name,
+        "aeo_domain": h.aeo_domain,
+        # robots.txt에 그대로 공개되는 소유 확인 문구다. Site는 요청 host가 aeo_domain과
+        # 일치할 때만 사용하므로 플랫폼 서브도메인이나 다른 병원에 섞이지 않는다.
+        "daum_webmaster_verification": getattr(h, "daum_webmaster_verification", None),
+    }
 
 
 @domain_router.get("/health/by-domain/{domain}", response_model=TenantHealthLookup)
@@ -536,6 +543,9 @@ def _serialize_hospital(
         "google_business_profile_url": _safe_external_url(h.google_business_profile_url),
         "google_maps_url": _safe_external_url(h.google_maps_url),
         "naver_place_url": _safe_external_url(h.naver_place_url),
+        # 검색엔진 소유 확인 값은 공개 표면에 실리기 위한 값이다(비밀 아님).
+        "naver_site_verification": getattr(h, "naver_site_verification", None),
+        "daum_webmaster_verification": getattr(h, "daum_webmaster_verification", None),
         "aeo_domain": h.aeo_domain,
         "latitude": h.latitude,
         "longitude": h.longitude,

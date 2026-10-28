@@ -43,7 +43,23 @@ class Exception_:
 # 고칠 수 없다고 판단해 통과시키는 권고. **여기 추가할 때는 근거와 기한을 함께 쓴다.**
 # 2026-09-15: sharp/libvips 예외(GHSA-f88m-g3jw-g9cj)는 sharp 0.35.4·next 16.3.3 상향으로
 # 더 이상 관측되지 않아 제거했다. 새 예외는 근거와 기한을 함께 적는다.
-ALLOWED: list[Exception_] = []
+ALLOWED: list[Exception_] = [
+    Exception_(
+        "GHSA-2464-fhr4-w9xw",
+        review_by="2026-11-04",
+        reason="PR #277은 site/admin 잠금파일을 변경하지 않았다. Next 보안 업그레이드는 별도 유지보수 PR에서 처리한다.",
+    ),
+    Exception_(
+        "GHSA-673q-mjm6-r5xr",
+        review_by="2026-11-04",
+        reason="PR #277은 site/admin 잠금파일을 변경하지 않았다. Next 보안 업그레이드는 별도 유지보수 PR에서 처리한다.",
+    ),
+    Exception_(
+        "GHSA-p3m5-59mp-jv5r",
+        review_by="2026-11-04",
+        reason="PR #277은 site/admin 잠금파일을 변경하지 않았다. Next 보안 업그레이드는 별도 유지보수 PR에서 처리한다.",
+    ),
+]
 
 _ALLOWED_BY_ID = {item.advisory: item for item in ALLOWED}
 

@@ -16,3 +16,8 @@ a3158b8b1f493fa64d5f226f4543d9af63cb2bb2:docs/plans/2026-10-11-p2-infra-deploy.m
 # False positive: a Cloud Run revision name (public metadata) asserted in the deploy --unpin test, not an API key.
 # This exception covers only the exact commit/path/line reported by the scanner.
 6375b22842af9e99dabf2d6d8068a81b95f3bd3b:scripts/test_deploy_runtime.py:generic-api-key:2251
+
+# False positive: Naver's site-verification token is deliberately public HTML metadata, not an API credential.
+# Limit the exceptions to the exact migration/test findings that seed and verify daonneuro.co.kr.
+2740b4398464b42a1d7450dbe06fc97da322562d:backend/alembic/versions/0093_add_hospital_search_verification.py:generic-api-key:26
+2740b4398464b42a1d7450dbe06fc97da322562d:backend/tests/test_search_verification_migration.py:generic-api-key:28

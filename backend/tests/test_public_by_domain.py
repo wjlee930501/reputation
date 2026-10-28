@@ -86,6 +86,7 @@ def _hospital():
         slug="jang-clinic",
         name="장편한외과의원",
         aeo_domain="clinic.example.com",
+        daum_webmaster_verification=None,
         status=HospitalStatus.ACTIVE,
         site_live=True,
         site_built=True,
@@ -106,7 +107,18 @@ async def test_by_domain_returns_exact_contract_shape():
         "slug": "jang-clinic",
         "name": "장편한외과의원",
         "aeo_domain": "clinic.example.com",
+        "daum_webmaster_verification": None,
     }
+
+
+async def test_by_domain_returns_public_daum_ownership_phrase():
+    hospital = _hospital()
+    hospital.daum_webmaster_verification = "#DaumWebMasterTool:abc123:token=="
+    db = FakeDB(hospital)
+
+    response = await _get_by_domain(_request(), "clinic.example.com", db=db)
+
+    assert response["daum_webmaster_verification"] == "#DaumWebMasterTool:abc123:token=="
 
 
 async def test_by_domain_normalizes_path_param_before_lookup():

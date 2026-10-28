@@ -3,6 +3,7 @@ import type { ReactNode } from 'react'
 
 import { fetchHospital } from '@/lib/api'
 import { clinicFaviconHref } from '@/lib/clinic-favicon'
+import { ownershipVerificationMetadata } from '@/lib/ownership-verification'
 
 type Props = {
   children: ReactNode
@@ -21,6 +22,10 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
         icon: [{ url: clinicFaviconHref(slug, hospital, 'icon'), type: 'image/png', sizes: '96x96' }],
         apple: [{ url: clinicFaviconHref(slug, hospital, 'apple'), sizes: '180x180' }],
       },
+      verification: ownershipVerificationMetadata(
+        hospital.naver_site_verification,
+        process.env.NEXT_PUBLIC_GOOGLE_SITE_VERIFICATION,
+      ),
     }
   } catch {
     const neutral = `/favicon/${encodeURIComponent(slug)}`
