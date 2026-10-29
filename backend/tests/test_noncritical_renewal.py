@@ -537,7 +537,13 @@ def test_a_closed_environment_window_is_renewed_not_left_to_a_human(enabled, fie
     assert noncritical_renewal.renewal_due(item, NOW) is True
 
 
-def test_an_open_environment_window_keeps_its_own_retry(enabled):
+def test_an_open_environment_window_keeps_its_own_retry(enabled, monkeypatch):
+    # ladder_spent → environment_window_closed uses wall-clock now; pin both modules to NOW
+    # so an open 3-day window is not treated as closed after the fixture date ages.
+    from app.workers import generation_retry_policy
+
+    monkeypatch.setattr(noncritical_renewal, "datetime", _frozen(NOW))
+    monkeypatch.setattr(generation_retry_policy, "datetime", _frozen(NOW))
     fields = {
         "reason": "PROVIDER_TIMEOUT",
         "retry_class": "ENVIRONMENT_RECOVERABLE",
