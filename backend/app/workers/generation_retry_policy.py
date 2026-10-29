@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 
 from app.core.config import settings
 from app.services.finding_criticality import Criticality, classify_finding
+from app.services.openrouter_key_limit import OPENROUTER_KEY_LIMIT_EXCEEDED_CODE
 
 KST = ZoneInfo("Asia/Seoul")
 OVERNIGHT_RECOVERY_HOURS = (1, 4, 7)
@@ -173,6 +174,7 @@ _INPUT_CODES = frozenset(
         "CONTENT_AI_REVIEW_STALE",
     }
 )
+_TERMINAL_OPERATOR_CODES = frozenset({OPENROUTER_KEY_LIMIT_EXCEEDED_CODE})
 
 
 def environment_attempt_period(observed: datetime | None = None) -> str:
@@ -777,6 +779,8 @@ def attempt_is_terminal(attempt: Mapping | None) -> bool:
       일일 갱신(`noncritical_renewal.renewal_candidate`)이 소유하는 슬롯은 호출부
       (`tasks._terminal_attempt_is_unchanged`)가 종착으로 읽지 않는다(2026-10-15).
     - 사람이 정하는 참고자료 보류(`OPERATOR_DECIDES_KEY`).
+    - OpenRouter API 키의 월 사용 한도 소진 — 같은 키·같은 월에는 어떤 모델/슬롯도
+      성공하지 않으며, 새 월에는 호출부가 기간 표지를 보고 한 번 다시 연다.
 
     `MISSING_APPROVED_ESSENCE`는 종착이 아니다 — Essence는 승인 없이 자동으로 만들어져 곧 적용되므로
     (Phase 4 D33) 다음 스윕이 다시 집어 새 판으로 쓴다. 생성 경로가 그 자리에서 자동 요약을 요청한다.
@@ -793,7 +797,7 @@ def attempt_is_terminal(attempt: Mapping | None) -> bool:
     reason = attempt.get("reason")
     retry_class = attempt.get("retry_class")
     if retry_class == GenerationRetryClass.OPERATOR_REQUIRED.value:
-        return reason in SAMPLE_BODY_CODES or (
+        return reason in SAMPLE_BODY_CODES | _TERMINAL_OPERATOR_CODES or (
             reason == "MISSING_REFERENCES" and bool(attempt.get(OPERATOR_DECIDES_KEY))
         )
     if retry_class != GenerationRetryClass.INPUT_CHANGE_REQUIRED.value:

@@ -1381,7 +1381,7 @@ run_production_readiness_gate() {
 # 배치 시간대 밖이면 하루 여러 번 배포할 수 있다(2026-10-13 대표 결정). 하루 잠금은 막는 규칙이 아니라
 # 기록이다 — 같은 날 다른 릴리스가 이미 나갔으면 경고하고 --override-reason으로 사유를 남겨야 진행한다.
 #
-# 막는 시간(KST): 22:15~02:00 전체(23:00 야간 생성이 몇 시간 이어지고 01시 복구 스윕이 뒤따른다)와
+# 막는 시간(KST): 22:15~02:00 양 끝 포함(23:00 야간 생성이 몇 시간 이어지고 01시 복구 스윕이 뒤따른다)와
 # 04·07·08·12·18·22시 앞뒤 45분(08시는 07:45·08:00 발행 게이트와 08:30 외부 감시).
 BATCH_NIGHT_START_MINUTE=$(( 22 * 60 + 15 ))
 BATCH_NIGHT_END_MINUTE=$(( 2 * 60 ))
@@ -1414,7 +1414,10 @@ mark_deploy_mutating() {
 batch_window_conflict() {
   local hhmm="$1" now center distance
   now=$(( 10#${hhmm%%:*} * 60 + 10#${hhmm##*:} ))
-  if (( now >= BATCH_NIGHT_START_MINUTE || now < BATCH_NIGHT_END_MINUTE )); then
+  # 02:00 정각도 보호 구간이다. `<`이면 문서의 22:15~02:00과 달리 정확히
+  # 02:00에 Worker/Beat 교체를 시작할 수 있어, 01시 복구의 늦은 항목과 월요일
+  # 02시 Beat 작업을 끊는 1분짜리 틈이 생긴다.
+  if (( now >= BATCH_NIGHT_START_MINUTE || now <= BATCH_NIGHT_END_MINUTE )); then
     printf '22:15~02:00 야간 생성'
     return 0
   fi

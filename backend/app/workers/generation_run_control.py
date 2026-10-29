@@ -20,6 +20,12 @@ from app.models.operations import (
     OperationRun,
     OperationRunState,
 )
+from app.services.openrouter_key_limit import (
+    OPENROUTER_KEY_LIMIT_EXCEEDED_CODE,
+    OPENROUTER_KEY_LIMIT_EXCEEDED_MESSAGE,
+    OpenRouterKeyLimitCircuitOpen,
+    is_openrouter_key_limit_error,
+)
 from app.services.operation_run_payloads import (
     DispatchPayload,
     UnsafeDispatchPayload,
@@ -180,6 +186,12 @@ class ExplicitRunContext:
 def classify_generation_failure(error: BaseException) -> tuple[str, str]:
     """Map runtime failures to allowlisted operator-safe facts."""
     match error:
+        case OpenRouterKeyLimitCircuitOpen():
+            code = OPENROUTER_KEY_LIMIT_EXCEEDED_CODE
+            message = OPENROUTER_KEY_LIMIT_EXCEEDED_MESSAGE
+        case _ if is_openrouter_key_limit_error(error):
+            code = OPENROUTER_KEY_LIMIT_EXCEEDED_CODE
+            message = OPENROUTER_KEY_LIMIT_EXCEEDED_MESSAGE
         case GenerationBudgetUnknown():
             code = "LEGACY_SPEND_UNKNOWN"
             message = "기존 생성 비용 기록을 확인할 수 없어 자동 재시도를 중단했습니다."

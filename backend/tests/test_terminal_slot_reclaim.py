@@ -68,6 +68,25 @@ def test_terminal_unchanged_slot_is_not_eligible(monkeypatch):
     assert _eligible(monkeypatch, item, philosophy) is False
 
 
+def test_openrouter_key_limit_is_terminal_only_for_its_billing_period(monkeypatch):
+    philosophy = _philosophy()
+    item = _item(
+        {
+            "reason": "OPENROUTER_KEY_LIMIT_EXCEEDED",
+            "retry_class": "OPERATOR_REQUIRED",
+            "provider_limit_period": "2026-10",
+        },
+        philosophy=philosophy,
+    )
+    monkeypatch.setattr(tasks.openrouter_key_limit, "billing_period", lambda *_a: "2026-10")
+
+    assert attempt_is_terminal(item.essence_check_summary["generation_attempt"]) is True
+    assert _eligible(monkeypatch, item, philosophy) is False
+
+    monkeypatch.setattr(tasks.openrouter_key_limit, "billing_period", lambda *_a: "2026-11")
+    assert _eligible(monkeypatch, item, philosophy) is True
+
+
 def test_operator_decides_references_and_rejected_body_are_terminal(monkeypatch):
     philosophy = _philosophy()
     for attempt in (

@@ -35,3 +35,26 @@ def _status(cls, status: int):
 )
 def test_openrouter_errors_are_classified_by_status(error, code):
     assert classify_generation_failure(error)[0] == code
+
+
+def test_openrouter_monthly_key_limit_has_a_specific_terminal_cause():
+    error = openai.PermissionDeniedError(
+        "Key limit exceeded (monthly limit)",
+        response=httpx.Response(403, request=_REQUEST),
+        body={"error": {"message": "Key limit exceeded (monthly limit)"}},
+    )
+
+    code, message = classify_generation_failure(error)
+
+    assert code == "OPENROUTER_KEY_LIMIT_EXCEEDED"
+    assert "OpenRouter API 키의 월 사용 한도" in message
+
+
+def test_other_openrouter_403_is_not_misclassified_as_a_key_limit():
+    error = openai.PermissionDeniedError(
+        "User not allowed to access this model",
+        response=httpx.Response(403, request=_REQUEST),
+        body={"error": {"message": "User not allowed to access this model"}},
+    )
+
+    assert classify_generation_failure(error)[0] == "GENERATION_FAILED"

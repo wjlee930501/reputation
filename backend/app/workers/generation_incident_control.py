@@ -34,6 +34,7 @@ from app.services.notification_contracts import IncidentSlackProjection
 from app.services.notification_copy import display_time
 from app.services.notification_messages import build_open_incident_notification
 from app.services.notification_store import enqueue_notification
+from app.services.openrouter_key_limit import OPENROUTER_KEY_LIMIT_EXCEEDED_CODE
 from app.services.reference_requirement import references_left_to_operator
 from app.workers.generation_retry_policy import (
     BODY_REPAIR_CODES,
@@ -105,7 +106,13 @@ PUBLISHED_IMAGE_RECERTIFY_CODES: frozenset[str] = recertification.OPERATOR_REQUI
 # 독립 검수 공급자 설정 오류는 자동 재시도 대상이 아니다 — 매일 조용히 실패하는 대신
 # 즉시 한 번 알리고 사람이 설정을 고치게 한다.
 _IMMEDIATE_GENERATION_NOTIFICATION_CODES: frozenset[str] = (
-    frozenset({"COST_BLOCKED", "CONTENT_AI_REVIEW_CONFIG_ERROR"})
+    frozenset(
+        {
+            "COST_BLOCKED",
+            "CONTENT_AI_REVIEW_CONFIG_ERROR",
+            OPENROUTER_KEY_LIMIT_EXCEEDED_CODE,
+        }
+    )
     | PUBLISHED_IMAGE_RECERTIFY_CODES
 )
 _EXTERNALLY_OWNED_IMMEDIATE_NOTIFICATION_CODES = frozenset({"COST_BLOCKED"})
@@ -767,6 +774,11 @@ def _generation_operator_copy(
         "PROVIDER_UNAVAILABLE": (
             "일시적인 외부 서비스 장애입니다. 다음 예약 배치가 자동으로 다시 시도하므로 지금은 기다리세요."
         ),
+        OPENROUTER_KEY_LIMIT_EXCEEDED_CODE: (
+            "OpenRouter에서 이 API 키의 월 사용 한도를 높이거나 새 키로 교체해 주세요. "
+            "같은 키의 한도를 월중에 변경했다면 운영 센터에서 이 글의 “작업 다시 시도”를 "
+            "한 번 눌러 회복을 확인하세요. 자동 생성은 다음 월 사용 기간에 다시 열립니다."
+        ),
         "GENERATION_REJECTED": (
             "가격·지역·검색 구조 자동 검수 게이트가 재작성 후에도 통과되지 않았습니다. "
             "운영 센터에서 게이트 문구와 승인된 병원 정보를 확인하세요."
@@ -890,6 +902,9 @@ def _generation_safe_cause(code: str) -> str:
     return {
         "PROVIDER_TIMEOUT": "콘텐츠 생성 서비스의 응답이 제시간에 오지 않았습니다.",
         "PROVIDER_UNAVAILABLE": "콘텐츠 생성 서비스를 일시적으로 사용할 수 없습니다.",
+        OPENROUTER_KEY_LIMIT_EXCEEDED_CODE: (
+            "OpenRouter API 키의 월 사용 한도가 소진되어 자동 콘텐츠 생성을 중단했습니다."
+        ),
         "GENERATION_REJECTED": (
             "가격·지역·검색 구조 자동 검수 게이트가 재작성 후에도 통과되지 않았습니다."
         ),
@@ -938,6 +953,7 @@ def _fingerprint(code: str) -> IncidentFingerprint:
     return {
         "PROVIDER_TIMEOUT": IncidentFingerprint.PROVIDER_TIMEOUT,
         "PROVIDER_UNAVAILABLE": IncidentFingerprint.PROVIDER_REJECTED,
+        OPENROUTER_KEY_LIMIT_EXCEEDED_CODE: IncidentFingerprint.COST_BLOCKED,
         "GENERATION_REJECTED": IncidentFingerprint.PROVIDER_REJECTED,
         "MISSING_APPROVED_ESSENCE": IncidentFingerprint.MISSING_PREREQUISITE,
         "COST_BLOCKED": IncidentFingerprint.COST_BLOCKED,

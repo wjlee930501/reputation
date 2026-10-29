@@ -11,6 +11,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from app.services.incident_safety import sanitize_operator_text
+from app.services.openrouter_key_limit import OPENROUTER_KEY_LIMIT_EXCEEDED_CODE
 
 KST = ZoneInfo("Asia/Seoul")
 
@@ -293,6 +294,13 @@ def blocker_copy(code: object) -> ActionCopy:
         return ActionCopy(
             "발행용 원고 미생성",
             "운영센터에서 해당 글의 생성 상태를 확인하고, 자동 재시도 중이 아니면 “작업 다시 시도”를 눌러 주세요.",
+            "생성 상태 확인",
+        )
+    if value == OPENROUTER_KEY_LIMIT_EXCEEDED_CODE:
+        return ActionCopy(
+            "OpenRouter 키 월 한도 소진",
+            "OpenRouter에서 이 API 키의 월 사용 한도를 높이거나 새 키로 교체한 뒤, 운영 센터에서 "
+            "해당 글의 “작업 다시 시도”를 한 번 눌러 회복을 확인해 주세요.",
             "생성 상태 확인",
         )
     if value == "TOPIC_SWAPPED":

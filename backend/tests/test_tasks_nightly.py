@@ -1499,6 +1499,9 @@ def test_generation_failure_notification_cadences_are_disjoint():
     assert not tasks.generation_notify_requested("COST_BLOCKED")
     assert not tasks.generation_notify_requested("MISSING_APPROVED_ESSENCE")
     assert not tasks.generation_notify_requested("CONTENT_AI_REVIEW_UNAVAILABLE")
+    assert generation_incident_control.generation_notification_cadence(
+        "OPENROUTER_KEY_LIMIT_EXCEEDED"
+    ) == "IMMEDIATE"
 
 
 class _NightlyTaskDB:

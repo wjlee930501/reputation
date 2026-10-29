@@ -25,7 +25,7 @@ from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponen
 
 from app.core.config import settings
 from app.models.content import ContentType
-from app.services import openrouter
+from app.services import openrouter, openrouter_key_limit
 from app.services.image_direction import (
     HospitalImageDirection,
     image_direction_prompt,
@@ -658,6 +658,8 @@ async def _openai_stage(
             return _StageOutcome(url=url, prompt=prompt)
         return _StageOutcome(reason="PROVIDER_EMPTY")
     except ImagePolicyUnavailableError as e:
+        if openrouter_key_limit.is_openrouter_key_limit_error(e):
+            raise
         # 검수 모델 장애는 폴백 여부와 무관하게 최종 원인이다 — Google 진단을 덮어쓴다.
         if diagnostics is not None:
             diagnostics["reason"] = "POLICY_UNAVAILABLE"
@@ -677,6 +679,8 @@ async def _openai_stage(
         # 기본 경로에서는 여기서 끝난다(Google 폴백 없음). 폴백 경로에서도 더 갈 곳이 없다.
         return _StageOutcome(reason="POLICY_REJECTED", terminal=True)
     except Exception as e:  # noqa: BLE001 — 공급자 오류는 다음 경로가 있으면 넘긴다
+        if openrouter_key_limit.is_openrouter_key_limit_error(e):
+            raise
         if stage == ImagePolicyStage.OPENAI_FALLBACK:
             # Google 진단(reason·policy_rejection)은 남겨 두고 폴백 실패 원문만 덧붙인다.
             # `_image_failure_class`가 진단 값 전체에서 quota 신호를 찾으므로 원문이 필요하다.
@@ -733,6 +737,8 @@ async def _google_stages(
             diagnostics["stage"] = google_stage.value
         return _StageOutcome(reason="PROVIDER_EMPTY")
     except ImagePolicyUnavailableError as e:
+        if openrouter_key_limit.is_openrouter_key_limit_error(e):
+            raise
         if diagnostics is not None:
             diagnostics["reason"] = "POLICY_UNAVAILABLE"
             diagnostics["stage"] = google_stage.value
@@ -751,6 +757,8 @@ async def _google_stages(
         logger.warning("Generated Google image failed semantic policy review")
         return _StageOutcome(reason="POLICY_REJECTED")
     except Exception as e:  # noqa: BLE001
+        if openrouter_key_limit.is_openrouter_key_limit_error(e):
+            raise
         primary_failure = (
             "IMAGE_SAFETY"
             if isinstance(e, ImageSafetyBlockedError) or _looks_like_policy_block(e)
@@ -789,6 +797,8 @@ async def _google_stages(
         logger.warning("Google topical fallback failed semantic policy review")
         return _StageOutcome(reason="POLICY_REJECTED")
     except ImagePolicyUnavailableError as fallback_exc:
+        if openrouter_key_limit.is_openrouter_key_limit_error(fallback_exc):
+            raise
         if diagnostics is not None:
             diagnostics["reason"] = "POLICY_UNAVAILABLE"
             diagnostics["stage"] = ImagePolicyStage.GOOGLE_FALLBACK.value
@@ -802,6 +812,8 @@ async def _google_stages(
         logger.warning("Google topical fallback blocked by image safety: %s", fallback_exc)
         return _StageOutcome(reason="IMAGE_SAFETY")
     except Exception as fallback_exc:  # noqa: BLE001
+        if openrouter_key_limit.is_openrouter_key_limit_error(fallback_exc):
+            raise
         if diagnostics is not None:
             diagnostics["reason"] = "PROVIDER_ERROR"
             diagnostics["stage"] = ImagePolicyStage.GOOGLE_FALLBACK.value
@@ -1011,6 +1023,8 @@ def _validate_generated_image(
                 counter=counter,
             )
         except Exception as primary_exc:  # noqa: BLE001 — 검수 모델 장애 시 다른 비전 모델로 한 번 더
+            if openrouter_key_limit.is_openrouter_key_limit_error(primary_exc):
+                raise
             if settings.OPENAI_MODEL_PARSE == settings.GEMINI_MODEL:
                 raise
             logger.warning(
