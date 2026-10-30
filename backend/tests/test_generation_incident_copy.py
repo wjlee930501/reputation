@@ -122,6 +122,34 @@ def _operator_gate_record(monkeypatch, item, moment) -> dict:
     return record
 
 
+def test_openrouter_key_limit_attempt_and_operator_copy_are_specific(monkeypatch):
+    item = _slot()
+    philosophy = SimpleNamespace(id="p1")
+    attempt = _remember(
+        monkeypatch,
+        item,
+        _kst(10, 30, 1),
+        "OPENROUTER_KEY_LIMIT_EXCEEDED",
+    )
+
+    assert attempt["retry_class"] == GenerationRetryClass.OPERATOR_REQUIRED.value
+    assert attempt["provider_limit_period"] == "2026-10"
+    assert attempt["provider_key_fingerprint"] == tasks.openrouter_key_limit.key_fingerprint()
+    assert attempt.get("next_retry_at") is None
+    assert "OpenRouter" in generation_incident_control.generation_safe_cause(
+        "OPENROUTER_KEY_LIMIT_EXCEEDED"
+    )
+    action = generation_operator_action("OPENROUTER_KEY_LIMIT_EXCEEDED")
+    assert "월 사용 한도" in action
+    assert "작업 다시 시도" in action
+
+    before_gate = dict(item.essence_check_summary["generation_attempt"])
+    tasks._record_gate_blocker_decision(
+        _CommitOnlyDB(), item, philosophy, "CONTENT_NOT_GENERATED"
+    )
+    assert item.essence_check_summary["generation_attempt"] == before_gate
+
+
 class _Session:
     """`scalar`는 차례로 (같은 키의 이전 인시던트, 원인 인시던트)를 돌려준다."""
 

@@ -2119,15 +2119,17 @@ def _run_target(tmp_path: Path, target: str, *args: str, **extra: str):
     return result, command_log.read_text() if command_log.exists() else ""
 
 
-# 22:15~02:00은 야간 생성(23:00)·복구 스윕(01시)이 몇 시간 이어지므로 통째로 막고, 그 밖의 배치
+# 22:15~02:00은 양 끝을 포함해 야간 생성(23:00)·복구 스윕(01시)이 몇 시간 이어지므로 통째로 막고, 그 밖의 배치
 # (04·07·08·12·18·22시 — 08시는 07:45·08:00 발행 게이트와 08:30 외부 감시)는 앞뒤 45분을 막는다.
 @pytest.mark.parametrize(
     "clock",
     [
+        "2026-10-11T22:15",
         "2026-10-11T22:30",
         "2026-10-11T23:59",
         "2026-10-11T00:20",
         "2026-10-11T01:55",
+        "2026-10-11T02:00",
         "2026-10-11T08:30",
         "2026-10-11T12:45",
         "2026-10-11T17:15",
@@ -2146,7 +2148,7 @@ def test_backend_deploy_is_blocked_inside_a_batch_window(tmp_path: Path, clock: 
 
 
 @pytest.mark.parametrize(
-    "clock", ["2026-10-11T02:00", "2026-10-11T02:46", "2026-10-11T09:00", "2026-10-11T12:46", "2026-10-11T14:30"]
+    "clock", ["2026-10-11T02:01", "2026-10-11T02:46", "2026-10-11T09:00", "2026-10-11T12:46", "2026-10-11T14:30"]
 )
 def test_backend_deploy_runs_outside_batch_windows(tmp_path: Path, clock: str) -> None:
     result, commands = _run_target(tmp_path, "api", DEPLOY_CLOCK_KST=clock)

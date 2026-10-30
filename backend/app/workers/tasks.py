@@ -74,7 +74,14 @@ from app.models.sov import (
     QueryMatrix,
     SovRecord,
 )
-from app.services import cost_guard, indexnow, notifier, operation_run_payloads, sov_engine
+from app.services import (
+    cost_guard,
+    indexnow,
+    notifier,
+    openrouter_key_limit,
+    operation_run_payloads,
+    sov_engine,
+)
 from app.services import published_image_recertification as recertification
 from app.services.asset_extractor import evidence_text_is_acceptable
 from app.services.audit_log import write_audit_log_sync
@@ -1452,10 +1459,32 @@ def _operator_decides_copy_code(item: ContentItem) -> str:
     )
 
 
+def _openrouter_key_limit_attempt_released(previous: Mapping[str, object]) -> bool:
+    """Whether a stored OpenRouter key-limit decision no longer suppresses a probe."""
+
+    if previous.get("reason") != openrouter_key_limit.OPENROUTER_KEY_LIMIT_EXCEEDED_CODE:
+        return False
+    if not openrouter_key_limit.attempt_period_is_current(
+        previous.get("provider_limit_period")
+    ):
+        return True
+    fingerprint = previous.get("provider_key_fingerprint")
+    return isinstance(fingerprint, str) and (
+        fingerprint != openrouter_key_limit.key_fingerprint()
+        or not openrouter_key_limit.circuit_is_open(
+            fingerprint=fingerprint,
+            period=previous.get("provider_limit_period"),
+        )
+    )
+
+
 def _generation_attempt_is_unchanged(
     item: ContentItem, philosophy: HospitalContentPhilosophy | None
 ) -> bool:
     previous = _stored_generation_attempt(item)
+    if _openrouter_key_limit_attempt_released(previous):
+        # A new period/key or a cleared circuit makes this a bounded probe candidate.
+        return False
     unchanged = bool(
         previous.get("reason")
         and previous.get("context") == _generation_attempt_context(item, philosophy)
@@ -1488,6 +1517,8 @@ def _terminal_attempt_is_unchanged(
 
     previous = _stored_generation_attempt(item)
     if not attempt_is_terminal(previous):
+        return False
+    if _openrouter_key_limit_attempt_released(previous):
         return False
     if renewal_candidate(item):
         # 비-Critical 소진은 종착이 아니다 — 일일 갱신이 하루 한 번 새 예산으로 잇는다(2026-10-15).
@@ -1665,6 +1696,9 @@ def _remember_generation_attempt(
         "provider_attempt_count": provider_attempt_count,
         "guard_deferral_count": guard_deferral_count,
     }
+    if reason == openrouter_key_limit.OPENROUTER_KEY_LIMIT_EXCEEDED_CODE:
+        attempt["provider_limit_period"] = openrouter_key_limit.billing_period(observed_at)
+        attempt["provider_key_fingerprint"] = openrouter_key_limit.key_fingerprint()
     if GENERATION_BUDGET_KEY in previous:
         attempt[GENERATION_BUDGET_KEY] = previous[GENERATION_BUDGET_KEY]
     if (
@@ -1842,6 +1876,14 @@ def _record_gate_blocker_decision(db, item: ContentItem, philosophy, code: str) 
         # 시도 전이다. 여기서 증상을 지금 문맥의 기한 없는 OPERATOR_REQUIRED로 쓰면 그 시도가
         # 작가 0회로 사라진다(2026-10-02 gate_catalog 갱신 뒤 09:00 발행기가 4건을 그렇게
         # 굳혔다). 기록이 아예 없는 빈 슬롯은 종전대로 아래에서 기록한다.
+        return
+    if (
+        code == "CONTENT_NOT_GENERATED"
+        and stored_reason == openrouter_key_limit.OPENROUTER_KEY_LIMIT_EXCEEDED_CODE
+    ):
+        # The publish gate observes only the empty-body symptom. Keep the exact
+        # operator-required provider cause so 07:45/08:00 cannot erase it back to
+        # generic CONTENT_NOT_GENERATED.
         return
     if code == "CONTENT_NOT_GENERATED" and stored.get("retry_class") in (
         GenerationRetryClass.OPERATOR_REQUIRED.value,
@@ -6136,6 +6178,49 @@ def _philosophy_for_failure_record(db, hospital_id) -> HospitalContentPhilosophy
         return None
 
 
+def _classify_generation_exception(
+    error: BaseException,
+) -> tuple[str, str, bool]:
+    """Classify a generation failure and elect the one key-limit Slack owner."""
+
+    notification_owner = True
+    if openrouter_key_limit.is_openrouter_key_limit_error(error):
+        notification_owner = openrouter_key_limit.trip_circuit()
+    elif isinstance(error, openrouter_key_limit.OpenRouterKeyLimitCircuitOpen):
+        # Another worker already reported the provider fact.  This slot still gets
+        # its own durable terminal cause and Operations incident, but no Slack fan-out.
+        notification_owner = False
+    code, message = classify_generation_failure(error)
+    return code, message, notification_owner
+
+
+def _generation_failure_notify(
+    code: str, *, requested: bool, limit_notification_owner: bool
+) -> bool:
+    if code == openrouter_key_limit.OPENROUTER_KEY_LIMIT_EXCEEDED_CODE:
+        # Recovery sweeps normally suppress per-item Slack until 07:45. This cause
+        # cannot self-heal, so the first fleet detector must page immediately even
+        # when it was discovered by a recovery or automatic image run.
+        return limit_notification_owner
+    return requested and limit_notification_owner
+
+
+def _close_key_limit_circuit_after_probe(
+    stored_attempt: dict[str, Any], outcome: GenerationItemState
+) -> None:
+    """Close only the circuit disproved by a successful explicit provider probe."""
+
+    if (
+        outcome in (GenerationItemState.SUCCEEDED, GenerationItemState.PARTIAL)
+        and stored_attempt.get("reason")
+        == openrouter_key_limit.OPENROUTER_KEY_LIMIT_EXCEEDED_CODE
+    ):
+        openrouter_key_limit.close_circuit(
+            fingerprint=stored_attempt.get("provider_key_fingerprint"),
+            period=stored_attempt.get("provider_limit_period"),
+        )
+
+
 def _run_generation_item(
     db,
     recorder,
@@ -6280,6 +6365,12 @@ def _run_generation_item(
                 )
             )
             return GenerationItemState.SKIPPED, code, message
+
+        # A monthly key limit is shared by every model behind OpenRouter. Once one
+        # worker proves it, queued automatic items record the same terminal cause
+        # without buying another writer/reviewer/image request. This check comes
+        # after deterministic prerequisites so missing Essence keeps its real cause.
+        openrouter_key_limit.raise_if_circuit_open()
 
         # 비용 가드: Claude 호출 예산 확인. 차단 시 예외로 배치를 죽이지 않고 이 아이템만
         # 스킵한다(다음 야간 배치에서 body-null 필터로 재시도됨).
@@ -6547,7 +6638,7 @@ def _run_generation_item(
         return GenerationItemState.SUCCEEDED, None, None
 
     except Exception as e:
-        code, message = classify_generation_failure(e)
+        code, message, limit_notification_owner = _classify_generation_exception(e)
         # 운영자에게 저장되는 `message`는 허용 목록 문구라 어느 게이트가 걸렸는지 말하지
         # 않는다. 여기까지 예외 이름만 남기면 거절 원인이 어디에도 남지 않으므로, 로그에는
         # 실제 메시지와 스택을 남긴다(저장·알림 경로는 종전 그대로다).
@@ -6569,7 +6660,11 @@ def _run_generation_item(
             # 그 주제의 공신력 있는 문서는 생기지 않는다 — 표본 사다리·주제 교체가 아니라
             # 곧바로 사람의 결정(OPERATOR_REQUIRED, 기한 없는 OPEN)이다.
             code, message = "MISSING_REFERENCES", REFERENCES_OPERATOR_DECIDES_CAUSE
-        if unwritten or _bodied_budget_exhaustion_is_recorded(code, item):
+        if (
+            unwritten
+            or _bodied_budget_exhaustion_is_recorded(code, item)
+            or code == openrouter_key_limit.OPENROUTER_KEY_LIMIT_EXCEEDED_CODE
+        ):
             # 본문이 있는 슬롯이 생성 예산에 막힌 경우도 기록한다 — 남기지 않으면 저장 본문의 옛 원인
             # (지금 기한의 갱신 시작·표본 차단)이 그대로라 다음 스윕이 같은 실패로 다시 집고, 주제 교체
             # 계단(`topic_swap_fallback`, 원인 = 생성 예산 소진)은 영영 그 슬롯을 보지 못한다(공회전).
@@ -6602,7 +6697,13 @@ def _run_generation_item(
                 run_id=failed_run.id,
                 code=code,
                 message=message,
-                notify=generation_notify_requested(code) if notify is None else notify,
+                notify=_generation_failure_notify(
+                    code,
+                    requested=(
+                        generation_notify_requested(code) if notify is None else notify
+                    ),
+                    limit_notification_owner=limit_notification_owner,
+                ),
             )
         )
         return GenerationItemState.FAILED, code, message
@@ -6731,6 +6832,12 @@ def regenerate_content_item(self, content_id: str):
                             stored_attempt.get("reason") == "LEGACY_SPEND_UNKNOWN"
                             and legacy_generation_budget_replaced(item.essence_check_summary)
                         )
+                        # This terminal record prevents automatic fleet retries.  An
+                        # explicit operator run is the bounded probe used after raising
+                        # the same key's limit; if it still receives 403, the circuit and
+                        # terminal record are written again.
+                        or stored_attempt.get("reason")
+                        == openrouter_key_limit.OPENROUTER_KEY_LIMIT_EXCEEDED_CODE
                     )
                 ):
                     # 운영자가 누른 “작업 다시 시도”가 같은 원인 억제에 걸려 작가 0회로 끝나지
@@ -6772,14 +6879,20 @@ def regenerate_content_item(self, content_id: str):
                     # (`_generate_single_content_item(review_only=True)`).
                     review_only_snapshot = _release_for_review_only(db, item, stored_attempt)
                 if review_only_snapshot is None:
-                    outcome, code, message = _generate_single_content_item(db, item, hospital)
+                    outcome, code, message = _generate_single_content_item(
+                        db, item, hospital, bypass_provider_circuit=True
+                    )
                 else:
                     outcome, code, message = _generate_single_content_item(
-                        db, item, hospital, review_only=True
+                        db,
+                        item,
+                        hospital,
+                        review_only=True,
+                        bypass_provider_circuit=True,
                     )
             except Exception as exc:
                 _rollback_quietly(db, item_id)
-                code, message = classify_generation_failure(exc)
+                code, message, limit_notification_owner = _classify_generation_exception(exc)
                 # 야간 경로(`_run_generation_item`)와 같이 빈 슬롯의 실패를 기록한다. 위에서 푼
                 # 억제가 원인 없는 기록으로 남으면 자동 경로가 예산 없이 다시 산다.
                 _remember_regeneration_failure(db, item, hospital.id, code, message)
@@ -6804,7 +6917,11 @@ def regenerate_content_item(self, content_id: str):
                             run_id=run_id,
                             code=code,
                             message=message,
-                            notify=generation_notify_requested(code),
+                            notify=_generation_failure_notify(
+                                code,
+                                requested=generation_notify_requested(code),
+                                limit_notification_owner=limit_notification_owner,
+                            ),
                         )
                     )
                 logger.error(
@@ -6815,6 +6932,10 @@ def regenerate_content_item(self, content_id: str):
                 )
                 raise
 
+            # The writer/reviewer reached the provider successfully. A separate
+            # image shortfall may still make the item PARTIAL, but the bounded
+            # probe has nevertheless disproved the stored key-limit condition.
+            _close_key_limit_circuit_after_probe(stored_attempt, outcome)
             if outcome == GenerationItemState.DISCARDED:
                 finish_explicit_run(db, self, item_id, OperationRunState.CANCELLED)
                 return
@@ -7360,7 +7481,14 @@ def generate_content_image(self, content_id: str):
             if "claim_token" in locals():
                 release_generation_claim(db, item_id, claim_token)
                 db.commit()
-            if "philosophy" in locals() and philosophy is not None:
+            limit_notification_owner = True
+            if openrouter_key_limit.is_openrouter_key_limit_error(exc) or isinstance(
+                exc, openrouter_key_limit.OpenRouterKeyLimitCircuitOpen
+            ):
+                code, message, limit_notification_owner = _classify_generation_exception(exc)
+                if "philosophy" in locals() and philosophy is not None:
+                    _remember_generation_attempt(db, item, philosophy, code, message=message)
+            elif "philosophy" in locals() and philosophy is not None:
                 _remember_image_failure(db, item, philosophy)
                 code, message = _image_failure_details(item)
             else:
@@ -7382,7 +7510,11 @@ def generate_content_image(self, content_id: str):
                         run_id=run_id,
                         code=code,
                         message=message,
-                        notify=notify_failure,
+                        notify=_generation_failure_notify(
+                            code,
+                            requested=notify_failure,
+                            limit_notification_owner=limit_notification_owner,
+                        ),
                     )
                 )
             logger.error("generate_content_image failed for %s: %s", content_id, type(exc).__name__)
@@ -7399,7 +7531,12 @@ _REVIEW_ONLY_SKIPPED = (
 
 
 def _generate_single_content_item(
-    db, item: ContentItem, hospital: Hospital, *, review_only: bool = False
+    db,
+    item: ContentItem,
+    hospital: Hospital,
+    *,
+    review_only: bool = False,
+    bypass_provider_circuit: bool = False,
 ) -> tuple[GenerationItemState, str | None, str | None]:
     # review_only=True는 운영자 재검수 전용 실행이다(`regenerate_content_item`). 아래 저장
     # 본문 재검수 구간을 한 번만 돌리고 작가·원고 계획·비용 가드·본문 수리 세션은 쓰지 않는다.
@@ -7426,6 +7563,9 @@ def _generate_single_content_item(
             "MISSING_APPROVED_ESSENCE",
             "콘텐츠 운영 기준의 시스템 자동 승인이 아직 완료되지 않았습니다.",
         )
+
+    if not bypass_provider_circuit:
+        openrouter_key_limit.raise_if_circuit_open()
 
     # A body generated under this exact Essence remains immutable in scheduled
     # sweeps. Once automated source refresh approves a different snapshot, the
