@@ -1459,18 +1459,31 @@ def _operator_decides_copy_code(item: ContentItem) -> str:
     )
 
 
+def _openrouter_key_limit_attempt_released(previous: Mapping[str, object]) -> bool:
+    """Whether a stored OpenRouter key-limit decision no longer suppresses a probe."""
+
+    if previous.get("reason") != openrouter_key_limit.OPENROUTER_KEY_LIMIT_EXCEEDED_CODE:
+        return False
+    if not openrouter_key_limit.attempt_period_is_current(
+        previous.get("provider_limit_period")
+    ):
+        return True
+    fingerprint = previous.get("provider_key_fingerprint")
+    return isinstance(fingerprint, str) and (
+        fingerprint != openrouter_key_limit.key_fingerprint()
+        or not openrouter_key_limit.circuit_is_open(
+            fingerprint=fingerprint,
+            period=previous.get("provider_limit_period"),
+        )
+    )
+
+
 def _generation_attempt_is_unchanged(
     item: ContentItem, philosophy: HospitalContentPhilosophy | None
 ) -> bool:
     previous = _stored_generation_attempt(item)
-    if (
-        previous.get("reason") == openrouter_key_limit.OPENROUTER_KEY_LIMIT_EXCEEDED_CODE
-        and not openrouter_key_limit.attempt_period_is_current(
-            previous.get("provider_limit_period")
-        )
-    ):
-        # The provider's monthly period changed.  The durable terminal decision
-        # belongs to the old period and must not suppress the first new-month probe.
+    if _openrouter_key_limit_attempt_released(previous):
+        # A new period/key or a cleared circuit makes this a bounded probe candidate.
         return False
     unchanged = bool(
         previous.get("reason")
@@ -1505,25 +1518,7 @@ def _terminal_attempt_is_unchanged(
     previous = _stored_generation_attempt(item)
     if not attempt_is_terminal(previous):
         return False
-    if (
-        previous.get("reason") == openrouter_key_limit.OPENROUTER_KEY_LIMIT_EXCEEDED_CODE
-        and (
-            not openrouter_key_limit.attempt_period_is_current(
-                previous.get("provider_limit_period")
-            )
-            or (
-                isinstance(previous.get("provider_key_fingerprint"), str)
-                and (
-                    previous.get("provider_key_fingerprint")
-                    != openrouter_key_limit.key_fingerprint()
-                    or not openrouter_key_limit.circuit_is_open(
-                        fingerprint=previous.get("provider_key_fingerprint"),
-                        period=previous.get("provider_limit_period"),
-                    )
-                )
-            )
-        )
-    ):
+    if _openrouter_key_limit_attempt_released(previous):
         return False
     if renewal_candidate(item):
         # 비-Critical 소진은 종착이 아니다 — 일일 갱신이 하루 한 번 새 예산으로 잇는다(2026-10-15).

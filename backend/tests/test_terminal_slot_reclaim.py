@@ -32,7 +32,7 @@ def _philosophy(philosophy_id: str = "p1"):
     return SimpleNamespace(id=philosophy_id, director_delta_ids=[])
 
 
-def _item(attempt: dict, *, philosophy, human_edited_at=None, history=None):
+def _item(attempt: dict, *, philosophy, human_edited_at=None, history=None, body="본문"):
     context = tasks._generation_attempt_context(
         SimpleNamespace(content_type=SimpleNamespace(value="FAQ"), query_target_id=None),
         philosophy,
@@ -40,7 +40,7 @@ def _item(attempt: dict, *, philosophy, human_edited_at=None, history=None):
     return SimpleNamespace(
         id="i1",
         hospital_id="h1",
-        body="본문",
+        body=body,
         content_type=SimpleNamespace(value="FAQ"),
         query_target_id=None,
         human_edited_at=human_edited_at,
@@ -107,6 +107,32 @@ def test_openrouter_terminal_tracks_stored_circuit_and_key(monkeypatch):
     monkeypatch.setattr(tasks.openrouter_key_limit, "circuit_is_open", lambda **_kw: True)
     monkeypatch.setattr(tasks.openrouter_key_limit, "key_fingerprint", lambda: "fingerprint-b")
     assert tasks._terminal_attempt_is_unchanged(item, philosophy) is False
+
+
+def test_empty_openrouter_key_limit_attempt_tracks_stored_circuit_and_key(monkeypatch):
+    philosophy = _philosophy()
+    attempt = {
+        "reason": "OPENROUTER_KEY_LIMIT_EXCEEDED",
+        "retry_class": "OPERATOR_REQUIRED",
+        "provider_limit_period": "2026-10",
+        "provider_key_fingerprint": "fingerprint-a",
+    }
+    item = _item(attempt, philosophy=philosophy, body=None)
+    monkeypatch.setattr(tasks.openrouter_key_limit, "billing_period", lambda *_a: "2026-10")
+    monkeypatch.setattr(tasks.openrouter_key_limit, "key_fingerprint", lambda: "fingerprint-a")
+    monkeypatch.setattr(tasks.openrouter_key_limit, "circuit_is_open", lambda **_kw: True)
+
+    assert tasks._generation_attempt_is_unchanged(item, philosophy) is True
+    assert _eligible(monkeypatch, item, philosophy) is False
+
+    monkeypatch.setattr(tasks.openrouter_key_limit, "circuit_is_open", lambda **_kw: False)
+    assert tasks._generation_attempt_is_unchanged(item, philosophy) is False
+    assert _eligible(monkeypatch, item, philosophy) is True
+
+    monkeypatch.setattr(tasks.openrouter_key_limit, "circuit_is_open", lambda **_kw: True)
+    monkeypatch.setattr(tasks.openrouter_key_limit, "key_fingerprint", lambda: "fingerprint-b")
+    assert tasks._generation_attempt_is_unchanged(item, philosophy) is False
+    assert _eligible(monkeypatch, item, philosophy) is True
 
 
 def test_operator_decides_references_and_rejected_body_are_terminal(monkeypatch):
