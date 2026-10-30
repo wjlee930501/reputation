@@ -134,6 +134,7 @@ def test_openrouter_key_limit_attempt_and_operator_copy_are_specific(monkeypatch
 
     assert attempt["retry_class"] == GenerationRetryClass.OPERATOR_REQUIRED.value
     assert attempt["provider_limit_period"] == "2026-10"
+    assert attempt["provider_key_fingerprint"] == tasks.openrouter_key_limit.key_fingerprint()
     assert attempt.get("next_retry_at") is None
     assert "OpenRouter" in generation_incident_control.generation_safe_cause(
         "OPENROUTER_KEY_LIMIT_EXCEEDED"

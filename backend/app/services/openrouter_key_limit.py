@@ -83,13 +83,18 @@ def attempt_period_is_current(value: object, now: datetime | None = None) -> boo
     return isinstance(value, str) and value == billing_period(now)
 
 
-def _key_fingerprint() -> str:
+def key_fingerprint() -> str:
     value = settings.OPENROUTER_API_KEY.strip().encode("utf-8")
     return hashlib.sha256(value).hexdigest()[:16]
 
 
-def circuit_key(now: datetime | None = None) -> str:
-    return f"{_CIRCUIT_PREFIX}:{_key_fingerprint()}:{billing_period(now)}"
+def circuit_key(
+    now: datetime | None = None,
+    *,
+    fingerprint: str | None = None,
+    period: str | None = None,
+) -> str:
+    return f"{_CIRCUIT_PREFIX}:{fingerprint or key_fingerprint()}:{period or billing_period(now)}"
 
 
 def _connect() -> redis.Redis:
@@ -139,7 +144,11 @@ def trip_circuit(
 
 
 def circuit_is_open(
-    *, now: datetime | None = None, redis_client: Any | None = None
+    *,
+    now: datetime | None = None,
+    redis_client: Any | None = None,
+    fingerprint: str | None = None,
+    period: str | None = None,
 ) -> bool:
     """Read the shared circuit. Redis failure deliberately fails open."""
 
@@ -148,10 +157,38 @@ def circuit_is_open(
     client = redis_client or _connect()
     owned = redis_client is None
     try:
-        return bool(client.exists(circuit_key(now)))
+        return bool(client.exists(circuit_key(now, fingerprint=fingerprint, period=period)))
     except (OSError, RedisError, RuntimeError, TimeoutError, TypeError, ValueError) as exc:
         logger.warning(
             "OpenRouter key-limit circuit could not be read: %s", type(exc).__name__
+        )
+        return False
+    finally:
+        if owned:
+            try:
+                client.close()
+            except (OSError, RedisError):
+                pass
+
+
+def close_circuit(
+    *,
+    now: datetime | None = None,
+    redis_client: Any | None = None,
+    fingerprint: str | None = None,
+    period: str | None = None,
+) -> bool:
+    """Close one key/period circuit after a successful bounded provider probe."""
+
+    if redis_client is None and not os.environ.get("REDIS_URL"):
+        return False
+    client = redis_client or _connect()
+    owned = redis_client is None
+    try:
+        return bool(client.delete(circuit_key(now, fingerprint=fingerprint, period=period)))
+    except (OSError, RedisError, RuntimeError, TimeoutError, TypeError, ValueError) as exc:
+        logger.warning(
+            "OpenRouter key-limit circuit could not be closed: %s", type(exc).__name__
         )
         return False
     finally:
@@ -173,9 +210,11 @@ __all__ = [
     "OpenRouterKeyLimitCircuitOpen",
     "attempt_period_is_current",
     "billing_period",
+    "close_circuit",
     "circuit_is_open",
     "circuit_key",
     "is_openrouter_key_limit_error",
+    "key_fingerprint",
     "raise_if_circuit_open",
     "trip_circuit",
 ]

@@ -500,6 +500,11 @@ async def generate_image(
     """
     import asyncio
 
+    # Image generation and its policy review share the OpenRouter key with text
+    # generation. Avoid reserving budget or starting any provider fallback while
+    # the fleet-wide monthly key-limit circuit is open.
+    openrouter_key_limit.raise_if_circuit_open()
+
     # 비용 가드: 이미지 생성 호출 예산 확인. 차단 시 이미지 없이 진행한다 — 본문은 유지되고,
     # 호출부는 이미 ("", "") 반환(=이미지 없음)을 정상 처리하므로 기존 실패 경로를 재사용한다.
     from app.services import cost_guard

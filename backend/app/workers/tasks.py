@@ -1507,8 +1507,21 @@ def _terminal_attempt_is_unchanged(
         return False
     if (
         previous.get("reason") == openrouter_key_limit.OPENROUTER_KEY_LIMIT_EXCEEDED_CODE
-        and not openrouter_key_limit.attempt_period_is_current(
-            previous.get("provider_limit_period")
+        and (
+            not openrouter_key_limit.attempt_period_is_current(
+                previous.get("provider_limit_period")
+            )
+            or (
+                isinstance(previous.get("provider_key_fingerprint"), str)
+                and (
+                    previous.get("provider_key_fingerprint")
+                    != openrouter_key_limit.key_fingerprint()
+                    or not openrouter_key_limit.circuit_is_open(
+                        fingerprint=previous.get("provider_key_fingerprint"),
+                        period=previous.get("provider_limit_period"),
+                    )
+                )
+            )
         )
     ):
         return False
@@ -1690,6 +1703,7 @@ def _remember_generation_attempt(
     }
     if reason == openrouter_key_limit.OPENROUTER_KEY_LIMIT_EXCEEDED_CODE:
         attempt["provider_limit_period"] = openrouter_key_limit.billing_period(observed_at)
+        attempt["provider_key_fingerprint"] = openrouter_key_limit.key_fingerprint()
     if GENERATION_BUDGET_KEY in previous:
         attempt[GENERATION_BUDGET_KEY] = previous[GENERATION_BUDGET_KEY]
     if (
@@ -6196,6 +6210,22 @@ def _generation_failure_notify(
     return requested and limit_notification_owner
 
 
+def _close_key_limit_circuit_after_probe(
+    stored_attempt: dict[str, Any], outcome: GenerationItemState
+) -> None:
+    """Close only the circuit disproved by a successful explicit provider probe."""
+
+    if (
+        outcome in (GenerationItemState.SUCCEEDED, GenerationItemState.PARTIAL)
+        and stored_attempt.get("reason")
+        == openrouter_key_limit.OPENROUTER_KEY_LIMIT_EXCEEDED_CODE
+    ):
+        openrouter_key_limit.close_circuit(
+            fingerprint=stored_attempt.get("provider_key_fingerprint"),
+            period=stored_attempt.get("provider_limit_period"),
+        )
+
+
 def _run_generation_item(
     db,
     recorder,
@@ -6907,6 +6937,10 @@ def regenerate_content_item(self, content_id: str):
                 )
                 raise
 
+            # The writer/reviewer reached the provider successfully. A separate
+            # image shortfall may still make the item PARTIAL, but the bounded
+            # probe has nevertheless disproved the stored key-limit condition.
+            _close_key_limit_circuit_after_probe(stored_attempt, outcome)
             if outcome == GenerationItemState.DISCARDED:
                 finish_explicit_run(db, self, item_id, OperationRunState.CANCELLED)
                 return
@@ -7453,7 +7487,9 @@ def generate_content_image(self, content_id: str):
                 release_generation_claim(db, item_id, claim_token)
                 db.commit()
             limit_notification_owner = True
-            if openrouter_key_limit.is_openrouter_key_limit_error(exc):
+            if openrouter_key_limit.is_openrouter_key_limit_error(exc) or isinstance(
+                exc, openrouter_key_limit.OpenRouterKeyLimitCircuitOpen
+            ):
                 code, message, limit_notification_owner = _classify_generation_exception(exc)
                 if "philosophy" in locals() and philosophy is not None:
                     _remember_generation_attempt(db, item, philosophy, code, message=message)

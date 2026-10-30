@@ -87,6 +87,28 @@ def test_openrouter_key_limit_is_terminal_only_for_its_billing_period(monkeypatc
     assert _eligible(monkeypatch, item, philosophy) is True
 
 
+def test_openrouter_terminal_tracks_stored_circuit_and_key(monkeypatch):
+    philosophy = _philosophy()
+    attempt = {
+        "reason": "OPENROUTER_KEY_LIMIT_EXCEEDED",
+        "retry_class": "OPERATOR_REQUIRED",
+        "provider_limit_period": "2026-10",
+        "provider_key_fingerprint": "fingerprint-a",
+    }
+    item = _item(attempt, philosophy=philosophy)
+    monkeypatch.setattr(tasks.openrouter_key_limit, "billing_period", lambda *_a: "2026-10")
+    monkeypatch.setattr(tasks.openrouter_key_limit, "key_fingerprint", lambda: "fingerprint-a")
+    monkeypatch.setattr(tasks.openrouter_key_limit, "circuit_is_open", lambda **_kw: True)
+    assert tasks._terminal_attempt_is_unchanged(item, philosophy) is True
+
+    monkeypatch.setattr(tasks.openrouter_key_limit, "circuit_is_open", lambda **_kw: False)
+    assert tasks._terminal_attempt_is_unchanged(item, philosophy) is False
+
+    monkeypatch.setattr(tasks.openrouter_key_limit, "circuit_is_open", lambda **_kw: True)
+    monkeypatch.setattr(tasks.openrouter_key_limit, "key_fingerprint", lambda: "fingerprint-b")
+    assert tasks._terminal_attempt_is_unchanged(item, philosophy) is False
+
+
 def test_operator_decides_references_and_rejected_body_are_terminal(monkeypatch):
     philosophy = _philosophy()
     for attempt in (

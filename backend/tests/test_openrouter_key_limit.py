@@ -37,6 +37,9 @@ class _Redis:
     def exists(self, key):
         return int(key in self.values)
 
+    def delete(self, key):
+        return int(self.values.pop(key, None) is not None)
+
 
 def test_detects_only_the_specific_openrouter_permission_error():
     exact = _permission("Key limit exceeded (monthly limit)")
@@ -82,6 +85,21 @@ def test_circuit_is_key_and_month_scoped(monkeypatch):
     assert openrouter_key_limit.circuit_is_open(now=october, redis_client=client) is False
 
 
+def test_successful_probe_can_close_exact_key_month_circuit(monkeypatch):
+    client = _Redis()
+    october = datetime(2026, 10, 30, tzinfo=UTC)
+    monkeypatch.setattr(openrouter_key_limit.settings, "OPENROUTER_API_KEY", "key-a")
+    fingerprint = openrouter_key_limit.key_fingerprint()
+    assert openrouter_key_limit.trip_circuit(now=october, redis_client=client) is True
+
+    assert openrouter_key_limit.close_circuit(
+        redis_client=client, fingerprint=fingerprint, period="2026-10"
+    ) is True
+    assert openrouter_key_limit.circuit_is_open(
+        redis_client=client, fingerprint=fingerprint, period="2026-10"
+    ) is False
+
+
 def test_attempt_period_rolls_at_utc_month_boundary():
     october = datetime(2026, 10, 31, 23, 59, tzinfo=UTC)
     november = datetime(2026, 11, 1, tzinfo=UTC)
@@ -123,6 +141,22 @@ def test_first_limit_detector_pages_even_in_a_quiet_recovery_sweep():
     ) is False
 
 
+def test_successful_operator_probe_closes_stored_key_month(monkeypatch):
+    closed = []
+    monkeypatch.setattr(
+        openrouter_key_limit, "close_circuit", lambda **kwargs: closed.append(kwargs)
+    )
+    attempt = {
+        "reason": "OPENROUTER_KEY_LIMIT_EXCEEDED",
+        "provider_key_fingerprint": "fingerprint-a",
+        "provider_limit_period": "2026-10",
+    }
+
+    tasks._close_key_limit_circuit_after_probe(attempt, tasks.GenerationItemState.SUCCEEDED)
+
+    assert closed == [{"fingerprint": "fingerprint-a", "period": "2026-10"}]
+
+
 def test_image_key_limit_does_not_buy_safety_or_provider_fallbacks(monkeypatch):
     response = httpx.Response(403, request=_REQUEST, text='{"error":"Key limit exceeded"}')
     error = httpx.HTTPStatusError(
@@ -155,3 +189,13 @@ def test_image_key_limit_does_not_buy_safety_or_provider_fallbacks(monkeypatch):
     with pytest.raises(httpx.HTTPStatusError, match="Key limit exceeded"):
         asyncio.run(run())
     assert calls == 1
+
+
+def test_image_generation_checks_key_limit_circuit_before_budget(monkeypatch):
+    def circuit_open():
+        raise openrouter_key_limit.OpenRouterKeyLimitCircuitOpen("already open")
+
+    monkeypatch.setattr(openrouter_key_limit, "raise_if_circuit_open", circuit_open)
+
+    with pytest.raises(openrouter_key_limit.OpenRouterKeyLimitCircuitOpen):
+        asyncio.run(image_engine.generate_image(ContentType.HEALTH, "hospital"))
