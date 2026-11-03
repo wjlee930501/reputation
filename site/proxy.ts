@@ -2,15 +2,20 @@ import { NextResponse, type NextRequest } from 'next/server.js'
 
 import { getApiBase } from './lib/config.ts'
 import {
+  canonicalHostRedirectEnabled,
+  decideCanonicalHostTarget,
   decideCanonicalRedirect,
   decideRewrite,
   getPrimaryHostnames,
   isPrimaryHost,
   isReservedPath,
   normalizeHostname,
+  platformSlugPathCandidate,
   resolveRequestHost,
   shouldFailClosedCustomHost,
 } from './lib/host-routing.ts'
+import { aiTrafficEvent, logAiTraffic } from './lib/ai-traffic.ts'
+import { canonicalBase } from './lib/site-url.ts'
 
 // 병원 커스텀 도메인(CNAME → 플랫폼 LB) 요청을 /{slug} 허브로 rewrite하는 어댑터.
 // 판정 로직은 lib/host-routing.ts(순수 함수)에 있고 여기서는 호스트 해석만 한다.
@@ -26,6 +31,8 @@ const RESOLVE_TIMEOUT_MS = 5000
 
 interface CacheEntry {
   slug: string | null
+  // 병원 자기 도메인. 정본 호스트 리다이렉트만 쓴다 — 없거나 모르면 리다이렉트하지 않는다.
+  aeoDomain?: string | null
   freshUntil: number
   staleUntil: number
 }
@@ -33,7 +40,7 @@ interface CacheEntry {
 const domainSlugCache = new Map<string, CacheEntry>()
 
 type DomainResolveResult =
-  | { status: 'found'; slug: string }
+  | { status: 'found'; slug: string; aeoDomain: string | null }
   | { status: 'not-found' }
   | { status: 'unavailable'; staleSlug: string | null }
 
@@ -54,7 +61,9 @@ function isExpectedDomainLookupFailure(error: unknown): boolean {
 async function resolveSlugForDomain(hostname: string): Promise<DomainResolveResult> {
   const cached = domainSlugCache.get(hostname)
   if (cached && cached.freshUntil > Date.now()) {
-    return cached.slug ? { status: 'found', slug: cached.slug } : { status: 'not-found' }
+    return cached.slug
+      ? { status: 'found', slug: cached.slug, aeoDomain: cached.aeoDomain ?? null }
+      : { status: 'not-found' }
   }
 
   const apiBase = getApiBase(false)
@@ -82,12 +91,17 @@ async function resolveSlugForDomain(hostname: string): Promise<DomainResolveResu
     if (!slug) {
       return unavailableResult(hostname)
     }
+    const aeoDomain =
+      typeof data === 'object' && data !== null && 'aeo_domain' in data && typeof data.aeo_domain === 'string'
+        ? normalizeHostname(data.aeo_domain)
+        : null
     domainSlugCache.set(hostname, {
       slug,
+      aeoDomain,
       freshUntil: Date.now() + POSITIVE_TTL_MS,
       staleUntil: Date.now() + STALE_POSITIVE_TTL_MS,
     })
-    return { status: 'found', slug }
+    return { status: 'found', slug, aeoDomain }
   } catch (error) {
     if (!isExpectedDomainLookupFailure(error)) throw error
     return unavailableResult(hostname)
@@ -102,6 +116,66 @@ export function __setDomainSlugCacheEntryForTest(hostname: string, entry: CacheE
   domainSlugCache.set(hostname, entry)
 }
 
+function canonicalHostTargetFor(
+  requestHostname: string,
+  slug: string,
+  aeoDomain: string | null,
+): string | null {
+  if (!canonicalHostRedirectEnabled(process.env.SITE_CANONICAL_HOST_REDIRECT)) return null
+  let origin: string
+  try {
+    origin = canonicalBase({ aeo_domain: aeoDomain }, slug)
+  } catch {
+    return null
+  }
+  return decideCanonicalHostTarget(requestHostname, origin)
+}
+
+function permanentRedirect(request: NextRequest, origin: string, pathname: string): NextResponse {
+  const url = new URL(`${pathname}${request.nextUrl.search}`, origin)
+  return NextResponse.redirect(url, 308)
+}
+
+/**
+ * 플랫폼 호스트의 `/{slug}/...`를 병원 정본 호스트로 영구 이동한다.
+ *
+ * 운영 플랫폼 호스트(NEXT_PUBLIC_SITE_URL의 DNS 이름)에서만 동작한다. 로컬·run.app 호스트는
+ * 경로형이 정상 접근 경로이므로 손대지 않는다. 역조회가 병원을 확정하지 못하면(404·장애)
+ * 아무것도 바꾸지 않는다 — 페이지 자체의 404/503 처리를 그대로 둔다.
+ */
+async function platformPathCanonicalRedirect(
+  request: NextRequest,
+  effectiveHost: string | null,
+): Promise<NextResponse | null> {
+  if (!canonicalHostRedirectEnabled(process.env.SITE_CANONICAL_HOST_REDIRECT)) return null
+  const hostname = normalizeHostname(effectiveHost)
+  const platformHostname = platformDnsHostname()
+  if (!hostname || !platformHostname || hostname !== platformHostname) return null
+
+  const candidate = platformSlugPathCandidate(request.nextUrl.pathname)
+  if (!candidate) return null
+
+  const resolution = await resolveSlugForDomain(`${candidate.slug}.${platformHostname}`)
+  if (resolution.status !== 'found' || resolution.slug !== candidate.slug) return null
+  const target = canonicalHostTargetFor(hostname, resolution.slug, resolution.aeoDomain)
+  if (!target) return null
+  return permanentRedirect(request, target, candidate.rest)
+}
+
+function platformDnsHostname(): string | null {
+  const value = process.env.NEXT_PUBLIC_SITE_URL?.trim()
+  if (!value) return null
+  let hostname: string
+  try {
+    hostname = new URL(value).hostname.toLowerCase()
+  } catch {
+    return null
+  }
+  if (!hostname.includes('.') || hostname === 'localhost' || hostname.endsWith('.localhost')) return null
+  if (/^[0-9.]+$/.test(hostname) || hostname.includes(':')) return null
+  return hostname
+}
+
 export async function proxy(request: NextRequest) {
   const host = request.headers.get('host')
   const primaryHostnames = getPrimaryHostnames(process.env.NEXT_PUBLIC_SITE_URL)
@@ -110,7 +184,18 @@ export async function proxy(request: NextRequest) {
     request.headers.get('x-forwarded-host'),
     primaryHostnames,
   )
-  if (isPrimaryHost(effectiveHost, primaryHostnames)) return NextResponse.next()
+  logAiTraffic(
+    aiTrafficEvent({
+      host: effectiveHost,
+      pathname: request.nextUrl.pathname,
+      userAgent: request.headers.get('user-agent'),
+      referer: request.headers.get('referer'),
+      utmSource: request.nextUrl.searchParams.get('utm_source'),
+    }),
+  )
+  if (isPrimaryHost(effectiveHost, primaryHostnames)) {
+    return (await platformPathCanonicalRedirect(request, effectiveHost)) ?? NextResponse.next()
+  }
 
   const pathname = request.nextUrl.pathname
   // 예약 경로는 백엔드 조회 없이 즉시 통과.
@@ -138,6 +223,17 @@ export async function proxy(request: NextRequest) {
     const res = new NextResponse('Not found', { status: 404 })
     res.headers.set('cache-control', 'no-store')
     return res
+  }
+
+  // 관리형 서브도메인에서 자기 도메인으로만 옮긴다. 자기 도메인을 모르면(옛 캐시·응답에 값 없음)
+  // 지금 호스트를 정본으로 두고 아무것도 하지 않는다.
+  const hostTarget =
+    resolution.status === 'found' && resolution.aeoDomain
+      ? canonicalHostTargetFor(hostname, resolution.slug, resolution.aeoDomain)
+      : null
+  if (hostTarget) {
+    const publicPath = decideCanonicalRedirect(effectiveHost, pathname, slug, primaryHostnames) ?? pathname
+    return permanentRedirect(request, hostTarget, publicPath)
   }
 
   const canonicalRedirectPath = decideCanonicalRedirect(

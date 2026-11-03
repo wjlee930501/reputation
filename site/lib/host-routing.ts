@@ -166,3 +166,80 @@ export function shouldFailClosedCustomHost(
   const clinicLlms = /^\/([^/]+)\/llms\.txt\/?$/.exec(pathname)
   return clinicLlms !== null && clinicLlms[1] !== slugOrNull
 }
+
+// 플랫폼 호스트의 최상위 정적 라우트. 병원 slug가 아니므로 호스트 역조회를 하지 않는다.
+// 백엔드 예약 slug 목록과 같은 집합이라(site/app 최상위 정적 라우트 = 예약 slug) 여기서
+// 빠진 이름이 있어도 역조회가 404를 돌려 그대로 통과한다 — 이 목록은 조회 절약용이다.
+const PLATFORM_TOP_LEVEL_ROUTES = new Set([
+  'ai-diagnosis',
+  'api',
+  'brochure',
+  'contact',
+  'favicon',
+  'fonts',
+  'landing',
+  'privacy',
+  'terms',
+  '_next',
+])
+
+/**
+ * 플랫폼 호스트의 `/{slug}/...` 경로에서 병원 slug 후보와 나머지 공개 경로를 뽑는다.
+ *
+ * 플랫폼 경로형 URL(`reputation.motionlabs.kr/{slug}/contents/...`)은 canonical이 병원
+ * 호스트를 가리키는데도 200으로 응답해, 같은 글이 두 호스트에 색인 후보로 남는다.
+ * 이 함수는 리다이렉트 대상 후보만 판정하고, 실제 병원 여부는 호스트 역조회가 정한다.
+ *
+ * @returns `{ slug, rest }` (rest는 `/`로 시작하는 병원 공개 경로) 또는 null.
+ */
+export function platformSlugPathCandidate(pathname: string): { slug: string; rest: string } | null {
+  if (!pathname.startsWith('/')) return null
+  const segments = pathname.split('/')
+  const first = segments[1] ?? ''
+  if (!first || first.includes('.')) return null
+  if (PLATFORM_TOP_LEVEL_ROUTES.has(first)) return null
+  if (!SLUG_PATTERN.test(first)) return null
+  const restPath = pathname.slice(first.length + 1)
+  const rest = restPath && restPath !== '/' ? restPath : '/'
+  // 병원 하위 경로라도 플랫폼 소유 경로(_next 등)는 건드리지 않는다.
+  if (rest !== '/' && isReservedPath(rest) && !/^\/llms\.txt\/?$/.test(rest)) return null
+  return { slug: first, rest }
+}
+
+/**
+ * 병원 공개 페이지를 canonical 호스트로 영구 이동할 대상 origin을 정한다(순수 함수).
+ *
+ * | 요청 호스트            | 조건                                      | 결과                |
+ * |------------------------|-------------------------------------------|---------------------|
+ * | 플랫폼 호스트 `/{slug}` | 병원 공개 중                              | 병원 canonical 호스트 |
+ * | 관리형 서브도메인      | 병원이 자기 도메인(aeo_domain)으로 공개 중 | 자기 도메인         |
+ * | 자기 도메인            | -                                         | null (이미 정본)     |
+ *
+ * canonical 태그만으로는 중복 URL이 색인 후보로 남는다. 리다이렉트는 크롤러가 정본 한 곳에
+ * 신호를 모으게 한다. 대상이 요청 호스트와 같으면 null(루프 방지).
+ *
+ * @param canonicalOrigin 병원 canonical origin (`https://host`), 계산 실패 시 null
+ */
+export function decideCanonicalHostTarget(
+  requestHostname: string | null,
+  canonicalOrigin: string | null,
+): string | null {
+  if (!requestHostname || !canonicalOrigin) return null
+  let target: URL
+  try {
+    target = new URL(canonicalOrigin)
+  } catch {
+    return null
+  }
+  if (target.protocol !== 'https:') return null
+  if (target.pathname !== '/' && target.pathname !== '') return null
+  const targetHostname = target.hostname.toLowerCase()
+  if (!targetHostname || targetHostname === requestHostname.toLowerCase()) return null
+  return target.origin
+}
+
+/** 정본 호스트 리다이렉트 kill switch. `SITE_CANONICAL_HOST_REDIRECT=0`이면 끈다. */
+export function canonicalHostRedirectEnabled(value: string | null | undefined): boolean {
+  const normalized = (value ?? '').trim().toLowerCase()
+  return !(normalized === '0' || normalized === 'false' || normalized === 'off')
+}

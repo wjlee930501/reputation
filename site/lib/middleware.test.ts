@@ -153,3 +153,113 @@ test('unknown custom hosts cannot serve clinic-qualified llms routes', async () 
   const response = await middleware(requestFor('unknown.example.com', '/clinic-b/llms.txt'))
   assert.equal(response.status, 404)
 })
+
+function byDomainFetch(records: Record<string, { slug: string; aeo_domain: string | null }>): typeof fetch {
+  return (async (input: RequestInfo | URL) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+    const host = decodeURIComponent(url.slice(url.lastIndexOf('/') + 1))
+    const record = records[host]
+    if (!record) return new Response('Not found', { status: 404 })
+    return Response.json({ slug: record.slug, name: 'clinic', aeo_domain: record.aeo_domain })
+  }) as typeof fetch
+}
+
+test('platform /{slug} paths move permanently to the managed subdomain', async () => {
+  resetEnvAndCache()
+  globalThis.fetch = byDomainFetch({
+    'jang-clinic.reputation.motionlabs.kr': { slug: 'jang-clinic', aeo_domain: null },
+  })
+
+  const hub = await middleware(requestFor('reputation.motionlabs.kr', '/jang-clinic'))
+  const article = await middleware(
+    requestFor('reputation.motionlabs.kr', '/jang-clinic/contents/abc?utm_source=chatgpt.com'),
+  )
+  const llms = await middleware(requestFor('reputation.motionlabs.kr', '/jang-clinic/llms.txt'))
+
+  assert.equal(hub.status, 308)
+  assert.equal(hub.headers.get('location'), 'https://jang-clinic.reputation.motionlabs.kr/')
+  assert.equal(article.status, 308)
+  assert.equal(
+    article.headers.get('location'),
+    'https://jang-clinic.reputation.motionlabs.kr/contents/abc?utm_source=chatgpt.com',
+  )
+  assert.equal(llms.headers.get('location'), 'https://jang-clinic.reputation.motionlabs.kr/llms.txt')
+})
+
+test('platform /{slug} paths move to the custom domain when the clinic serves one', async () => {
+  resetEnvAndCache()
+  globalThis.fetch = byDomainFetch({
+    'jang-clinic.reputation.motionlabs.kr': { slug: 'jang-clinic', aeo_domain: 'jangclinic.co.kr' },
+  })
+
+  const res = await middleware(requestFor('reputation.motionlabs.kr', '/jang-clinic/visit'))
+
+  assert.equal(res.status, 308)
+  assert.equal(res.headers.get('location'), 'https://jangclinic.co.kr/visit')
+})
+
+test('managed subdomain moves to the custom domain; the custom domain itself is served', async () => {
+  resetEnvAndCache()
+  globalThis.fetch = byDomainFetch({
+    'jang-clinic.reputation.motionlabs.kr': { slug: 'jang-clinic', aeo_domain: 'jangclinic.co.kr' },
+    'jangclinic.co.kr': { slug: 'jang-clinic', aeo_domain: 'jangclinic.co.kr' },
+  })
+
+  const sub = await middleware(requestFor('jang-clinic.reputation.motionlabs.kr', '/contents'))
+  const subInternal = await middleware(
+    requestFor('jang-clinic.reputation.motionlabs.kr', '/jang-clinic/doctor'),
+  )
+  const custom = await middleware(requestFor('jangclinic.co.kr', '/contents'))
+  const reserved = await middleware(
+    requestFor('jang-clinic.reputation.motionlabs.kr', '/.well-known/reputation-health'),
+  )
+
+  assert.equal(sub.status, 308)
+  assert.equal(sub.headers.get('location'), 'https://jangclinic.co.kr/contents')
+  assert.equal(subInternal.headers.get('location'), 'https://jangclinic.co.kr/doctor')
+  assert.equal(custom.status, 200)
+  assert.match(custom.headers.get('x-middleware-rewrite') ?? '', /\/jang-clinic\/contents$/)
+  assert.equal(reserved.status, 200)
+  assert.equal(reserved.headers.get('location'), null)
+})
+
+test('platform routes, unknown slugs and lookup outages are left alone', async () => {
+  resetEnvAndCache()
+  let calls = 0
+  const inner = byDomainFetch({})
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    calls += 1
+    return inner(input, init)
+  }) as typeof fetch
+
+  for (const path of ['/', '/ai-diagnosis', '/contact', '/privacy', '/llms.txt', '/favicon/jang']) {
+    const res = await middleware(requestFor('reputation.motionlabs.kr', path))
+    assert.equal(res.headers.get('location'), null, path)
+  }
+  assert.equal(calls, 0)
+
+  const unknown = await middleware(requestFor('reputation.motionlabs.kr', '/no-such-clinic'))
+  assert.equal(unknown.headers.get('location'), null)
+
+  resetEnvAndCache()
+  globalThis.fetch = (async () => new Response('down', { status: 500 })) as typeof fetch
+  const outage = await middleware(requestFor('reputation.motionlabs.kr', '/jang-clinic'))
+  assert.equal(outage.headers.get('location'), null)
+})
+
+test('canonical host redirect kill switch keeps the previous behaviour', async () => {
+  resetEnvAndCache()
+  process.env.SITE_CANONICAL_HOST_REDIRECT = '0'
+  globalThis.fetch = byDomainFetch({
+    'jang-clinic.reputation.motionlabs.kr': { slug: 'jang-clinic', aeo_domain: 'jangclinic.co.kr' },
+  })
+  try {
+    const platform = await middleware(requestFor('reputation.motionlabs.kr', '/jang-clinic'))
+    const sub = await middleware(requestFor('jang-clinic.reputation.motionlabs.kr', '/contents'))
+    assert.equal(platform.headers.get('location'), null)
+    assert.equal(sub.status, 200)
+    assert.match(sub.headers.get('x-middleware-rewrite') ?? '', /\/jang-clinic\/contents$/)
+  } finally {
+    Reflect.deleteProperty(process.env, 'SITE_CANONICAL_HOST_REDIRECT')
+  }
+})

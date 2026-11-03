@@ -36,6 +36,30 @@ OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 # 같은 의미). OpenAI·Google·Anthropic 모델은 공급자 네이티브 검색으로 실행된다.
 WEB_SEARCH_TOOL = {"type": "openrouter:web_search"}
 
+
+def web_search_user_location() -> dict[str, str] | None:
+    """측정 검색에 넘길 대략적 위치. 설정이 비면 None(도구를 종전 그대로 보낸다)."""
+    country = settings.SOV_WEB_SEARCH_USER_LOCATION_COUNTRY.strip().upper()
+    if not country:
+        return None
+    location = {"type": "approximate", "country": country}
+    timezone = settings.SOV_WEB_SEARCH_USER_LOCATION_TIMEZONE.strip()
+    if timezone:
+        location["timezone"] = timezone
+    return location
+
+
+def measurement_web_search_tool() -> dict[str, Any]:
+    """측정 답변에 주는 서버 검색 도구.
+
+    위치 설정이 없으면 `WEB_SEARCH_TOOL`과 같은 값이다 — 기준선을 조용히 바꾸지 않는다.
+    OpenRouter 문서상 `user_location`은 네이티브 공급자 검색에서만 반영되고 Exa 등에서는 무시된다.
+    """
+    location = web_search_user_location()
+    if location is None:
+        return dict(WEB_SEARCH_TOOL)
+    return {**WEB_SEARCH_TOOL, "parameters": {"user_location": location}}
+
 _clients_lock = threading.Lock()
 _sync_clients: dict[float, OpenAI] = {}
 _async_clients: dict[float, AsyncOpenAI] = {}
@@ -472,6 +496,8 @@ def generate_image(
 __all__ = (
     "OPENROUTER_BASE_URL",
     "WEB_SEARCH_TOOL",
+    "measurement_web_search_tool",
+    "web_search_user_location",
     "configured",
     "sync_client",
     "async_client",

@@ -16,6 +16,7 @@ import {
   SOURCE_TYPE_LABELS,
   TYPE_LABELS,
 } from '@/lib/api'
+import { physicianNodeId, resolveClinicPhysicians } from '@/lib/clinic-physicians'
 import { buildClinicThemeStyle } from '@/lib/clinic-theme'
 import {
   articleHeadingId,
@@ -179,7 +180,23 @@ export default async function ContentDetailPage({ params: paramsPromise }: Props
   const dateModified = content.body_updated_at || content.published_at || undefined
 
   // 모든 article 공통 base. type별 추가 schema는 jsonLd 배열에 별도로 push.
-  const physicianId = `${hospitalRootUrl}/doctor#physician`
+  // 원장 페이지의 Physician 노드와 같은 `@id`를 써야 답변 엔진이 두 페이지의 원장을 한 사람으로
+  // 묶는다. 예전 값(원장 페이지 경로 + #physician)은 원장 페이지 어디에도 없는 노드였다.
+  const clinicPhysicians = resolveClinicPhysicians(hospital)
+  const leadIndex = Math.max(
+    0,
+    clinicPhysicians.findIndex((physician) => physician.isRepresentative),
+  )
+  const leadPhysician = clinicPhysicians[leadIndex] ?? null
+  const performerNode = leadPhysician
+    ? {
+        '@type': 'Physician',
+        '@id': physicianNodeId(hospitalRootUrl, leadPhysician, leadIndex),
+        name: leadPhysician.name,
+      }
+    : hospital.director_name
+      ? { '@type': 'Physician', name: hospital.director_name }
+      : undefined
   const clinicId = `${hospitalRootUrl}#clinic`
   const articleImageUrl = resolveAssetUrl(content.image_url)
   const articleJsonLd: Record<string, unknown> = {
@@ -251,11 +268,7 @@ export default async function ContentDetailPage({ params: paramsPromise }: Props
       name: content.title,
       description: content.meta_description ?? undefined,
       url: articleUrl,
-      performer: {
-        '@type': 'Physician',
-        '@id': physicianId,
-        name: hospital.director_name,
-      },
+      performer: performerNode,
     })
   }
 

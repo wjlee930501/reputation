@@ -25,6 +25,8 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
       verification: ownershipVerificationMetadata(
         hospital.naver_site_verification,
         process.env.NEXT_PUBLIC_GOOGLE_SITE_VERIFICATION,
+        hospital.google_site_verification,
+        hospital.bing_site_verification,
       ),
     }
   } catch {

@@ -166,3 +166,16 @@ def test_monthly_report_guarantee_queries_are_registered_reads() -> None:
     assert "customer_ready" not in statements[0]  # 생성 시점 스냅샷은 읽지 않는다.
     assert "MONTHLY_REPORT_SAFETY_NET_FAILED" in statements[1]
     assert "report-repair:" in statements[2]
+
+
+def test_geo_queries_are_registered_read_only_selects() -> None:
+    """2026-11 GEO 점검: 인용 도메인 지형(q17)·참고자료 부착률(q18)·병원 간 같은 제목(q19)."""
+
+    assert [len(ops_sql_report.QUERIES[name]) for name in ("q17", "q18", "q19")] == [2, 1, 1]
+    for name in ("q17", "q18", "q19"):
+        for sql in ops_sql_report.QUERIES[name]:
+            assert sql.strip().upper().startswith("SELECT")
+    assert "competitor_only" in ops_sql_report.QUERIES["q17"][0]
+    assert "references_list" in ops_sql_report.QUERIES["q18"][0]
+    assert "count(DISTINCT t.hospital_id) > 1" in ops_sql_report.QUERIES["q19"][0]
+    assert ops_sql_report.parse_args(["--only=q17", "--only=q19"]).only == ["q17", "q19"]

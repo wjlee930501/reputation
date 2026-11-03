@@ -535,6 +535,12 @@ class Settings(BaseSettings):
     # 프로덕션은 Responses API + web_search tool만 허용한다. False는 모델 recall이므로
     # _validate_production_config에서 부팅을 차단한다.
     OPENAI_CHATGPT_USE_WEB_SEARCH: bool = True
+    # 측정 검색 도구에 넘기는 대략적 사용자 위치(OpenRouter `user_location`, 네이티브 검색만 반영).
+    # 빈 값이면 넘기지 않는다(기본, 지금 기준선 그대로). 국가 코드(예: "KR")를 넣으면 측정 정책
+    # 지문이 바뀌어 그 뒤 측정은 이전 달과 비교되지 않는다 — 대표 결정 뒤 월초 창 밖에서 켠다.
+    # 소비자 ChatGPT·Gemini는 접속 위치로 지역 결과를 고르므로, 한국 병원 측정은 한국 위치가 더 가깝다.
+    SOV_WEB_SEARCH_USER_LOCATION_COUNTRY: str = ""
+    SOV_WEB_SEARCH_USER_LOCATION_TIMEZONE: str = "Asia/Seoul"
 
     # Gemini — SoV (OpenRouter 경유, google/ 슬러그)
     # 답변 모델이므로 OpenAI와 동일하게 **버전 고정**한다. `gemini-flash-latest`는

@@ -4,10 +4,14 @@ import { notFound } from 'next/navigation'
 
 import { fetchContents, fetchHospital, resolveAssetUrl, HospitalNotFoundError, type ContentSummary } from '@/lib/api'
 import { getApiBase } from '@/lib/config'
+import { hasWeeklyHours } from '@/lib/business-hours'
+import { physicianNameSuffix, resolveClinicPhysicians } from '@/lib/clinic-physicians'
+import { fullClinicAddress } from '@/lib/clinic-schema'
 import { buildClinicThemeStyle } from '@/lib/clinic-theme'
 import { countLabel } from '@/lib/clinic-counters'
 import { REVALIDATE_SECONDS } from '@/lib/fetch-policy'
 import { canonicalHospitalUrl } from '@/lib/site-url'
+import { buildTreatmentAnswer } from '@/lib/treatment-answer'
 import { buildTreatmentEmptyStatePaths } from '@/lib/treatment-empty-state'
 import {
   buildTreatmentSlug,
@@ -139,6 +143,22 @@ export default async function TreatmentPillarPage({ params: paramsPromise }: Pro
 
   const pageUrl = `${hospitalRootUrl}/treatments/${canonicalTreatmentSlug}`
 
+  // 지역 추천형 질문("{지역}에서 {진료} 받을 수 있는 병원")에 바로 답하는 사실 블록.
+  // 승인된 병원 정보로만 결정적으로 만든다 — lib/treatment-answer.ts.
+  const treatmentAnswer = buildTreatmentAnswer({
+    hospitalName: hospital.name,
+    treatmentName,
+    address: fullClinicAddress(hospital.address, hospital.address_detail),
+    specialties: hospital.specialties ?? [],
+    physicians: resolveClinicPhysicians(hospital).map((physician) => ({
+      name: physician.name,
+      suffix: physician.title || physicianNameSuffix(physician),
+      certifications: physician.credentials?.board_certifications ?? [],
+    })),
+    phone: hospital.phone,
+    hasWeeklyHours: hasWeeklyHours(hospital.business_hours),
+  })
+
   // 관련 글이 아직 없을 때 이 페이지가 빈 문서로 끝나지 않게 할 경로들 (P-A-2).
   const emptyStatePaths = buildTreatmentEmptyStatePaths({
     treatments,
@@ -213,6 +233,27 @@ export default async function TreatmentPillarPage({ params: paramsPromise }: Pro
               )}
             </div>
           </section>
+
+          {treatmentAnswer ? (
+            <section className="clinic-section clinic-treatment-answer" aria-labelledby="treatment-answer-heading">
+              <div className="clinic-section-inner">
+                <h2 id="treatment-answer-heading" className="clinic-section-heading">
+                  {treatmentAnswer.heading}
+                </h2>
+                <p className="clinic-section-lede">{treatmentAnswer.sentences.join(' ')}</p>
+                <dl className="clinic-treatment-answer-facts">
+                  {treatmentAnswer.facts.map((fact) => (
+                    <div key={fact.label}>
+                      <dt>{fact.label}</dt>
+                      <dd>
+                        {fact.linksToVisit ? <Link href={`${hospitalRootUrl}/visit`}>{fact.value}</Link> : fact.value}
+                      </dd>
+                    </div>
+                  ))}
+                </dl>
+              </div>
+            </section>
+          ) : null}
 
           <section className="clinic-section">
             <div className="clinic-section-inner">

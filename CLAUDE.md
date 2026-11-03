@@ -1,5 +1,14 @@
 # Re:putation — 현재 프로젝트 개발 안내
 
+## 미배포 변경 — 2026-11-03 GEO 노출 보완 (`claude/geo-visibility-improvements`)
+
+로컬 구현·검증만 끝났다. 배포 전이다. DB head가 `0095_add_google_bing_site_verification`이 된다(추가형, 병원별 Google·Bing 소유 확인 토큰).
+Site는 플랫폼 `/{slug}/...`와 자기 도메인 병원의 관리형 서브도메인을 정본 호스트로 308 이동하고(끄는 값 `SITE_CANONICAL_HOST_REDIRECT=0`, 예약 경로 제외),
+AI 크롤러·AI 유입을 구조화 로그로 남기며, 진료 항목 페이지에 결정적 "진료 기본 정보" 블록을 싣는다. 노출 행동 근거에 인용 도메인 지형(답변 단위,
+`services/citation_landscape.py`)이 붙고, 읽기 전용 조회 `ops_sql_report` q17(인용 도메인)·q18(참고자료 부착률)·q19(병원 간 같은 제목)가 생겼다.
+측정 검색 위치 `SOV_WEB_SEARCH_USER_LOCATION_COUNTRY`는 기본 빈 값(끔)이고 끈 상태의 정책 지문은 그대로다 — 켜면 전월 비교가 끊기므로 대표 결정 뒤에 켠다.
+사람이 할 일(Search Console·Bing 등록, 로그 측정항목, 대표 결정 항목)은 [GEO 노출 보완](docs/ops/2026-11-03-geo-visibility-improvements.md)에 있다.
+
 ## 최신 운영 배포 — 2026-11-03 월간 보고서 1일 오전 마감
 
 코드 `76e09e55`를 main에 반영하고 API `00274-v8l`·Worker `00264-r86`·Beat `00259-9sl`·Admin `00115-rwt`에 배포했다(각 100% 트래픽).

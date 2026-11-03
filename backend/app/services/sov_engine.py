@@ -640,7 +640,11 @@ _EXECUTION_POLICY_KEYS = (
     "gemini_model",
     "judge_prompt_fingerprint",
     "judge_model",
+    "web_search_user_location",
 )
+# 켤 때만 스냅샷에 나타나는 실행 조건. 없으면 지문 재료에서도 빠져, 끈 상태의 지문·캐시 키가
+# 이 키를 도입하기 전과 같다(기존 기준선과 계속 비교된다).
+_OPTIONAL_EXECUTION_KEYS = frozenset({"web_search_user_location"})
 _QUERY_DESIGN_KEYS = (
     "query_design_version",
     "template_fingerprint",
@@ -700,6 +704,12 @@ def measurement_protocol(
         # 질의 설계. 실행을 막지는 않지만(저장된 질의로 잴 수 있다) 기간 비교는 막는다.
         **query_mapper.query_design(),
     }
+    user_location = openrouter.web_search_user_location()
+    if user_location is not None:
+        # 위치를 넘기면 답변 분포가 바뀌는 다른 측정이다. 끈 상태는 키 자체가 없다.
+        protocol["web_search_user_location"] = "|".join(
+            f"{key}={user_location[key]}" for key in sorted(user_location)
+        )
     optional_basis = {
         "measurement_window": measurement_window,
         "tracking_set_fingerprint": tracking_set_fingerprint,
@@ -721,6 +731,7 @@ def _execution_policy_keys_for_platform(platform: str | None) -> tuple[str, ...]
         "prompt_delivery",
         "judge_prompt_fingerprint",
         "judge_model",
+        "web_search_user_location",
     )
     if platform == "chatgpt":
         return common + (
@@ -742,7 +753,9 @@ def protocol_fingerprint(*, platform: str | None = None) -> str:
     """
     protocol = measurement_protocol()
     material = "|".join(
-        f"{key}={protocol[key]}" for key in _execution_policy_keys_for_platform(platform)
+        f"{key}={protocol[key]}"
+        for key in _execution_policy_keys_for_platform(platform)
+        if key in protocol or key not in _OPTIONAL_EXECUTION_KEYS
     )
     return hashlib.sha256(material.encode()).hexdigest()[:16]
 
@@ -954,7 +967,7 @@ async def _query_chatgpt_with_search_result(query: str) -> dict[str, Any]:
         response = await create_response(
             model=settings.OPENAI_MODEL_QUERY,
             # OpenRouter 서버 검색 도구 — openai/ 모델은 OpenAI 네이티브 검색으로 실행된다.
-            tools=[openrouter.WEB_SEARCH_TOOL],
+            tools=[openrouter.measurement_web_search_tool()],
             # 도구는 제공하되 강제하지 않는다 (측정 정책 v2). 매 요청 검색을 강제하면
             # 지역 병원 디렉터리를 긁어와 나열하게 되어, 환자가 실제로 받는 답변보다
             # 구조적으로 병원명이 많이 등장한다. 모델이 검색을 쓸지 고르는 것까지가
@@ -1046,7 +1059,7 @@ async def _query_gemini_result(query: str) -> dict[str, Any]:
             # 서버 검색 도구는 모델이 호출 여부를 고른다 — 도구 제공·강제하지 않는
             # v2 정책과 같은 의미다. google/ 모델은 OpenRouter가 Google 네이티브
             # 검색(grounding)으로 실행한다.
-            tools=[openrouter.WEB_SEARCH_TOOL],
+            tools=[openrouter.measurement_web_search_tool()],
             # usage.server_tool_use.web_search_requests를 받기 위해 usage 포함을 요청한다.
             extra_body={"usage": {"include": True}},
         )

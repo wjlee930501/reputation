@@ -1,5 +1,6 @@
 """읽기 전용 운영 조회: 자율 운영 지표(Q1~Q6), 배포 전 확인(Q7), 롤백 점검(Q8), 콘텐츠 게이트 지표(Q9~Q11),
-Phase 4 사전 조회(Q12~Q14), 월간 보고서 보장(Q15), D36·D37 배포 전 영향(Q16)을 JSON 한 줄씩 출력한다.
+Phase 4 사전 조회(Q12~Q14), 월간 보고서 보장(Q15), D36·D37 배포 전 영향(Q16),
+GEO 점검(Q17 인용 도메인 지형, Q18 참고자료 부착률, Q19 병원 간 같은 제목)을 JSON 한 줄씩 출력한다.
 
 새 세션의 트랜잭션에서 첫 문장으로 `SET TRANSACTION READ ONLY`를 실행해 DB 수준에서 쓰기를 막고,
 끝나면 롤백한다. 받은 세션에 이미 열린 트랜잭션이 있으면 먼저 롤백해 새로 시작한다::
@@ -651,6 +652,128 @@ QUERIES: dict[str, tuple[str, ...]] = {
         WHERE c.status = 'PUBLISHED'
           AND c.essence_check_summary->'post_publish_ai_review'->>'status' = 'FLAGGED'
           AND NOT (c.essence_check_summary ? 'post_publish_critical_alert')
+        """,
+    ),
+    # GEO: 최근 35일 성공 측정 답변이 인용한 도메인(답변 단위). 서비스 전체 상위 40개와
+    # 병원별 상위 5개. competitor_only = 병원 없이 경쟁 병원만 언급된 답변에서 인용된 수다 —
+    # 사이트 밖 보강 후보를 고르는 근거이며 인과가 아니다(`services/citation_landscape.py`와 같은 단위).
+    "q17": (
+        """
+        SELECT * FROM (
+
+        WITH answers AS (
+          SELECT r.id, r.hospital_id, r.ai_platform, r.is_mentioned,
+                 EXISTS (
+                   SELECT 1 FROM json_array_elements(
+                       CASE WHEN json_typeof(r.competitor_mentions) = 'array'
+                            THEN r.competitor_mentions ELSE '[]'::json END) cm
+                   WHERE (cm->>'is_mentioned') = 'true') AS competitor_mentioned,
+                 r.source_urls
+          FROM sov_records r
+          WHERE r.measured_at >= now() - interval '35 days'
+            AND coalesce(r.measurement_status, 'SUCCESS') = 'SUCCESS'
+            AND jsonb_typeof(r.source_urls) = 'array'
+        ), cited AS (
+          SELECT DISTINCT a.id, a.hospital_id, a.ai_platform, a.is_mentioned, a.competitor_mentioned,
+                 regexp_replace(lower(substring(u FROM '^[A-Za-z]+://([^/:?#]+)')), '^(www\.|m\.)', '')
+                   AS domain
+          FROM answers a, jsonb_array_elements_text(a.source_urls) u
+        )
+        SELECT domain,
+               count(*) AS answers,
+               count(DISTINCT hospital_id) AS hospitals,
+               count(*) FILTER (WHERE ai_platform = 'chatgpt') AS chatgpt_answers,
+               count(*) FILTER (WHERE ai_platform = 'gemini') AS gemini_answers,
+               count(*) FILTER (WHERE is_mentioned IS TRUE) AS hospital_mentioned,
+               count(*) FILTER (WHERE is_mentioned IS FALSE AND competitor_mentioned) AS competitor_only
+        FROM cited
+        WHERE domain IS NOT NULL AND domain <> ''
+        GROUP BY domain
+        ORDER BY answers DESC, domain
+        LIMIT 40
+        ) AS report
+        ORDER BY answers DESC, domain
+        """,
+        """
+        SELECT * FROM (
+
+        WITH answers AS (
+          SELECT r.id, r.hospital_id, r.is_mentioned,
+                 EXISTS (
+                   SELECT 1 FROM json_array_elements(
+                       CASE WHEN json_typeof(r.competitor_mentions) = 'array'
+                            THEN r.competitor_mentions ELSE '[]'::json END) cm
+                   WHERE (cm->>'is_mentioned') = 'true') AS competitor_mentioned,
+                 r.source_urls
+          FROM sov_records r
+          WHERE r.measured_at >= now() - interval '35 days'
+            AND coalesce(r.measurement_status, 'SUCCESS') = 'SUCCESS'
+            AND jsonb_typeof(r.source_urls) = 'array'
+        ), cited AS (
+          SELECT DISTINCT a.id, a.hospital_id, a.is_mentioned, a.competitor_mentioned,
+                 regexp_replace(lower(substring(u FROM '^[A-Za-z]+://([^/:?#]+)')), '^(www\.|m\.)', '')
+                   AS domain
+          FROM answers a, jsonb_array_elements_text(a.source_urls) u
+        ), ranked AS (
+          SELECT hospital_id, domain, count(*) AS answers,
+                 count(*) FILTER (WHERE is_mentioned IS FALSE AND competitor_mentioned) AS competitor_only,
+                 row_number() OVER (PARTITION BY hospital_id ORDER BY count(*) DESC, domain) AS rank
+          FROM cited
+          WHERE domain IS NOT NULL AND domain <> ''
+          GROUP BY hospital_id, domain
+        )
+        SELECT h.slug, ranked.domain, ranked.answers, ranked.competitor_only, ranked.rank
+        FROM ranked JOIN hospitals h ON h.id = ranked.hospital_id
+        WHERE ranked.rank <= 5
+        ORDER BY h.slug, ranked.rank
+        ) AS report
+        ORDER BY slug, rank
+        """,
+    ),
+    # GEO: 최근 90일 처음 공개된 글의 참고자료 부착률(병원·유형별). D36으로 참고자료는 발행을
+    # 막지 않지만, 출처 인용은 생성형 답변 인용과 관련이 큰 본문 요인이라 비율을 따로 본다.
+    "q18": (
+        """
+        SELECT h.slug, c.content_type::text AS content_type,
+               count(*) AS published,
+               count(*) FILTER (WHERE jsonb_typeof(c.references_list) = 'array'
+                                  AND jsonb_array_length(c.references_list) > 0) AS with_references,
+               round(100.0 * count(*) FILTER (WHERE jsonb_typeof(c.references_list) = 'array'
+                                  AND jsonb_array_length(c.references_list) > 0)
+                     / nullif(count(*), 0), 1) AS with_references_pct
+        FROM content_items c JOIN hospitals h ON h.id = c.hospital_id
+        WHERE c.status = 'PUBLISHED'
+          AND c.first_published_at >= now() - interval '90 days'
+        GROUP BY h.slug, c.content_type
+        ORDER BY h.slug, c.content_type
+        """,
+    ),
+    # GEO: 서로 다른 병원이 정규화한 같은 제목으로 공개 중인 글. 한 루트 도메인 아래에서 거의 같은
+    # 글이 반복되면 Google 대량 생성 콘텐츠 정책의 위험이 모든 병원에 함께 걸린다. 기록만 한다 —
+    # 차단·사고·Slack을 만들지 않는다(중복 주제 계약과 같다).
+    "q19": (
+        """
+        SELECT * FROM (
+
+        WITH titles AS (
+          SELECT c.id, c.hospital_id, c.title,
+                 regexp_replace(lower(coalesce(c.title, '')), '[[:space:][:punct:]]+', '', 'g') AS norm
+          FROM content_items c
+          WHERE c.status = 'PUBLISHED' AND coalesce(c.title, '') <> ''
+        )
+        SELECT t.norm AS normalized_title,
+               count(DISTINCT t.hospital_id) AS hospitals,
+               count(*) AS articles,
+               array_agg(DISTINCT h.slug ORDER BY h.slug) AS slugs,
+               min(t.title) AS sample_title
+        FROM titles t JOIN hospitals h ON h.id = t.hospital_id
+        WHERE t.norm <> ''
+        GROUP BY t.norm
+        HAVING count(DISTINCT t.hospital_id) > 1
+        ORDER BY hospitals DESC, articles DESC, t.norm
+        LIMIT 100
+        ) AS report
+        ORDER BY hospitals DESC, articles DESC, normalized_title
         """,
     ),
 }

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { buildPostalAddress, fullClinicAddress } from './clinic-schema.ts'
+import { buildClinicSameAs, buildPostalAddress, fullClinicAddress } from './clinic-schema.ts'
 
 test('buildPostalAddress preserves the verified physical address without target regions', () => {
   assert.deepEqual(buildPostalAddress(' 서울특별시 강남구 테헤란로 1 '), {
@@ -37,4 +37,27 @@ test('the screen and the structured data print the same full address', () => {
   assert.equal(fullClinicAddress(road, detail), buildPostalAddress(road, detail)?.streetAddress)
   assert.equal(fullClinicAddress(road, null), road)
   assert.equal(fullClinicAddress('', detail), '')
+})
+
+test('buildClinicSameAs is one ordered, de-duplicated list for every #clinic node', () => {
+  assert.deepEqual(
+    buildClinicSameAs({
+      website_url: 'https://clinic.example',
+      blog_url: ' https://blog.naver.com/clinic ',
+      google_maps_url: 'https://maps.google.com/?cid=1',
+      google_business_profile_url: 'https://maps.google.com/?cid=1',
+      naver_place_url: null,
+      wikidata_qid: 'Q1',
+      naver_place_id: '123',
+      kakao_place_id: '',
+    }),
+    [
+      'https://clinic.example',
+      'https://blog.naver.com/clinic',
+      'https://maps.google.com/?cid=1',
+      'https://www.wikidata.org/wiki/Q1',
+      'https://map.naver.com/p/entry/place/123',
+    ],
+  )
+  assert.deepEqual(buildClinicSameAs({}), [])
 })

@@ -18,6 +18,7 @@ from sqlalchemy.orm import selectinload
 from app.models.monthly_control import MonthlyMeasurementAttempt, MonthlyMeasurementCell
 from app.models.sov import AIQueryTarget, ExposureAction, ExposureGap, SovRecord
 from app.services import sov_engine
+from app.services.citation_landscape import format_domain_list, summarize_citation_landscape
 from app.services.content_citations import hospital_surface_roots, normalize_cited_url
 from app.utils.db_locks import acquire_hospital_advisory_lock
 
@@ -27,6 +28,8 @@ ACTIVE_ACTION_STATUSES = {"OPEN", "IN_PROGRESS", "BLOCKED"}
 
 MENTION_RATE_THRESHOLD = 50.0
 SOURCE_OWNED_SHARE_THRESHOLD = 50.0
+# 사이트 밖 보강 후보로 근거에 남기는 인용 도메인 수(답변 단위 상위 N).
+CITATION_LANDSCAPE_TOP = 5
 MIN_COMPARABLE_OBSERVATIONS = 2
 MAX_RECORDS_PER_TARGET = 100
 
@@ -657,6 +660,23 @@ def _diagnose_target(
         "owned_citation_share": owned_citation_share,
     }
 
+    # 사이트 밖 보강 후보: 경쟁 병원만 언급된 답변에서 AI가 읽은 소유하지 않은 도메인.
+    hospital_for_roots = getattr(target, "hospital", None)
+    landscape_roots = _owned_source_roots(hospital_for_roots)
+    landscape = summarize_citation_landscape(
+        cohort,
+        is_owned=lambda url: _matches_owned_source(url, landscape_roots),
+        top=CITATION_LANDSCAPE_TOP,
+    )
+    competitor_sources = format_domain_list(
+        landscape["competitor_only_domains"], key="competitor_only"
+    )
+    competitor_source_sentence = (
+        f" 병원 없이 경쟁 병원만 언급된 답변에서 AI가 읽은 출처는 {competitor_sources}입니다."
+        if competitor_sources
+        else ""
+    )
+
     recommendations: list[ExposureRecommendation] = []
     if mention_count == 0:
         recommendations.append(
@@ -714,6 +734,7 @@ def _diagnose_target(
                 {
                     **evidence,
                     "rule": "competitor_mentions_match_or_exceed_hospital_mentions",
+                    "citation_landscape": landscape,
                 },
                 "WEBBLOG_IA",
                 "경쟁 병원 대비 병원 정보 구조 보강",
@@ -721,6 +742,7 @@ def _diagnose_target(
                     "경쟁 병원 언급이 병원 언급과 같거나 더 많습니다. "
                     "환자 질문에서 선택 기준, 지역성, 진료 근거가 "
                     "드러나도록 병원 정보 구조를 조정하세요."
+                    f"{competitor_source_sentence}"
                 ),
                 due_month,
             )
@@ -740,6 +762,7 @@ def _diagnose_target(
                     **evidence,
                     "rule": "owned_citations_below_threshold_after_observed_search",
                     "threshold": SOURCE_OWNED_SHARE_THRESHOLD,
+                    "citation_landscape": landscape,
                 },
                 "SOURCE",
                 "AI가 참고할 공식 근거 자료 보강",
@@ -748,6 +771,7 @@ def _diagnose_target(
                     f"채널 인용 비율이 {owned_citation_share:.1f}%입니다. 기존 홈페이지, "
                     "지도 정보, 공개 콘텐츠의 병원명/진료/지역 정보 연결을 점검하세요. "
                     "이 관측만으로 자료 보강이 노출 변화를 일으켰다고 판단하지 않습니다."
+                    f"{competitor_source_sentence}"
                 ),
                 due_month,
             )

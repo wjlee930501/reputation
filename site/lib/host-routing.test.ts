@@ -2,12 +2,15 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+  canonicalHostRedirectEnabled,
+  decideCanonicalHostTarget,
   decideCanonicalRedirect,
   decideRewrite,
   getPrimaryHostnames,
   isPrimaryHost,
   isReservedPath,
   normalizeHostname,
+  platformSlugPathCandidate,
   resolveRequestHost,
   shouldFailClosedCustomHost,
 } from './host-routing.ts'
@@ -191,4 +194,42 @@ test('decideRewrite: malformed slug from backend is rejected defensively', () =>
   assert.equal(decideRewrite('clinic.example.com', '/', '../etc', PRIMARY), null)
   assert.equal(decideRewrite('clinic.example.com', '/', 'UPPER CASE', PRIMARY), null)
   assert.equal(decideRewrite('clinic.example.com', '/', '', PRIMARY), null)
+})
+
+test('platformSlugPathCandidate picks clinic paths and skips platform routes', () => {
+  assert.deepEqual(platformSlugPathCandidate('/jang-clinic'), { slug: 'jang-clinic', rest: '/' })
+  assert.deepEqual(platformSlugPathCandidate('/jang-clinic/'), { slug: 'jang-clinic', rest: '/' })
+  assert.deepEqual(platformSlugPathCandidate('/jang-clinic/contents/a'), {
+    slug: 'jang-clinic',
+    rest: '/contents/a',
+  })
+  assert.deepEqual(platformSlugPathCandidate('/jang-clinic/llms.txt'), {
+    slug: 'jang-clinic',
+    rest: '/llms.txt',
+  })
+  assert.equal(platformSlugPathCandidate('/'), null)
+  assert.equal(platformSlugPathCandidate('/ai-diagnosis'), null)
+  assert.equal(platformSlugPathCandidate('/contact'), null)
+  assert.equal(platformSlugPathCandidate('/llms.txt'), null)
+  assert.equal(platformSlugPathCandidate('/Upper'), null)
+  assert.equal(platformSlugPathCandidate('/jang-clinic/og.png'), null)
+})
+
+test('decideCanonicalHostTarget never loops and only accepts https origins', () => {
+  assert.equal(
+    decideCanonicalHostTarget('reputation.motionlabs.kr', 'https://jang.reputation.motionlabs.kr'),
+    'https://jang.reputation.motionlabs.kr',
+  )
+  assert.equal(decideCanonicalHostTarget('jangclinic.co.kr', 'https://jangclinic.co.kr'), null)
+  assert.equal(decideCanonicalHostTarget('a.example', 'http://b.example'), null)
+  assert.equal(decideCanonicalHostTarget('a.example', 'https://platform.example/jang'), null)
+  assert.equal(decideCanonicalHostTarget(null, 'https://b.example'), null)
+  assert.equal(decideCanonicalHostTarget('a.example', 'not a url'), null)
+})
+
+test('canonicalHostRedirectEnabled defaults on and honours explicit off values', () => {
+  assert.equal(canonicalHostRedirectEnabled(undefined), true)
+  assert.equal(canonicalHostRedirectEnabled(''), true)
+  assert.equal(canonicalHostRedirectEnabled('1'), true)
+  for (const off of ['0', 'false', 'OFF']) assert.equal(canonicalHostRedirectEnabled(off), false)
 })

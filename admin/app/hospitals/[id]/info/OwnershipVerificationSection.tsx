@@ -9,12 +9,16 @@ import type { Hospital } from '@/types'
 interface VerificationValues {
   naver_site_verification: string
   daum_webmaster_verification: string
+  google_site_verification: string
+  bing_site_verification: string
 }
 
 function valuesOf(hospital: Hospital | null): VerificationValues {
   return {
     naver_site_verification: hospital?.naver_site_verification ?? '',
     daum_webmaster_verification: hospital?.daum_webmaster_verification ?? '',
+    google_site_verification: hospital?.google_site_verification ?? '',
+    bing_site_verification: hospital?.bing_site_verification ?? '',
   }
 }
 
@@ -55,6 +59,8 @@ export function OwnershipVerificationSection({
         body: JSON.stringify({
           naver_site_verification: form.naver_site_verification.trim() || null,
           daum_webmaster_verification: form.daum_webmaster_verification.trim() || null,
+          google_site_verification: form.google_site_verification.trim() || null,
+          bing_site_verification: form.bing_site_verification.trim() || null,
         }),
       })
       setDirty(false)
@@ -79,8 +85,8 @@ export function OwnershipVerificationSection({
       <div>
         <h3 className="text-base font-semibold text-slate-800">검색엔진 소유 확인</h3>
         <p className="mt-0.5 text-xs leading-5 text-slate-500">
-          병원별 네이버 코드는 HTML 메타 태그에, 다음 확인 문구는 자기 도메인의 robots.txt
-          마지막 줄에 자동 반영됩니다.
+          병원별 네이버·Google·Bing 코드는 HTML 메타 태그에, 다음 확인 문구는 자기 도메인의
+          robots.txt 마지막 줄에 자동 반영됩니다.
         </p>
       </div>
 
@@ -116,10 +122,44 @@ export function OwnershipVerificationSection({
             다음 웹마스터 도구가 제공한 #DaumWebMasterTool: 문구 전체를 붙여 넣습니다.
           </span>
         </label>
+
+        <label htmlFor="google-site-verification" className="text-sm font-medium text-slate-700">
+          Google Search Console 확인 코드
+          <input
+            id="google-site-verification"
+            type="text"
+            value={form.google_site_verification}
+            onChange={(event) => update('google_site_verification', event.target.value)}
+            maxLength={255}
+            placeholder="content 값 또는 meta 태그 전체"
+            className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 font-mono text-sm"
+          />
+          <span className="mt-1 block text-xs font-normal text-slate-500">
+            &lt;meta name=&quot;google-site-verification&quot; content=&quot;…&quot;&gt;의 content 값입니다.
+            Gemini·AI 개요는 Google 색인을 읽으므로 자기 도메인 병원은 이 값으로 색인 상태를 확인합니다.
+          </span>
+        </label>
+
+        <label htmlFor="bing-site-verification" className="text-sm font-medium text-slate-700">
+          Bing Webmaster Tools 확인 코드
+          <input
+            id="bing-site-verification"
+            type="text"
+            value={form.bing_site_verification}
+            onChange={(event) => update('bing_site_verification', event.target.value)}
+            maxLength={255}
+            placeholder="content 값 또는 meta 태그 전체"
+            className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 font-mono text-sm"
+          />
+          <span className="mt-1 block text-xs font-normal text-slate-500">
+            &lt;meta name=&quot;msvalidate.01&quot; content=&quot;…&quot;&gt;의 content 값입니다.
+          </span>
+        </label>
       </div>
 
       <p className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs leading-5 text-slate-600">
-        Google 소유 확인은 병원별 값이 아니라 Re:putation 플랫폼 도메인의 배포 환경값으로 관리합니다.
+        플랫폼 공용 Google 확인 값(배포 환경값)은 그대로 함께 나갑니다. 병원별 값은 자기 도메인을 Search
+        Console·Bing에 따로 등록할 때 씁니다.
       </p>
 
       <div className="flex flex-wrap items-center gap-3">

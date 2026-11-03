@@ -57,6 +57,11 @@ export async function GET(_req: Request, { params: paramsPromise }: Props) {
       lineValue('phone', hospital.phone),
       optionalUrlValue('official_homepage', hospital.website_url),
       optionalUrlValue('google_maps', hospital.google_maps_url),
+      // 허브 JSON-LD sameAs와 같은 외부 식별자. 같은 병원을 가리키는 공식 채널을 한곳에 모은다.
+      optionalUrlValue('google_business_profile', hospital.google_business_profile_url),
+      optionalUrlValue('naver_place_page', hospital.naver_place_url),
+      optionalUrlValue('official_blog', hospital.blog_url),
+      optionalUrlValue('kakao_channel', hospital.kakao_channel_url),
       lineValue('specialties', hospital.specialties?.map((value) => llmsTextValue(value)).filter(Boolean).join(', ')),
       lineValue('region', hospital.region?.map((value) => llmsTextValue(value)).filter(Boolean).join(', ')),
       hospital.wikidata_qid

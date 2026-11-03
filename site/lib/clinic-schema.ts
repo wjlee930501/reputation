@@ -38,3 +38,39 @@ export function fullClinicAddress(
   if (!road) return ''
   return detail ? `${road} ${detail}` : road
 }
+
+interface ClinicSameAsSource {
+  website_url?: string | null
+  blog_url?: string | null
+  kakao_channel_url?: string | null
+  google_business_profile_url?: string | null
+  google_maps_url?: string | null
+  naver_place_url?: string | null
+  wikidata_qid?: string | null
+  naver_place_id?: string | null
+  kakao_place_id?: string | null
+}
+
+/**
+ * 병원 엔티티의 `sameAs` 단일 정본.
+ *
+ * 허브와 방문 안내 페이지는 같은 `#clinic` `@id`를 쓴다. 두 노드의 sameAs가 다르면 같은
+ * 엔티티에 서로 다른 외부 식별자를 주장하게 되므로, 두 페이지가 이 함수 하나를 쓴다.
+ * 중복 URL은 한 번만 싣는다.
+ */
+export function buildClinicSameAs(hospital: ClinicSameAsSource): string[] {
+  const values = [
+    hospital.website_url,
+    hospital.blog_url,
+    hospital.kakao_channel_url,
+    hospital.google_business_profile_url,
+    hospital.google_maps_url,
+    hospital.naver_place_url,
+    hospital.wikidata_qid ? `https://www.wikidata.org/wiki/${hospital.wikidata_qid}` : null,
+    hospital.naver_place_id ? `https://map.naver.com/p/entry/place/${hospital.naver_place_id}` : null,
+    hospital.kakao_place_id ? `https://place.map.kakao.com/${hospital.kakao_place_id}` : null,
+  ]
+    .map((value) => (typeof value === 'string' ? value.trim() : ''))
+    .filter(Boolean)
+  return [...new Set(values)]
+}

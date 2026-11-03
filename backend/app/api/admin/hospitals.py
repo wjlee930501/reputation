@@ -198,6 +198,8 @@ class HospitalProfileUpdate(BaseModel):
     naver_place_url: str | None = Field(None, max_length=500)
     naver_site_verification: str | None = Field(None, max_length=255)
     daum_webmaster_verification: str | None = Field(None, max_length=500)
+    google_site_verification: str | None = Field(None, max_length=255)
+    bing_site_verification: str | None = Field(None, max_length=255)
     latitude: float | None = Field(None, ge=-90, le=90)
     longitude: float | None = Field(None, ge=-180, le=180)
     # True by default: an address change resolves coordinates once during this save.
@@ -335,6 +337,20 @@ class HospitalProfileUpdate(BaseModel):
             raise ValueError("네이버 소유 확인 코드는 공백 없는 코드만 입력해 주세요.")
         return cleaned
 
+    @field_validator("google_site_verification", "bing_site_verification")
+    @classmethod
+    def validate_meta_site_verification(cls, value: str | None) -> str | None:
+        """Google·Bing은 HTML meta의 content 값만 받는다(태그 전체를 붙여 넣으면 값만 추린다)."""
+        if value is None or not value.strip():
+            return None
+        cleaned = value.strip()
+        tag_match = re.search(r'content\s*=\s*["\']([^"\']+)["\']', cleaned)
+        if tag_match:
+            cleaned = tag_match.group(1).strip()
+        if not re.fullmatch(r"[A-Za-z0-9._:+/=-]{8,255}", cleaned):
+            raise ValueError("소유 확인 코드는 meta 태그의 content 값만 입력해 주세요.")
+        return cleaned
+
     @field_validator("daum_webmaster_verification")
     @classmethod
     def validate_daum_webmaster_verification(cls, value: str | None) -> str | None:
@@ -450,6 +466,16 @@ READINESS_CHECK_STATE_LABELS = {
 
 profile_completion_handoff_blocker = profile_completion.profile_completion_handoff_blocker
 
+# 검색엔진 소유 확인 값 — 공개 증명값이지만 병원 사실이 아니므로 프로필 출처 원장에 남기지 않는다.
+_OWNERSHIP_VERIFICATION_FIELDS = frozenset(
+    {
+        "naver_site_verification",
+        "daum_webmaster_verification",
+        "google_site_verification",
+        "bing_site_verification",
+    }
+)
+
 PUBLIC_PROFILE_FIELDS = {
     "address",
     "address_detail",
@@ -463,6 +489,8 @@ PUBLIC_PROFILE_FIELDS = {
     "naver_place_url",
     "naver_site_verification",
     "daum_webmaster_verification",
+    "google_site_verification",
+    "bing_site_verification",
     "latitude",
     "longitude",
     "region",
@@ -838,6 +866,8 @@ async def update_profile(
         "naver_place_url",
         "naver_site_verification",
         "daum_webmaster_verification",
+        "google_site_verification",
+        "bing_site_verification",
         "latitude",
         "longitude",
         "wikidata_qid",
@@ -877,6 +907,8 @@ async def update_profile(
         "naver_place_url",
         "naver_site_verification",
         "daum_webmaster_verification",
+        "google_site_verification",
+        "bing_site_verification",
         "latitude",
         "longitude",
         "wikidata_qid",
@@ -993,7 +1025,7 @@ async def update_profile(
             field
             for field in changed_fields
             if field in values_before
-            and field not in {"naver_site_verification", "daum_webmaster_verification"}
+            and field not in _OWNERSHIP_VERIFICATION_FIELDS
             and profile_provenance.semantically_changed(
                 values_before[field], getattr(h, field, None)
             )
@@ -1732,6 +1764,8 @@ def serialize_hospital_detail(h: Hospital) -> dict:
         "naver_place_url": h.naver_place_url,
         "naver_site_verification": getattr(h, "naver_site_verification", None),
         "daum_webmaster_verification": getattr(h, "daum_webmaster_verification", None),
+        "google_site_verification": getattr(h, "google_site_verification", None),
+        "bing_site_verification": getattr(h, "bing_site_verification", None),
         "aeo_domain": h.aeo_domain,
         "domain_management_mode": _enum_value(
             getattr(h, "domain_management_mode", None), "HOSPITAL_MANAGED"

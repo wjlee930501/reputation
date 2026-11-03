@@ -546,6 +546,8 @@ def _serialize_hospital(
         # 검색엔진 소유 확인 값은 공개 표면에 실리기 위한 값이다(비밀 아님).
         "naver_site_verification": getattr(h, "naver_site_verification", None),
         "daum_webmaster_verification": getattr(h, "daum_webmaster_verification", None),
+        "google_site_verification": getattr(h, "google_site_verification", None),
+        "bing_site_verification": getattr(h, "bing_site_verification", None),
         "aeo_domain": h.aeo_domain,
         "latitude": h.latitude,
         "longitude": h.longitude,

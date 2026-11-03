@@ -107,6 +107,8 @@ class HospitalDetail(HospitalItemBase):
     naver_place_url: Optional[str]
     naver_site_verification: Optional[str] = None
     daum_webmaster_verification: Optional[str] = None
+    google_site_verification: Optional[str] = None
+    bing_site_verification: Optional[str] = None
     domain_management_mode: str = "HOSPITAL_MANAGED"
     domain_dns_strategy: str = "CNAME"
     domain_registrar: Optional[str] = None

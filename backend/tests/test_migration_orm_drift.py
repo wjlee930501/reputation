@@ -81,6 +81,17 @@ def test_hospitals_has_search_verification_columns():
         assert column.nullable is True
 
 
+def test_hospitals_has_google_bing_verification_columns():
+    """migration 0095: per-hospital Google/Bing public ownership tokens."""
+    table = Base.metadata.tables["hospitals"]
+    for name in ("google_site_verification", "bing_site_verification"):
+        assert name in table.c
+        column = table.c[name]
+        assert isinstance(column.type, sa.String)
+        assert column.type.length == 255
+        assert column.nullable is True
+
+
 def test_hospitals_has_operating_policy_version_column():
     """migration 0094: durable operating-policy generation, starting at zero."""
     table = Base.metadata.tables["hospitals"]

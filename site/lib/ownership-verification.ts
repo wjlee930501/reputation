@@ -14,18 +14,39 @@ export function validDaumWebmasterVerification(value: unknown): string | null {
   return DAUM_WEBMASTER_PATTERN.test(phrase) ? phrase : null
 }
 
+const META_SITE_VERIFICATION_PATTERN = /^[A-Za-z0-9._:+/=-]{8,255}$/
+
+function validMetaToken(value: string | null | undefined): string | null {
+  const token = (value ?? '').trim()
+  return META_SITE_VERIFICATION_PATTERN.test(token) ? token : null
+}
+
+/**
+ * 병원 레이아웃의 검색엔진 소유 확인 메타.
+ *
+ * Google은 플랫폼 공용 토큰(배포 환경값)과 병원별 토큰을 함께 싣는다. 자기 도메인 병원은
+ * 공용 토큰으로 Search Console에 등록할 수 없어 병원 행의 토큰이 따로 필요하다.
+ * Bing은 병원별 `msvalidate.01`만 있다. 형식이 맞지 않는 값은 싣지 않는다.
+ */
 export function ownershipVerificationMetadata(
   naverValue: string | null | undefined,
   googleValue: string | null | undefined,
+  hospitalGoogleValue?: string | null,
+  bingValue?: string | null,
 ): Metadata['verification'] | undefined {
   const naver = (naverValue ?? '').trim()
-  const google = (googleValue ?? '').trim()
-  if (!google && !NAVER_SITE_VERIFICATION_PATTERN.test(naver)) return undefined
+  const googleTokens = [...new Set([(googleValue ?? '').trim(), validMetaToken(hospitalGoogleValue) ?? ''])].filter(
+    Boolean,
+  )
+  const bing = validMetaToken(bingValue)
+  const other: Record<string, string> = {}
+  if (NAVER_SITE_VERIFICATION_PATTERN.test(naver)) other['naver-site-verification'] = naver
+  if (bing) other['msvalidate.01'] = bing
+  if (googleTokens.length === 0 && Object.keys(other).length === 0) return undefined
   return {
-    ...(google ? { google } : {}),
-    ...(NAVER_SITE_VERIFICATION_PATTERN.test(naver)
-      ? { other: { 'naver-site-verification': naver } }
-      : {}),
+    ...(googleTokens.length === 1 ? { google: googleTokens[0] } : {}),
+    ...(googleTokens.length > 1 ? { google: googleTokens } : {}),
+    ...(Object.keys(other).length > 0 ? { other } : {}),
   }
 }
 

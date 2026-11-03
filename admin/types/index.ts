@@ -150,6 +150,8 @@ export interface Hospital {
   naver_place_url?: string
   naver_site_verification?: string | null
   daum_webmaster_verification?: string | null
+  google_site_verification?: string | null
+  bing_site_verification?: string | null
   latitude?: number | null
   longitude?: number | null
   aeo_domain?: string

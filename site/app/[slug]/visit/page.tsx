@@ -4,7 +4,7 @@ import { notFound } from 'next/navigation'
 import { fetchHospital, HospitalNotFoundError } from '@/lib/api'
 import { buildOpeningHoursSpec, visitHoursHref } from '@/lib/business-hours'
 import { clinicGalleryPolicy } from '@/lib/clinic-design'
-import { buildPostalAddress, fullClinicAddress } from '@/lib/clinic-schema'
+import { buildClinicSameAs, buildPostalAddress, fullClinicAddress } from '@/lib/clinic-schema'
 import { buildClinicThemeStyle } from '@/lib/clinic-theme'
 import { canonicalHospitalUrl } from '@/lib/site-url'
 import { selectVisitFacilityPhotos } from '@/lib/visit-photos'
@@ -64,14 +64,7 @@ export default async function VisitPage({ params: paramsPromise }: Props) {
     { label: '진료 안내' },
   ]
 
-  const sameAs = [
-    hospital.website_url,
-    hospital.blog_url,
-    hospital.kakao_channel_url,
-    hospital.google_business_profile_url,
-    hospital.google_maps_url,
-    hospital.naver_place_url,
-  ].filter((value): value is string => Boolean(value))
+  const sameAs = buildClinicSameAs(hospital)
 
   const visitJsonLd = {
     '@context': 'https://schema.org',

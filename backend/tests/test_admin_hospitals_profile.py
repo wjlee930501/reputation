@@ -194,6 +194,54 @@ def test_search_verification_rejects_malformed_or_multiline_values(field, value)
         hospitals_api.HospitalProfileUpdate(**{field: value})
 
 
+async def test_google_and_bing_verification_tokens_are_saved_and_serialized():
+    hospital = _hospital()
+    db = FakeDB(hospital)
+
+    result = await hospitals_api.update_profile(
+        hospital.id,
+        hospitals_api.HospitalProfileUpdate(
+            google_site_verification="AbCdEf_12-3456789xyz",
+            bing_site_verification="0123456789ABCDEF0123456789ABCDEF",
+        ),
+        BackgroundTasks(),
+        db=db,
+    )
+
+    assert hospital.google_site_verification == "AbCdEf_12-3456789xyz"
+    assert hospital.bing_site_verification == "0123456789ABCDEF0123456789ABCDEF"
+    assert result["google_site_verification"] == "AbCdEf_12-3456789xyz"
+    assert result["bing_site_verification"] == "0123456789ABCDEF0123456789ABCDEF"
+    # 소유 확인 값은 병원 사실이 아니므로 마케터 입력 출처로 남기지 않는다.
+    provenance = getattr(hospital, "profile_field_provenance", None) or {}
+    assert "google_site_verification" not in provenance
+    assert "bing_site_verification" not in provenance
+
+
+def test_meta_verification_accepts_a_pasted_tag_and_keeps_only_the_content():
+    body = hospitals_api.HospitalProfileUpdate(
+        google_site_verification='<meta name="google-site-verification" content="AbCdEf_123456789" />',
+        bing_site_verification="  <meta name='msvalidate.01' content='0123456789ABCDEF'>  ",
+    )
+    assert body.google_site_verification == "AbCdEf_123456789"
+    assert body.bing_site_verification == "0123456789ABCDEF"
+    assert hospitals_api.HospitalProfileUpdate(google_site_verification="  ").google_site_verification is None
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("google_site_verification", "token with spaces"),
+        ("google_site_verification", "short"),
+        ("bing_site_verification", '<meta content="x"><script>'),
+        ("bing_site_verification", "abc\n<script>"),
+    ],
+)
+def test_meta_verification_rejects_malformed_values(field, value):
+    with pytest.raises(ValueError):
+        hospitals_api.HospitalProfileUpdate(**{field: value})
+
+
 async def test_body_profile_complete_is_ignored_and_derivation_wins(caplog):
     """body의 완료 플래그는 버리고 경고만 남긴다 — 저장 결과에서 파생한 값이 이긴다.
 

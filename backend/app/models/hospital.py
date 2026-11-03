@@ -115,6 +115,10 @@ class Hospital(Base):
     # 비밀이 아니다. 병원별 값은 배포 환경변수나 Site 하드코딩이 아니라 이 행이 소유한다.
     naver_site_verification: Mapped[str | None] = mapped_column(String(255))
     daum_webmaster_verification: Mapped[str | None] = mapped_column(String(500))
+    # Google Search Console·Bing Webmaster Tools의 병원별 HTML meta 토큰(0095). 자기 도메인은
+    # 플랫폼 공용 Google 토큰으로 소유 확인할 수 없어 병원 행이 따로 가진다. 역시 공개 증명값이다.
+    google_site_verification: Mapped[str | None] = mapped_column(String(255))
+    bing_site_verification: Mapped[str | None] = mapped_column(String(255))
     # 연결된 AEO 도메인 — 공개 /site 미들웨어가 요청 호스트로 병원을 역조회하므로
     # 인덱스 필수 (ix_hospitals_aeo_domain, migration 0025). 저장 시 정규화(소문자).
     aeo_domain: Mapped[str | None] = mapped_column(String(200), index=True)

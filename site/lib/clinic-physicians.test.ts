@@ -242,3 +242,13 @@ test('the home and the doctor page emit one Physician node per physician', () =>
     assert.match(source, /physicianNodeId\(hospitalRootUrl, physician, index\)/)
   }
 })
+
+test('article MedicalProcedure performer points at a node the doctor page emits', () => {
+  const article = readFileSync(
+    join(HERE, '..', 'app', '[slug]', 'contents', '[contentId]', 'page.tsx'),
+    'utf8',
+  )
+  // 원장 페이지에 없는 `/doctor#physician` 노드를 가리키면 두 페이지의 원장이 다른 사람이 된다.
+  assert.doesNotMatch(article, /\/doctor#physician`/)
+  assert.match(article, /physicianNodeId\(hospitalRootUrl, leadPhysician, leadIndex\)/)
+})

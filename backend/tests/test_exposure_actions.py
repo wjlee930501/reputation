@@ -371,6 +371,36 @@ def test_no_successful_measurement_still_fires_before_the_first_measurement():
     assert [r.gap_type for r in recommendations] == ["NO_SUCCESSFUL_MEASUREMENT"]
 
 
+def test_competitor_action_names_the_sources_ai_read_when_only_competitors_appeared():
+    target = _target(priority="HIGH")
+    competitor = [{"name": "경쟁병원", "is_mentioned": True, "mention_rank": 1}]
+    records = [
+        _record(
+            target.id,
+            is_mentioned=False,
+            competitors=competitor,
+            source_urls=["https://www.modoodoc.com/h/1", "https://news.example/a"],
+        ),
+        _record(
+            target.id,
+            is_mentioned=False,
+            competitors=competitor,
+            source_urls=["https://m.modoodoc.com/h/2"],
+        ),
+    ]
+
+    recommendations = build_exposure_recommendations([target], records, today=date(2026, 5, 3))
+
+    competitor_action = next(r for r in recommendations if r.gap_type == "COMPETITOR_VISIBILITY")
+    landscape = competitor_action.evidence["citation_landscape"]
+    assert landscape["unit"] == "answer"
+    assert [row["domain"] for row in landscape["competitor_only_domains"]] == [
+        "modoodoc.com",
+        "news.example",
+    ]
+    assert "modoodoc.com(2), news.example(1)" in competitor_action.description
+
+
 def test_builds_content_and_webblog_actions_from_missing_mentions():
     target = _target(priority="HIGH")
     records = [
