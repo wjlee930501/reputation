@@ -1,6 +1,7 @@
 # Monthly Reports: First-Morning Close
 
-Status: implemented locally; not deployed, not committed.
+Status: implemented, committed/pushed as `76e09e55`, and deployed/verified in
+production on 2026-11-03. See the [deployment record](../releases/2026-11-03-monthly-report-morning-close-production.md).
 
 Implementation verified 2026-11-03 (local test DBs/Redis only):
 
@@ -110,8 +111,8 @@ Decision date: 2026-11-03. All times below are Asia/Seoul.
   as an API failure or a negative mention.
 - A successful self judgment survives a supplementary competitor-analysis
   failure. Failed competitor entries persist `is_mentioned: null` with failure
-  evidence; they are not zeroes. Competitor comparisons are withheld when their
-  observations are incomplete, and cannot close an existing competitor gap.
+  evidence; they are not zeroes. Competitor-visibility recommendations and gap
+  resolution are withheld when their observations are incomplete.
 - Live read-only preflight on 2026-11-03 found API/Worker/Beat release
   `2baa99f1012a47c147f701dc15aefd72eb703886`, daily SoV limit 3000,
   monthly limit 9000, and 12 ACTIVE hospitals (the cohort can be smaller).
@@ -119,9 +120,9 @@ Decision date: 2026-11-03. All times below are Asia/Seoul.
   `/tmp/monthly-dawn-prod-http.json`. These are captured inputs, not live claims.
 - With 15 questions, two platforms, five repeats, and at most one answer plus
   self/competitor judgment batches, 12 hospitals require at most 5400 units
-  before retries. Proposed production daily limit: 9000; monthly limit remains
-  9000. Kill switch, stage attempt bounds, and monthly guard remain enabled.
-  This operational limit change still requires deployment approval.
+  before retries. Approved/applied production daily limit: 9000; monthly limit remains
+  9000. Kill-switch support, stage attempt bounds, and the monthly guard remain in place.
+  The user separately approved this operational change before deployment.
 - The code default daily limit matches its existing monthly limit (4260).
   The cohort warning uses the smaller daily/monthly allowance and includes
   judgment stages, rather than understating cost using answer calls alone.
@@ -314,5 +315,7 @@ or unvalidated PDF as completed.
   quiet before 09:00 and reports actual missing/unready artifacts afterward.
 - Admin/API copy has no active seven-day promises or normal manual-repeat action.
 
-No production queries, deployments, real provider calls, or historical report
-rebuilds are authorized by this implementation task.
+The original implementation scope excluded production operations. On 2026-11-03
+the user separately approved read-only inspection, then the described GitHub/GCP
+rollout and daily-limit change. No paid verification measurements or forced
+historical report rebuilds were performed. Customer delivery remains manual.

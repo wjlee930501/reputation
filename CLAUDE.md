@@ -1,6 +1,17 @@
 # Re:putation — 현재 프로젝트 개발 안내
 
-## 최신 운영 배포 — 2026-10-14~15 Full-Automatic (W1~W10·등급·누락 방지·대표 확정 Critical 정의)
+## 최신 운영 배포 — 2026-11-03 월간 보고서 1일 오전 마감
+
+코드 `76e09e55`를 main에 반영하고 API `00274-v8l`·Worker `00264-r86`·Beat `00259-9sl`·Admin `00115-rwt`에 배포했다(각 100% 트래픽).
+Site `00149-6ck`와 DB head `0093_add_hospital_search_verification`은 그대로다. RedBeat `2026-11-03.1`:
+매월 1일 00:15~06:45 30분마다 지난달 측정, 07:00 측정 마감, 07:15/07:45/08:15/08:45 보고서 최종화, 09:00 최종 판정.
+대표 승인으로 일일 SoV 한도 3000→9000, 월간 9000 유지, `SOV_MONTHLY_WINDOW_START_DAY` 제거. 자사 판정은 경쟁사 분석 실패로 지우지 않고,
+경쟁사 미확정은 0이 아닌 null로 남긴다. 15:55 KST 검증: readiness 18/18, 현재 코드의 큐 canary 정상, 공개 병원 12곳 ID·도메인·Site 리비전 일치,
+Admin 로그인 200, 새 리비전 ERROR 0건. 유료 검증 측정·과거 보고서 강제 재생성은 하지 않았다. 다음 실제 월초 실행 완료를 이번 검증 결과로 단정하지 않는다.
+배포 전 리비전은 `.omo/evidence/monthly-dawn-20261103/rollback-{backend,admin}.json`에 보관했다. 옛 Worker로의 롤백은 1~7일 재측정을 되살릴 수 있어 무조건 자동 롤백하지 않았다.
+상세는 [배포 기록](docs/releases/2026-11-03-monthly-report-morning-close-production.md)을 본다.
+
+## 이전 운영 배포 — 2026-10-14~15 Full-Automatic (W1~W10·등급·누락 방지·대표 확정 Critical 정의)
 
 main `139bd07f`(PR #275)까지 2026-10-14 15:07 ~ 10-15 14:25 KST에 Backend를 열한 번, Site를 한 번 배포했다(PR #260·#261·#262·#263·#266·#267·#268·#269·#270·#271·#272·#273·#274·#275,
 모두 배치 시간대 밖·`--override-reason`·env 차이 0). **현재 리비전은 api `00266-86v`, worker `00256-ctr`, beat `00251-z5x`**, Admin `00109-d6r`·DB head
