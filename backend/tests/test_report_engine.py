@@ -553,3 +553,40 @@ def test_a_private_host_without_a_path_still_owns_its_whole_domain():
     roots = _owned_source_roots(_hospital_with(website_url="https://clinic.example.kr"))
 
     assert _matches_owned_source("https://www.clinic.example.kr/doctor", roots)
+
+
+def test_competitor_outcomes_never_counts_unknown_competitor_judgments():
+    """미확정(판정 실패) 경쟁사 항목은 관측 수에 들어가지 않는다 — 거짓 0%가 안 나온다."""
+    from types import SimpleNamespace
+
+    from app.services.report_engine import _competitor_outcomes
+
+    records = [
+        SimpleNamespace(
+            competitor_mentions=[
+                {"name": "다라병원", "is_mentioned": True, "mention_rank": 1},
+                {"name": "마병원", "is_mentioned": None, "mention_rank": None,
+                 "measurement_status": "FAILED", "failure_reason": "competitor_parse_failed"},
+            ]
+        ),
+        SimpleNamespace(
+            competitor_mentions=[
+                {"name": "다라병원", "is_mentioned": False, "mention_rank": None},
+            ]
+        ),
+    ]
+    outcomes = _competitor_outcomes(records)
+    assert outcomes == [
+        {"name": "다라병원", "observed_count": 2, "mention_count": 1, "mention_pct": 50.0}
+    ]
+
+    # 전부 미확정이면 outcomes 자체가 비어있다 — 0%로 표기하지 않는다.
+    unknown_only = [
+        SimpleNamespace(
+            competitor_mentions=[
+                {"name": "다라병원", "is_mentioned": None, "mention_rank": None,
+                 "measurement_status": "FAILED", "failure_reason": "provider_error"},
+            ]
+        )
+    ]
+    assert _competitor_outcomes(unknown_only) == []

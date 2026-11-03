@@ -1,7 +1,7 @@
 """Frozen measurement completion rules; never widen a resumed sampling cohort."""
 
-from collections.abc import Mapping
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, replace
 
 from app.models.monthly_control import MonthlyMeasurementCell, MonthlyMeasurementManifest
 from app.services import sov_engine
@@ -93,6 +93,56 @@ def legacy_manifest_is_final(
     )
 
 
+def slotted_observation_adequacy(
+    planned_cells: Sequence[MonthlyMeasurementCell],
+    *,
+    repeat_count: int,
+    deadline_reached: bool,
+) -> ObservationAdequacy | None:
+    """동결 반복 계약의 최종 적정성 — 계획한 반복은 모두 pending으로 센다.
+
+    만들어지지 않은 반복은 실패한 답변이 아니라 pending 슬롯이다 — 사기 결과가
+    아니다. 계획과 모순되는 반복 집합(초과·중복·범위 밖 repeat_no)은 오염된 자료라
+    결과가 아니다 — 측정 결과를 꾸며내지 않고 None을 돌려준다. `deadline_reached`
+    는 '이 표본은 최종이다'의 뜻 — 측정 마감(07:00)이 지났거나 동결이 닫힌 뒤다.
+    """
+    if not planned_cells:
+        return None
+    cell_rows = [
+        list(getattr(cell, "observation_slots", ()) or ()) for cell in planned_cells
+    ]
+    for slots in cell_rows:
+        repeat_numbers = [slot.repeat_no for slot in slots]
+        if (
+            len(slots) > repeat_count
+            or len(set(repeat_numbers)) != len(repeat_numbers)
+            or any(number < 1 or number > repeat_count for number in repeat_numbers)
+        ):
+            return None
+    rows = [slot for slots in cell_rows for slot in slots]
+    expected = len(planned_cells) * repeat_count
+    missing = expected - len(rows)
+    finished = deadline_reached or (
+        missing == 0 and all(slot_is_terminal(row) for row in rows)
+    )
+    summary = summarize_observation_slots(rows, deadline_reached=finished)
+    status = (
+        "COMPLETE"
+        if expected > 0 and summary.confirmed_slots == expected
+        else "LIMITED"
+        if finished and summary.confirmed_slots > 0
+        else "UNAVAILABLE"
+        if finished
+        else "IN_PROGRESS"
+    )
+    return replace(
+        summary,
+        planned_slots=expected,
+        pending_slots=summary.pending_slots + missing,
+        status=status,
+    )
+
+
 def manifest_observation_adequacy(
     manifest: MonthlyMeasurementManifest, *, deadline_reached: bool
 ) -> ObservationAdequacy | None:
@@ -102,14 +152,8 @@ def manifest_observation_adequacy(
     planned_cells = [
         cell for cell in (getattr(manifest, "cells", ()) or ()) if cell.state != "EXCLUDED"
     ]
-    if not planned_cells or any(
-        len(list(getattr(cell, "observation_slots", ()) or ())) != repeat_count
-        for cell in planned_cells
-    ):
-        return None
-    return summarize_observation_slots(
-        (slot for cell in planned_cells for slot in (getattr(cell, "observation_slots", ()) or ())),
-        deadline_reached=deadline_reached,
+    return slotted_observation_adequacy(
+        planned_cells, repeat_count=repeat_count, deadline_reached=deadline_reached
     )
 
 

@@ -64,18 +64,18 @@ function copyForStage(stage: string): RunCopy {
       }
     case 'BLOCKED':
       return {
-        statusLabel: '필수 측정이 부족해 전달이 멈췄습니다',
-        whatHappened: '보고서는 만들어졌지만 필수 측정이나 운영 자료가 부족합니다.',
+        statusLabel: '보고서 전달 준비에 확인이 필요합니다',
+        whatHappened: '보고서의 측정 결과, 원장 전달용 PDF 또는 콘텐츠 검수에서 차단 사유가 확인됐습니다.',
         customerImpact: '현재 파일은 원장님께 전달할\u00a0수\u00a0없습니다.',
-        nextAction: '운영 센터에서 차단 사유를 확인하고 해결한 뒤 ‘보고서 다시 만들기’를 눌러 주세요.',
+        nextAction: '운영 센터에서 실제 차단 사유와 자동 복구 상태를 확인해 주세요. 조치가 필요한 항목만 처리한 뒤 보고서를 다시 확인하세요.',
         canRebuild: true,
         primaryAction: 'operations',
         attentionLabel: '조치 필요',
       }
     case 'COVERAGE_COMPLETE':
       return {
-        statusLabel: '측정 집계가 완료됐습니다',
-        whatHappened: '이번 달에 계획한 측정 결과가 모두 모였습니다.',
+        statusLabel: '측정 집계가 마감됐습니다',
+        whatHappened: '확보한 결과로 측정 집계를 확정했습니다. 제한된 결과나 측정 불가 항목은 보고서에 표시됩니다.',
         customerImpact: '원장 전달용 PDF 확인이 끝나기 전에는 전달할\u00a0수\u00a0없습니다.',
         nextAction: '원장 전달용 PDF 준비 상태를 이어서 확인해 주세요.',
         canRebuild: true,

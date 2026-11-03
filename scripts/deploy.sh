@@ -1383,6 +1383,7 @@ run_production_readiness_gate() {
 #
 # 막는 시간(KST): 22:15~02:00 양 끝 포함(23:00 야간 생성이 몇 시간 이어지고 01시 복구 스윕이 뒤따른다)와
 # 04·07·08·12·18·22시 앞뒤 45분(08시는 07:45·08:00 발행 게이트와 08:30 외부 감시).
+# 매월 1일은 측정부터 보고서 최종 판정까지 00:15~09:00 전체를 보호한다.
 BATCH_NIGHT_START_MINUTE=$(( 22 * 60 + 15 ))
 BATCH_NIGHT_END_MINUTE=$(( 2 * 60 ))
 BATCH_WINDOW_HOURS_KST=(4 7 8 12 18 22)
@@ -1412,8 +1413,12 @@ mark_deploy_mutating() {
 
 # HH:MM이 배치 시간대 안이면 그 배치를 출력하고 0을 돌려준다.
 batch_window_conflict() {
-  local hhmm="$1" now center distance
+  local hhmm="$1" day="${2:-}" now center distance
   now=$(( 10#${hhmm%%:*} * 60 + 10#${hhmm##*:} ))
+  if [[ "${day##*-}" == "01" ]] && (( now >= 15 && now <= 9 * 60 )); then
+    printf '1일 00:15~09:00 월간 측정·보고서 마감'
+    return 0
+  fi
   # 02:00 정각도 보호 구간이다. `<`이면 문서의 22:15~02:00과 달리 정확히
   # 02:00에 Worker/Beat 교체를 시작할 수 있어, 01시 복구의 늦은 항목과 월요일
   # 02시 Beat 작업을 끊는 1분짜리 틈이 생긴다.
@@ -1479,7 +1484,7 @@ require_deploy_slot() {
   if [[ -n "$OVERRIDE_REASON" ]]; then
     info "배포 규칙 예외: ${OVERRIDE_REASON}"
     # 같은 날 두 번째 릴리스도 이 사유로 넘기므로, 배치 시간대까지 넘는 경우는 따로 드러내고 기록한다.
-    if batch="$(batch_window_conflict "$hhmm")"; then
+    if batch="$(batch_window_conflict "$hhmm" "$day")"; then
       warn "지금(KST ${hhmm})은 콘텐츠 배치 시간대(${batch})입니다 — 사유로 배치 시간대 규칙도 넘습니다."
       record_fields+=(batch_window "$batch")
     fi
@@ -1494,7 +1499,7 @@ require_deploy_slot() {
     return
   fi
 
-  if batch="$(batch_window_conflict "$hhmm")"; then
+  if batch="$(batch_window_conflict "$hhmm" "$day")"; then
     fail "지금(KST ${hhmm})은 콘텐츠 배치 시간대(${batch})입니다. 배치 시간대 밖에서 다시 배포하거나, 꼭 필요하면 --override-reason=\"사유\"를 붙이세요."
   fi
 
@@ -1527,7 +1532,7 @@ recheck_batch_window() {
   local stage="$1" clock hhmm batch
   clock="$(deploy_clock_kst)"
   hhmm="${clock##*T}"
-  batch="$(batch_window_conflict "$hhmm")" || return 0
+  batch="$(batch_window_conflict "$hhmm" "${clock%%T*}")" || return 0
   if [[ -n "$OVERRIDE_REASON" ]]; then
     warn "${stage} 직전 다시 확인: 지금(KST ${hhmm})은 콘텐츠 배치 시간대(${batch})입니다 — 사유(${OVERRIDE_REASON})로 넘깁니다."
     return 0

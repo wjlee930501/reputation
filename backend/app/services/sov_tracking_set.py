@@ -19,6 +19,9 @@ TRACKING_SET_N_MAX = 15
 TRACKING_SET_N_DEFAULT = 15
 MEASUREMENT_WINDOW_MONTH_START = "month_start"
 MEASUREMENT_WINDOW_MONTH_END = "month_end"
+# 1일 새벽 창(00:15~07:00 KST)에 지난달을 재는 동결 프로토콜. 옛 month_end·month_start
+# 창과 같은 측정 기준이 아니다 — 기간 비교가 서로 억제된다.
+MEASUREMENT_WINDOW_MONTH_START_DAWN = "month_start_dawn"
 def _target_query_text(target: AIQueryTarget) -> str:
     return str(getattr(target, "name", "") or "").strip()
 
@@ -382,10 +385,13 @@ def monthly_sov_guard_units(
 
 
 def monthly_sov_cohort_cost_threshold(n: int = TRACKING_SET_N_DEFAULT) -> int:
-    """월간 측정 비용 경고선(병원 수) — 월 SoV 호출 상한을 병원 1곳의 고정 세트 비용으로 나눈 값.
-
-    병원 1곳 = n문항 × 2플랫폼 × 5반복(기본 150호출). 손으로 맞추는 병원 수 상수는 계약 병원이
-    늘 때마다 매월 확정 경고를 만들었다(2026-10: 상한 7 < 9곳). 실제 지출 차단은 비용 가드가 한다.
-    """
-
-    return max(1, settings.COST_GUARD_MONTHLY_SOV_QUERIES // monthly_sov_guard_units(1, n))
+    """Conservative one-dawn capacity before retries; actual spending stays guarded."""
+    platforms = 2 if settings.OPENROUTER_API_KEY else 1
+    repeats = min(settings.SOV_REPEAT_COUNT_WEEKLY, 20)
+    # One answer, one self judgment, and one competitor judgment batch per repeat.
+    units = max(1, n * platforms * repeats * 3)
+    budget = min(
+        settings.COST_GUARD_DAILY_SOV_QUERIES,
+        settings.COST_GUARD_MONTHLY_SOV_QUERIES,
+    )
+    return max(1, budget // units)

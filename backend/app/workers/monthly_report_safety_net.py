@@ -1,11 +1,12 @@
-"""월간 보고서 안전망 — 서비스 중인 모든 병원·월은 8일까지 전달 가능한 보고서를 갖는다(I2, W8).
+"""월간 보고서 안전망 — 서비스 중인 모든 병원·월은 1일 오전에 전달 가능한 보고서를 갖는다(I2, W8).
 
-8일 00:15 최종화가 끝난 뒤(최종 판정 시각 8일 09:00 KST부터) 지난달 서비스 구간에 든 병원마다
+1일 07:15 예정 최종화(`monthly_report_finalization_at`)부터 지난달 서비스 구간에 든 병원마다
 전달 게이트(`monthly_report_delivery_gate`)를 본다. 통과하지 못하면 사람을 부르지 않고 먼저 다시
 만든다 — 원장 PDF만 문제면 숫자를 그대로 옮기는 템플릿 갱신, 그 밖(보고서 없음·측정 미완료로 남은
-옛 판·차단)은 같은 달 재생성이다. 병원·월마다 2회(`REPAIR_BUDGET`), 6시간 간격(`REPAIR_SPACING`).
-그래도 남을 때만 개발 대상 사고 하나(`MONTHLY_REPORT_SAFETY_NET_FAILED`)를 열고, 전달 가능해지면
-같은 안전망이 닫는다. 원장 PDF 검증 실패의 자동 재생성(월간 PDF 대조 작업)도 같은 예산을 쓴다.
+옛 판·차단)은 같은 달 재생성이다. 병원·월마다 2회(`REPAIR_BUDGET`), 30분 간격(`REPAIR_SPACING`)이라
+첫 아침 PDF 결함이 09:00 전에 회복할 수 있다. 그래도 남을 때만 개발 대상 사고 하나
+(`MONTHLY_REPORT_SAFETY_NET_FAILED`)를 열고, 전달 가능해지면 같은 안전망이 닫는다. 원장 PDF 검증
+실패의 자동 재생성(월간 PDF 대조 작업)도 같은 예산을 쓴다.
 
 알림 소유는 하나다: 그 병원·월에 원장 PDF 사고(`MONTHLY_DOCTOR_PDF_BLOCKED`)가 열려 있으면 그
 사고가 승격(18시간 창)을 소유하고 안전망은 따로 열지 않는다. 안전망 사고도 첫 재생성 뒤 같은 창
@@ -34,7 +35,7 @@ from app.services.incident_types import MONTHLY_ARTIFACT_REPAIR_WINDOW, Incident
 from app.services.monthly_period import (
     MonthlyPeriodError,
     eligible_hospital_ids,
-    monthly_final_judgment_at,
+    monthly_report_finalization_at,
     prior_month_to_close,
     reporting_period,
 )
@@ -46,7 +47,7 @@ from app.services.report_file_integrity import ReportFileUnavailable, read_verif
 logger = logging.getLogger(__name__)
 
 REPAIR_BUDGET = 2
-REPAIR_SPACING = timedelta(hours=6)
+REPAIR_SPACING = timedelta(minutes=30)
 # 이보다 오래 끝나지 않은 재생성 실행은 유실로 보고 예산 한 번을 쓴 것으로 센다(자율 복구가 따로 정리한다).
 _IN_FLIGHT_HORIZON = timedelta(hours=2)
 _REPAIR_KEY = "report-repair"
@@ -157,7 +158,7 @@ def dispatch_report_repair(
     prefer_template: bool,
     now: datetime | None = None,
 ) -> RepairDecision:
-    """그 달 보고서를 한 번 더 만든다 — 병원·월마다 `REPAIR_BUDGET`회, `REPAIR_SPACING` 간격.
+    """그 달 보고서를 한 번 더 만든다 — 병원·월마다 `REPAIR_BUDGET`회, `REPAIR_SPACING`(30분) 간격.
 
     첫 시도는 `prefer_template`이면 템플릿 갱신(숫자 그대로, PDF만 다시)이고, 두 번째는 같은 달
     재생성이다 — 템플릿 갱신이 숫자 판정으로 거절돼도 다음 시도가 다른 길로 간다. 커밋은 여기서 한다.
@@ -247,7 +248,7 @@ def run_monthly_report_safety_net(db: Session, *, now: datetime | None = None) -
         period = prior_month_to_close(observed)
     except MonthlyPeriodError:
         return {"status": "period_not_closed"}
-    if observed < monthly_final_judgment_at(period.year, period.month):
+    if observed < monthly_report_finalization_at(period.year, period.month):
         return {"status": "before_final_judgment"}
     period_key = _period_key(period.year, period.month)
     hospital_ids = list(eligible_hospital_ids(db, period))

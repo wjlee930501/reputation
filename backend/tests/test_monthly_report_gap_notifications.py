@@ -36,13 +36,13 @@ def test_gap_summary_runs_days_one_through_eight(monkeypatch):
         notifications, "enqueue_onboarding_notification_sync", lambda *_a, **_k: None
     )
 
-    # UTC 9/8 00:00 = KST 9/8 09:00 — 8일 최종화 뒤의 마지막 판정 날이다.
+    # UTC 9/1 00:00 = KST 9/1 09:00 — 1일 최종화 뒤의 유일한 판정 시각이다.
     assert not notifications.enqueue_monthly_report_gap_summary_sync(
-        object(), now=datetime(2026, 9, 8, tzinfo=UTC)
+        object(), now=datetime(2026, 9, 1, tzinfo=UTC)
     )
-    # UTC 9/9 00:00 = KST 9/9 09:00 — 더 돌지 않는다.
+    # UTC 9/2 00:00 = KST 9/2 09:00 — 2일부터는 더 돌지 않는다.
     assert not notifications.enqueue_monthly_report_gap_summary_sync(
-        object(), now=datetime(2026, 9, 9, tzinfo=UTC)
+        object(), now=datetime(2026, 9, 2, tzinfo=UTC)
     )
 
     assert loaded == [True]

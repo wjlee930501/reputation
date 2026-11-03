@@ -14,7 +14,10 @@ from app.models.monthly_control import (
 )
 from app.models.report import MonthlyReport
 from app.services import sov_engine
-from app.services.measurement_slots import summarize_observation_slots
+from app.services.measurement_manifest_policy import (
+    manifest_observation_adequacy,
+    slotted_observation_adequacy,
+)
 from app.services.monthly_period import is_monthly_recovery_window
 
 EXCLUSION_REASONS: Final[frozenset[str]] = frozenset(
@@ -91,11 +94,23 @@ def _protocol_snapshot(measurement_protocol_kwargs: dict | None) -> dict:
     return sov_engine.measurement_protocol(**(measurement_protocol_kwargs or {}))
 
 
+_AUTHORITATIVE_MEASUREMENT_WINDOWS: Final[frozenset[str]] = frozenset(
+    {"month_end", "month_start_dawn"}
+)
+
+
 def _is_month_end_tracking_protocol(protocol: dict) -> bool:
+    """고정 추적 세트에 묶인 권위 있는 월간 측정 프로토콜인가.
+
+    옛 month_end 창과 새 month_start_dawn 창 둘 다 추적 세트 지문·크기를 든다 —
+    둘의 측정 자체는 같은 기준이 아니지만(same_measurement_basis가 가른다),
+    슬롯 소유·교체 금지 같은 동결 계약은 둘에 똑같이 적용된다.
+    """
+
     fingerprint = protocol.get("tracking_set_fingerprint")
     size = protocol.get("tracking_set_size")
     return (
-        protocol.get("measurement_window") == "month_end"
+        protocol.get("measurement_window") in _AUTHORITATIVE_MEASUREMENT_WINDOWS
         and isinstance(fingerprint, str)
         and bool(fingerprint)
         and isinstance(size, int)
@@ -327,11 +342,7 @@ def summarize_manifest(
     quality = "BLOCKED"
     if closed and planned > 0 and success > 0 and not platform_gap:
         quality = "COMPLETE" if success == planned else "DEGRADED"
-    slotted_cells = [
-        cell
-        for cell in rows
-        if cell.state != "EXCLUDED" and list(getattr(cell, "observation_slots", ()) or ())
-    ]
+    planned_cells = [cell for cell in rows if cell.state != "EXCLUDED"]
     provenance = getattr(next(iter(rows), None), "manifest", None)
     provenance = getattr(provenance, "platform_provenance", None)
     slot_contract = provenance.get("observation_slots") if isinstance(provenance, dict) else None
@@ -346,22 +357,26 @@ def summarize_manifest(
         and contract_repeat_count > 0
     )
     # Manifests frozen before the slot contract keep their legacy quality. We do
-    # not backfill repeat lineage. A new contract manifest stays incomplete until
-    # every planned cell has every frozen repeat slot, including after a hard kill.
+    # not backfill repeat lineage. A closed contract manifest follows the authored
+    # final adequacy: missing frozen repeats stay pending, LIMITED is DEGRADED, and
+    # UNAVAILABLE stays BLOCKED under the honest-unavailable delivery contract.
     if has_slot_contract:
-        expected_slots = planned * contract_repeat_count
-        actual_slots = sum(len(cell.observation_slots) for cell in slotted_cells)
-        adequacy = summarize_observation_slots(
-            (slot for cell in slotted_cells for slot in cell.observation_slots),
+        adequacy = slotted_observation_adequacy(
+            planned_cells,
+            repeat_count=contract_repeat_count,
             deadline_reached=closed,
         )
-        slot_set_complete = len(slotted_cells) == planned and actual_slots == expected_slots
-        if slot_set_complete and adequacy.status == "COMPLETE" and success == planned and not platform_gap:
-            quality = "COMPLETE" if closed else "BLOCKED"
-        elif slot_set_complete and adequacy.status == "LIMITED":
+        slot_set_corrupt = adequacy is None
+        if (
+            not slot_set_corrupt
+            and closed
+            and adequacy.status == "COMPLETE"
+            and success == planned
+            and not platform_gap
+        ):
+            quality = "COMPLETE"
+        elif not slot_set_corrupt and closed and adequacy.status == "LIMITED":
             quality = "DEGRADED"
-        elif slot_set_complete and adequacy.status == "UNAVAILABLE":
-            quality = "BLOCKED"
         else:
             quality = "BLOCKED"
     blockers: list[str] = []
@@ -374,7 +389,7 @@ def summarize_manifest(
     elif failed:
         blockers.append("MANIFEST_CELL_FAILURES")
     if has_slot_contract:
-        if not slot_set_complete:
+        if slot_set_corrupt:
             blockers.append("MEASUREMENT_SLOT_SET_INCOMPLETE")
         elif adequacy.status == "LIMITED":
             blockers.append("MEASUREMENT_SAMPLE_LIMITED")
@@ -424,6 +439,16 @@ def reopen_incomplete_manifest_for_recovery(
     if manifest.closed_at is None or not is_monthly_recovery_window(
         now, manifest.period_year, manifest.period_month
     ):
+        return False
+    # 최종 표본(COMPLETE·LIMITED·UNAVAILABLE)은 절대 다시 열지 않는다 — 열리면
+    # 07:00 마감 기준과 보고서 회복이 흔들린다. 미해결 미완료(IN_PROGRESS)는
+    # closed_at이 있어도 창 안에서는 다시 열 수 있다.
+    adequacy = manifest_observation_adequacy(manifest, deadline_reached=False)
+    if adequacy is not None and adequacy.status in {
+        "COMPLETE",
+        "LIMITED",
+        "UNAVAILABLE",
+    }:
         return False
     summary = summarize_manifest(
         manifest.cells,

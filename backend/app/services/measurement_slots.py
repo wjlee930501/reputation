@@ -224,19 +224,31 @@ def slot_is_terminal(slot: MeasurementObservationSlot) -> bool:
     return slot.judgment_attempt_count >= MAX_STAGE_ATTEMPTS
 
 
+def _deadline_reached(deadline: datetime | None, moment: datetime) -> bool:
+    if deadline is None:
+        return False
+    aware = deadline if deadline.tzinfo is not None else deadline.replace(tzinfo=timezone.utc)
+    return moment >= aware
+
+
 def claim_slot_stage(
     session,
     slot_id: uuid.UUID,
     *,
     stage: str,
     now: datetime | None = None,
+    deadline: datetime | None = None,
 ) -> tuple[MeasurementObservationSlot, uuid.UUID] | None:
     """Claim one answer/judgment stage under a DB row lock.
 
     The caller commits the claim before making the external call. A worker death
-    leaves a bounded lease that a later recovery run can take over.
+    leaves a bounded lease that a later recovery run can take over. At/after
+    `deadline` no new paid stage may start — the claim is refused before and
+    again after the row lock so a lock wait cannot smuggle a call past it.
     """
     moment = now or datetime.now(timezone.utc)
+    if _deadline_reached(deadline, moment):
+        return None
     slot = session.execute(
         select(MeasurementObservationSlot)
         .where(MeasurementObservationSlot.id == slot_id)
@@ -244,6 +256,8 @@ def claim_slot_stage(
         .execution_options(populate_existing=True)
     ).scalar_one_or_none()
     if slot is None:
+        return None
+    if _deadline_reached(deadline, datetime.now(timezone.utc)):
         return None
     if slot.lease_token is not None and slot.lease_expires_at is not None:
         expires = slot.lease_expires_at
@@ -329,9 +343,17 @@ def checkpoint_answer(
     result: Mapping[str, Any],
     *,
     lease_token: uuid.UUID,
+    deadline: datetime | None = None,
 ) -> MeasurementObservationSlot | None:
-    """Persist an answer only while this worker still owns the committed lease."""
+    """Persist an answer only while this worker still owns the committed lease.
+
+    At/after `deadline` the late answer is discarded before the slot mutates.
+    """
+    if _deadline_reached(deadline, datetime.now(timezone.utc)):
+        return None
     slot = _claimed_slot_for_checkpoint(session, slot_id, lease_token)
+    if _deadline_reached(deadline, datetime.now(timezone.utc)):
+        return None
     if slot is None:
         return None
     raw_response = str(result.get("raw_response") or "")
@@ -384,9 +406,18 @@ def checkpoint_judgment(
     result: Mapping[str, Any],
     sov_record: SovRecord,
     lease_token: uuid.UUID,
+    deadline: datetime | None = None,
 ) -> tuple[MeasurementObservationSlot, str] | None:
-    """Fence and persist the judgment plus SovRecord in one transaction."""
+    """Fence and persist the judgment plus SovRecord in one transaction.
+
+    At/after `deadline` the late judgment is discarded before a SovRecord is
+    added or the slot mutates.
+    """
+    if _deadline_reached(deadline, datetime.now(timezone.utc)):
+        return None
     slot = _claimed_slot_for_checkpoint(session, slot_id, lease_token)
+    if _deadline_reached(deadline, datetime.now(timezone.utc)):
+        return None
     if slot is None:
         return None
     session.add(sov_record)

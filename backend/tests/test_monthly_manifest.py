@@ -282,10 +282,11 @@ def test_recovery_reopen_uses_only_the_recovery_guard() -> None:
         cells=[SimpleNamespace(state="FAILED", platform="chatgpt")],
     )
 
+    # UTC 8/31 20:00 = KST 9/1 05:00 — 1일 새벽 창(00:15~07:00 KST) 안.
     reopened = reopen_incomplete_manifest_for_recovery(
         PostgresSession(),
         manifest,
-        now=datetime(2026, 9, 2, tzinfo=timezone.utc),
+        now=datetime(2026, 8, 31, 20, 0, tzinfo=timezone.utc),
     )
 
     assert reopened is True
@@ -344,10 +345,11 @@ def test_postgres_supersede_cannot_reopen_but_recovery_can() -> None:
 
             db.expire(manifest)
             assert manifest.closed_at == closed_at
+            # UTC 8/31 20:00 = KST 9/1 05:00 — 1일 새벽 창 안에서만 재개된다.
             assert reopen_incomplete_manifest_for_recovery(
                 db,
                 manifest,
-                now=datetime(2026, 9, 2, tzinfo=timezone.utc),
+                now=datetime(2026, 8, 31, 20, 0, tzinfo=timezone.utc),
             )
             db.commit()
             assert db.scalar(

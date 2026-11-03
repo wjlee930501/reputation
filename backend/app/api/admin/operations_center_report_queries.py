@@ -37,7 +37,7 @@ from app.services.monthly_delivery_projection import (
     latest_delivery_event_subquery,
     latest_monthly_report_subquery,
 )
-from app.services.monthly_period import is_monthly_recovery_window, reporting_period
+from app.services.monthly_period import monthly_final_judgment_at, reporting_period
 from app.services.monthly_report_delivery import monthly_report_delivery_gate
 
 ReportQueueState = Literal[
@@ -60,14 +60,20 @@ _MONTHLY_RUN_TYPES: Final = ("GENERATE_MONTHLY_REPORT", "SCHEDULED_MONTHLY_REPOR
 
 
 def _report_operator_copy(
-    state: ReportQueueState, *, monthly_recovery_open: bool = False
+    state: ReportQueueState, *, preparing: bool = False
 ) -> tuple[str, str]:
     match state:
         case "MISSING":
+            if preparing:
+                return (
+                    "지난달 보고서를 시스템이 자동으로 준비하고 있습니다.",
+                    "1일 새벽 측정 뒤 09:00까지 시스템이 보고서를 만듭니다. 수동으로 생성하거나 "
+                    "재측정하지 마세요. 09:00 뒤에도 없으면 처리 사유와 함께 다시 표시됩니다.",
+                )
             return (
                 "지난달 보고서가 없어 원장 보고가 지연됩니다.",
-                "시스템이 매월 1~7일 00시 15분에 지난달 측정과 리포트 마감을 다시 시도합니다. "
-                "자동 복구 뒤에도 남아 있으면 처리 사유를 남기고 “지난달 리포트 생성”을 누른 뒤 "
+                "시스템이 매월 1일 새벽에 측정하고 오전에 지난달 보고서를 만듭니다. "
+                "남아 있으면 처리 사유를 남기고 “지난달 리포트 생성”을 누른 뒤 "
                 "작업 기록에서 진행 상태를 확인하세요.",
             )
         case "DELIVERY_PENDING":
@@ -76,16 +82,16 @@ def _report_operator_copy(
                 f"운영 센터의 “{_REPORT_ACTION_LABEL}”을 눌러 고객용 PDF와 전달 기록을 확인하세요.",
             )
         case "COVERAGE_INCOMPLETE":
-            if not monthly_recovery_open:
+            if preparing:
                 return (
-                    "필수 측정이 완료되지 않아 지난달 보고서를 원장님께 전달할 수 없습니다.",
-                    "시스템은 매월 1~7일 실패한 측정을 자동으로 다시 실행합니다. "
-                    "현재는 보고서 확인에서 남은 계획·성공·실패 수와 다음 복구 창을 확인하세요.",
+                    "지난달 측정과 보고서를 시스템이 자동으로 준비하고 있습니다.",
+                    "1일 새벽 창에서 측정을 마치고 09:00까지 보고서를 준비합니다. 수동으로 "
+                    "재측정하거나 보고서를 만들지 마세요. 09:00 뒤에도 미완료면 사유별 조치가 표시됩니다.",
                 )
             return (
                 "필수 측정이 완료되지 않아 지난달 보고서를 원장님께 전달할 수 없습니다.",
-                "시스템이 매월 1~7일 실패한 측정만 다시 실행합니다. 이 복구 기간 안에서 "
-                "즉시 다시 실행하려면 운영 센터의 “지난달 월간 재측정”을 사용하세요.",
+                "보고서 확인에서 남은 계획·성공·실패 수와 측정 상태를 확인하고, "
+                "차단 사유를 해결한 뒤 다시 확인하세요.",
             )
         case "MANIFEST_MISMATCH" | "MANIFEST_OPEN":
             return (
@@ -117,10 +123,14 @@ def _report_action(
     state: ReportQueueState,
     year: int,
     month: int,
-    monthly_recovery_open: bool = False,
+    preparing: bool = False,
 ) -> OperationsAction:
-    """Expose the least-click recovery available for each report queue state."""
-    if state == "MISSING":
+    """Expose the least-click recovery available for each report queue state.
+
+    Before the 09:00 availability judgment the queue is view-only — the automatic
+    dawn window owns measurement and report preparation.
+    """
+    if state == "MISSING" and not preparing:
         return OperationsAction(
             kind="GENERATE_MONTHLY_REPORT",
             label="지난달 리포트 생성",
@@ -130,14 +140,6 @@ def _report_action(
                 f"?year={year}&month={month}"
             ),
             reason_required=True,
-            requires_idempotency_key=True,
-        )
-    if state == "COVERAGE_INCOMPLETE" and monthly_recovery_open:
-        return OperationsAction(
-            kind="RUN_SOV",
-            label="지난달 월간 재측정",
-            method="POST",
-            path=f"/hospitals/{hospital_id}/operations/run-sov?measurement_mode=monthly",
             requires_idempotency_key=True,
         )
     return OperationsAction(
@@ -239,7 +241,7 @@ async def load_reports_queue(
     now: datetime,
 ) -> tuple[int, list[OperationsQueueRow]]:
     """Load hospitals missing or awaiting delivery of the prior monthly report."""
-    if filters.severity not in (None, "HIGH") or filters.sla not in (
+    if filters.severity not in (None, "HIGH", "LOW") or filters.sla not in (
         None,
         SlaFilter.NONE,
     ):
@@ -252,7 +254,10 @@ async def load_reports_queue(
             - closes_at.astimezone(ZoneInfo("Asia/Seoul")).date()
         ).days,
     )
-    monthly_recovery_open = is_monthly_recovery_window(now, year, month)
+    # 1일 09:00 판정 전에는 미생성·측정 미완료가 운영자 작업이 아니라 준비 상태다.
+    preparing = now.astimezone(ZoneInfo("Asia/Seoul")) < monthly_final_judgment_at(
+        year, month
+    )
     latest = latest_monthly_report_subquery(year, month)
     latest_delivery = latest_delivery_event_subquery()
     active_report_runs = (
@@ -344,8 +349,15 @@ async def load_reports_queue(
         report_state_value, safe_cause = _report_queue_state(report, manifest, artifact)
         if filters.status is not None and report_state_value != filters.status:
             continue
+        severity = (
+            "LOW"
+            if preparing and report_state_value in {"MISSING", "COVERAGE_INCOMPLETE"}
+            else "HIGH"
+        )
+        if filters.severity is not None and severity != filters.severity:
+            continue
         candidates.append(
-            (hospital, report, handoff, actor, report_state_value, safe_cause)
+            (hospital, report, handoff, actor, report_state_value, safe_cause, severity)
         )
     total = len(candidates)
     rows = candidates[(page - 1) * page_size : page * page_size]
@@ -360,10 +372,10 @@ async def load_reports_queue(
                 admin_path=f"/hospitals/{hospital.id}/reports",
             ),
             status=report_state_value,
-            severity="HIGH",
+            severity=severity,
             impact=_report_operator_copy(
                 report_state_value,
-                monthly_recovery_open=monthly_recovery_open,
+                preparing=preparing,
             )[0],
             owner=owner_projection(actor),
             # REPORTS는 전달 준비 상태를 보여 주는 큐이지 스태프 SLA 큐가 아니다.
@@ -373,14 +385,14 @@ async def load_reports_queue(
             days_since_close=days_since_close,
             next_action=_report_operator_copy(
                 report_state_value,
-                monthly_recovery_open=monthly_recovery_open,
+                preparing=preparing,
             )[1],
             action=_report_action(
                 hospital.id,
                 state=report_state_value,
                 year=year,
                 month=month,
-                monthly_recovery_open=monthly_recovery_open,
+                preparing=preparing,
             ),
             retry=None,
             safe_cause=safe_cause,
@@ -391,7 +403,7 @@ async def load_reports_queue(
             report_id=report.id if report else None,
             occurred_at=report.created_at if report else period_start,
         )
-        for hospital, report, handoff, actor, report_state_value, safe_cause in rows
+        for hospital, report, handoff, actor, report_state_value, safe_cause, severity in rows
     ]
 
 

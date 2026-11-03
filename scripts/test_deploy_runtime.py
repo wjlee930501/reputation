@@ -2555,3 +2555,62 @@ def test_a_minority_of_unhealthy_hospitals_warns_without_rollback(tmp_path: Path
     assert result.returncode != 0
     assert "경고" in result.stderr
     assert "gcloud run services update-traffic" not in commands
+
+
+@pytest.mark.parametrize(
+    "clock",
+    ["2026-12-01T03:00", "2026-12-01T05:00", "2026-12-01T09:00"],
+)
+def test_day_one_dawn_window_blocks_backend_deploy(tmp_path: Path, clock: str) -> None:
+    # 1일 00:15~09:00은 월간 측정·보고서 마감이 지킨다 — 03:00·05:00·09:00은 어느 일반 창에도
+    # 들어가지 않으므로 이 차단은 월간 창만의 것이다. API/백엔드 배포가 막히고 운영 변경은 없다.
+    result, commands = _run_target(tmp_path, "api", DEPLOY_CLOCK_KST=clock)
+    assert result.returncode != 0
+    assert "월간 측정" in result.stderr
+    assert "--override-reason" in result.stderr
+    assert "docker build" not in commands
+    assert "storage cp" not in commands
+    assert "gcloud run jobs execute reputation-migrate" not in commands
+    assert "gcloud run deploy" not in commands
+    assert "uv " not in commands
+
+
+@pytest.mark.parametrize(
+    "clock",
+    ["2026-12-02T03:00", "2026-12-02T05:00", "2026-12-01T09:01"],
+)
+def test_ordinary_days_and_after_nine_stay_deployable(tmp_path: Path, clock: str) -> None:
+    # 평일(2일) 같은 시각과 1일 09:01은 월간 창 밖이다 — 평소처럼 배포한다.
+    result, commands = _run_target(tmp_path, "api", DEPLOY_CLOCK_KST=clock)
+    assert result.returncode == 0, result.stderr
+    assert "ops/deploy-lock/" in commands
+    assert "docker build" in commands
+
+
+def test_day_one_override_reason_still_records_the_monthly_window(tmp_path: Path) -> None:
+    # 명시 예외는 여전히 통과하지만 넘긴 창(월간 마감)이 기록에 남는다.
+    result, commands = _run_target(
+        tmp_path,
+        "api",
+        "--override-reason=월간 마감 복구",
+        DEPLOY_CLOCK_KST="2026-12-01T05:00",
+    )
+    assert result.returncode == 0, result.stderr
+    assert "월간 측정" in result.stderr
+    # 넘긴 창이 '1일 00:15~09:00 월간 측정·보고서 마감'으로 예외 기록에 남는다.
+    assert "override-" in commands
+
+
+def test_a_build_crossing_into_the_day_one_window_stops_before_any_mutation(
+    tmp_path: Path,
+) -> None:
+    # 21:00(창 밖)에 시작한 api 배포가 월을 넘겨 1일 새벽 마감에 들어오면 첫 운영 변경 전에 멈춘다.
+    result, commands = _run_with_advancing_clock(
+        tmp_path, "api", ["2026-11-30T21:00", "2026-12-01T00:16"]
+    )
+    assert result.returncode != 0
+    assert "월간 측정" in result.stderr
+    assert "docker build" in commands
+    assert "gcloud run jobs execute reputation-migrate" not in commands
+    assert "gcloud run deploy" not in commands
+    assert "gcloud storage rm" in commands

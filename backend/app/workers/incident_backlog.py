@@ -104,7 +104,7 @@ def _same_period_measurement(
 
 
 def _monthly_period_finalized(db: Session, incident: Incident, now: datetime) -> str | None:
-    """최종 판정 시각(다음 달 8일 09:00 KST)이 지났고 그 달 월간 보고서가 있으면 측정 단계는 끝났다.
+    """최종 판정 시각(다음 달 1일 09:00 KST)이 지났고 그 달 월간 보고서가 있으면 측정 단계는 끝났다.
 
     마감으로 LIMITED/UNAVAILABLE이 된 달에는 새 RUN_SOV 성공이 없어, 같은 기간 측정 성공만 보던
     근거로는 사고가 영원히 열려 있었다(2026-09 신기한·장앤김, 7.6일). 측정 결손은 보고서 품질이

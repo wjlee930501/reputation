@@ -5,7 +5,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, delete, select
 from sqlalchemy.orm import Session
 
 from app.api.admin.reports import _serialize
@@ -302,14 +302,27 @@ def test_horizon_closes_zero_question_period_as_unavailable_with_truthful_null_s
 
 def test_three_day_partial_budget_round_robin_runs_through_report_entrypoint(monkeypatch) -> None:
     engine = create_engine(require_db_url("TASK22_DATABASE_URL"), pool_pre_ping=True)
-    period_key = "2099-09"
+    period_key = "2098-11"
     published: list[tuple[str, str]] = []
 
     def apply_async(*, args, task_id, **_kwargs) -> None:
         published.append((args[0], task_id))
 
     monkeypatch.setattr(tasks.run_sov_for_hospital, "apply_async", apply_async)
-    with Session(engine, expire_on_commit=False) as db:
+    # 이 테스트의 모든 행은 바깥 트랜잭션 안의 savepoint로 묶여 마지막에 통째로 롤백된다 —
+    # 공유 테스트 DB의 다른 기간 행은 읽기도 지우기도 않는다.
+    connection = engine.connect()
+    outer = connection.begin()
+    try:
+
+        def _session() -> Session:
+            return Session(
+                bind=connection,
+                join_transaction_mode="create_savepoint",
+                expire_on_commit=False,
+            )
+
+        db = _session()
         hospitals = [
             Hospital(name=f"라운드로빈-{index}", slug=f"round-robin-{uuid.uuid4().hex}")
             for index in range(3)
@@ -317,7 +330,7 @@ def test_three_day_partial_budget_round_robin_runs_through_report_entrypoint(mon
         db.add_all(hospitals)
         db.commit()
         hospital_ids = {hospital.id for hospital in hospitals}
-        monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: Session(engine, expire_on_commit=False))
+        monkeypatch.setattr(tasks, "SyncSessionLocal", _session)
         monkeypatch.setattr(tasks, "require_dispatch", lambda *_args, **_kwargs: None)
         monkeypatch.setattr(tasks, "eligible_hospital_ids", lambda *_args: list(hospital_ids))
         monkeypatch.setattr(tasks, "_hospital_requires_monthly_sov_success", lambda *_args: True)
@@ -327,16 +340,17 @@ def test_three_day_partial_budget_round_robin_runs_through_report_entrypoint(mon
         monkeypatch.setattr(tasks, "_start_monthly_report_batch_run", lambda *_args: None)
         monkeypatch.setattr(tasks, "_finish_monthly_report_batch_run", lambda *_args, **_kwargs: None)
         monkeypatch.setattr(tasks, "_record_weekly_sov_failure", lambda *_args, **_kwargs: None)
-        clock = {"day": 1}
+        clock = {"hour": 1}
         monkeypatch.setattr(
             tasks.arrow,
             "now",
             lambda *_args, **_kwargs: tasks.arrow.get(
-                2099, 10, clock["day"], 1, 0, tzinfo="Asia/Seoul"
+                2098, 12, 1, clock["hour"], 0, tzinfo="Asia/Seoul"
             ),
         )
-        for day in range(1, 4):
-            clock["day"] = day
+        # 측정 창(1일 00:15~07:00 KST) 안에서 복귀하는 보고서 틱마다 미완료 병원을 다시 보낸다.
+        for tick, hour in enumerate((1, 3, 5)):
+            clock["hour"] = hour
             result = tasks.run_monthly_reports.run()
             assert result == {
                 "status": "PARTIAL",
@@ -344,14 +358,14 @@ def test_three_day_partial_budget_round_robin_runs_through_report_entrypoint(mon
                 "success_count": 0,
                 "failure_count": len(hospitals),
             }
-            assert len(published) == day * len(hospitals)
-            if day < 3:
+            assert len(published) == (tick + 1) * len(hospitals)
+            if tick < 2:
                 db.expire_all()
                 runs = db.scalars(
                     select(OperationRun).where(
                         OperationRun.hospital_id.in_(hospital_ids),
                         OperationRun.operation_type == "RUN_SOV",
-                        OperationRun.idempotency_key.like("monthly-sov:%:2099-09"),
+                        OperationRun.idempotency_key.like(f"monthly-sov:%:{period_key}"),
                     )
                 ).all()
                 assert len(runs) == len(hospitals)
@@ -362,7 +376,8 @@ def test_three_day_partial_budget_round_robin_runs_through_report_entrypoint(mon
                 db.commit()
 
         paid_dispatches_before_close = len(published)
-        clock["day"] = 8
+        # 07:00 마감 뒤의 보고서 틱은 더 사지 않고 고정 사실로 최종화한다.
+        clock["hour"] = 8
         close_result = tasks.run_monthly_reports.run()
         assert close_result["status"] == "PARTIAL"
         assert len(published) == paid_dispatches_before_close
@@ -383,12 +398,7 @@ def test_three_day_partial_budget_round_robin_runs_through_report_entrypoint(mon
         assert period_runs[0].result_summary["monthly_measurement_cursor"][
             "hospital_id"
         ] in {str(hospital_id) for hospital_id in hospital_ids}
-        db.execute(
-            OperationRun.__table__.delete().where(
-                (OperationRun.hospital_id.in_(hospital_ids))
-                | (OperationRun.id == period_runs[0].id)
-            )
-        )
-        db.execute(Hospital.__table__.delete().where(Hospital.id.in_(hospital_ids)))
-        db.commit()
-    engine.dispose()
+    finally:
+        outer.rollback()
+        connection.close()
+        engine.dispose()

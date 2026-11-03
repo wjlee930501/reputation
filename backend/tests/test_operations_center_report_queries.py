@@ -156,18 +156,17 @@ def test_report_queue_preserves_manifest_gate_distinctions():
 
 
 def test_incomplete_report_queue_action_offers_real_prior_month_remasure():
+    """월간 재측정 액션은 보고서 큐에서 제거됐다 — 보기만 남는다(자동 새벽 창이 소유)."""
     control = report_queries._report_action(
         uuid.uuid4(),
         state="COVERAGE_INCOMPLETE",
         year=2026,
         month=8,
-        monthly_recovery_open=True,
+        preparing=True,
     )
 
-    assert control.kind == "RUN_SOV"
-    assert control.method == "POST"
-    assert control.path.endswith("/operations/run-sov?measurement_mode=monthly")
-    assert control.requires_idempotency_key is True
+    assert control.kind == "OPEN_REPORT"
+    assert control.method == "GET"
 
 
 def test_incomplete_report_action_is_not_a_dead_remasure_outside_recovery_window():

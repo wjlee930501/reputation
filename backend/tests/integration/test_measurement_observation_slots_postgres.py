@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.models.hospital import Hospital
 from app.models.monthly_control import MeasurementObservationSlot
 from app.models.sov import MeasurementRun, QueryMatrix, SovRecord
+from app.services import measurement_slots as slots_module
 from app.services.measurement_slots import (
     MAX_STAGE_ATTEMPTS,
     STAGE_LEASE_SECONDS,
@@ -503,3 +504,253 @@ def test_cost_blocks_do_not_consume_stage_attempts_and_zero_judgment_checks_guar
 
     with Session(pg_engine) as cleanup:
         _cleanup_hospital(cleanup, hospital_id)
+
+
+class _CrossingClock(datetime):
+    """measurement_slots.datetime 대체 — execute/provider 안에서 시각을 전진시킨다."""
+
+    _clock: dict = {}
+
+    @classmethod
+    def now(cls, tz=None):
+        t = cls._clock["t"]
+        return t.astimezone(tz) if tz else t
+
+
+def _dawn_clock_and_deadline():
+    clock = {"t": datetime(2026, 8, 31, 21, 59, 59, tzinfo=timezone.utc)}  # KST 9/1 06:59:59
+    deadline = datetime(2026, 8, 31, 22, 0, tzinfo=timezone.utc)  # KST 9/1 07:00 배타 마감
+    return clock, deadline
+
+
+def _bind_crossing_clocks(monkeypatch, clock):
+    monkeypatch.setattr(_CrossingClock, "_clock", clock)
+    monkeypatch.setattr(slots_module, "datetime", _CrossingClock)
+    monkeypatch.setattr(
+        tasks.arrow, "now", lambda *_a, **_k: tasks.arrow.get(clock["t"])
+    )
+
+
+def _seed_slot(db, suffix):
+    hospital = Hospital(name=f"마감교차-{suffix}", slug=f"deadline-cross-{suffix}")
+    db.add(hospital)
+    db.flush()
+    query = QueryMatrix(
+        hospital_id=hospital.id, query_text="노원구 정형외과 추천", query_intent="LOCAL"
+    )
+    run = MeasurementRun(
+        hospital_id=hospital.id,
+        run_label="deadline-crossing",
+        status="RUNNING",
+        config={"measurement_protocol": {"version": "v1", "repeat_count": 1}},
+    )
+    db.add_all([query, run])
+    db.flush()
+    slots = ensure_v0_slots(
+        db,
+        hospital_id=hospital.id,
+        measurement_run_id=run.id,
+        query_id=query.id,
+        platform="chatgpt",
+        repeat_count=1,
+        protocol={"version": "v1", "repeat_count": 1},
+    )
+    db.commit()
+    return hospital, query, run, slots[0]
+
+
+def test_late_provider_answer_settles_but_is_never_checkpointed(pg_engine, monkeypatch):
+    """Case A: 06:59:59에 보낸 답변 호출이 07:00 뒤에 돌아오면 예약은 정산하고 늦은 답은 버린다."""
+    suffix = uuid.uuid4().hex[:12]
+    clock, deadline = _dawn_clock_and_deadline()
+    _bind_crossing_clocks(monkeypatch, clock)
+    fetches, judgments, settlements = [], [], []
+
+    async def fetch_answer(query_text, platform, **kwargs):
+        fetches.append((query_text, platform))
+        clock["t"] = deadline  # 공급자가 답한 뒤 이미 마감을 지났다.
+        return {
+            "measurement_status": "SUCCESS",
+            "raw_response": "답변 본문",
+            "answer_model": "answer-test",
+            "measurement_method": "TEST",
+            "source_urls": [],
+            "provider_calls": 1,
+        }
+
+    async def judge_answer(_name, _response, **kwargs):
+        judgments.append(kwargs)
+        return {"measurement_status": "SUCCESS", "verdict": "MATCHED", "provider_calls": 1}
+
+    async def reserve(category, count, *, reservation_id):
+        return SimpleNamespace(allowed=True, receipt=reservation_id)
+
+    async def settle(receipt, *, consumed_units):
+        settlements.append((receipt, consumed_units))
+
+    monkeypatch.setattr(tasks, "fetch_answer", fetch_answer)
+    monkeypatch.setattr(tasks, "judge_answer", judge_answer)
+    monkeypatch.setattr(tasks.cost_guard, "reserve", reserve)
+    monkeypatch.setattr(tasks.cost_guard, "settle_reservation", settle)
+
+    with Session(pg_engine, expire_on_commit=False) as db:
+        hospital, query, run, slot = _seed_slot(db, suffix)
+        result = tasks._execute_paid_observation_slot(
+            db,
+            slot=slot,
+            hospital=hospital,
+            query_text=query.query_text,
+            competitors=[],
+            protocol={"version": "v1", "repeat_count": 1},
+            deadline=deadline,
+        )
+        hospital_id, run_id, slot_id = hospital.id, run.id, slot.id
+    try:
+        assert result["measurement_status"] == "FAILED"
+        assert fetches == [("노원구 정형외과 추천", "chatgpt")]  # 답변은 이미 샀다.
+        assert judgments == []  # 늦은 답은 판정 호출을 일으키지 않는다.
+        assert settlements and settlements[-1][1] == 1  # 발행된 예약은 그대로 정산.
+        with Session(pg_engine) as db:
+            fresh = db.get(MeasurementObservationSlot, slot_id)
+            assert fresh.raw_response is None and fresh.answered_at is None
+            assert fresh.judgment_status != "CONFIRMED"
+            assert (
+                db.query(SovRecord).filter(SovRecord.measurement_run_id == run_id).count()
+                == 0
+            )
+    finally:
+        with Session(pg_engine) as db:
+            _cleanup_hospital(db, hospital_id)
+
+
+def test_late_judgment_return_settles_but_writes_no_verdict(pg_engine, monkeypatch):
+    """Case B: 판정 호출이 마감을 넘겨 돌아오면 예약은 정산하고 verdict·레코드는 안 쓴다."""
+    suffix = uuid.uuid4().hex[:12]
+    clock, deadline = _dawn_clock_and_deadline()
+    _bind_crossing_clocks(monkeypatch, clock)
+    judgments, settlements = [], []
+
+    async def fetch_answer(query_text, platform, **kwargs):
+        return {
+            "measurement_status": "SUCCESS",
+            "raw_response": f"{hospital.name}을 추천합니다.",
+            "answer_model": "answer-test",
+            "measurement_method": "TEST",
+            "source_urls": [],
+            "provider_calls": 1,
+        }
+
+    async def judge_answer(_name, _response, **kwargs):
+        judgments.append(kwargs)
+        if len(judgments) == 1:
+            return {"measurement_status": "FAILED", "failure_reason": "temporary", "provider_calls": 1}
+        clock["t"] = deadline  # 판정이 마감을 넘겨 돌아온다.
+        return {
+            "measurement_status": "SUCCESS",
+            "verdict": "MATCHED",
+            "is_mentioned": True,
+            "provider_calls": 1,
+        }
+
+    async def reserve(category, count, *, reservation_id):
+        return SimpleNamespace(allowed=True, receipt=reservation_id)
+
+    async def settle(receipt, *, consumed_units):
+        settlements.append((receipt, consumed_units))
+
+    monkeypatch.setattr(tasks, "fetch_answer", fetch_answer)
+    monkeypatch.setattr(tasks, "judge_answer", judge_answer)
+    monkeypatch.setattr(tasks.cost_guard, "reserve", reserve)
+    monkeypatch.setattr(tasks.cost_guard, "settle_reservation", settle)
+
+    with Session(pg_engine, expire_on_commit=False) as db:
+        hospital, query, run, slot = _seed_slot(db, suffix)
+        first = tasks._execute_paid_observation_slot(
+            db,
+            slot=slot,
+            hospital=hospital,
+            query_text=query.query_text,
+            competitors=[],
+            protocol={"version": "v1", "repeat_count": 1},
+            deadline=deadline,
+        )
+        assert first["failure_reason"] == "temporary"  # 답변은 확정, 판정만 보류.
+        records_before = (
+            db.query(SovRecord).filter(SovRecord.measurement_run_id == run.id).count()
+        )
+        fresh = db.get(MeasurementObservationSlot, slot.id, populate_existing=True)
+        second = tasks._execute_paid_observation_slot(
+            db,
+            slot=fresh,
+            hospital=hospital,
+            query_text=query.query_text,
+            competitors=[],
+            protocol={"version": "v1", "repeat_count": 1},
+            deadline=deadline,
+        )
+        hospital_id, run_id, slot_id, _rb = hospital.id, run.id, slot.id, records_before
+    try:
+        assert second["measurement_status"] == "FAILED"
+        assert len(judgments) == 2  # 늦은 반환도 호출 자체는 갔다 — 그 비용은 정산한다.
+        assert settlements[-1][1] == 1
+        with Session(pg_engine) as db:
+            fresh = db.get(MeasurementObservationSlot, slot_id)
+            assert fresh.raw_response == f"{hospital.name}을 추천합니다."  # 산 답변은 그대로다.
+            assert fresh.judgment_status != "CONFIRMED"
+            # 늦은 판정은 새 레코드·verdict를 쓰지 않는다 — 첫 호출의 실패 기록만 남는다.
+            assert (
+                db.query(SovRecord).filter(SovRecord.measurement_run_id == run_id).count()
+                == _rb
+            )
+    finally:
+        with Session(pg_engine) as db:
+            _cleanup_hospital(db, hospital_id)
+
+
+def test_reserve_crossing_deadline_refunds_without_provider_call(pg_engine, monkeypatch):
+    """Case C: 예약 대기가 마감을 넘기면 공급자 호출 없이 예약을 환불(0)한다."""
+    suffix = uuid.uuid4().hex[:12]
+    clock, deadline = _dawn_clock_and_deadline()
+    _bind_crossing_clocks(monkeypatch, clock)
+    fetches, settlements = [], []
+
+    async def fetch_answer(query_text, platform, **kwargs):
+        fetches.append(query_text)
+        return {"measurement_status": "SUCCESS", "raw_response": "x", "provider_calls": 1}
+
+    async def reserve(category, count, *, reservation_id):
+        clock["t"] = deadline  # 예약 허가를 기다리는 동안 마감이 지났다.
+        return SimpleNamespace(allowed=True, receipt=reservation_id)
+
+    async def settle(receipt, *, consumed_units):
+        settlements.append((receipt, consumed_units))
+
+    monkeypatch.setattr(tasks, "fetch_answer", fetch_answer)
+    monkeypatch.setattr(tasks.cost_guard, "reserve", reserve)
+    monkeypatch.setattr(tasks.cost_guard, "settle_reservation", settle)
+
+    with Session(pg_engine, expire_on_commit=False) as db:
+        hospital, query, run, slot = _seed_slot(db, suffix)
+        result = tasks._execute_paid_observation_slot(
+            db,
+            slot=slot,
+            hospital=hospital,
+            query_text=query.query_text,
+            competitors=[],
+            protocol={"version": "v1", "repeat_count": 1},
+            deadline=deadline,
+        )
+        hospital_id, slot_id = hospital.id, slot.id
+    try:
+        assert result["measurement_status"] == "FAILED"
+        assert result["failure_reason"] == "monthly_deadline_reached"
+        assert fetches == []
+        assert settlements and settlements[-1][1] == 0  # 미사용 예약은 0으로 환불.
+        with Session(pg_engine) as db:
+            fresh = db.get(MeasurementObservationSlot, slot_id)
+            # claim이 소모한 시도는 되돌리고, 리스도 거절 도중 새지 않는다.
+            assert fresh.answer_attempt_count == 0
+            assert fresh.lease_token is None
+    finally:
+        with Session(pg_engine) as db:
+            _cleanup_hospital(db, hospital_id)

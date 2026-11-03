@@ -432,7 +432,7 @@ def test_partial_monthly_run_rearms_for_failed_cell_retry(signal_store):
             db,
             SimpleNamespace(id=hospital_id),
             "2026-08",
-            datetime(2026, 9, 7, 14, 59, 59, tzinfo=UTC),
+            datetime(2026, 8, 31, 20, 0, tzinfo=UTC),
         )
 
     assert run is not None
@@ -482,7 +482,7 @@ def test_non_cost_failed_monthly_run_rearms_failed_cells_in_month_end_window(
             db,
             SimpleNamespace(id=hospital_id),
             "2026-08",
-            datetime(2026, 8, 28, tzinfo=UTC),
+            datetime(2026, 8, 31, 20, 0, tzinfo=UTC),
         )
 
     assert run is not None
@@ -509,7 +509,7 @@ def test_non_cost_failed_monthly_run_without_manifest_rearms_in_retry_window(
             db,
             SimpleNamespace(id=hospital_id),
             "2026-08",
-            datetime(2026, 8, 28, tzinfo=UTC),
+            datetime(2026, 8, 31, 20, 0, tzinfo=UTC),
         )
 
     assert run is not None
@@ -544,7 +544,7 @@ def test_non_cost_failed_monthly_run_stays_closed_outside_bounded_windows():
         db,
         SimpleNamespace(id=uuid.uuid4()),
         "2026-08",
-        datetime(2026, 9, 8, tzinfo=UTC),
+        datetime(2026, 9, 1, 0, 0, tzinfo=UTC),
     )
 
     assert run is None
@@ -583,7 +583,7 @@ def test_cost_guard_failed_run_does_not_rearm_after_recovery_horizon():
         _DB(),
         SimpleNamespace(id=uuid.uuid4()),
         "2026-08",
-        datetime(2026, 9, 7, 15, 0, tzinfo=UTC),
+        datetime(2026, 8, 31, 22, 0, tzinfo=UTC),
     )
 
     assert run is None
@@ -606,7 +606,7 @@ def test_cost_guard_failed_run_rearms_one_bounded_page_without_whole_budget_fit(
             db,
             SimpleNamespace(id=hospital_id),
             "2026-08",
-            datetime(2026, 9, 7, 14, 59, 59, tzinfo=UTC),
+            datetime(2026, 8, 31, 20, 0, tzinfo=UTC),
         )
 
     assert run is not None
@@ -915,6 +915,9 @@ def _patch_monthly_report_batch(monkeypatch, hospitals, *, now, succeeded_ids=No
         def scalar_one_or_none(self):
             return None
 
+        def first(self):
+            return None
+
     class _DB:
         def execute(self, _stmt):
             return _Result()
@@ -1051,6 +1054,12 @@ def test_daily_close_does_not_duplicate_terminal_report_run(
         "_latest_monthly_report_operation_run",
         lambda *_args: SimpleNamespace(state=run_state),
     )
+    recovery = []
+    monkeypatch.setattr(
+        tasks,
+        "_dispatch_automatic_monthly_report_recovery",
+        lambda *args: recovery.append(args),
+    )
 
     result = tasks.run_monthly_reports.run()
 
@@ -1059,6 +1068,8 @@ def test_daily_close_does_not_duplicate_terminal_report_run(
     assert result["success_count"] == (
         1 if run_state == OperationRunState.SUCCEEDED else 0
     )
+    # PARTIAL은 측정이 최종이면 멱등 자동 복구 경로로 넘긴다 — 새 버전 남발 없이 아침 최종화가 잡는다.
+    assert (len(recovery) == 1) == (run_state == OperationRunState.PARTIAL)
 
 
 def test_daily_close_self_heals_complete_report_with_missing_artifact(monkeypatch):
@@ -1889,22 +1900,25 @@ def test_monthly_report_batch_run_attaches_failure_correlation_header():
 
 
 def test_monthly_measurement_beat_stays_day_24_to_31_and_skips_sep1(monkeypatch):
+    """측정은 1일 00:15~07:00 창에만 돈다 — 07:00 이후와 말일은 아무것도 보내지 않는다."""
     entry = celery_app.conf.beat_schedule["monthly-sov-measurement"]
-    assert entry["schedule"].day_of_month == set(range(24, 32))
+    assert entry["schedule"].day_of_month == {1}
+    assert entry["schedule"].hour == set(range(0, 7))
+    assert entry["schedule"].minute == {15, 45}
     dispatched = []
     monkeypatch.setattr(tasks, "require_dispatch", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(
-        tasks.arrow,
-        "now",
-        lambda *_args, **_kwargs: tasks.arrow.get(2026, 9, 1, 0, 0, tzinfo="Asia/Seoul"),
-    )
     monkeypatch.setattr(
         tasks.run_sov_for_hospital,
         "apply_async",
         lambda **kwargs: dispatched.append(kwargs),
     )
-
-    tasks.run_monthly_sov_measurement.run()
+    for at in (
+        tasks.arrow.get(2026, 9, 1, 7, 0, tzinfo="Asia/Seoul"),
+        tasks.arrow.get(2026, 9, 30, 0, 0, tzinfo="Asia/Seoul"),
+        tasks.arrow.get(2026, 9, 2, 0, 15, tzinfo="Asia/Seoul"),
+    ):
+        monkeypatch.setattr(tasks.arrow, "now", lambda *_a, **_k: at)
+        tasks.run_monthly_sov_measurement.run()
 
     assert dispatched == []
 
@@ -1939,11 +1953,12 @@ def test_day_eight_finalize_closes_the_month_measurement_incident(monkeypatch):
 
 
 def test_pending_measurement_is_not_closed_by_the_batch(monkeypatch):
+    """측정 창 안에서 아직 끝나지 않은 측정은 보고서 배치가 닫지 않는다 — 창이 자동 복구다."""
     hospital = SimpleNamespace(id=uuid.uuid4(), name="미완료의원", monthly_sov_cohort=True)
     _patch_monthly_report_batch(
         monkeypatch,
         [hospital],
-        now=tasks.arrow.get(2026, 10, 2, 0, 15, tzinfo="Asia/Seoul"),
+        now=tasks.arrow.get(2026, 10, 1, 1, 0, tzinfo="Asia/Seoul"),
         succeeded_ids=set(),
     )
     monkeypatch.setattr(tasks, "_close_finalized_monthly_sov_incident", _REAL_CLOSE_FINALIZED)

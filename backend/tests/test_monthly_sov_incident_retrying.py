@@ -23,8 +23,8 @@ from app.services.monthly_period import (
 from app.workers import weekly_sov_incident_control as control
 
 HOSPITAL = uuid.UUID("22222222-2222-2222-2222-222222222222")
-DEADLINE_SEP = datetime(2026, 10, 7, 23, 59, 59, tzinfo=KST)
-JUDGMENT_SEP = datetime(2026, 10, 8, 9, 0, tzinfo=KST)
+DEADLINE_SEP = datetime(2026, 10, 1, 7, 0, tzinfo=KST)
+JUDGMENT_SEP = datetime(2026, 10, 1, 9, 0, tzinfo=KST)
 
 
 def _request(code: str | None, period: str = "2026-09") -> IncidentOpenRequest:
@@ -47,14 +47,15 @@ def _request(code: str | None, period: str = "2026-09") -> IncidentOpenRequest:
 
 
 def test_recovery_deadline_is_the_last_second_of_day_seven_kst():
+    """측정 마감은 다음 달 1일 07:00 KST(배타) — 마지막 초 조정은 없다."""
     assert monthly_recovery_deadline(2026, 9) == DEADLINE_SEP
-    assert monthly_recovery_deadline(2026, 12) == datetime(2027, 1, 7, 23, 59, 59, tzinfo=KST)
+    assert monthly_recovery_deadline(2026, 12) == datetime(2027, 1, 1, 7, 0, tzinfo=KST)
 
 
 def test_final_judgment_is_after_the_day_eight_finalize():
-    # 8일 00:15 월간 배치가 마감 사실로 최종화하고, 09:00 공백 요약이 마지막으로 판정한다.
+    # 1일 07:15부터 보고서 틱이 최종화하고, 09:00 공백 요약이 마지막으로 판정한다.
     assert monthly_final_judgment_at(2026, 9) == JUDGMENT_SEP
-    assert monthly_final_judgment_at(2026, 12) == datetime(2027, 1, 8, 9, 0, tzinfo=KST)
+    assert monthly_final_judgment_at(2026, 12) == datetime(2027, 1, 1, 9, 0, tzinfo=KST)
     assert monthly_final_judgment_at(2026, 9) > monthly_recovery_deadline(2026, 9) + timedelta(
         minutes=16
     )
@@ -76,9 +77,9 @@ def test_tasks_recovery_horizon_delegates_to_the_service_function():
 )
 def test_machine_owned_failures_stay_retrying_through_the_day_eight_finalize(code):
     day_one = datetime(2026, 10, 1, 0, 20, tzinfo=KST)
-    window = datetime(2026, 9, 26, 6, 0, tzinfo=KST)
-    # 7일 23:59:59 직후 ~ 8일 00:15 최종화 사이에 '조치 필요'가 먼저 나가면 오탐이다.
-    finalize = datetime(2026, 10, 8, 0, 15, tzinfo=KST)
+    window = datetime(2026, 10, 1, 5, 0, tzinfo=KST)
+    # 측정 마감(07:00) ~ 보고서 최종화 사이에 '조치 필요'가 먼저 나가면 오탐이다.
+    finalize = datetime(2026, 10, 1, 7, 15, tzinfo=KST)
 
     for at in (day_one, window, finalize):
         assert retry_deadline(_request(code), episode_start=at, observed_at=at) == JUDGMENT_SEP

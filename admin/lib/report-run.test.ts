@@ -97,6 +97,34 @@ test('blocked reports lead with the operations center before a rebuild', () => {
   assert.equal(run?.primaryAction, 'operations')
   assert.equal(run?.attentionLabel, '조치 필요')
   assert.equal(run?.canRebuild, true)
+  // 차단은 측정 부족만을 뜻하지 않는다 — PDF·콘텐츠 검수 차단도 같은 문구로 안내한다.
+  assert.equal(run?.statusLabel, '보고서 전달 준비에 확인이 필요합니다')
+  assert.equal(
+    run?.whatHappened,
+    '보고서의 측정 결과, 원장 전달용 PDF 또는 콘텐츠 검수에서 차단 사유가 확인됐습니다.',
+  )
+  assert.equal(
+    run?.nextAction,
+    '운영 센터에서 실제 차단 사유와 자동 복구 상태를 확인해 주세요. 조치가 필요한 항목만 처리한 뒤 보고서를 다시 확인하세요.',
+  )
+  assert.doesNotMatch(run?.whatHappened ?? '', /다시 만들기|측정이 부족/)
+})
+
+test('coverage complete reflects a finalized sample, not a promise of full results', () => {
+  const [run] = parseReportRuns([{
+    run_id: 'run-final', state: 'SUCCEEDED', stage: 'COVERAGE_COMPLETE', period_year: 2026,
+    period_month: 7, report_id: 'report-final', report_version: 1,
+    supersedes_report_id: null, parent_run_id: null,
+    requested_at: '2026-08-10T00:00:00Z', completed_at: '2026-08-10T00:01:00Z',
+  }])
+
+  // 마감된 집계는 LIMITED/UNAVAILABLE 최종일 수 있다 — '모두 모였다'고 과장하지 않는다.
+  assert.equal(run?.statusLabel, '측정 집계가 마감됐습니다')
+  assert.equal(
+    run?.whatHappened,
+    '확보한 결과로 측정 집계를 확정했습니다. 제한된 결과나 측정 불가 항목은 보고서에 표시됩니다.',
+  )
+  assert.doesNotMatch(run?.whatHappened ?? '', /모두 모|완료됐/)
 })
 
 test('unknown payload is rejected and developer note contains only safe identifiers', () => {

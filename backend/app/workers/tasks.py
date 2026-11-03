@@ -301,6 +301,7 @@ from app.services.measurement_selection import (
     priority_included as _priority_included,  # noqa: F401 -- stable legacy worker import
 )
 from app.services.measurement_slots import (
+    _deadline_reached,
     answer_artifact,
     checkpoint_answer,
     checkpoint_judgment,
@@ -476,7 +477,7 @@ from app.services.sov_engine import (
     run_single_query,
 )
 from app.services.sov_tracking_set import (
-    MEASUREMENT_WINDOW_MONTH_END,
+    MEASUREMENT_WINDOW_MONTH_START_DAWN,
     hospital_in_monthly_cohort,
     iter_monthly_sov_cohort,
     monthly_sov_cohort_cost_threshold,
@@ -9044,9 +9045,12 @@ def run_sov_for_hospital(
                     return
                 period_year, period_month = resolved_period
                 period_key = f"{period_year:04d}-{period_month:02d}"
+                # 월간 유료 단계는 이 마감(1일 07:00 KST, 배타)을 넘기지 않는다.
+                measurement_deadline = monthly_recovery_deadline(period_year, period_month)
             else:
                 period_year, period_month = today_kst.year, today_kst.month
                 period_key = week_key
+                measurement_deadline = None
             failure_prefix = "MONTHLY_SOV" if monthly else "WEEKLY_SOV"
             is_even_week = _is_even_measurement_week(today_kst)
             current_month_day = today_kst.day
@@ -9136,7 +9140,7 @@ def run_sov_for_hospital(
             if monthly:
                 frozen_specs = measurement_specs
                 protocol_kwargs = {
-                    "measurement_window": MEASUREMENT_WINDOW_MONTH_END,
+                    "measurement_window": MEASUREMENT_WINDOW_MONTH_START_DAWN,
                     "tracking_set_fingerprint": tracking_set_fingerprint(query_targets),
                     "tracking_set_size": len(query_targets),
                 }
@@ -9307,10 +9311,17 @@ def run_sov_for_hospital(
             success_count = 0
             failure_count = 0
             for spec_index, spec in enumerate(measurement_specs):
-                if _sov_chunk_deadline_reached(task_started_at):
+                deadline_hit = _deadline_reached(
+                    measurement_deadline, arrow.now().datetime
+                )
+                if _sov_chunk_deadline_reached(task_started_at) or deadline_hit:
                     _finish_measurement_run(run, success_count, failure_count)
                     db.commit()
-                    if monthly and _sov_continuation_available(self):
+                    if (
+                        not deadline_hit
+                        and monthly
+                        and _sov_continuation_available(self)
+                    ):
                         raise SovMeasurementResumable(
                             "monthly measurement chunk stopped with pending slots"
                         )
@@ -9410,8 +9421,17 @@ def run_sov_for_hospital(
                         if (
                             monthly
                             and not slot_is_terminal(slot)
-                            and _sov_chunk_deadline_reached(task_started_at)
+                            and (
+                                _sov_chunk_deadline_reached(task_started_at)
+                                or _deadline_reached(
+                                    measurement_deadline, arrow.now().datetime
+                                )
+                            )
                         ):
+                            if _deadline_reached(
+                                measurement_deadline, arrow.now().datetime
+                            ):
+                                raise _MonthlyMeasurementDeadlineReached()
                             raise SovMeasurementResumable(
                                 "monthly measurement chunk stopped between slots"
                             )
@@ -9425,25 +9445,38 @@ def run_sov_for_hospital(
                             target_id=spec["target_id"],
                             variant_id=spec["variant_id"],
                             monthly_cell=spec["manifest_cell"],
+                            deadline=measurement_deadline if monthly else None,
                         )
                         if slot_result.get("failure_reason") == "cost_guard_blocked":
                             cost_blocked = True
                             break
                 except (
                     SovMeasurementResumable,
+                    _MonthlyMeasurementDeadlineReached,
                     SoftTimeLimitExceeded,
                     DispatchAuthorizationError,
                     WorkerLostError,
                 ) as exc:
+                    deadline_stop = isinstance(exc, _MonthlyMeasurementDeadlineReached)
                     chunk_stop = isinstance(
-                        exc, (SovMeasurementResumable, SoftTimeLimitExceeded)
+                        exc,
+                        (
+                            SovMeasurementResumable,
+                            _MonthlyMeasurementDeadlineReached,
+                            SoftTimeLimitExceeded,
+                        ),
                     )
                     if chunk_stop:
                         # An uncommitted stage claim must not be committed with the run.
                         db.rollback()
                     _finish_measurement_run(run, success_count, failure_count)
                     db.commit()
-                    if chunk_stop and monthly and _sov_continuation_available(self):
+                    if (
+                        chunk_stop
+                        and not deadline_stop
+                        and monthly
+                        and _sov_continuation_available(self)
+                    ):
                         raise SovMeasurementResumable(
                             "monthly measurement chunk stopped inside a cell"
                         ) from exc
@@ -9602,6 +9635,10 @@ class SovMeasurementResumable(RuntimeError):
     """A monthly chunk stopped at its time budget with durable slots still pending."""
 
 
+class _MonthlyMeasurementDeadlineReached(RuntimeError):
+    """The 07:00 KST cut-off passed mid-run — stop, do not resume, let finality rule."""
+
+
 def _sov_chunk_deadline_reached(started_at: float) -> bool:
     return monotonic() - started_at >= SOV_CHUNK_STOP_SECONDS
 
@@ -9664,17 +9701,24 @@ def _resolve_monthly_measurement_period(
     *,
     observed_at: datetime | None = None,
 ) -> tuple[int, int] | None:
+    """월간 측정은 방금 끝난 달만, 다음 달 1일 00:15~07:00 KST 창에서만 잰다.
+
+    연/월을 비우면 지난 달로 접는다. 짝이 반만 오거나, 이번 달·다음 달을 가리키거나,
+    1일 새벽 창(00:15~07:00 배타) 밖의 요청은 모두 거절이다.
+    """
+
     if (measurement_year is None) != (measurement_month is None):
         return None
-    if measurement_year is None or measurement_month is None:
-        requested = (today_kst.year, today_kst.month)
-    else:
-        requested = (measurement_year, measurement_month)
     observed_at = observed_at or datetime.combine(
         today_kst, time.min, tzinfo=ZoneInfo("Asia/Seoul")
     )
-    if today_kst.day >= settings.SOV_MONTHLY_WINDOW_START_DAY:
-        return requested if requested == (today_kst.year, today_kst.month) else None
+    local = observed_at.astimezone(ZoneInfo("Asia/Seoul"))
+    if measurement_year is None or measurement_month is None:
+        requested = (
+            (local.year - 1, 12) if local.month == 1 else (local.year, local.month - 1)
+        )
+    else:
+        requested = (measurement_year, measurement_month)
     if is_monthly_recovery_window(observed_at, *requested):
         return requested
     return None
@@ -9789,11 +9833,12 @@ def _complete_monthly_measurement_and_dispatch_report(
     adequacy = _manifest_observation_adequacy(
         manifest, deadline_reached=deadline_reached
     )
+    # 적정성 판정은 이미 최종만 낸다 — 마감 뒤 LIMITED/UNAVAILABLE과 마감 전
+    # 올-터미널 조기 완료를 둘 다 받는다.
     finalized = (
         legacy_complete
         if adequacy is None
-        else adequacy.status == "COMPLETE"
-        or deadline_reached and adequacy.status in {"LIMITED", "UNAVAILABLE"}
+        else adequacy.status in {"COMPLETE", "LIMITED", "UNAVAILABLE"}
     )
     if not finalized:
         error_code = "MONTHLY_SOV_MEASUREMENT_INCOMPLETE"
@@ -10174,7 +10219,7 @@ def _close_finalized_monthly_sov_incident(hospital: Hospital, period_key: str) -
     """측정이 최종(COMPLETE, 또는 마감 뒤 LIMITED/UNAVAILABLE)이면 그 달 측정 사고는 기계가 닫는다.
 
     마감으로 닫힌 달에는 새 RUN_SOV 성공이 없어 백로그 해결 규칙이 근거를 찾지 못한다.
-    닫지 않으면 8일 09:00 판정 기한이 지나 이미 전달 가능한 달이 사람의 일로 남는다.
+    닫지 않으면 1일 09:00 판정 기한이 지나 이미 전달 가능한 달이 사람의 일로 남는다.
     """
     try:
         _run_async(
@@ -10349,12 +10394,18 @@ def _execute_paid_observation_slot(
     target_id: uuid.UUID | None = None,
     variant_id: uuid.UUID | None = None,
     monthly_cell=None,
+    deadline: datetime | None = None,
 ) -> dict[str, Any]:
-    """Resume exactly one paid answer/judgment slot and checkpoint each stage."""
+    """Resume exactly one paid answer/judgment slot and checkpoint each stage.
+
+    `deadline` is the monthly dawn cut-off: no new provider stage starts at/after
+    it, a late answer must not trigger a judgment call, and a discarded late
+    response still settles its already-issued reservation normally.
+    """
     judgment_hospital_name = hospital_name or hospital.name
     judgment_region = region if region is not None else (hospital.region or [""])[0]
     if slot_needs_answer(slot):
-        claim = claim_slot_stage(db, slot.id, stage="ANSWER")
+        claim = claim_slot_stage(db, slot.id, stage="ANSWER", deadline=deadline)
         if claim is None:
             return {"measurement_status": "FAILED", "failure_reason": "slot_lease_active"}
         slot, lease_token = claim
@@ -10378,6 +10429,25 @@ def _execute_paid_observation_slot(
                     "failure_reason": "cost_guard_blocked",
                 }
             db.commit()
+            if _deadline_reached(deadline, arrow.now().datetime):
+                # 마감 뒤 새 유료 단계는 사지 않는다 — 예약은 정상 정산하고 시도는 되돌린다.
+                _run_async(
+                    cost_guard.settle_reservation(
+                        decision.receipt, consumed_units=0
+                    )
+                )
+                release_interrupted_stage(
+                    db,
+                    slot_id,
+                    stage="ANSWER",
+                    lease_token=lease_token,
+                    refund_attempt=True,
+                )
+                db.commit()
+                return {
+                    "measurement_status": "FAILED",
+                    "failure_reason": "monthly_deadline_reached",
+                }
             try:
                 answer = _run_async(
                     fetch_answer(
@@ -10412,7 +10482,7 @@ def _execute_paid_observation_slot(
                 )
             )
             checkpointed = checkpoint_answer(
-                db, slot_id, answer, lease_token=lease_token
+                db, slot_id, answer, lease_token=lease_token, deadline=deadline
             )
             if checkpointed is None:
                 db.rollback()
@@ -10460,8 +10530,15 @@ def _execute_paid_observation_slot(
         slot.raw_response or "",
         competitors=competitors,
     )
-    claim = claim_slot_stage(db, slot.id, stage="JUDGMENT")
+    claim = claim_slot_stage(db, slot.id, stage="JUDGMENT", deadline=deadline)
     if claim is None:
+        if _deadline_reached(deadline, arrow.now().datetime):
+            # 마감 뒤 도착한 답변으로 새 판정 호출을 일으키지 않는다.
+            return {
+                **answer_artifact(slot),
+                "measurement_status": "FAILED",
+                "failure_reason": "monthly_deadline_reached",
+            }
         return {"measurement_status": "FAILED", "failure_reason": "slot_lease_active"}
     slot, lease_token = claim
     slot_id = slot.id
@@ -10484,6 +10561,25 @@ def _execute_paid_observation_slot(
                 "failure_reason": "cost_guard_blocked",
             }
         db.commit()
+        if _deadline_reached(deadline, arrow.now().datetime):
+            _run_async(
+                cost_guard.settle_reservation(
+                    decision.receipt, consumed_units=0
+                )
+            )
+            release_interrupted_stage(
+                db,
+                slot_id,
+                stage="JUDGMENT",
+                lease_token=lease_token,
+                refund_attempt=True,
+            )
+            db.commit()
+            return {
+                **answer_artifact(slot),
+                "measurement_status": "FAILED",
+                "failure_reason": "monthly_deadline_reached",
+            }
         try:
             judgment = _run_async(
                 judge_answer(
@@ -10535,6 +10631,7 @@ def _execute_paid_observation_slot(
             result=judgment,
             sov_record=record,
             lease_token=lease_token,
+            deadline=deadline,
         )
         if checkpointed is None:
             db.rollback()
@@ -10827,7 +10924,7 @@ def _commit_new_cohort_enrollments(db, registration: Any) -> None:
 
 
 NO_SOV_RECORD_REASON = "no SovRecord"
-# 월말 창에서 기록 없는 병원에 주간 측정 1회를 보낸 뒤 편입을 기다리는 시간(6시간 tick 4번).
+# 새벽 창에서 기록 없는 병원에 주간 측정 1회를 보낸 뒤 편입을 기다리는 시간(30분 tick 상당).
 COHORT_BOOTSTRAP_GRACE = timedelta(hours=24)
 
 
@@ -10965,7 +11062,7 @@ def run_weekly_monitoring():
         registration = register_convertible_tracking_sets(db, n=15, enroll_new=True)
         _commit_new_cohort_enrollments(db, registration)
         _log_blocked_convertible_tracking_sets(registration)
-        # 기록 없는 병원은 이 실행이 바로 측정한다 — 사람 몫 사유(질문 세트 부족 등)만 24일 전에 미리 알린다.
+        # 기록 없는 병원은 이 실행이 바로 측정한다 — 사람 몫 사유(질문 세트 부족 등)만 미리 알린다.
         _report_monthly_cohort_gaps(
             registration,
             f"{today_kst.year:04d}-{today_kst.month:02d}",
@@ -10975,7 +11072,7 @@ def run_weekly_monitoring():
         result = db.execute(stmt)
         monthly_ids = {hospital.id for hospital in iter_monthly_sov_cohort(db)}
         # 주간 배치는 매주 월간 코호트를 건너뛴다. 해당 병원의 측정은
-        # 월말 창에서 run_monthly_sov_measurement가 전담한다 (CLAUDE.md STEP 8).
+        # 1일 새벽 창에서 run_monthly_sov_measurement가 전담한다.
         if monthly_ids:
             logger.info(
                 "Weekly visibility measurement skipped for monthly cohort: %s hospitals on %s",
@@ -11326,36 +11423,67 @@ def _dispatch_monthly_sov_period_sweep(
 
 @celery_app.task(name="app.workers.tasks.run_monthly_sov_measurement")
 def run_monthly_sov_measurement():
-    """Run each converted hospital's fixed LOCAL set once in the month-end window."""
+    """지난달 고정 LOCAL 세트를 1일 00:15~07:00 KST 새벽 창에 잰다 — 이번 달은 절대 아니다."""
 
     require_dispatch(current_task, "monthly-sov-measurement")
     now_kst = arrow.now("Asia/Seoul")
     today_kst = now_kst.date()
-    if today_kst.day < settings.SOV_MONTHLY_WINDOW_START_DAY:
-        logger.info("Monthly measurement window is not open: %s", today_kst)
-        return
     observed_at = now_kst.datetime.astimezone(timezone.utc)
-    period_key = f"{today_kst.year:04d}-{today_kst.month:02d}"
+    local = now_kst.datetime
+    period_year, period_month = (
+        (local.year - 1, 12) if local.month == 1 else (local.year, local.month - 1)
+    )
+    if not is_monthly_recovery_window(observed_at, period_year, period_month):
+        logger.info("Monthly measurement dawn window is not open: %s", today_kst)
+        return
+    period_key = f"{period_year:04d}-{period_month:02d}"
     with SyncSessionLocal() as db:
         owner = str(getattr(getattr(current_task, "request", None), "id", None) or uuid.uuid4())
         registration = register_convertible_tracking_sets(db, n=15, enroll_new=True)
         _commit_new_cohort_enrollments(db, registration)
         _log_blocked_convertible_tracking_sets(registration)
+        # 1일에 서비스를 시작한 병원은 지난달 측정을 받지 않는다 — 코호트와 그 달의
+        # 실제 서비스 구간을 교집합으로 잰다.
+        eligible_ids = set(
+            eligible_hospital_ids(db, reporting_period(period_year, period_month))
+        )
         hospitals = _round_robin_hospitals(
-            iter_monthly_sov_cohort(db), None
+            [h for h in iter_monthly_sov_cohort(db) if h.id in eligible_ids], None
         )
         _warn_monthly_cohort_over_limit(len(hospitals), period_key)
         _dispatch_monthly_sov_period_sweep(
             db,
             hospitals,
-            year=today_kst.year,
-            month=today_kst.month,
+            year=period_year,
+            month=period_month,
             observed_at=observed_at,
             owner=owner,
         )
+        # 편입은 전역적으로 유지하되, 부트스트랩·코호트 공백처럼 그 달을 다는 소비자는
+        # 지난달 서비스 구간에 든 병원만 본다 — 1일 가입 병원에 지난달 사고를 달지 않는다.
+        period_registration = registration
+        if isinstance(registration, Mapping):
+            eligible_text = {str(hospital_id) for hospital_id in eligible_ids}
+            period_registration = {
+                **registration,
+                "blocked": [
+                    item
+                    for item in (registration.get("blocked") or [])
+                    if str(item.get("hospital_id")) in eligible_text
+                ],
+                "not_enrolled": [
+                    item
+                    for item in (registration.get("not_enrolled") or [])
+                    if str(item.get("hospital_id")) in eligible_text
+                ],
+            }
         # 코호트 측정을 먼저 큐에 넣은 뒤 보낸다 — 같은 sov 큐에서 코호트가 먼저 돈다.
-        bootstrapped = _bootstrap_unmeasured_hospitals(db, registration, today_kst, observed_at)
-        _report_monthly_cohort_gaps(registration, period_key, retrying_until=bootstrapped)
+        bootstrapped = _bootstrap_unmeasured_hospitals(
+            db, period_registration, today_kst, observed_at
+        )
+        _report_monthly_cohort_gaps(
+            period_registration, period_key, retrying_until=bootstrapped
+        )
 
 
 @celery_app.task(name="app.workers.tasks.adjust_query_priorities")
@@ -11591,7 +11719,7 @@ def _ensure_monthly_sov_operation_run(
         def _rearm_unchanged(
             expected_state: OperationRunState, *guards: ColumnElement[bool]
         ) -> OperationRun | None:
-            # 같은 병원×월 OperationRun을 다시 REQUESTED로 열어 월말 윈도우의 다음
+            # 같은 병원×월 OperationRun을 다시 REQUESTED로 열어 새벽 창의 다음
             # 6시간 슬롯이 실패한 manifest cells만 재시도하게 한다. 새 월간 키를 만들지
             # 않으므로 중복 full run은 없고, 성공한 셀은 pending 필터에서 계속 빠진다.
             return _write_unchanged(
@@ -11701,17 +11829,12 @@ def _operation_lease_expired(run: OperationRun, observed_at: datetime) -> bool:
 
 
 def _monthly_sov_retry_window(period_key: str, observed_at: datetime) -> bool:
+    """자동 월간 측정이 그 달을 다시 살 수 있는 유일한 창 — 다음 달 1일 새벽."""
     try:
         year_text, month_text = period_key.split("-", 1)
         year, month = int(year_text), int(month_text)
     except (AttributeError, TypeError, ValueError):
         return False
-    local = observed_at.astimezone(ZoneInfo("Asia/Seoul"))
-    if (
-        (year, month) == (local.year, local.month)
-        and local.day >= settings.SOV_MONTHLY_WINDOW_START_DAY
-    ):
-        return True
     return is_monthly_recovery_window(observed_at, year, month)
 
 
@@ -11765,7 +11888,7 @@ def _mark_weekly_sov_operation_queued(db, run_id: uuid.UUID, observed_at: dateti
 
 
 # ══════════════════════════════════════════════════════════════════
-# 월간 리포트 (다음 달 1일 00:15 첫 마감, 2~7일 매일 자동 복구)
+# 월간 리포트 (다음 달 1일 00:15 첫 마감, 07:15~08:45 최종화 틱)
 # ══════════════════════════════════════════════════════════════════
 def _monthly_operation_run_id(task) -> uuid.UUID | None:
     headers = getattr(getattr(task, "request", None), "headers", None)
@@ -12164,8 +12287,7 @@ def _monthly_sov_measurement_succeeded(
     finalized = (
         legacy_complete
         if adequacy is None
-        else adequacy.status == "COMPLETE"
-        or deadline_reached and adequacy.status in {"LIMITED", "UNAVAILABLE"}
+        else adequacy.status in {"COMPLETE", "LIMITED", "UNAVAILABLE"}
     )
     if finalized:
         if manifest.closed_at is None:
@@ -12223,7 +12345,7 @@ def _monthly_manifest_absent_after_deadline(
 ) -> bool:
     """복구 마감이 지났는데 그 달 매니페스트가 아예 없다 — 기다려도 측정은 생기지 않는다.
 
-    매니페스트는 24일~말일 창에서만 생긴다. D38: 이 달은 '기준 설정' 보고서로 만든다.
+    매니페스트는 1일 새벽 창에서만 생긴다. D38: 이 달은 '기준 설정' 보고서로 만든다.
     """
     if not _monthly_sov_deadline_reached(observed_at, year, month):
         return False
@@ -12382,9 +12504,10 @@ def _finish_monthly_operation_run(
             "DOCTOR_ARTIFACT_BLOCKED" if artifact_blocked else "MONTHLY_REPORT_BLOCKED"
         )
         run.safe_error_message = (
-            "원장 전달용 PDF 검증을 완료하지 못했습니다. 리포트 화면에서 다시 만들기를 눌러 주세요."
+            "원장 전달용 PDF 검증을 완료하지 못했습니다. 운영 센터에서 자동 복구 상태와 차단 사유를 확인해 주세요."
             if artifact_blocked
-            else "필수 측정이나 운영 자료가 부족합니다. 운영 센터에서 차단 사유를 확인해 주세요."
+            else "측정 결과, 원장 PDF, 또는 콘텐츠 검수 중 확인이 필요한 항목이 있습니다. "
+            "운영 센터에서 차단 사유를 확인해 주세요."
         )
     run.version += 1
     db.commit()
@@ -12476,7 +12599,7 @@ def _build_monthly_report_for_hospital(
     반환값은 생성 완료 ``"created"``, 원장 PDF가 차단된 ``"blocked_artifact"``,
     이미 있어서 건너뛴 ``"skipped_existing"`` 중 하나다.
 
-    월말 배치(run_monthly_reports)와 Admin의 병원별 수동 재생성이 이 함수를 공유한다 —
+    1일 오전 배치(run_monthly_reports)와 Admin의 병원별 수동 재생성이 이 함수를 공유한다 —
     두 경로가 서로 다른 코드였다면 배치 실패를 복구한 리포트가 배치본과 다른 내용이 될 수
     있다. 리포트 커밋까지 여기서 끝내고, 작업 상태 기록과 알림 이벤트는 호출자가 처리한다.
     """
@@ -13049,8 +13172,8 @@ def _template_refresh_blockers(
     verdict: RefreshVerdict,
     allow_recovery_pending: bool = False,
 ) -> None:
-    # 1~7일 복구 기간의 자동 복구는 측정이 덜 끝난 병원만 다시 측정·재생성한다. 측정이 전부
-    # 확정된 병원은 복구 대상이 아니라 숫자가 바뀌지 않으므로 기간 중에도 갱신할 수 있다.
+    # 1일 새벽 창의 자동 복구는 측정이 덜 끝난 병원만 다시 측정·재생성한다. 측정이 전부
+    # 확정된 병원은 복구 대상이 아니라 숫자가 바뀌지 않으므로 창 안에서도 갱신할 수 있다.
     # 운영자가 지금 숫자로 보내기로 명시하면(allow_recovery_pending) 막지 않고 기록만 남긴다 —
     # 갱신은 저장된 숫자를 옮길 뿐이고, 자동 복구가 측정을 마저 채우면 그때 새 버전이 따로 생긴다.
     if is_monthly_recovery_window(
@@ -13066,7 +13189,7 @@ def _template_refresh_blockers(
             verdict.add(
                 "BLOCKER",
                 "RECOVERY_PENDING",
-                "측정이 덜 끝나 복구 기간(1~7일) 자동 복구 대상 — 8일 이후 실행",
+                "측정이 덜 끝나 1일 새벽(00:15~07:00) 자동 복구 대상 — 측정 마감 뒤 실행",
             )
     in_flight = db.execute(
         select(OperationRun.id, OperationRun.operation_type).where(
@@ -13276,12 +13399,9 @@ def run_monthly_reports(self):
                         latest_report
                     ) and not _has_valid_doctor_artifact(db, latest_report):
                         blocked.append(hospital.name)
-                        if is_monthly_recovery_window(
-                            now.datetime, period.year, period.month
-                        ):
-                            _dispatch_automatic_monthly_report_recovery(
-                                db, hospital, period.year, period.month
-                            )
+                        _dispatch_automatic_monthly_report_recovery(
+                            db, hospital, period.year, period.month
+                        )
                     else:
                         hospitals.append((hospital, "already_succeeded"))
                     continue
@@ -13291,19 +13411,15 @@ def run_monthly_reports(self):
                     OperationRunState.QUEUED,
                     OperationRunState.RUNNING,
                 ):
-                    if latest_run.state == OperationRunState.PARTIAL:
-                        latest_report = _latest_monthly_report(
-                            db, hospital.id, period.year, period.month
+                    # 측정이 최종이면 이전 PARTIAL 실행이나 끊긴 큐잉이 아침 최종화를
+                    # 영원히 막지 못한다 — 멱등 자동 복구 경로로 넘긴다(매 tick 새 버전이 아니다).
+                    if (
+                        latest_run.state == OperationRunState.PARTIAL
+                        or _coverage_recovery_run_is_stale(latest_run, observed_at)
+                    ):
+                        _dispatch_automatic_monthly_report_recovery(
+                            db, hospital, period.year, period.month
                         )
-                        if _monthly_report_measurement_is_final(
-                            latest_report
-                        ) and not _has_valid_doctor_artifact(db, latest_report):
-                            if is_monthly_recovery_window(
-                                now.datetime, period.year, period.month
-                            ):
-                                _dispatch_automatic_monthly_report_recovery(
-                                    db, hospital, period.year, period.month
-                                )
                     blocked.append(hospital.name)
                     continue
             hospitals.append((hospital, "build"))

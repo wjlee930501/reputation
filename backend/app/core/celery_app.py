@@ -32,7 +32,7 @@ from app.workers.worker_liveness import touch_heartbeat
 # Redis에 저장된 정적 스케줄과 배포 이미지의 선언을 맞출 때 사용하는 명시적 버전.
 # beat_schedule을 추가/삭제/시간 변경할 때 반드시 올린다. 배포 스크립트의
 # reconcile-redbeat Job이 이 버전을 기록하고, --check 모드가 드리프트를 차단한다.
-REDBEAT_SCHEDULE_VERSION = "2026-10-14.1"
+REDBEAT_SCHEDULE_VERSION = "2026-11-03.1"
 
 # Worker logs share the API's structured format + request_id filter (OBS-1/OBS-2).
 configure_logging(level=settings.LOG_LEVEL, json_logs=settings.LOG_JSON)
@@ -431,24 +431,23 @@ celery_app.conf.update(
             "schedule": crontab(hour=2, minute=0, day_of_week=1),
             "options": {"headers": build_dispatch_headers("weekly-sov-monitoring")},
         },
-        # 매월 24일~말일 6시간마다 — 전환 코호트의 고정 LOCAL 세트를 월말에 완주한다.
+        # 매월 1일 00:15~06:45 30분마다 — 지난달 고정 LOCAL 세트를 새벽 창(07:00 마감)에 완주한다.
         "monthly-sov-measurement": {
             "task": "app.workers.tasks.run_monthly_sov_measurement",
-            "schedule": crontab(hour="*/6", minute=0, day_of_month="24-31"),
+            "schedule": crontab(hour="0-6", minute="15,45", day_of_month="1"),
             "options": {"headers": build_dispatch_headers("monthly-sov-measurement")},
         },
-        # 매월 1일 00:15 첫 마감, 2~7일 같은 시각 재시도, 8일 00:15 최종화 —
-        # 7일 23:59:59까지 bounded catch-up하고 8일 tick은 추가 유료 측정 없이 닫는다.
+        # 매월 1일 07:15/07:45/08:15/08:45 — 마감된 지난달 측정 사실로 보고서를 최종화한다.
+        # 09:00 SLO 판정 전에 네 번의 기회를 두어 일시 장애가 09:00 준비를 깨지 않게 한다.
         "monthly-reports": {
             "task": "app.workers.tasks.run_monthly_reports",
-            "schedule": crontab(hour=0, minute=15, day_of_month="1-8"),
+            "schedule": crontab(hour="7,8", minute="15,45", day_of_month="1"),
             "options": {"headers": build_dispatch_headers("monthly-reports")},
         },
-        # 1~7일 자동 복구가 돈 뒤 남은 미생성/측정 미완료를 하루 한 번 요약하고, 8일 00:15 최종화 뒤
-        # 09:00에 마지막으로 판정한다(그때 남은 공백만 '자동 복구 종료').
+        # 1일 새벽 자동 측정·최종화가 끝난 뒤 09:00에 마지막으로 판정한다 — 그때 남은 공백만 알린다.
         "monthly-report-gap-summary": {
             "task": "app.workers.tasks.summarize_monthly_report_gaps",
-            "schedule": crontab(hour=9, minute=0, day_of_month="1-8"),
+            "schedule": crontab(hour=9, minute=0, day_of_month="1"),
             "options": {"headers": build_dispatch_headers("monthly-report-gap-summary")},
         },
         # 매월 25일 00:00 — 다음 달 콘텐츠 슬롯 자동 생성

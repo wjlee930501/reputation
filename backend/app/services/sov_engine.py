@@ -1725,9 +1725,6 @@ async def judge_answer(
         async with _get_semaphore(f"{pool}:openai-judge"):
             try:
                 parsed = await _parse_mention(hospital_name, response_text, region)
-                competitor_mentions = (
-                    await _parse_competitors(competitors, response_text) if competitors else []
-                )
             except SoftTimeLimitExceeded:
                 raise
             except Exception as exc:  # noqa: BLE001 - preserve answer and retry judgment only.
@@ -1738,6 +1735,25 @@ async def judge_answer(
                     "provider_calls": _provider_calls_made(),
                     "provider_failure_reason": provider_failure_reason(exc),
                 }
+            try:
+                competitor_mentions = (
+                    await _parse_competitors(competitors, response_text) if competitors else []
+                )
+            except SoftTimeLimitExceeded:
+                raise
+            except Exception as exc:  # noqa: BLE001 - supplementary analysis cannot erase a verdict.
+                reason = provider_failure_reason(exc)
+                logger.warning("Competitor judgment unavailable: %s", reason)
+                competitor_mentions = [
+                    {
+                        "name": name,
+                        "is_mentioned": None,
+                        "mention_rank": None,
+                        "measurement_status": "FAILED",
+                        "failure_reason": reason,
+                    }
+                    for name in competitors or []
+                ]
             provider_calls = _provider_calls_made()
     return {
         **parsed,

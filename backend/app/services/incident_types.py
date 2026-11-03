@@ -219,7 +219,7 @@ def _monthly_slot_window(
 
 
 # 질문 세트·측정 기준이 없거나 어긋난 실패는 사람이 입력을 바꿔야 풀린다 — 처음부터 사람의 일이다.
-# 나머지(부분·미완료·비용 보류)는 1~7일 catch-up과 24~말일 6시간 tick이 실제로 다시 산다.
+# 나머지(부분·미완료·비용 보류)는 1일 새벽 창의 30분 tick이 실제로 다시 산다.
 MONTHLY_SOV_HUMAN_ERROR_CODES = frozenset(
     {
         "MONTHLY_SOV_NO_MEASUREMENT_MANIFEST",
@@ -232,10 +232,10 @@ MONTHLY_SOV_HUMAN_ERROR_CODES = frozenset(
 def _monthly_sov_window(
     request: IncidentOpenRequest, _episode_start: datetime
 ) -> datetime | None:
-    """월간 측정은 다음 달 7일 23:59:59 KST까지 catch-up이 맡고 8일 00:15 배치가 최종화한다.
+    """월간 측정은 다음 달 1일 00:15~07:00 KST 새벽 창에서 자동 재실행되고 07:15부터 보고서가 최종화한다.
 
-    기한은 최종화 뒤 마지막 판정 시각(8일 09:00 KST, `monthly_period.monthly_final_judgment_at`)이다.
-    복구 마감에서 끊으면 00:00~00:15 사이에 보류된 '조치 필요'가 나가고 곧 최종화가 닫는 오탐이 된다.
+    기한은 최종화 뒤 마지막 판정 시각(1일 09:00 KST, `monthly_period.monthly_final_judgment_at`)이다.
+    측정 마감(07:00)에서 끊으면 보고서 틱이 곧 닫을 일을 미리 사람에게 넘기는 오탐이 된다.
     """
 
     if (request.safe_error_code or "").strip().upper() in MONTHLY_SOV_HUMAN_ERROR_CODES:
@@ -245,7 +245,7 @@ def _monthly_sov_window(
         return None
     year, month = period
     next_start = datetime(year + (month == 12), month % 12 + 1, 1, tzinfo=_KST)
-    return next_start + timedelta(days=7, hours=9)
+    return next_start + timedelta(hours=9)
 
 
 # 원장 PDF 검증 실패는 월간 PDF 대조 작업이 사람을 기다리지 않고 다시 만든다 — 병원·월마다 2회,
@@ -282,7 +282,7 @@ INCIDENT_TYPE_POLICIES: dict[str, IncidentTypePolicy] = {
         sweep_owned=True,
         retry_window=_artifact_repair_window,
     ),
-    # 8일 09:00 최종 판정 뒤 월간 보고서 안전망이 두 번 다시 만들어도 전달 가능한 보고서가 없는
+    # 1일 09:00 최종 판정 뒤 월간 보고서 안전망이 두 번 다시 만들어도 전달 가능한 보고서가 없는
     # 병원·월(I2). 전달 가능해지면 같은 안전망이 닫는다(`monthly_report_safety_net`).
     "MONTHLY_REPORT_SAFETY_NET_FAILED": _DEVELOPER,
     # 같은 점검에서 여러 병원 주소가 공유 공개 서비스의 5xx를 받은 상태. AE가 병원 정보에서 고칠
@@ -334,7 +334,7 @@ INCIDENT_TYPE_POLICIES: dict[str, IncidentTypePolicy] = {
     # 재시도가 끝난 V0 실패는 같은 실행을 6시간 뒤로 미뤄 최대 3회 다시 돈다(재실행 시각 + 유예,
     # 호출자 기한). 소진·측정 기준 변경은 기한 없이 사람의 일이다. V0 리포트가 생기면 근거가 닫는다.
     "V0_REPORT_FAILED": IncidentTypePolicy(sweep_owned=True),
-    # 기록이 없어 코호트에 못 든 병원에 월말 창이 주간 측정 1회를 보냈다(요청 + 24시간, 호출자 기한).
+    # 기록이 없어 코호트에 못 든 병원에 1일 새벽 창이 주간 측정 1회를 보냈다(요청 + 24시간, 호출자 기한).
     # 기한이 없는 공백(질문 세트 부족 등)은 처음부터 사람의 일이다. 편입되면 근거가 닫는다.
     "MONTHLY_SOV_COHORT_GAP": IncidentTypePolicy(sweep_owned=True),
     # Phase 2 — 비용 가드가 Redis를 읽지 못해 상한 확인 없이 허용 중이다(fail-open). 비용 한도

@@ -154,14 +154,16 @@ def test_essence_auto_review_has_immediate_and_periodic_recovery_routes():
 
 
 def test_monthly_reports_close_first_then_finalize_after_day_seven_horizon():
+    # 1일 07:15/07:45/08:15/08:45 — 마감된 측정 사실로 09:00 SLO 전에 최종화한다.
     schedule = celery_app.conf.beat_schedule["monthly-reports"]["schedule"]
-    assert schedule.minute == {15}
-    assert schedule.hour == {0}
-    assert schedule.day_of_month == set(range(1, 9))
-    assert REDBEAT_SCHEDULE_VERSION >= "2026-10-09.1"
+    assert schedule.minute == {15, 45}
+    assert schedule.hour == {7, 8}
+    assert schedule.day_of_month == {1}
+    assert REDBEAT_SCHEDULE_VERSION >= "2026-11-03.1"
 
 
 def test_monthly_sov_measurement_runs_only_in_the_month_end_window():
+    # 1일 00:15~06:45 30분마다 — 지난달을 새벽 창(07:00 배타 마감)에 완주한다.
     entry = celery_app.conf.beat_schedule["monthly-sov-measurement"]
     task_name = "app.workers.tasks.run_monthly_sov_measurement"
     purpose = expected_purpose(task_name)
@@ -169,11 +171,11 @@ def test_monthly_sov_measurement_runs_only_in_the_month_end_window():
     assert entry["task"] == task_name
     assert purpose == "monthly-sov-measurement"
     assert purpose == entry["options"]["headers"][PURPOSE_HEADER]
-    assert entry["schedule"].minute == {0}
-    assert entry["schedule"].hour == {0, 6, 12, 18}
-    assert entry["schedule"].day_of_month == set(range(24, 32))
+    assert entry["schedule"].minute == {15, 45}
+    assert entry["schedule"].hour == set(range(0, 7))
+    assert entry["schedule"].day_of_month == {1}
     assert _resolved_queue(entry["task"]) == "sov"
-    assert REDBEAT_SCHEDULE_VERSION >= "2026-08-30.1"
+    assert REDBEAT_SCHEDULE_VERSION >= "2026-11-03.1"
 
 
 def test_monthly_artifact_incident_reconciliation_runs_each_minute_on_reports_queue():
@@ -237,10 +239,11 @@ def test_redbeat_refreshes_lock_well_before_ttl_expires():
 
 
 def test_gap_summary_runs_after_the_day_eight_finalize():
+    # 1일 새벽 측정·최종화가 끝난 뒤 09:00에 마지막으로 판정한다.
     schedule = celery_app.conf.beat_schedule["monthly-report-gap-summary"]["schedule"]
-    assert schedule.day_of_month == set(range(1, 9))
+    assert schedule.day_of_month == {1}
     assert schedule.hour == {9}
-    assert REDBEAT_SCHEDULE_VERSION >= "2026-10-12.1"
+    assert REDBEAT_SCHEDULE_VERSION >= "2026-11-03.1"
 
 
 def test_publisher_runs_again_after_each_daytime_sweep_and_at_2330():

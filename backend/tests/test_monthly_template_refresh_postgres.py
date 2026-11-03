@@ -309,8 +309,9 @@ def test_legacy_incomplete_precheck_blocks_without_mutation(pg_session, renders)
     )
     pg_session.commit()
 
+    # UTC 7/31 20:00 = KST 8/1 05:00 — 7월 달의 1일 새벽 창 안.
     plan = tasks.build_monthly_template_refresh_plan(
-        pg_session, hospital, ANCHOR, observed_now=datetime(2026, 8, 3, tzinfo=timezone.utc)
+        pg_session, hospital, ANCHOR, observed_now=datetime(2026, 7, 31, 20, tzinfo=timezone.utc)
     )
 
     codes = {finding.code for finding in plan.verdict.findings if finding.kind == "BLOCKER"}
@@ -334,7 +335,7 @@ def test_legacy_incomplete_precheck_blocks_without_mutation(pg_session, renders)
 
 
 def test_recovery_window_only_blocks_hospitals_whose_measurement_is_incomplete(pg_session):
-    """1~7일 자동 복구는 측정이 덜 끝난 병원만 다시 만든다 — 전부 확정된 병원은 막지 않는다."""
+    """1일 새벽 자동 복구는 측정이 덜 끝난 병원만 다시 만든다 — 전부 확정된 병원은 막지 않는다."""
 
     def report_with(quality: str, success: int) -> tuple[Hospital, MonthlyReport]:
         hospital = Hospital(name="복구 기간 가상 의원", slug=f"window-{uuid.uuid4().hex}")
@@ -358,8 +359,9 @@ def test_recovery_window_only_blocks_hospitals_whose_measurement_is_incomplete(p
         pg_session.commit()
         return hospital, report
 
-    in_window = datetime(2026, 8, 3, tzinfo=timezone.utc)
-    after_window = datetime(2026, 8, 9, tzinfo=timezone.utc)
+    # UTC 7/31 20:00 = KST 8/1 05:00 — 7월 달 새벽 창 안. UTC 8/1 00:00 = KST 8/1 09:00 — 창 뒤.
+    in_window = datetime(2026, 7, 31, 20, tzinfo=timezone.utc)
+    after_window = datetime(2026, 8, 1, tzinfo=timezone.utc)
 
     def blockers(hospital, observed_now):
         plan = tasks.build_monthly_template_refresh_plan(

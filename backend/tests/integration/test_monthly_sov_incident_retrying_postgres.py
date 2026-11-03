@@ -80,8 +80,8 @@ async def test_day_one_incomplete_measurement_is_retrying_and_its_notice_waits(
     assert incident.state == "RETRYING"
     assert incident.sla_due_at == JUDGMENT
     [notice] = await _notices(db, incident_id)
-    # 7일 밤 복구 마감 직후(8일 00:00~00:15)에도 보류된다 — 00:15 최종화가 닫을 기회를 갖는다.
-    for held_at in (DAY_ONE, datetime(2099, 10, 8, 0, 5, tzinfo=KST)):
+    # 07:00 측정 마감 뒤 ~ 09:00 판정 전에도 보류된다 — 최종화가 닫을 기회를 갖는다.
+    for held_at in (DAY_ONE, datetime(2099, 10, 1, 7, 5, tzinfo=KST)):
         claimed = await claim_notification_batch(db, "test-worker", now=held_at)
         assert notice.id not in {row.id for row in claimed}
     # 최종화 뒤에도 남은 실패는 판정 시각에 사람에게 넘어간다.

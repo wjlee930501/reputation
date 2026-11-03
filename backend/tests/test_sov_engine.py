@@ -1001,3 +1001,90 @@ async def test_judge_answer_hard_failure_reports_exhausted_attempts(monkeypatch)
     assert judgment["measurement_status"] == "FAILED"
     assert completions.calls == 3
     assert judgment["provider_calls"] == 3
+
+
+# ── 자사 판정/경쟁사 판정 분리 — 보조 분석 실패가 판정을 지우지 않는다 ──
+
+def _good_own(verdict: str):
+    async def _mention(_name, _text, _region=""):
+        return {
+            "verdict": verdict,
+            "is_mentioned": None if verdict == "AMBIGUOUS" else verdict == "MATCHED",
+            "matched_text": "가나의원" if verdict == "MATCHED" else None,
+            "mention_rank": 1 if verdict == "MATCHED" else None,
+        }
+
+    return _mention
+
+
+async def _always_broken_competitors(_comp, _text):
+    raise ValueError("competitor_parse_failed")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("verdict", ["MATCHED", "NOT_MATCHED", "AMBIGUOUS"])
+async def test_own_verdict_survives_a_failed_competitor_parse(monkeypatch, verdict):
+    # 판정 입력 fingerprint·자사 판정은 그대로, 경쟁사만 FAILED 미확정으로 남는다.
+    monkeypatch.setattr(sov_engine, "_parse_mention", _good_own(verdict))
+    monkeypatch.setattr(sov_engine, "_parse_competitors", _always_broken_competitors)
+
+    judgment = await sov_engine.judge_answer(
+        "가나의원",
+        "가나의원을 추천합니다.",
+        competitors=["다라병원", "마병원"],
+        policy={"judge_model": "m", "judge_prompt_fingerprint": "fp"},
+    )
+
+    assert judgment["measurement_status"] == "SUCCESS"
+    assert judgment["verdict"] == verdict
+    expected_mention = None if verdict == "AMBIGUOUS" else verdict == "MATCHED"
+    assert judgment["is_mentioned"] is expected_mention
+    assert judgment["failure_reason"] is None
+    assert "judgment_input_fingerprint" in judgment
+    mentions = judgment["competitor_mentions"]
+    assert len(mentions) == 2
+    for entry in mentions:
+        assert entry["is_mentioned"] is None
+        assert entry["mention_rank"] is None
+        assert entry["measurement_status"] == "FAILED"
+        assert entry["failure_reason"]
+    assert isinstance(judgment["provider_calls"], int)
+
+
+@pytest.mark.asyncio
+async def test_self_parse_failure_still_fails_the_whole_judgment(monkeypatch):
+    async def _broken(_name, _text, _region=""):
+        raise ValueError("mention_parse_failed")
+
+    competitor_calls = {"n": 0}
+
+    async def _competitors(_comp, _text):
+        competitor_calls["n"] += 1
+        return [{"name": "다라병원", "is_mentioned": True, "mention_rank": 1}]
+
+    monkeypatch.setattr(sov_engine, "_parse_mention", _broken)
+    monkeypatch.setattr(sov_engine, "_parse_competitors", _competitors)
+
+    judgment = await sov_engine.judge_answer(
+        "가나의원", "가나의원을 추천합니다.", competitors=["다라병원"]
+    )
+
+    assert judgment["measurement_status"] == "FAILED"
+    assert judgment["failure_reason"] == "mention_parse_failed"
+    assert competitor_calls["n"] == 0  # 자사 판정이 실패하면 보조 분석은 시작도 안 한다.
+
+
+@pytest.mark.asyncio
+async def test_competitor_soft_time_limit_still_propagates(monkeypatch):
+    from billiard.exceptions import SoftTimeLimitExceeded
+
+    monkeypatch.setattr(sov_engine, "_parse_mention", _good_own("MATCHED"))
+
+    async def _timeout(_comp, _text):
+        raise SoftTimeLimitExceeded()
+
+    monkeypatch.setattr(sov_engine, "_parse_competitors", _timeout)
+    with pytest.raises(SoftTimeLimitExceeded):
+        await sov_engine.judge_answer(
+            "가나의원", "가나의원을 추천합니다.", competitors=["다라병원"]
+        )

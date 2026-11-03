@@ -70,11 +70,11 @@ _RECOVERY_STOP_INCIDENT_TYPE: Final = "OPERATION_RECOVERY_EXHAUSTED"
 _REDISPATCH_EXHAUSTED: Final = "OPERATION_REDISPATCH_EXHAUSTED"
 _LEASE_EXPIRED: Final = "OPERATION_LEASE_EXPIRED"
 # 이만큼 아무 갱신이 없고 lease도 없는 RUNNING은 끝낼 주체가 사라진 잔재다(9/7 야간 배치 잔재).
-# 시작 시각이 아니라 마지막 갱신으로 본다 — 월간 측정 구간 실행은 24~31일 내내 RUNNING이다.
+# 시작 시각이 아니라 마지막 갱신으로 본다 — 월간 측정 구간 실행은 1일 새벽 창 내내 RUNNING이다.
 _ABANDONED_RUNNING_AFTER: Final = timedelta(days=10)
-# 유형별로 더 길게 기다리는 예외. 정상인 `MONTHLY_SOV_PERIOD`는 말일 18시(KST) 마지막 창 sweep 뒤
-# 다음 달 8일 00:15 최종화(`_finalize_monthly_sov_period_run`)까지 약 7일 6시간 아무도 건드리지
-# 않는다. 기본 10일과의 여유가 3일뿐이라 이 유형만 20일을 기다린다.
+# 유형별로 더 길게 기다리는 예외. `MONTHLY_SOV_PERIOD`는 1일 07:00 측정 마감 뒤 07:15
+# 최종화(`_finalize_monthly_sov_period_run`)까지 RUNNING으로 남을 수 있다 — 그 구조가 살던
+# 긴 대기를 닫지 않게 이 유형만 20일을 기다린다.
 _ABANDONED_RUNNING_AFTER_BY_TYPE: Final[dict[str, timedelta]] = {
     "MONTHLY_SOV_PERIOD": timedelta(days=20),
 }

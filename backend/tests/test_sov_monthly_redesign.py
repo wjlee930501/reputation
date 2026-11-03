@@ -256,10 +256,14 @@ def _patch_monthly_window(monkeypatch, db, registration, cohort):
     monkeypatch.setattr(
         tasks.arrow,
         "now",
-        lambda *_a, **_k: tasks.arrow.get(2026, 10, 25, 12, tzinfo="Asia/Seoul"),
+        lambda *_a, **_k: tasks.arrow.get(2026, 11, 1, 1, 0, tzinfo="Asia/Seoul"),
     )
     monkeypatch.setattr(tasks, "register_convertible_tracking_sets", lambda *_a, **_k: registration)
     monkeypatch.setattr(tasks, "iter_monthly_sov_cohort", lambda *_a, **_k: cohort)
+    # 새 코드는 코호트와 그 달 서비스 구간을 교집합한다 — 이 가짜 창에서는 코호트 전원이 적격이다.
+    monkeypatch.setattr(
+        tasks, "eligible_hospital_ids", lambda *_a, **_k: [h.id for h in cohort]
+    )
     monkeypatch.setattr(tasks, "_ensure_monthly_sov_operation_run", lambda *_a, **_k: None)
     _patch_monthly_period_claim(monkeypatch)
 
@@ -284,6 +288,10 @@ def test_monthly_window_opens_one_gap_incident_per_unenrolled_hospital(monkeypat
     }
     db = _monthly_window_db()
     _patch_monthly_window(monkeypatch, db, registration, [])
+    # 미편입이어도 지난달 서비스 구간에 든 병원만 공백 사고를 받는다 — 1일 가입 병원은 제외.
+    monkeypatch.setattr(
+        tasks, "eligible_hospital_ids", lambda *_a, **_k: [hospital_id]
+    )
     opened: list[dict] = []
     monkeypatch.setattr(tasks, "open_monthly_cohort_gap", lambda **kw: opened.append(kw) or kw)
     monkeypatch.setattr(tasks, "_run_async", lambda value: value)
@@ -709,9 +717,8 @@ def test_window_mismatch_uses_existing_policy_changed_reason():
 
 def test_guard_defaults_pin_locked_august_conversion_envelope():
     assert Settings.model_fields["COST_GUARD_MONTHLY_SOV_QUERIES"].default == 4260
-    assert Settings.model_fields["COST_GUARD_DAILY_SOV_QUERIES"].default == 1260
-    assert 7 * 15 * 2 * 5 + 210 == 1260
-    assert 3000 + 1260 == 4260
+    # 1일 새벽 창은 하루 안에서 끝나므로 일 상한도 월 상한과 같다(2026-11-03).
+    assert Settings.model_fields["COST_GUARD_DAILY_SOV_QUERIES"].default == 4260
     assert monthly_sov_guard_units(
         3,
         15,
@@ -818,10 +825,13 @@ def test_measurement_beats_log_each_blocked_tracking_set(
     if beat == "monthly":
         _patch_monthly_period_claim(monkeypatch)
         monkeypatch.setattr(
+            tasks, "eligible_hospital_ids", lambda *_a, **_k: []
+        )
+        monkeypatch.setattr(
             tasks.arrow,
             "now",
             lambda *_args, **_kwargs: tasks.arrow.get(
-                2026, 8, 31, 12, tzinfo="Asia/Seoul"
+                2026, 9, 1, 1, 0, tzinfo="Asia/Seoul"
             ),
         )
 
@@ -871,7 +881,7 @@ def test_monthly_measurement_registers_locked_names_before_cohort(monkeypatch):
     monkeypatch.setattr(
         tasks.arrow,
         "now",
-        lambda *_args, **_kwargs: tasks.arrow.get(2026, 8, 31, 12, tzinfo="Asia/Seoul"),
+        lambda *_args, **_kwargs: tasks.arrow.get(2026, 9, 1, 1, 0, tzinfo="Asia/Seoul"),
     )
     monkeypatch.setattr(
         tasks,
@@ -883,6 +893,7 @@ def test_monthly_measurement_registers_locked_names_before_cohort(monkeypatch):
         "iter_monthly_sov_cohort",
         lambda *_args, **_kwargs: order.append("cohort") or [],
     )
+    monkeypatch.setattr(tasks, "eligible_hospital_ids", lambda *_a, **_k: [])
     _patch_monthly_period_claim(monkeypatch)
 
     tasks.run_monthly_sov_measurement.run()
@@ -950,7 +961,7 @@ def test_august_conversion_batch_uses_august_and_preserves_july(monkeypatch):
         tasks.arrow,
         "now",
         lambda *_args, **_kwargs: tasks.arrow.get(
-            2026, 8, 31, 12, 0, tzinfo="Asia/Seoul"
+            2026, 9, 1, 1, 0, tzinfo="Asia/Seoul"
         ),
     )
 
@@ -973,6 +984,12 @@ def test_august_conversion_batch_skips_without_successful_measurement(monkeypatc
         def all(self):
             return [hospital]
 
+        def scalar_one_or_none(self):
+            return None
+
+        def first(self):
+            return None
+
     class _DB:
         def execute(self, _stmt):
             return _Result()
@@ -994,11 +1011,17 @@ def test_august_conversion_batch_skips_without_successful_measurement(monkeypatc
         lambda *_args, **_kwargs: pytest.fail("report built before monthly measurement success"),
     )
     monkeypatch.setattr(tasks, "_record_weekly_sov_failure", lambda *_args, **_kwargs: None)
+    swept = []
+    monkeypatch.setattr(
+        tasks,
+        "_dispatch_monthly_sov_period_sweep",
+        lambda *args, **kwargs: swept.append((args, kwargs)) or {},
+    )
     monkeypatch.setattr(
         tasks.arrow,
         "now",
         lambda *_args, **_kwargs: tasks.arrow.get(
-            2026, 8, 31, 12, 0, tzinfo="Asia/Seoul"
+            2026, 9, 1, 1, 0, tzinfo="Asia/Seoul"
         ),
     )
 
@@ -1008,6 +1031,9 @@ def test_august_conversion_batch_skips_without_successful_measurement(monkeypatc
         "success_count": 0,
         "failure_count": 1,
     }
+    # 1일 새벽 창 안에서는 미완료 측정을 자동 복구 스윕이 다시 잰다 — 8월 창(00:15~07:00 KST) 안.
+    assert len(swept) == 1
+    assert swept[0][1]["year"] == 2026 and swept[0][1]["month"] == 8
 
 
 def test_august_conversion_does_not_load_july_measurement_cells():
@@ -1024,7 +1050,7 @@ def test_monthly_measurement_copy_guard_strings_are_preserved():
     source = Path(tasks.__file__).read_text()
 
     assert '"Hospital %s is no longer in the monthly measurement cohort"' in source
-    assert '"Monthly measurement window is not open: %s"' in source
+    assert '"Monthly measurement dawn window is not open: %s"' in source
 
 
 def test_partial_monthly_operation_is_rearmed_for_failed_cell_retry(signal_store):
@@ -1043,7 +1069,7 @@ def test_partial_monthly_operation_is_rearmed_for_failed_cell_retry(signal_store
             db,
             SimpleNamespace(id=hospital_id),
             "2026-08",
-            datetime(2026, 9, 7, 14, 59, 59, tzinfo=UTC),
+            datetime(2026, 8, 31, 20, 0, tzinfo=UTC),
         )
 
     assert run is not None
@@ -1138,7 +1164,7 @@ def test_monthly_run_left_running_after_its_lease_expired_is_rearmed(signal_stor
     # A chunk whose continuation publish failed (Celery raises Reject, postrun state
     # REJECTED) or whose RETRY requeue write failed keeps RUNNING with its lease.
     _factory, hospital_id = signal_store
-    observed_at = datetime(2026, 9, 26, 6, 0, tzinfo=UTC)
+    observed_at = datetime(2026, 9, 30, 20, 0, tzinfo=UTC)
     seeded = _seed_running_monthly_operation(
         hospital_id, "2026-09", observed_at - timedelta(minutes=1)
     )
@@ -1185,7 +1211,7 @@ def test_monthly_rearm_and_redelivered_lease_reclaim_race_exactly_one_wins(
     # The re-arm reads the expired RUNNING row; before it writes, a redelivered
     # message re-claims the expired lease on another connection and commits.
     _factory, hospital_id = signal_store
-    observed_at = datetime(2026, 9, 26, 6, 0, tzinfo=UTC)
+    observed_at = datetime(2026, 9, 30, 20, 0, tzinfo=UTC)
     seeded = _seed_running_monthly_operation(
         hospital_id, "2026-09", observed_at - timedelta(minutes=1)
     )
@@ -1228,7 +1254,7 @@ def test_monthly_rearm_and_redelivered_lease_reclaim_race_exactly_one_wins(
 
 def test_monthly_rearm_committed_first_fences_out_the_redelivered_reclaim(signal_store):
     _factory, hospital_id = signal_store
-    observed_at = datetime(2026, 9, 26, 6, 0, tzinfo=UTC)
+    observed_at = datetime(2026, 9, 30, 20, 0, tzinfo=UTC)
     seeded = _seed_running_monthly_operation(
         hospital_id, "2026-09", observed_at - timedelta(minutes=1)
     )
@@ -1257,7 +1283,7 @@ def _ensure_in_new_session(hospital_id: uuid.UUID, observed_at: datetime):
 
 
 def test_monthly_run_with_a_live_chunk_lease_is_not_redispatched():
-    observed_at = datetime(2026, 9, 26, 6, 0, tzinfo=UTC)
+    observed_at = datetime(2026, 9, 30, 20, 0, tzinfo=UTC)
     existing = _running_monthly_operation(observed_at + timedelta(minutes=30))
     db = _SingleRunDB(existing)
 
@@ -1388,7 +1414,7 @@ def test_claim_waits_on_the_rearm_row_lock_then_finds_the_run_rearmed(
     bounded_signal_store, monkeypatch, caplog
 ):
     engine, factory, hospital_id = bounded_signal_store
-    observed_at = datetime(2026, 9, 26, 6, 0, tzinfo=UTC)
+    observed_at = datetime(2026, 9, 30, 20, 0, tzinfo=UTC)
     seeded = _seed_running_monthly_operation(
         hospital_id, "2026-09", observed_at - timedelta(minutes=1)
     )
@@ -1439,7 +1465,7 @@ def test_rearm_waits_on_the_claim_row_lock_then_skips_the_reclaimed_run(
 ):
     # 행 잠금 대기 뒤 skip을 확인하며, lease와 version 중 어느 쪽 가드인지는 구분하지 않음
     engine, factory, hospital_id = bounded_signal_store
-    observed_at = datetime(2026, 9, 26, 6, 0, tzinfo=UTC)
+    observed_at = datetime(2026, 9, 30, 20, 0, tzinfo=UTC)
     seeded = _seed_running_monthly_operation(
         hospital_id, "2026-09", observed_at - timedelta(minutes=1)
     )
@@ -1511,7 +1537,7 @@ def test_running_rearm_skips_a_run_whose_version_alone_changed(
 ):
     # Lease still expired and state still RUNNING: only the version predicate fences.
     _engine, factory, hospital_id = bounded_signal_store
-    observed_at = datetime(2026, 9, 26, 6, 0, tzinfo=UTC)
+    observed_at = datetime(2026, 9, 30, 20, 0, tzinfo=UTC)
     seeded = _seed_running_monthly_operation(
         hospital_id, "2026-09", observed_at - timedelta(minutes=1)
     )
@@ -1549,7 +1575,7 @@ def test_running_rearm_skips_a_run_whose_lease_alone_was_renewed(
     # Synthetic lease renewal without a version bump (no current writer does this): state
     # and version still match, so only the lease predicate fences the re-arm.
     _engine, factory, hospital_id = bounded_signal_store
-    observed_at = datetime(2026, 9, 26, 6, 0, tzinfo=UTC)
+    observed_at = datetime(2026, 9, 30, 20, 0, tzinfo=UTC)
     renewed_until = observed_at + timedelta(minutes=10)
     seeded = _seed_running_monthly_operation(
         hospital_id, "2026-09", observed_at - timedelta(minutes=1)
@@ -1582,12 +1608,12 @@ def test_running_rearm_skips_a_run_whose_lease_alone_was_renewed(
 _PARTIAL_RETRY = (
     tasks.OperationRunState.PARTIAL,
     "MONTHLY_SOV_MEASUREMENT_PARTIAL",
-    datetime(2026, 9, 7, 14, 59, 59, tzinfo=UTC),
+    datetime(2026, 8, 31, 20, 0, tzinfo=UTC),
 )
 _FAILED_RETRY = (
     tasks.OperationRunState.FAILED,
     "MONTHLY_SOV_NO_MEASUREMENT_MANIFEST",
-    datetime(2026, 8, 28, tzinfo=UTC),
+    datetime(2026, 8, 31, 20, 0, tzinfo=UTC),
 )
 _VERSION_BUMP = {"version": OperationRun.version + 1}
 # No real writer changes a monthly RUN_SOV row's state without bumping its version: the
@@ -1728,7 +1754,7 @@ def test_requested_refresh_skips_a_concurrently_changed_run(
     bounded_signal_store, monkeypatch, caplog, change, expected_state, expected_version
 ):
     _engine, factory, hospital_id = bounded_signal_store
-    observed_at = datetime(2026, 9, 26, 6, 0, tzinfo=UTC)
+    observed_at = datetime(2026, 9, 30, 20, 0, tzinfo=UTC)
     seeded = _seed_requested_monthly_operation(hospital_id)
     changed = _change_run_after_first_read(monkeypatch, factory, seeded.id, change)
 
@@ -1754,7 +1780,7 @@ def test_requested_refresh_rewrites_the_payload_and_bumps_the_version(
     bounded_signal_store, caplog
 ):
     _engine, _factory, hospital_id = bounded_signal_store
-    observed_at = datetime(2026, 9, 26, 6, 0, tzinfo=UTC)
+    observed_at = datetime(2026, 9, 30, 20, 0, tzinfo=UTC)
     seeded = _seed_requested_monthly_operation(hospital_id)
     hospital_key = str(hospital_id)
     expected_payload = {
@@ -1826,7 +1852,7 @@ def test_monthly_catchup_does_not_dispatch_when_the_requested_refresh_loses(
     bounded_signal_store, monkeypatch
 ):
     _engine, factory, hospital_id = bounded_signal_store
-    observed_at = datetime(2026, 9, 26, 6, 0, tzinfo=UTC)
+    observed_at = datetime(2026, 9, 30, 20, 0, tzinfo=UTC)
     seeded = _seed_requested_monthly_operation(hospital_id)
     changed = _change_run_after_first_read(
         monkeypatch, factory, seeded.id, {"version": OperationRun.version + 1}
@@ -1862,7 +1888,7 @@ def test_monthly_beat_does_not_dispatch_when_the_requested_refresh_loses(
     monkeypatch.setattr(
         tasks.arrow,
         "now",
-        lambda *_args, **_kwargs: tasks.arrow.get(2026, 9, 26, 15, tzinfo="Asia/Seoul"),
+        lambda *_args, **_kwargs: tasks.arrow.get(2026, 10, 1, 1, 0, tzinfo="Asia/Seoul"),
     )
     monkeypatch.setattr(
         tasks,
@@ -1873,6 +1899,9 @@ def test_monthly_beat_does_not_dispatch_when_the_requested_refresh_loses(
         tasks,
         "iter_monthly_sov_cohort",
         lambda *_args, **_kwargs: [SimpleNamespace(id=hospital_id)],
+    )
+    monkeypatch.setattr(
+        tasks, "eligible_hospital_ids", lambda *_a, **_k: [hospital_id]
     )
     _patch_monthly_period_claim(monkeypatch)
 

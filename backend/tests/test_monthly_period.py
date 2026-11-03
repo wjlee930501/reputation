@@ -1,7 +1,7 @@
 """Month-close boundary and historical service eligibility contracts."""
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -12,6 +12,9 @@ from app.services.monthly_period import (
     MonthlyPeriodError,
     ReportBuildReason,
     is_monthly_recovery_window,
+    monthly_final_judgment_at,
+    monthly_recovery_deadline,
+    monthly_report_finalization_at,
     plan_report_version,
     prior_month_to_close,
     reporting_period,
@@ -31,11 +34,42 @@ def test_pin_manifest_close_is_first_day_at_0015_kst() -> None:
 
 
 def test_monthly_close_keeps_day_one_first_tick_and_finalizes_on_day_eight() -> None:
+    """PIN: report ticks fire only on day 1 at 07:15/07:45/08:15/08:45 KST."""
+
     schedule = celery_app.conf.beat_schedule["monthly-reports"]["schedule"]
 
-    assert schedule.minute == {15}
-    assert schedule.hour == {0}
-    assert schedule.day_of_month == set(range(1, 9))
+    assert schedule.minute == {15, 45}
+    assert schedule.hour == {7, 8}
+    assert schedule.day_of_month == {1}
+
+
+def test_dawn_close_boundaries_are_exact_kst() -> None:
+    """PIN: 07:00 exclusive deadline, 07:15 finalization, 09:00 SLO — incl. Dec rollover."""
+
+    august = reporting_period(2026, 8)
+    assert monthly_recovery_deadline(2026, 8) == august.ends_at + timedelta(hours=7)
+    assert monthly_report_finalization_at(2026, 8) == august.ends_at + timedelta(
+        hours=7, minutes=15
+    )
+    assert monthly_final_judgment_at(2026, 8) == august.ends_at + timedelta(hours=9)
+    december = reporting_period(2026, 12)
+    assert monthly_recovery_deadline(2026, 12) == datetime(2027, 1, 1, 7, 0, tzinfo=KST)
+    assert monthly_report_finalization_at(2026, 12) == datetime(
+        2027, 1, 1, 7, 15, tzinfo=KST
+    )
+    assert december.ends_at == datetime(2027, 1, 1, tzinfo=KST)
+
+
+def test_dawn_measurement_beat_fires_day_one_only() -> None:
+    measurement = celery_app.conf.beat_schedule["monthly-sov-measurement"]["schedule"]
+
+    assert measurement.minute == {15, 45}
+    assert measurement.hour == set(range(0, 7))
+    assert measurement.day_of_month == {1}
+    gap = celery_app.conf.beat_schedule["monthly-report-gap-summary"]["schedule"]
+    assert gap.hour == {9}
+    assert gap.minute == {0}
+    assert gap.day_of_month == {1}
 
 
 def test_reporting_period_handles_leap_year_and_year_boundary() -> None:
@@ -63,7 +97,9 @@ def test_prior_month_closes_only_at_or_after_0015_kst() -> None:
     [
         (datetime(2026, 9, 1, 0, 14, 59, tzinfo=KST), False),
         (datetime(2026, 9, 1, 0, 15, tzinfo=KST), True),
-        (datetime(2026, 9, 7, 23, 59, tzinfo=KST), True),
+        (datetime(2026, 9, 1, 6, 45, tzinfo=KST), True),
+        (datetime(2026, 9, 1, 7, 0, tzinfo=KST), False),
+        (datetime(2026, 9, 2, 0, 15, tzinfo=KST), False),
         (datetime(2026, 9, 8, 0, 0, tzinfo=KST), False),
     ],
 )

@@ -627,15 +627,13 @@ class Settings(BaseSettings):
     # 월간 상한 (병원50 × 리더 20편 × 재시도 여유 ≈ 3000)
     COST_GUARD_MONTHLY_CONTENT_CALLS: int = 3000
     COST_GUARD_MONTHLY_IMAGE_CALLS: int = 3000
-    # Locked August 2026 conversion envelope for H=7 named hospitals.
-    # 1260 = 7×15×2×5 + 210 retry remainder. 4260 = 3000 already-used + 1260 today.
-    # NOT a weekly full-sample raise. Register the 7 tracking sets first, then
-    # apply these env values so weekly retries cannot eat the new budget.
+    # Monthly measurements run on one dawn. The daily envelope can use the
+    # existing monthly budget; this does not raise the monthly spending ceiling.
     COST_GUARD_MONTHLY_SOV_QUERIES: int = 4260
     # 일일 상한 = 월간의 1/10 수준(피크 하루 폭주 차단용)
     COST_GUARD_DAILY_CONTENT_CALLS: int = 250
     COST_GUARD_DAILY_IMAGE_CALLS: int = 250
-    COST_GUARD_DAILY_SOV_QUERIES: int = 1260
+    COST_GUARD_DAILY_SOV_QUERIES: int = 4260
     # 운영 기준(Essence) 합성·독립 검수 호출 상한. 야간 생성과 예산을 나눠 온보딩 폭주가
     # 계약 병원의 콘텐츠 생성을 굶기지 않게 한다(병원 1곳 = 합성·1차·2차 ≈ 3~6회).
     COST_GUARD_DAILY_ESSENCE_CALLS: int = 60
@@ -693,7 +691,7 @@ class Settings(BaseSettings):
     # 월간 코호트(Hospital.monthly_sov_cohort)는 계약된 ACTIVE 병원이 자동 편입되며 전원 측정한다.
     # 비용 경고선은 `sov_tracking_set.monthly_sov_cohort_cost_threshold`가
     # COST_GUARD_MONTHLY_SOV_QUERIES에서 계산한다(손으로 맞추는 병원 수 설정은 없앴다).
-    SOV_MONTHLY_WINDOW_START_DAY: int = 24
+    # (removed) 월간 측정은 다음 달 1일 00:15~07:00 KST 새벽 창에만 돈다 — 시작일 설정은 없다.
     # 아직 전환되지 않은 병원의 주간 측정 반복 횟수.
     SOV_REPEAT_COUNT_WEEKLY: int = 5
     # 아래 priority/cap 설정은 공존 기간의 주간 legacy 경로에만 적용한다. 월간 고정 세트는

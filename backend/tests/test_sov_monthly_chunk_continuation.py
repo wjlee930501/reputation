@@ -158,7 +158,7 @@ def _shell(monkeypatch, *, measurement_mode="monthly", retries=0, slots_per_cell
     monkeypatch.setattr(
         tasks.arrow,
         "now",
-        lambda *_a, **_k: tasks.arrow.get(2026, 8, 31, tzinfo="Asia/Seoul"),
+        lambda *_a, **_k: tasks.arrow.get(2026, 9, 1, 1, 0, tzinfo="Asia/Seoul"),
     )
 
     def execute(_db, *, slot, **_kwargs):

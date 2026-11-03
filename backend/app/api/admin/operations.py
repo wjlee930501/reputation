@@ -649,7 +649,7 @@ async def run_sov_operation(
         ):
             raise HTTPException(
                 status_code=409,
-                detail="지난달 월간 측정 복구는 매월 1일 00시 15분부터 7일까지 실행할 수 있습니다.",
+                detail="지난달 월간 측정 복구는 매월 1일 00시 15분부터 07시까지 실행할 수 있습니다.",
             )
         if not hospital.monthly_sov_cohort:
             raise HTTPException(
@@ -848,7 +848,7 @@ async def generate_monthly_report_operation(
 
     `rebuild=true&template_only=true`는 저장된 숫자를 그대로 두고 원장·AE PDF의 문구와
     디자인만 새 버전으로 다시 그린다(새 템플릿 배포 뒤 지난달 리포트 갱신용). 숫자 판정이
-    어긋나면 워커가 새 버전을 만들지 않는다. 측정 복구 기간(1~7일)에 측정이 덜 끝난 병원은
+    어긋나면 워커가 새 버전을 만들지 않는다. 측정 복구 창(1일 00:15~07:00 KST)에 측정이 덜 끝난 병원은
     워커가 막고, `allow_recovery_pending=true`(템플릿 갱신 전용)를 함께 주면 운영자 지정으로
     지금 저장된 숫자 그대로 갱신한다.
     """

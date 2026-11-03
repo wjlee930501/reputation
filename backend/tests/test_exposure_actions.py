@@ -1836,3 +1836,69 @@ async def test_a_failed_rediagnosis_still_serves_the_last_known_queue(monkeypatc
     assert rollbacks == [True]
     assert len(response) == 1
     assert response[0]["id"] == str(action.id)
+
+
+def test_unknown_competitor_judgments_are_never_counted_as_unmentioned():
+    """경쟁사 판정 미확정은 0이 아니라 None — 추천도 근거 해소도 없다."""
+    from types import SimpleNamespace
+
+    from app.services.exposure_action_engine import _competitor_mention_count
+
+    known = SimpleNamespace(
+        competitor_mentions=[{"name": "다라", "is_mentioned": True, "mention_rank": 1}]
+    )
+    unknown = SimpleNamespace(
+        competitor_mentions=[
+            {"name": "다라", "is_mentioned": None, "mention_rank": None,
+             "measurement_status": "FAILED", "failure_reason": "parse_failed"}
+        ]
+    )
+    mixed = SimpleNamespace(
+        competitor_mentions=[
+            {"name": "다라", "is_mentioned": False, "mention_rank": None},
+            {"name": "마", "is_mentioned": None, "mention_rank": None},
+        ]
+    )
+    assert _competitor_mention_count([known, known]) == 2
+    assert _competitor_mention_count([known, unknown]) is None
+    assert _competitor_mention_count([mixed]) is None
+
+
+def test_competitor_gap_neither_created_nor_resolved_on_unknown_counts():
+    """미확정 비교는 COMPETITOR_VISIBILITY 추천을 만들지도 기존 공백을 닫지도 않는다."""
+    target = _target()
+    unknown = [{"name": "다라", "is_mentioned": None, "mention_rank": None}]
+    records = [
+        _record(target.id, is_mentioned=True, competitors=unknown),
+        _record(target.id, is_mentioned=True, competitors=unknown),
+    ]
+    recommendations = build_exposure_recommendations([target], records)
+    assert all(item.gap_type != "COMPETITOR_VISIBILITY" for item in recommendations)
+
+    current = {
+        "cohort_policy_fingerprint": "policy",
+        "cohort_comparability_fingerprint": "cohort",
+        "latest_measured_at": "2026-05-02T12:00:00+00:00",
+        "competitor_mention_count": None,
+    }
+    diagnosis = exposure_action_engine.TargetDiagnosis(
+        query_target_id=target.id,
+        policy_fingerprint="policy",
+        cohort_fingerprint="cohort",
+        evidence=current,
+        observed_gap_types=frozenset(),
+        recommendations=(),
+        comparable=True,
+    )
+    gap = SimpleNamespace(
+        gap_type="COMPETITOR_VISIBILITY",
+        evidence={
+            "cohort_policy_fingerprint": "policy",
+            "cohort_comparability_fingerprint": "cohort",
+            "latest_measured_at": "2026-05-01T12:00:00+00:00",
+        },
+    )
+    assert exposure_action_engine._resolution_evidence(gap, diagnosis) is None
+    # All other recovery requirements hold: a confirmed zero WOULD resolve it.
+    current["competitor_mention_count"] = 0
+    assert exposure_action_engine._resolution_evidence(gap, diagnosis) is not None

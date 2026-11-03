@@ -338,7 +338,8 @@ def test_safety_net_rebuilds_twice_then_opens_one_developer_incident(env, monkey
         "eligible_hospital_ids",
         lambda *_args: [missing.id, ready.id],
     )
-    judgment = datetime(2026, 11, 8, 9, 0, tzinfo=KST)
+    # 1일 07:15 KST 예정 최종화부터 안전망이 움직이고, 재시도 간격은 30분이다.
+    judgment = datetime(2026, 11, 1, 7, 15, tzinfo=KST)
 
     before = monthly_report_safety_net.run_monthly_report_safety_net(
         env.db, now=judgment - timedelta(minutes=1)
@@ -355,17 +356,17 @@ def test_safety_net_rebuilds_twice_then_opens_one_developer_incident(env, monkey
     _finish(env, run, judgment)
 
     waiting = monthly_report_safety_net.run_monthly_report_safety_net(
-        env.db, now=judgment + timedelta(hours=1)
+        env.db, now=judgment + timedelta(minutes=15)
     )
     assert waiting["waiting"] == 1 and waiting["dispatched"] == 0
 
     second = monthly_report_safety_net.run_monthly_report_safety_net(
-        env.db, now=judgment + timedelta(hours=7)
+        env.db, now=judgment + timedelta(minutes=45)
     )
     assert second["dispatched"] == 1
     runs = _repair_runs(env, missing.id)
     assert [item.idempotency_key[-1] for item in runs] == ["1", "2"]
-    _finish(env, runs[-1], judgment + timedelta(hours=7))
+    _finish(env, runs[-1], judgment + timedelta(minutes=45))
 
     # 두 번째 시도가 빨리 끝나도 첫 시도 뒤 18시간(원장 PDF 사고와 같은 창)이 지나야 사람을 부른다.
     early = monthly_report_safety_net.run_monthly_report_safety_net(
@@ -536,9 +537,9 @@ def test_monthly_sov_incident_closes_after_final_judgment_when_a_report_exists(e
         hospital_id=hospital.id,
         incident_type="MONTHLY_SOV_MEASUREMENT_FAILED",
         source_id=f"{hospital.id}:2026-09",
-        first_seen_at=datetime(2026, 10, 6, 9, 16, tzinfo=UTC),
+        first_seen_at=datetime(2026, 10, 1, 0, 16, tzinfo=UTC),
     )
-    after = datetime(2026, 10, 8, 9, 0, tzinfo=KST)
+    after = datetime(2026, 10, 1, 9, 0, tzinfo=KST)
     resolver = incident_backlog.RESOLVERS["MONTHLY_SOV_MEASUREMENT_FAILED"]
 
     assert resolver(env.db, incident, after) is None  # 보고서가 없으면 아직이다.
