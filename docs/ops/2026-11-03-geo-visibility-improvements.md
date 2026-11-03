@@ -68,7 +68,10 @@
 - Site: `npm run typecheck`, `npm test` 482/482, `npm run lint` 통과.
 - Admin: `npm run typecheck`, `npm test` 662/662, `npm run lint` 통과.
 - Backend 관련 테스트(마이그레이션 체인·ORM drift·0094 업그레이드·Admin 프로필·SoV 엔진·노출 행동·ops 조회·신규 테스트)는 통과했다. 로컬 Postgres 16 UTF-8 클러스터 3개와 Redis, CI env로 돌렸다.
-- 전체 suite 결과와 사전 존재 lint 1건(`tests/test_monthly_sov_postgres.py` 미사용 import)은 PR 설명에 적는다.
+- Backend 전체 suite: 9,632건 중 9,617 통과, 15 실패.
+  - 15건 모두 main에서도 같은 테스트가 똑같이 실패한다. 월간 재측정 잠금, 월간 측정 기한, 운영 채널 신호, 비용 정산 등 이번 변경과 무관한 영역이다.
+  - 이번 변경으로 깨졌던 1건(`tests/integration/test_ops_sql_report_postgres.py`, q17~q19 목록)은 고쳤다.
+- ruff는 사전 존재 1건(`tests/test_monthly_sov_postgres.py` 미사용 import) 외에 오류가 없다.
 - 운영 배포, 실제 리다이렉트 응답, 실제 로그 수집은 확인하지 않았다.
 
 ## 배포 시 주의
