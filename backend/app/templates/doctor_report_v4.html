@@ -1,23 +1,25 @@
 <!doctype html><html lang="ko"><head><meta charset="utf-8"><title>{{ view.hospital_name }} · {{ view.summary.title }}</title>
 <style>{% include 'report_editorial.css' %}
 {% include 'doctor_report_v4.css' %}
-{% if view.sample_label %}@page { @top-right { content:'검증용 가상 사례 · ' counter(page) ' / ' counter(pages); font-family:"Pretendard"; font-size:9pt; font-weight:700; letter-spacing:.08em; color:#a3a3a3; font-variant-numeric:tabular-nums; vertical-align:bottom; padding-bottom:8pt; } }{% endif %}
 </style></head><body class="v4 {{ density|default('comfortable') }}">
 {% set platform_labels = {'chatgpt': 'ChatGPT', 'gemini': 'Gemini'} %}
-{% macro masthead(ord, label) %}<div class="masthead"><span class="wordmark"><b>Re:putation</b> / {{ period_label }}</span><span class="section-label"><span class="ord">{{ ord }} /</span> {{ label }}</span></div>{% endmacro %}
+{# 절의 첫 쪽: 쪽수 줄 + 마스트헤드. 이어지는 쪽은 러닝 헤드가 `.masthead-cont`(running element, first-except)를 띄운다. #}
+{% macro masthead(ord, label) %}<p class="running-head">{% if view.sample_label %}{{ view.sample_label }} · {% endif %}<span class="pages"></span></p>
+<div class="masthead-cont"><span class="wordmark"><b>Re:putation</b> / {{ period_label }}</span><span class="section-label"><span class="ord">{{ ord }} /</span> {{ label }} (이어짐) <span class="pages"> · {% if view.sample_label %}{{ view.sample_label }} · {% endif %}</span></span></div>
+<div class="masthead"><span class="wordmark"><b>Re:putation</b> / {{ period_label }}</span><span class="section-label"><span class="ord">{{ ord }} /</span> {{ label }}</span></div>{% endmacro %}
 {% macro bar_list(bars, unit) %}{% set values = bars|map(attribute='value')|reject('none')|list %}{% set top = (values|max if values else 0) %}<table class="bars"><colgroup><col style="width:38%"><col style="width:44%"><col style="width:18%"></colgroup><tbody>{% for bar in bars %}<tr class="bar-row"><td class="bar-label">{{ bar.label }}{% if unit == 'pct' %}<span class="bar-detail">{{ bar.detail }}</span>{% endif %}</td><td class="bar-track-cell"><div class="bar-track">{% if bar.value is not none %}<div class="bar-fill" style="width:{{ (bar.value / (100 if unit == 'pct' else (top or 1)) * 100)|round(1) }}%"></div>{% endif %}</div></td><td class="bar-value{{ ' muted' if bar.value is none else '' }}">{% if bar.value is none %}—{% elif unit == 'pct' %}{{ bar.value|pct }}{% else %}{{ bar.detail }}{% endif %}</td></tr>
 {% endfor %}</tbody></table>{% endmacro %}
-{% macro plan_table(rows, anchor=None) %}<table class="plan-table"><colgroup><col style="width:9%"><col style="width:17%"><col style="width:13%"><col style="width:36%"><col style="width:25%"></colgroup>
+{% macro plan_table(rows, anchor=None) %}{% if anchor %}<div class="anchor-box">{% endif %}<table{% if anchor %} id="{{ anchor }}"{% endif %} class="plan-table"><colgroup><col style="width:9%"><col style="width:17%"><col style="width:13%"><col style="width:36%"><col style="width:25%"></colgroup>
 <thead><tr><th>우선순위</th><th>진료 항목</th><th class="num">현재 노출률</th><th>실행 내용</th><th>목표 키워드</th></tr></thead>
-<tbody>{% for row in rows %}<tr class="plan-{{ row.kind }}"><td class="priority"><span class="number">{{ '%02d'|format(row.priority) }}</span></td><td>{{ row.treatment }}</td><td class="num">{{ row.rate_label }}</td><td>{{ row.action }}</td><td class="keyword-cell">{{ row.keyword }}{% if anchor and loop.last %}<span id="{{ anchor }}"></span>{% endif %}</td></tr>
-{% endfor %}</tbody></table>{% endmacro %}
+<tbody>{% for row in rows %}<tr class="plan-{{ row.kind }}"><td class="priority"><span class="number">{{ '%02d'|format(row.priority) }}</span></td><td>{{ row.treatment }}</td><td class="num">{{ row.rate_label }}</td><td>{{ row.action }}</td><td class="keyword-cell">{{ row.keyword }}</td></tr>
+{% endfor %}</tbody></table>{% if anchor %}</div>{% endif %}{% endmacro %}
 {% set s = view.summary %}
 {% set p = view.plan %}
 {% set planned_keywords = (p.rows|length) + (p.continued|length) %}
 {% set keyword_total = view.appendix.keyword_rows|length or planned_keywords %}
 {% set text_values = ('다음 달부터 측정', '측정 미완료', '확인 필요') %}
 
-<section class="page summary" id="p1-start">
+<section class="page summary anchored" id="p1-start">
 {{ masthead('01', '월간 요약') }}
 <div class="page-head"><p class="eyebrow">AI 노출 성과 보고서</p>
 <h1 class="title">{{ s.title }}</h1>
@@ -46,12 +48,11 @@
 {% if view.content.bars %}<div class="module"><h2>진료 항목별 발행 편수</h2>
 {{ bar_list(view.content.bars, 'count') }}</div>{% endif %}
 {% if view.content.rows %}<div class="module"><h2>발행 콘텐츠 목록 <span class="section-aside">{{ view.content.rows|length }}편</span></h2>
-<table class="content-table"><colgroup><col style="width:10%"><col style="width:47%"><col style="width:15%"><col style="width:20%"><col style="width:8%"></colgroup>
+<div class="anchor-box"><table id="p2-table" class="content-table"><colgroup><col style="width:10%"><col style="width:47%"><col style="width:15%"><col style="width:20%"><col style="width:8%"></colgroup>
 <thead><tr><th>발행일</th><th>콘텐츠 제목</th><th>진료 항목</th><th>타깃 키워드</th><th>링크</th></tr></thead>
-<tbody>{% for row in view.content.rows %}<tr><td>{{ row.published_on }}</td><td class="title-cell">{{ row.title }}</td><td>{{ row.treatment }}</td><td>{{ row.keyword }}</td><td>{% if row.url %}<a href="{{ row.url }}">보기</a>{% else %}—{% endif %}{% if loop.last %}<span id="p2-table-end"></span>{% endif %}</td></tr>
-{% endfor %}</tbody></table></div>
+<tbody>{% for row in view.content.rows %}<tr><td>{{ row.published_on }}</td><td class="title-cell">{{ row.title }}</td><td>{{ row.treatment }}</td><td>{{ row.keyword }}</td><td>{% if row.url %}<a href="{{ row.url }}">보기</a>{% else %}—{% endif %}</td></tr>
+{% endfor %}</tbody></table></div></div>
 {% else %}<p class="empty">{{ view.content.empty_text }}</p>
-<div class="spring"></div>
 <div class="figure-band"><p class="figure-label">이번 달 발행 편수</p><p class="figure-value">0편</p></div>{% endif %}
 <div id="p2-end"></div>
 </section>
@@ -61,7 +62,7 @@
 {{ masthead('03', 'AI 노출 성과') }}
 <h1>{{ e.headline }}</h1>
 {% set has_trend = e.trend|length >= 2 %}
-{% set svg_h = 44 if density|default('comfortable') == 'comfortable' else 40 %}
+{% set svg_h = 64 if density|default('comfortable') == 'comfortable' else 56 %}
 {% macro treatment_block(e) %}<h2>진료 항목별 AI 노출률</h2>
 {% if e.treatment_bars %}{{ bar_list(e.treatment_bars, 'pct') }}{% else %}<p class="caption">{{ e.platform_bars[0].detail if e.platform_bars else '다음 달부터 측정' }}</p>{% endif %}{% endmacro %}
 {% macro platform_block(e) %}<h2>AI 서비스별 노출률</h2>
@@ -102,11 +103,11 @@
 <div class="module"><h2>측정 키워드별 노출 <span class="section-aside">주황 노출 · 회색 미노출 · 빗금 측정 실패</span></h2>
 {% if e.heatmap %}{% set n = e.heatmap|length %}{% set split = n > 10 %}{% set half = ((n + 1) // 2) if split else n %}
 {% macro heat_head(platforms) %}<th class="heat-keyword-head">측정 키워드</th>{% for platform in platforms %}<th class="heat-head">{{ platform_labels.get(platform, platform) }}</th>{% endfor %}{% endmacro %}
-{% macro heat_cells(row, anchor=None) %}<td class="heat-keyword">{{ row.keyword }}</td>{% for cell in row.cells %}<td class="heat heat-{{ cell.state }}">{{ cell.detail }}{% if anchor and loop.last %}<span id="{{ anchor }}"></span>{% endif %}</td>{% endfor %}{% endmacro %}
-{% set cell_w = 44 if split else 56 %}{% set kw_w = ((499 - 16 - 2 * cell_w * view.platforms|length) / 2)|round(1) %}<table class="heatmap{{ ' heatmap-2up' if split else '' }}{{ ' heatmap-many' if n > 20 else '' }}"><colgroup><col{% if split %} style="width:{{ kw_w }}pt"{% endif %}>{% for _ in view.platforms %}<col style="width:{{ cell_w }}pt">{% endfor %}{% if split %}<col style="width:16pt"><col style="width:{{ kw_w }}pt">{% for _ in view.platforms %}<col style="width:{{ cell_w }}pt">{% endfor %}{% endif %}</colgroup>
+{% macro heat_cells(row) %}<td class="heat-keyword">{{ row.keyword }}</td>{% for cell in row.cells %}<td class="heat heat-{{ cell.state }}">{{ cell.detail }}</td>{% endfor %}{% endmacro %}
+{% set cell_w = 44 if split else 56 %}{% set kw_w = ((499 - 16 - 2 * cell_w * view.platforms|length) / 2)|round(1) %}<div class="anchor-box"><table id="p3-heat" class="heatmap{{ ' heatmap-2up' if split else '' }}"><colgroup><col{% if split %} style="width:{{ kw_w }}pt"{% endif %}>{% for _ in view.platforms %}<col style="width:{{ cell_w }}pt">{% endfor %}{% if split %}<col style="width:16pt"><col style="width:{{ kw_w }}pt">{% for _ in view.platforms %}<col style="width:{{ cell_w }}pt">{% endfor %}{% endif %}</colgroup>
 <thead><tr>{{ heat_head(view.platforms) }}{% if split %}<th class="heat-gap"></th>{{ heat_head(view.platforms) }}{% endif %}</tr></thead>
-<tbody>{% for i in range(half) %}{% set last_row = i == half - 1 %}<tr>{{ heat_cells(e.heatmap[i], 'p3-heat-end' if last_row and not split else None) }}{% if split %}<td class="heat-gap"></td>{% if half + i < n %}{{ heat_cells(e.heatmap[half + i], 'p3-heat-end' if last_row else None) }}{% else %}<td class="heat-keyword heat-blank"></td>{% for _ in view.platforms %}<td class="heat heat-blank">{% if last_row and loop.last %}<span id="p3-heat-end"></span>{% endif %}</td>{% endfor %}{% endif %}{% endif %}</tr>
-{% endfor %}</tbody></table>
+<tbody>{% for i in range(half) %}<tr>{{ heat_cells(e.heatmap[i]) }}{% if split %}<td class="heat-gap"></td>{% if half + i < n %}{{ heat_cells(e.heatmap[half + i]) }}{% else %}<td class="heat-keyword heat-blank"></td>{% for _ in view.platforms %}<td class="heat heat-blank"></td>{% endfor %}{% endif %}{% endif %}</tr>
+{% endfor %}</tbody></table></div>
 {% else %}<p class="empty">{{ e.platform_bars[0].detail if e.platform_bars else '다음 달부터 측정' }}</p>{% endif %}</div>
 {% if not e.heatmap or e.citation_lines %}<div class="closing">{% if not e.heatmap %}<div class="figure-band"><p class="figure-label">측정 키워드</p><p class="figure-value">{{ keyword_total }}개</p><p class="caption">{{ e.platform_bars[0].detail if e.platform_bars else '다음 달부터 측정' }} — 키워드별 결과는 다음 측정부터 이 자리에 보입니다.</p></div>{% endif %}
 {% for line in e.citation_lines %}<p class="citation">{{ line }}</p>
@@ -115,24 +116,24 @@
 </section>
 
 {% set k = view.competition %}
-<section class="page competition" id="p4-start">
+<section class="page competition{{ ' anchored' if (k.replaced|length) <= 6 else '' }}" id="p4-start">
 {{ masthead('04', '경쟁 현황') }}
 <div class="page-head"><h1>{{ k.headline }}</h1>{% if k.rows and k.basis %}<p class="basis">{{ k.basis }}</p>{% endif %}</div>
-{% if k.rows %}<div class="module"><table class="competitor-table"><colgroup><col style="width:46%"><col style="width:24%"><col style="width:30%"></colgroup>
+{% if k.rows %}<div class="module"><div class="anchor-box"><table id="p4-table" class="competitor-table"><colgroup><col style="width:46%"><col style="width:24%"><col style="width:30%"></colgroup>
 <thead><tr><th>병원</th><th class="num">언급 답변 수</th><th class="num">언급률</th></tr></thead>
-<tbody>{% for row in k.rows %}<tr><td class="competitor-name">{{ row.name }}</td><td class="count-cell num">{{ row.count_label }}</td><td class="rate-cell num"><span class="mini-track"><span class="mini-fill" style="width:{{ row.rate|round(1) }}%"></span></span><span class="rate-figure">{{ row.rate|pct }}</span>{% if loop.last %}<span id="p4-table-end"></span>{% endif %}</td></tr>
-{% endfor %}</tbody></table></div>
+<tbody>{% for row in k.rows %}<tr><td class="competitor-name">{{ row.name }}</td><td class="count-cell num">{{ row.count_label }}</td><td class="rate-cell num"><span class="mini-track"><span class="mini-fill" style="width:{{ row.rate|round(1) }}%"></span></span><span class="rate-figure">{{ row.rate|pct }}</span></td></tr>
+{% endfor %}</tbody></table></div></div>
 {% if k.replaced %}<div class="module"><h2>{{ view.hospital_name }}이 빠진 키워드에서 대신 언급된 병원</h2>
 <div class="ledger">{% for row in k.replaced %}<div class="rule-row replaced-row"><p class="replaced-keyword">{{ row.keyword }}</p><p class="replaced-names">{{ row.competitors|join(', ') }}</p></div>
 {% endfor %}</div></div>{% endif %}
 {% else %}<p class="empty">{{ k.empty_text }}</p>{% endif %}
-<div class="spring"></div>
+{% if (k.replaced|length) <= 6 %}<div class="spring"></div>{% endif %}
 {% if k.unexposed_count is not none %}<div class="figure-band"><p class="figure-label">병원명이 노출되지 않은 측정 키워드</p><p class="figure-value">{{ k.unexposed_count }}개</p><p class="caption">다음 달 실행 계획(06)에서 키워드마다 대응 콘텐츠를 정했습니다.</p></div>{% else %}<div class="figure-band"><p class="figure-label">측정 키워드</p><p class="figure-value">{{ keyword_total }}개</p></div>{% endif %}
 <div id="p4-end"></div>
 </section>
 
 {% set c = view.cases %}
-<section class="page cases" id="p5-start">
+<section class="page cases anchored" id="p5-start">
 {{ masthead('05', '대표 답변 사례') }}
 <h1>{{ c.headline }}</h1>
 {% set cases = [c.found, c.missing]|reject('none')|list %}
@@ -152,10 +153,10 @@
 <div id="p5-end"></div>
 </section>
 
-<section class="page plan" id="p6-start">
+<section class="page plan anchored" id="p6-start">
 {{ masthead('06', '다음 달 실행 계획') }}
 <h1>{{ p.headline }}</h1>
-{% if p.rows %}<div class="module">{{ plan_table(p.rows, 'p6-table-end') }}
+{% if p.rows %}<div class="module">{{ plan_table(p.rows, 'p6-table') }}
 {% if p.continued %}<p class="caption">나머지 {{ p.continued|length }}개는 부록에 이어집니다.</p>{% endif %}</div>
 <div class="spring"></div>
 <div class="figure-band"><p class="figure-label">다음 달 대응 키워드</p><p class="figure-value">{{ (p.rows|length) + (p.continued|length) }}개</p></div>
@@ -170,10 +171,10 @@
 <section class="appendix" id="appendix-start">
 {{ masthead('부록', '자세한 기록') }}
 <h1>A. 측정 키워드 전체와 결과</h1>
-{% if a.keyword_rows %}<table class="keyword-table">{% set cell_w = (100 - 34 - 8 - 14) // (view.platforms|length + 2) if show_previous else (100 - 40 - 9 - 15) // (view.platforms|length + 1) %}<colgroup><col style="width:{{ 34 if show_previous else 40 }}%"><col style="width:{{ 8 if show_previous else 9 }}%"><col style="width:{{ 14 if show_previous else 15 }}%">{% for _ in view.platforms %}<col style="width:{{ cell_w }}%">{% endfor %}<col style="width:{{ cell_w }}%">{% if show_previous %}<col style="width:{{ cell_w }}%">{% endif %}</colgroup>
+{% if a.keyword_rows %}<div class="anchor-box"><table id="appendix-table" class="keyword-table">{% set cell_w = (100 - 34 - 8 - 14) // (view.platforms|length + 2) if show_previous else (100 - 40 - 9 - 15) // (view.platforms|length + 1) %}<colgroup><col style="width:{{ 34 if show_previous else 40 }}%"><col style="width:{{ 8 if show_previous else 9 }}%"><col style="width:{{ 14 if show_previous else 15 }}%">{% for _ in view.platforms %}<col style="width:{{ cell_w }}%">{% endfor %}<col style="width:{{ cell_w }}%">{% if show_previous %}<col style="width:{{ cell_w }}%">{% endif %}</colgroup>
 <thead><tr><th>측정 키워드</th><th>그룹</th><th>진료 항목</th>{% for platform in view.platforms %}<th class="num">{{ platform_labels.get(platform, platform) }}</th>{% endfor %}<th class="num">합계</th>{% if show_previous %}<th class="num">지난달</th>{% endif %}</tr></thead>
 <tbody>{% for row in a.keyword_rows %}<tr id="kw-row-{{ loop.index0 }}"><td>{{ row.keyword }}</td><td>{{ row.group }}</td><td>{{ row.treatment }}</td>{% for cell in row.cells %}<td class="num">{{ cell }}</td>{% endfor %}<td class="total-cell num">{{ row.total }}{% if not show_previous %}<span id="kw-row-{{ loop.index0 }}-end"></span>{% endif %}</td>{% if show_previous %}<td class="num">{{ row.previous or '—' }}<span id="kw-row-{{ loop.index0 }}-end"></span></td>{% endif %}</tr>
-{% endfor %}</tbody></table>
+{% endfor %}</tbody></table></div>
 <p class="caption">칸의 수는 노출 답변 수/AI 답변 수입니다. —는 그 칸의 측정이 없었다는 뜻입니다.</p>
 {% else %}<p class="caption">이번 달 측정 키워드 결과가 없습니다. 다음 달 첫 측정부터 이 표에 담깁니다.</p>{% endif %}
 {% if a.keyword_note %}<p class="caption keyword-note">{{ a.keyword_note }}</p>{% endif %}

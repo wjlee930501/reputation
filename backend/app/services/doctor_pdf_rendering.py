@@ -229,10 +229,16 @@ def render_v4_html(
 
 def _render_v4(*, view, period_label: str, public_url: str, expectation: DoctorPdfExpectation) -> ValidatedDoctorPdf:
     """v4(설계 2026-11-04): 뷰 모델 하나, 쪽별 앵커, 필수 문구는 `required_texts()`에서."""
-    from app.services.doctor_pdf_v4 import v4_expectation, v4_layout_valid, validate_v4_fields
+    from app.services.doctor_pdf_v4 import (
+        required_table_anchors,
+        v4_expectation,
+        v4_layout_valid,
+        validate_v4_fields,
+    )
 
     validate_v4_fields(view)
     row_count = len(view.appendix.keyword_rows)
+    table_anchors = required_table_anchors(view)
     try:
         from weasyprint import HTML
 
@@ -242,7 +248,7 @@ def _render_v4(*, view, period_label: str, public_url: str, expectation: DoctorP
                 view, period_label=period_label, public_url=public_url, density=density
             )
             candidate = HTML(string=html, base_url=str(_TEMPLATE_DIR)).render()
-            if v4_layout_valid(candidate, row_count):
+            if v4_layout_valid(candidate, row_count, required_anchors=table_anchors):
                 document = candidate
                 break
         if document is None:
