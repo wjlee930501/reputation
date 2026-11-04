@@ -176,7 +176,8 @@ DoctorReportV4
 5. 샘플 PDF 3종 대표 확인 → 문구 조정
 6. 배포: 배치 시간대 밖, 11월 안. **12/1 07:15 첫 정기 생성이 v4로 나간다.** 배포 뒤 `ops_sql_report --only=q15`로 게이트 입력 확인, 안전망 틱이 v4 판을 유효하다고 보는지 확인.
 7. 롤백: 트래픽 롤백만으로 충분 — v4로 만든 보고서가 있으면 옛 코드는 `template_version`을 모르므로 그 보고서의 템플릿 갱신만 막힌다(재생성은 v3로 새 버전). 11월분 생성 전 롤백이면 영향 없음.
-8. **10월분 재전달**: 배포 뒤 공개 병원마다 `python -m app.utils.monthly_template_refresh precheck/execute/postcheck`(2026-10)로 v4 버전을 만든다(§1의 v4 올리기). 숫자는 11월 1일 마감본 그대로이고 새 버전은 전달 기록을 새로 남겨야 한다. 거절(`V4_UPGRADE_FACTS`)이 나오면 그 병원은 v3 버전을 그대로 전달한다.
+8. **템플릿 갱신은 PDF 없는 버전을 남기지 않는다**(2026-11-04 배포 위험 검토): 원장 PDF 검증·저장에 실패하면 새 버전을 커밋하지 않고 `NEW_DOCTOR_PDF_INVALID`로 거절한다(`_attach_doctor_artifact_and_commit(refuse_without_artifact=True)`). 그래야 안전망의 두 번째 수리(일반 재생성)가 그 달 숫자를 다시 계산하는 일이 없다. 일반 생성 경로는 종전대로 PDF 없이도 커밋한다(측정 결과는 남겨야 하므로).
+9. **10월분 재전달**: 배포 뒤 공개 병원마다 `python -m app.utils.monthly_template_refresh precheck/execute/postcheck`(2026-10)로 v4 버전을 만든다(§1의 v4 올리기). 숫자는 11월 1일 마감본 그대로이고 새 버전은 전달 기록을 새로 남겨야 한다. 거절(`V4_UPGRADE_FACTS`)이 나오면 그 병원은 v3 버전을 그대로 전달한다.
 
 ## 11. 2단계로 넘기는 것
 

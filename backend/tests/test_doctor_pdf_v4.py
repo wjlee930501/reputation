@@ -24,7 +24,14 @@ from app.services.doctor_pdf_rendering import (
     render_v4_html,
     render_validated_doctor_pdf,
 )
-from app.services.doctor_pdf_v4 import v4_expectation, v4_layout_valid, validate_v4_fields
+from app.services.doctor_pdf_v4 import (
+    TABLE_ANCHORS,
+    required_table_anchors,
+    section_pages,
+    v4_expectation,
+    v4_layout_valid,
+    validate_v4_fields,
+)
 from app.services.doctor_report_artifact import build_doctor_pdf_expectation
 from app.services.doctor_report_v4 import DoctorReportV4, build_doctor_report_v4
 from app.services.report_artifact_validation import INTERNAL_ONLY_MARKERS, internal_markers_in
@@ -212,19 +219,34 @@ def _lines(html: str) -> list[str]:
 # ── 렌더·검증 ────────────────────────────────────────────────────────────────
 
 
+def _validated_layout(view: DoctorReportV4):
+    """렌더러와 같은 선택: comfortable이 앵커 검사를 통과하면 그것, 아니면 compact."""
+    for density in ("comfortable", "compact"):
+        document = _layout(render_v4_html(view, period_label=view.period_ym, public_url=PUBLIC_URL, density=density))
+        if v4_layout_valid(document, len(view.appendix.keyword_rows), required_anchors=required_table_anchors(view)):
+            return document, density
+    raise AssertionError("no density validates")
+
+
 @pytest.mark.parametrize("scenario", SCENARIOS)
 def test_v4_renders_validates_and_binds_every_page(scenario):
+    """절은 새 쪽에서 시작하고 길면 흐른다 — 절의 문구는 그 절의 쪽 범위 안에, 부록 문구는 부록 쪽에만 있다."""
     view, rendered, _ = _rendered(scenario)
     assert rendered.metadata.validation_version == "doctor-pdf-v4"
-    assert 7 <= rendered.metadata.page_count <= 9
+    assert 7 <= rendered.metadata.page_count <= 14
     assert rendered.metadata.font_family == "Pretendard"
+    document, _ = _validated_layout(view)
+    assert len(document.pages) == rendered.metadata.page_count
+    sections = section_pages(document)
+    assert sections is not None
     reader = PdfReader(io.BytesIO(rendered.pdf_bytes))
     pages = [_squash(page.extract_text() or "") for page in reader.pages]
     texts = view.required_texts()
-    for index in range(6):
+    for index, (start, end) in enumerate(sections.body):
+        section_text = "".join(pages[start : end + 1])
         for text in texts[index]:
-            assert _squash(text) in pages[index], f"{scenario} p{index + 1}: {text!r}"
-    appendix = "".join(pages[6:])
+            assert _squash(text) in section_text, f"{scenario} p{index + 1}: {text!r}"
+    appendix = "".join(pages[sections.appendix_start :])
     for text in texts[6]:
         assert _squash(text) in appendix, f"{scenario} 부록: {text!r}"
     for page in pages:
@@ -236,7 +258,7 @@ def test_dense_month_continues_the_plan_into_the_appendix():
     view, rendered, html = _rendered("dense")
     assert len(view.appendix.keyword_rows) == 30 and len(view.content.rows) == 20
     assert len(view.plan.rows) == 8 and len(view.plan.continued) == 4
-    assert rendered.metadata.page_count == 8
+    assert 9 <= rendered.metadata.page_count <= 12  # 읽기 최소치를 지키며 02·03·04·부록이 흐른다
     body = _body_text(html)
     assert "다음 달 실행 계획 (이어짐)" in body
     assert "나머지 4개는 부록에 이어집니다." in body
@@ -352,21 +374,268 @@ def test_layout_contract_requires_six_body_pages_then_appendix():
     high = _valid_pages()
     high[2]["p3-start"] = (RAIL[0], 40.0, RAIL[1], 900.0)  # 머리 여백(18mm) 안
     assert not v4_layout_valid(_document(high), 2)
-    assert v4_layout_valid(_document([*_valid_pages()[:6], *([_valid_pages()[6]] * 4)]), 2)
-    assert not v4_layout_valid(_document([*_valid_pages()[:6], *([_valid_pages()[6]] * 5)]), 2)
+    assert v4_layout_valid(_document([*_valid_pages()[:6], *([_valid_pages()[6]] * 8)]), 2)  # 14쪽
+    assert not v4_layout_valid(_document([*_valid_pages()[:6], *([_valid_pages()[6]] * 9)]), 2)  # 15쪽
+
+
+def test_layout_contract_lets_sections_flow_in_order():
+    """절은 새 쪽에서 시작해 여러 쪽에 걸칠 수 있다 — start는 오름차순, end는 start 이상·다음 start 미만, 부록은 p6-end 뒤."""
+    flowing = _valid_pages()
+    flowing[2] = {"p3-start": (RAIL[0], 68.0, RAIL[1], 1000.0)}  # 3절이 3·4쪽에 걸친다
+    flowing.insert(3, {"p3-start": (RAIL[0], 68.0, RAIL[1], 400.0), "p3-end": (RAIL[0], 400.0, RAIL[1], 400.0)})
+    assert v4_layout_valid(_document(flowing), 2)
+    assert section_pages(_document(flowing)).body == ((0, 0), (1, 1), (2, 3), (4, 4), (5, 5), (6, 6))
+    not_first = _valid_pages()
+    not_first.insert(0, {"appendix-start": (RAIL[0], 68.0, RAIL[1], 900.0)})
+    assert not v4_layout_valid(_document(not_first), 2)  # p1이 0쪽이 아니다
+    shared = _valid_pages()
+    shared[1]["p3-start"] = (RAIL[0], 950.0, RAIL[1], 1000.0)  # 3절이 2절의 끝 쪽에서 시작한다(새 쪽이 아니다)
+    shared[2].pop("p3-start")
+    assert not v4_layout_valid(_document(shared), 2)
     spill = _valid_pages()
     spill[5].pop("p6-end")
-    spill[6]["p6-end"] = (RAIL[0], 120.0, RAIL[1], 120.0)
+    spill[6]["p6-end"] = (RAIL[0], 120.0, RAIL[1], 120.0)  # 6절의 끝이 부록 첫 쪽에 있다
     assert not v4_layout_valid(_document(spill), 2)
+    backwards = _valid_pages()
+    backwards[3]["p4-end"] = (RAIL[0], 900.0, RAIL[1], 900.0)
+    backwards[2]["p4-end"] = (RAIL[0], 900.0, RAIL[1], 900.0)  # end가 start보다 앞 쪽에도 있다 → 첫 발견이 앞 쪽
+    backwards[3].pop("p4-end")
+    assert not v4_layout_valid(_document(backwards), 2)
+
+
+def test_layout_contract_rejects_wide_or_missing_table_anchors():
+    """넓은 표의 앵커 상자(표 자체의 사각형)는 가로 레일 검사를 받고, 뷰가 요구한 앵커가 빠지면 거절한다."""
+    pages = _valid_pages()
+    placement = {"p2-table": 1, "p3-heat": 2, "p4-table": 3, "p6-table": 5, "appendix-table": 6, "appendix-plan-table": 6}
+    for name, page_index in placement.items():
+        pages[page_index][name] = (RAIL[0], 300.0, RAIL[1], 1100.0)  # 세로는 쪽을 넘어 이어질 수 있다
+    assert v4_layout_valid(_document(pages), 2, required_anchors=frozenset(TABLE_ANCHORS))
+    for name, page_index in placement.items():
+        wide = [dict(page) for page in pages]
+        wide[page_index][name] = (RAIL[0], 300.0, 749.4, 900.0)  # 103% 너비: 오른쪽 레일(729.45px) 밖
+        assert not v4_layout_valid(_document(wide), 2), name
+        shifted = [dict(page) for page in pages]
+        shifted[page_index][name] = (RAIL[0], 1300.0, RAIL[1], 1900.0)  # 쪽 아래로 1200px 옮겨진 표
+        assert not v4_layout_valid(_document(shifted), 2), name
+        missing = [dict(page) for page in pages]
+        missing[page_index].pop(name)
+        assert v4_layout_valid(_document(missing), 2)  # 요구하지 않으면 선택
+        assert not v4_layout_valid(_document(missing), 2, required_anchors=frozenset({name})), name
+
+
+def test_layout_contract_keeps_appendix_anchors_in_the_appendix():
+    """appendix-end는 appendix-start 쪽 이상, p* 앵커는 부록 뒤에 없고, kw-row 앵커는 부록 쪽에만 있다."""
+    early_end = _valid_pages()
+    early_end[6].pop("appendix-end")
+    early_end[5]["appendix-end"] = (RAIL[0], 950.0, RAIL[1], 950.0)  # 부록 시작 전에 끝 앵커
+    assert not v4_layout_valid(_document(early_end), 2)
+    body_row = _valid_pages()
+    body_row[6].pop("kw-row-1")
+    body_row[6].pop("kw-row-1-end")
+    body_row[3]["kw-row-1"] = (RAIL[0], 200.0, RAIL[1], 230.0)  # 본문 쪽의 키워드 행
+    body_row[3]["kw-row-1-end"] = (677.9, 205.0, 677.9, 225.0)
+    assert not v4_layout_valid(_document(body_row), 2)
+    late_section = _valid_pages()
+    late_section.append({"p3-heat": (RAIL[0], 200.0, RAIL[1], 400.0), "appendix-end": (RAIL[0], 500.0, RAIL[1], 500.0)})
+    late_section[6].pop("appendix-end")
+    assert not v4_layout_valid(_document(late_section), 2)  # 부록 뒤 쪽의 p* 앵커
+
+
+def _layout(html: str):
+    from weasyprint import HTML
+
+    from app.services.doctor_pdf_rendering import _TEMPLATE_DIR
+
+    return HTML(string=html, base_url=str(_TEMPLATE_DIR)).render()
+
+
+def _walk(box):
+    yield box
+    for child in getattr(box, "children", ()):
+        yield from _walk(child)
+
+
+def _element_boxes(document, tag: str, css_class: str):
+    for page in document.pages:
+        for box in _walk(page._page_box):
+            element = getattr(box, "element", None)
+            if element is not None and element.tag == tag and css_class in (element.get("class") or "").split():
+                yield box
+
+
+def test_rendered_pages_carry_table_end_anchors_inside_the_rail():
+    for scenario in ("comparable", "dense"):
+        view = _view(scenario)
+        documents = [
+            _layout(render_v4_html(view, period_label=view.period_ym, public_url=PUBLIC_URL, density=density))
+            for density in ("comfortable", "compact")
+        ]
+        required = required_table_anchors(view)
+        assert required <= frozenset(TABLE_ANCHORS), scenario
+        assert ("appendix-plan-table" in required) == bool(view.plan.continued), scenario
+        valid = [doc for doc in documents if v4_layout_valid(doc, len(view.appendix.keyword_rows), required_anchors=required)]
+        assert valid, scenario  # 렌더러가 고르는 밀도(comfortable, 안 되면 compact) 중 하나는 통과한다
+        names = {name for page in valid[0].pages for name in page.anchors}
+        assert required <= names, scenario
+
+
+@pytest.mark.parametrize(
+    "selector, name",
+    (
+        (".v4 .heatmap", "p3-heat"),
+        (".v4 .content-table", "p2-table"),
+        (".v4 .keyword-table", "appendix-table"),
+        (".v4 .appendix .plan-table", "appendix-plan-table"),
+    ),
+)
+def test_over_wide_table_fails_the_layout_contract(selector, name):
+    """표가 레일보다 조금(103%)만 넓어져도 표 앵커의 사각형이 레일 밖으로 나가 거절된다."""
+    view = _view("dense")
+    rows = len(view.appendix.keyword_rows)
+    html = render_v4_html(view, period_label=view.period_ym, public_url=PUBLIC_URL, density="comfortable")
+    required = required_table_anchors(view)
+    assert v4_layout_valid(_layout(html), rows, required_anchors=required)
+    forced = html.replace("</style>", f"{selector} {{ width:103% !important; }}</style>", 1)
+    document = _layout(forced)
+    rect = next(page.anchors[name] for page in document.pages if name in page.anchors)
+    assert rect[2] > RAIL[1] + 1.0
+    assert not v4_layout_valid(document, rows, required_anchors=required)
+
+
+CARD_VALUE_SAMPLES = ("15개 중 15개", "15개 중 0개", "100.0%", "다음 달부터 측정", "측정 미완료", "12개 항목", "0개 항목", "20편")
+
+
+@pytest.mark.parametrize("value", CARD_VALUE_SAMPLES)
+def test_card_values_never_cross_into_the_next_card(value):
+    """카드 큰 숫자는 글자 수로 크기를 정하고 마지막 수단으로 줄을 바꾸므로, 어떤 값도 옆 카드로 흘러들지 않는다."""
+    view = _view("long-name")
+    summary = replace(view.summary, cards=tuple(replace(card, value=value) for card in view.summary.cards))
+    view = replace(view, summary=summary)
+    for density in ("comfortable", "compact"):
+        document = _layout(render_v4_html(view, period_label=view.period_ym, public_url=PUBLIC_URL, density=density))
+        cells = [box for box in _element_boxes(document, "td", "card-cell") if type(box).__name__ == "TableCellBox"]
+        assert len(cells) == 4, density
+        cells.sort(key=lambda box: box.position_x)
+        for index, cell in enumerate(cells):
+            limit = cells[index + 1].position_x if index + 1 < len(cells) else RAIL[1] + 1.0
+            lines = [line for line in _walk(cell) if type(line).__name__ == "LineBox"]
+            assert lines, (density, index, value)  # 두 줄로 접혀도 되지만 옆 카드로는 흘러들지 않는다
+            right = max(line.position_x + line.width for line in lines)
+            assert right <= limit, (density, index, value, right, limit)
+
+
+def _long_keyword_view() -> DoctorReportV4:
+    """키워드 18개(2-up), 글자 40자짜리 긴 키워드 — 칸 안에서 줄을 바꿔야 한다."""
+    view = _view("dense")
+    rows = tuple(
+        replace(row, keyword=(f"가상구에서 {TREATMENTS[i % 6]} 진료와 검사를 함께 받을 수 있는 병원 추천해줘 {i + 1:02d} 야간진료").ljust(40, "가")[:40])
+        for i, row in enumerate(view.exposure.heatmap[:18])
+    )
+    assert all(len(row.keyword) == 40 for row in rows)
+    return replace(view, exposure=replace(view.exposure, heatmap=rows))
+
+
+@pytest.mark.parametrize("fixture", ("dense", "long-keywords"))
+@pytest.mark.parametrize("density", ("comfortable", "compact"))
+def test_heatmap_keywords_stay_inside_their_cells(fixture, density):
+    """키워드 글줄은 칸을 넘지 않고(x2 ≤ 칸 오른쪽), 행은 밀도와 무관하게 22pt 이상이다."""
+    view = _view("dense") if fixture == "dense" else _long_keyword_view()
+    document = _layout(render_v4_html(view, period_label=view.period_ym, public_url=PUBLIC_URL, density=density))
+    cells = [box for box in _element_boxes(document, "td", "heat-keyword") if type(box).__name__ == "TableCellBox"]
+    assert len(cells) >= len(view.exposure.heatmap) // 2
+    for cell in cells:
+        lines = [line for line in _walk(cell) if type(line).__name__ == "LineBox"]
+        for line in lines:
+            assert line.position_x + line.width <= cell.position_x + cell.width + 0.5, (fixture, density)
+    rows = [
+        box for page in document.pages for box in _walk(page._page_box)
+        if type(box).__name__ == "TableRowBox" and getattr(box, "element", None) is not None
+        and any(getattr(child, "element", None) is not None and "heat-keyword" in (child.element.get("class") or "").split() for child in box.children)
+    ]
+    assert rows
+    floor = 22.0 * 96 / 72
+    for row in rows:
+        assert row.height >= floor - 0.5, (fixture, density, row.height, floor)
+
+
+MIN_BAR_ROW_PT = 30.0
+MIN_TABLE_ROW_PT = 22.0
+MIN_CLEARANCE_PT = 4.0
+
+
+def _readability_rows(document):
+    """P2~P6·부록의 막대 행(.bar-row)·원장 행(.rule-row)·표 본문 행(tbody tr)을 (종류, 행 상자) 로 모은다."""
+    for page_index, page in enumerate(document.pages):
+        if page_index == 0:
+            continue
+        for box in _walk(page._page_box):
+            element = getattr(box, "element", None)
+            if element is None:
+                continue
+            classes = (element.get("class") or "").split()
+            if type(box).__name__ == "TableRowBox" and element.tag == "tr":
+                cells = [child for child in box.children if getattr(child, "element", None) is not None]
+                if any(child.element.tag == "th" for child in cells):
+                    continue  # 머리 행(thead)은 본문 행 최소치의 대상이 아니다
+                yield ("bar" if "bar-row" in classes else "row"), box
+            elif element.tag == "div" and "rule-row" in classes and type(box).__name__ == "BlockBox":
+                yield "row", box
+
+
+def _cell_lines(box):
+    name = type(box).__name__
+    if name == "LineBox":
+        yield box
+        return
+    if name == "InlineBlockBox":
+        return
+    for child in getattr(box, "children", ()):
+        yield from _cell_lines(child)
+
+
+@pytest.mark.parametrize("fixture", ("growth", "dense", "long-keywords"))
+@pytest.mark.parametrize("density", ("comfortable", "compact"))
+def test_readability_minimums(fixture, density):
+    """읽기 최소치(2026-11 대표 확정): 막대 행 30pt·표/원장 행 22pt 이상, 글줄은 헤어라인에서 4pt 이상 떨어지고
+    한 행 안의 글줄끼리 겹치지 않는다 — 밀도(compact)도 이 값을 줄이지 못한다."""
+    view = _long_keyword_view() if fixture == "long-keywords" else _view("comparable" if fixture == "growth" else "dense")
+    document = _layout(render_v4_html(view, period_label=view.period_ym, public_url=PUBLIC_URL, density=density))
+    px = 96 / 72
+    rows = list(_readability_rows(document))
+    assert len(rows) > 20
+    for kind, row in rows:
+        floor = (MIN_BAR_ROW_PT if kind == "bar" else MIN_TABLE_ROW_PT) * px
+        assert row.height >= floor - 0.5, (fixture, density, kind, row.height / px)
+        top, bottom = row.position_y, row.position_y + row.height
+        for cell in (child for child in row.children if type(child).__name__ == "TableCellBox"):
+            # 칸 안의 블록(막대 라벨 + 캡션 블록)을 끝까지 내려가 글줄을 모은다. inline-block(막대 트랙·값 칸)의
+            # 안쪽 글줄은 바깥 글줄과 같은 자리에 겹쳐 서므로 그 요소 안은 내려가지 않는다.
+            lines = sorted(_cell_lines(cell), key=lambda line: line.position_y)
+            for line in lines:
+                assert line.position_y >= top + MIN_CLEARANCE_PT * px - 0.5, (fixture, density, kind)
+                assert line.position_y + line.height <= bottom - MIN_CLEARANCE_PT * px + 0.5, (fixture, density, kind)
+            for first, second in zip(lines, lines[1:], strict=False):
+                assert second.position_y >= first.position_y + first.height - 0.5, (fixture, density, kind)
 
 
 def test_v4_expectation_is_drawn_from_the_view_model():
     view = _view("comparable")
     base = DoctorPdfExpectation(view.hospital_name, "coverage", "caveat", PUBLIC_URL, appendix_expected=True)
-    bound = v4_expectation(view, replace(base, required_appendix_texts=("기존",)), 7)
+    # 쪽 범위 없이 부르면(옛 호출) 범위를 비워 두고 이진 검증이 '절 n = 쪽 n'으로 묶는다.
+    bound = v4_expectation(view, replace(base, required_appendix_texts=("기존",)), 99)
     assert bound.template_version == "v4"
-    assert bound.expected_page_count == 7
+    assert bound.expected_page_count == 99
     assert bound.main_page_texts == view.required_texts()[:6]
+    assert bound.section_page_ranges == ()
+    # 레이아웃 증명의 절 쪽 범위(본문 6 + 부록)를 그대로 싣는다 — 3절(히트맵)은 두 쪽에 걸친다.
+    document, _ = _validated_layout(view)
+    sections = section_pages(document)
+    flowing = v4_expectation(view, base, len(document.pages), sections)
+    assert flowing.main_page_texts == view.required_texts()[:6]
+    assert flowing.section_page_ranges == sections.ranges() and len(flowing.section_page_ranges) == 7
+    assert flowing.section_page_ranges[6] == (sections.appendix_start, sections.appendix_end)
+    assert sections.appendix_end == len(document.pages) - 1
+    assert any(end > start for start, end in sections.body)
     assert bound.required_appendix_texts == ("기존", *view.required_texts()[6])
     assert bound.required_links == view.required_links() and len(bound.required_links) == 6
     assert bound.required_overview_texts == ()
@@ -426,11 +695,14 @@ def test_v4_binary_validation_is_page_bound():
 
     view, rendered, _ = _rendered("comparable")
     reader = PdfReader(io.BytesIO(rendered.pdf_bytes))
-    bound = v4_expectation(view, replace(build_doctor_pdf_expectation(view, PUBLIC_URL), period_label=view.period_ym), 7)
+    document, _ = _validated_layout(view)
+    sections = section_pages(document)
+    bound = v4_expectation(view, replace(build_doctor_pdf_expectation(view, PUBLIC_URL), period_label=view.period_ym), len(document.pages), sections)
     assert validate_doctor_pdf(rendered.pdf_bytes, bound).validation_version == "doctor-pdf-v4"
-    # 2쪽과 3쪽을 바꿔 끼운 PDF: 글자는 전부 있지만 쪽이 다르다.
+    # 2절 쪽과 3절 첫 쪽을 바꿔 끼운 PDF: 글자는 전부 있지만 쪽이 다르다.
     writer = PdfWriter()
-    order = [0, 2, 1, 3, 4, 5, 6]
+    order = list(range(len(reader.pages)))
+    order[1], order[2] = order[2], order[1]
     for index in order:
         writer.add_page(reader.pages[index])
     swapped = BytesIO()
@@ -440,9 +712,10 @@ def test_v4_binary_validation_is_page_bound():
     assert caught.value.code == "DOCTOR_PDF_REQUIRED_TEXT_MISSING" and "p2:" in caught.value.problem
     # 부록 문구가 본문 쪽에만 있는 PDF(부록 자리에 1쪽 사본): 전체 검색이면 통과했을 것이다.
     writer = PdfWriter()
-    for index in range(6):
+    for index in range(sections.appendix_start):
         writer.add_page(reader.pages[index])
-    writer.add_page(reader.pages[0])
+    for _ in range(sections.appendix_start, len(reader.pages)):
+        writer.add_page(reader.pages[0])  # 쪽 수는 그대로(범위 검증을 통과해 문구 검증까지 간다)
     moved = BytesIO()
     writer.write(moved)
     with pytest.raises(DoctorPdfValidationError) as caught:
@@ -484,6 +757,44 @@ def test_v4_validation_rejects_single_page_with_all_text(monkeypatch):
     assert module.validate_doctor_pdf(rendered.pdf_bytes, legacy).validation_version == "doctor-pdf-v3"
 
 
+def test_blank_continuation_page_is_rejected(monkeypatch):
+    """절의 쪽 범위 안에 글자 없는 쪽이 끼면(빈 이어짐 쪽) DOCTOR_PDF_PAGE_EMPTY다."""
+    from app.services import report_artifact_validation as module
+
+    view, rendered, _ = _rendered("comparable")
+    reader = PdfReader(io.BytesIO(rendered.pdf_bytes))
+    document, _ = _validated_layout(view)
+    sections = section_pages(document)
+    texts = [page.extract_text() or "" for page in reader.pages]
+    blank = sections.body[2][1]  # 3절의 이어짐 쪽
+    assert blank > sections.body[2][0]
+    texts[blank] = "Re:putation / 2026-10   03 / AI 노출 성과 (이어짐) · 검증용 가상 사례 · 4 / 9\nNEWVISIT · RE:PUTATION MOTIONLABS INC."
+    first = reader.pages[0]
+
+    class _Page:
+        mediabox = first.mediabox
+
+        def __init__(self, text):
+            self._text = text
+
+        def extract_text(self):
+            return self._text
+
+        def get(self, key, default=None):
+            return first.get(key, default)
+
+    class _Reader:
+        def __init__(self, *_args, **_kwargs):
+            self.pages = [_Page(text) for text in texts]
+
+    monkeypatch.setattr(module, "PdfReader", _Reader)
+    monkeypatch.setattr(module, "_uri_links", lambda page: tuple(view.required_links()) + (PUBLIC_URL,))
+    bound = v4_expectation(view, replace(build_doctor_pdf_expectation(view, PUBLIC_URL), period_label=view.period_ym), len(texts), sections)
+    with pytest.raises(DoctorPdfValidationError) as caught:
+        module.validate_doctor_pdf(rendered.pdf_bytes, bound)
+    assert caught.value.code == "DOCTOR_PDF_PAGE_EMPTY" and f"{blank + 1}쪽" in caught.value.problem
+
+
 def test_public_url_mismatch_fails_before_rendering():
     view = _view("comparable")
     expectation = build_doctor_pdf_expectation(view, PUBLIC_URL)
@@ -493,3 +804,43 @@ def test_public_url_mismatch_fails_before_rendering():
             expectation=expectation,
         )
     assert caught.value.code == "DOCTOR_PDF_PUBLIC_URL_INVALID"
+
+
+def test_layout_contract_closes_the_appendix_boundary_holes():
+    """뒤에 남는 빈 쪽, 부록 첫 쪽의 p* 앵커, 부록 끝 뒤의 kw-row 앵커는 모두 거절한다(검토 11)."""
+    trailing_blank = _valid_pages()
+    trailing_blank.append({})  # 부록 끝 뒤에 아무 앵커도 없는 쪽
+    assert not v4_layout_valid(_document(trailing_blank), 2)
+    heat_in_appendix = _valid_pages()
+    heat_in_appendix[6]["p3-heat"] = (RAIL[0], 300.0, RAIL[1], 420.0)  # 부록 첫 쪽에 본문 표
+    assert not v4_layout_valid(_document(heat_in_appendix), 2)
+    row_after_end = _valid_pages()
+    row_after_end.append({"kw-row-1": (RAIL[0], 200.0, RAIL[1], 230.0), "kw-row-1-end": (677.9, 205.0, 677.9, 225.0)})
+    row_after_end[6].pop("kw-row-1")
+    row_after_end[6].pop("kw-row-1-end")
+    assert not v4_layout_valid(_document(row_after_end), 2)
+
+
+def test_binary_validation_rejects_malformed_section_ranges():
+    """넘겨받은 쪽 범위는 본문 6 + 부록, 오름차순·겹침 없음·쪽 안·부록 끝 = 마지막 쪽이어야 한다."""
+    from dataclasses import replace as _replace
+
+    from app.services.report_artifact_validation import validate_doctor_pdf
+
+    view, rendered, _ = _rendered("comparable")
+    page_count = rendered.metadata.page_count
+    document, _ = _validated_layout(view)
+    good = v4_expectation(view, build_doctor_pdf_expectation(view, PUBLIC_URL), page_count, section_pages(document))
+    assert validate_doctor_pdf(rendered.pdf_bytes, good).validation_version == "doctor-pdf-v4"
+    overlapping = tuple((0, page_count - 1) for _ in range(7))
+    with pytest.raises(DoctorPdfValidationError) as caught:
+        validate_doctor_pdf(rendered.pdf_bytes, _replace(good, section_page_ranges=overlapping))
+    assert caught.value.code == "DOCTOR_PDF_PAGE_COUNT_INVALID"
+    short_appendix = (*good.section_page_ranges[:-1], (good.section_page_ranges[-1][0], page_count - 2))
+    with pytest.raises(DoctorPdfValidationError) as caught:
+        validate_doctor_pdf(rendered.pdf_bytes, _replace(good, section_page_ranges=short_appendix))
+    assert caught.value.code == "DOCTOR_PDF_PAGE_COUNT_INVALID"
+    five_body = _replace(good, main_page_texts=good.main_page_texts[:5], section_page_ranges=good.section_page_ranges[:6])
+    with pytest.raises(DoctorPdfValidationError) as caught:
+        validate_doctor_pdf(rendered.pdf_bytes, five_body)
+    assert caught.value.code == "DOCTOR_PDF_PAGE_COUNT_INVALID"

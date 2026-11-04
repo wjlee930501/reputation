@@ -253,7 +253,7 @@ def _contents():
     ]
 
 
-def _record(text, *, mentioned, platform="chatgpt", raw=None, competitors=None, matched=None):
+def _record(text, *, mentioned, platform="chatgpt", raw=None, competitors=None, matched=None, source_urls=None):
     raw_text = raw or (
         f"가상동에서 {('심장초음파' if '심장' in text else '진료')}를 받으려면 "
         f"{HOSPITAL_NAME if mentioned else '가상동 다른의원'}을 고려해 볼 수 있습니다. "
@@ -268,6 +268,7 @@ def _record(text, *, mentioned, platform="chatgpt", raw=None, competitors=None, 
         ai_platform=platform,
         measured_at=datetime(2026, 10, 1, 0, 30, tzinfo=timezone.utc),
         competitor_mentions=competitors or [],
+        source_urls=source_urls or [],
     )
 
 
@@ -275,8 +276,9 @@ def _records(*, competitors=True):
     named = [{"name": "가상동 다른의원", "is_mentioned": True}, {"name": "가상 중앙의원", "is_mentioned": False}]
     quiet = [{"name": "가상동 다른의원", "is_mentioned": False}, {"name": "가상 중앙의원", "is_mentioned": False}]
     return [
+        # 고른 답변 자신의 출처가 발행 콘텐츠 URL일 때만 P5가 인용을 말한다(검토 7-5).
         _record("가상동 심장초음파 잘하는 병원", mentioned=True, competitors=quiet if competitors else None,
-                matched=HOSPITAL_NAME),
+                matched=HOSPITAL_NAME, source_urls=[f"https://tuntun.reputation.motionlabs.kr/contents/{CONTENT_ID}"]),
         _record("가상동 위내시경 가능한 병원", mentioned=False, competitors=named if competitors else None),
         _record("가슴이 답답할 때 가상동 병원", mentioned=True, platform="gemini",
                 competitors=quiet if competitors else None),

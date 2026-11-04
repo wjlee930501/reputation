@@ -13149,8 +13149,14 @@ def _attach_doctor_artifact_and_commit(
     *,
     render_hospital=None,
     public_url: str | None = None,
+    refuse_without_artifact: bool = False,
 ) -> str:
-    """원장용 PDF를 검증·저장해 리포트에 붙이고 커밋한다. 일반 생성과 템플릿 갱신이 공유한다."""
+    """원장용 PDF를 검증·저장해 리포트에 붙이고 커밋한다. 일반 생성과 템플릿 갱신이 공유한다.
+
+    `refuse_without_artifact`(템플릿 갱신): 원장 PDF를 붙이지 못하면 새 버전을 **커밋하지 않고** 되돌린다 —
+    갱신은 새 숫자가 없어 PDF 없는 버전이 쓸모없고, 그 버전이 남으면 안전망의 두 번째 수리가 일반 재생성으로
+    그 달 숫자를 바꿀 수 있다(2026-11-04 배포 위험 검토 1·7).
+    """
     artifact_error: DoctorPdfValidationError | None = None
     try:
         artifact_hospital = render_hospital or h
@@ -13186,6 +13192,11 @@ def _attach_doctor_artifact_and_commit(
             report.id,
             exc.code,
         )
+    if artifact_error is not None and refuse_without_artifact:
+        db.rollback()
+        verdict = RefreshVerdict()
+        verdict.add("BLOCKER", "NEW_DOCTOR_PDF_INVALID", f"{artifact_error.code}: {artifact_error.problem}")
+        raise TemplateRefreshRefused(verdict) from artifact_error
     db.commit()
 
     incident_context = MonthlyArtifactIncidentContext(
@@ -13549,6 +13560,7 @@ def _build_monthly_template_refresh(
         operation_run_id,
         render_hospital=frozen_hospital,
         public_url=render_inputs.public_url,
+        refuse_without_artifact=True,
     )
 
 

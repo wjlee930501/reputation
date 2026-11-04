@@ -669,3 +669,31 @@ def test_a_tampered_stored_published_count_is_caught_by_the_frozen_v3_facts(pg_s
         select(MonthlyReport.version).where(MonthlyReport.hospital_id == hospital.id)
     ).scalars().all()
     assert versions == [1]
+
+
+def test_template_refresh_refuses_without_a_doctor_artifact_and_writes_no_version(pg_session, monkeypatch):
+    """원장 PDF를 붙이지 못한 템플릿 갱신은 PDF 없는 새 버전을 남기지 않는다(안전망의 일반 재생성 수리를 막는다)."""
+    from app.services.doctor_pdf_contracts import DoctorPdfValidationError
+
+    texts: dict = {}
+    hospital, _first = _v3_snapshot_version(pg_session, monkeypatch, texts)
+
+    def broken_doctor(*_a, **_k):
+        raise DoctorPdfValidationError("DOCTOR_PDF_STORAGE_FAILED", "검증된 원장 전달용 PDF를 안전하게 저장하지 못했습니다.")
+
+    monkeypatch.setattr(tasks, "generate_doctor_pdf_report", broken_doctor)
+    recorded: list = []
+    monkeypatch.setattr(tasks, "record_monthly_artifact_failure", lambda *a, **k: recorded.append(a))
+
+    with pytest.raises(TemplateRefreshRefused) as caught:
+        tasks._build_monthly_template_refresh(
+            pg_session, hospital, ANCHOR, correlation_key=f"test:refuse-artifact:{hospital.id}"
+        )
+    assert "NEW_DOCTOR_PDF_INVALID" in caught.value.verdict.summary()
+    assert "DOCTOR_PDF_STORAGE_FAILED" in caught.value.verdict.summary()
+    pg_session.rollback()
+    versions = pg_session.execute(
+        select(MonthlyReport.version).where(MonthlyReport.hospital_id == hospital.id)
+    ).scalars().all()
+    assert versions == [1]
+    assert recorded == []  # 커밋되지 않은 보고서에 사고를 열지 않는다
