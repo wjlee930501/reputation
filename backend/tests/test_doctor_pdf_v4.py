@@ -663,6 +663,22 @@ def test_pagination_fixups_never_reject_a_previously_valid_layout():
     assert rendered.metadata.page_count <= 14
 
 
+def test_pagination_fixups_fall_back_when_binary_validation_rejects_the_fixed_layout():
+    """Codex 14차 반례: 계획 키워드 두 개를 300자로 늘리면 정리가 p6 모듈을 넘겨 제목만 남은 쪽(7자)을 만든다 —
+    이진 검증(DOCTOR_PDF_PAGE_EMPTY)이 그 변형을 거절하면 정리 없는 변형으로 물러서 전처럼 통과한다."""
+    view = _view("dense")
+    rows = list(view.plan.rows)
+    rows[0] = replace(rows[0], keyword="가" * 300)
+    rows[1] = replace(rows[1], keyword="가" * 300)
+    view = replace(view, plan=replace(view.plan, rows=tuple(rows)))
+    rendered = render_validated_doctor_pdf(
+        view=view, period_label=view.period_ym, public_url=PUBLIC_URL,
+        expectation=build_doctor_pdf_expectation(view, PUBLIC_URL),
+    )
+    assert rendered.metadata.validation_version == "doctor-pdf-v4"
+    assert rendered.metadata.page_count <= 14
+
+
 def test_pagination_fixups_leave_the_appendix_start_alone():
     """부록 표의 첫 조각은 고치지 않는다(마스트헤드만 남은 빈 쪽을 만들지 않는다) — 600자 키워드 4행 스트레스."""
     view = _view("comparable")

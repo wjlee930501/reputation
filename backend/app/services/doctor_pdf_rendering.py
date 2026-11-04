@@ -268,42 +268,44 @@ def _render_v4(*, view, period_label: str, public_url: str, expectation: DoctorP
         v4_layout_valid,
         validate_v4_fields,
     )
+    from app.services.report_artifact_validation import validate_doctor_pdf
 
     validate_v4_fields(view)
     row_count = len(view.appendix.keyword_rows)
     table_anchors = required_table_anchors(view)
-    try:
-        document = None
-        # 고아 정리는 최선의 노력이다 — 정리한 레이아웃이 쪽 상한을 넘기면(극단 입력) 정리 없는 레이아웃으로 물러선다.
-        # 순서: comfortable(정리) → compact(정리) → comfortable(없음) → compact(없음).
-        for fix_orphans in (True, False):
-            for density in ("comfortable", "compact"):
-                candidate, _ = layout_v4(
+    bound_expectation = replace(expectation, period_label=period_label)
+    # 고아 정리는 최선의 노력이다 — 정리한 레이아웃이 쪽 상한을 넘기거나(극단 입력) 이진 검증(빈 쪽 등)에 걸리면
+    # 다음 변형으로 물러선다. 순서: comfortable(정리) → compact(정리) → comfortable(없음) → compact(없음).
+    # 정리 없는 변형은 정리 전 렌더러와 같으므로, 전에 통과하던 입력은 계속 통과한다(Codex 14차 P1).
+    first_error: DoctorPdfValidationError | None = None
+    for fix_orphans in (True, False):
+        for density in ("comfortable", "compact"):
+            try:
+                document, _ = layout_v4(
                     view, period_label=period_label, public_url=public_url, density=density, fix_orphans=fix_orphans
                 )
-                if v4_layout_valid(candidate, row_count, required_anchors=table_anchors):
-                    document = candidate
-                    break
-            if document is not None:
-                break
-        if document is None:
-            raise DoctorPdfValidationError(
-                "DOCTOR_PDF_LAYOUT_OVERFLOW",
-                "본문 쪽이나 키워드표가 페이지 범위를 넘었습니다. 내용을 자르지 않고 중단했습니다.",
+                if not v4_layout_valid(document, row_count, required_anchors=table_anchors):
+                    continue
+                pdf_bytes = bytes(document.write_pdf())
+            except DoctorPdfValidationError:
+                raise
+            except Exception as exc:
+                raise DoctorPdfValidationError(
+                    "DOCTOR_PDF_RENDER_FAILED", "원장 전달용 PDF를 만드는 중 오류가 발생했습니다."
+                ) from exc
+            bound = v4_expectation(view, bound_expectation, len(document.pages), section_pages(document))
+            try:
+                metadata = validate_doctor_pdf(pdf_bytes, bound)
+            except DoctorPdfValidationError as exc:
+                first_error = first_error or exc
+                continue
+            return ValidatedDoctorPdf(
+                pdf_bytes=pdf_bytes, sha256=metadata.sha256, byte_size=metadata.byte_size, metadata=metadata
             )
-        pdf_bytes = bytes(document.write_pdf())
-    except DoctorPdfValidationError:
-        raise
-    except Exception as exc:
-        raise DoctorPdfValidationError(
-            "DOCTOR_PDF_RENDER_FAILED", "원장 전달용 PDF를 만드는 중 오류가 발생했습니다."
-        ) from exc
-    from app.services.report_artifact_validation import validate_doctor_pdf
+    if first_error is not None:
+        raise first_error
+    raise DoctorPdfValidationError(
+        "DOCTOR_PDF_LAYOUT_OVERFLOW",
+        "본문 쪽이나 키워드표가 페이지 범위를 넘었습니다. 내용을 자르지 않고 중단했습니다.",
+    )
 
-    bound = v4_expectation(
-        view, replace(expectation, period_label=period_label), len(document.pages), section_pages(document)
-    )
-    metadata = validate_doctor_pdf(pdf_bytes, bound)
-    return ValidatedDoctorPdf(
-        pdf_bytes=pdf_bytes, sha256=metadata.sha256, byte_size=metadata.byte_size, metadata=metadata
-    )
