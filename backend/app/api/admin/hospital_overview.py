@@ -33,6 +33,7 @@ from app.schemas.hospital_overview import (
 )
 from app.services.content_month_target import (
     initial_schedule_record_stmt,
+    month_allocation_count_stmt,
     recorded_first_month_target,
     resolve_month_target,
 )
@@ -191,6 +192,9 @@ async def _month_summary(db: AsyncSession, hospital: Hospital) -> MonthSummary:
                 initial_schedule_record_stmt(hospital.id)
                 .scalar_subquery()
                 .label("initial_schedule_record"),
+                month_allocation_count_stmt(hospital.id, now)
+                .scalar_subquery()
+                .label("month_allocation"),
             )
             .select_from(Hospital)
             .outerjoin(
@@ -209,6 +213,7 @@ async def _month_summary(db: AsyncSession, hospital: Hospital) -> MonthSummary:
     items = [row[0] for row in rows if row[0] is not None]
     effective_plan = rows[0][1] if rows else None
     first_month_target = recorded_first_month_target(rows[0][2] if rows else None, now)
+    month_allocation = int(rows[0][3] or 0) if rows else 0
     plan = effective_plan if effective_plan is not None else hospital.plan
     # DB PUBLISHED만으로 공개 성공을 선언하지 않는다 — 공개 API는 병원 게이트를 먼저 보고
     # 통과한 병원의 글만 내보낸다. 일시정지·준비 중 병원은 발행 글이 몇 편이든 공개 페이지가
@@ -228,7 +233,9 @@ async def _month_summary(db: AsyncSession, hospital: Hospital) -> MonthSummary:
         public_count=public_count,
         withheld_count=len(items) - public_count,
         # 첫 계약 월을 안분한 달은 그 편수가 약속이다(content_month_target).
-        planned_total=resolve_month_target(monthly_quota_for_plan(plan), first_month_target)
+        planned_total=resolve_month_target(
+            monthly_quota_for_plan(plan), first_month_target, month_allocation
+        )
         or 0,
         mention_rate=measured[0] if measured else None,
         mention_rate_measured_at=measured[1] if measured else None,

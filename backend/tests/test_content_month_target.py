@@ -55,6 +55,21 @@ def test_month_target_uses_a_smaller_recorded_first_month_target(
     assert resolve_month_target(quota, first_month_target) == expected
 
 
+@pytest.mark.parametrize(
+    "quota,first_month_target,allocated,expected",
+    [
+        (12, 7, 12, 12),  # 안분 뒤 첫 달 배정을 늘렸으면 그 배정이 약속이다
+        (12, 7, 5, 7),  # 배정이 모자라면 기록한 안분 편수가 약속이다(미이행이 보인다)
+        (12, 7, 13, 12),  # 요금제 편수를 넘지 않는다
+        (12, None, 20, 12),  # 안분하지 않은 달은 배정과 무관하게 요금제 편수
+    ],
+)
+def test_prorated_month_target_follows_a_larger_allocation(
+    quota, first_month_target, allocated, expected
+) -> None:
+    assert resolve_month_target(quota, first_month_target, allocated) == expected
+
+
 def test_recorded_first_month_target_applies_only_to_the_recorded_start_month() -> None:
     october, november = arrow.get(date(2026, 10, 1)), arrow.get(date(2026, 11, 1))
     detail = {"active_from": "2026-10-12", "first_month_target": 9}

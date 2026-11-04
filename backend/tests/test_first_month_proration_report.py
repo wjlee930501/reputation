@@ -14,7 +14,7 @@ from test_report_plain_language import _html, _page
 from test_report_redesign import monthly_view
 
 from app.models.audit import AdminAuditLog
-from app.models.content import ContentItem
+from app.models.content import ContentItem, ContentStatus, ContentType
 from app.services.content_month_target import INITIAL_SCHEDULE_ACTOR, month_content_target_sync
 from app.services.monthly_content_operations import build_monthly_content_operations_snapshot
 
@@ -143,3 +143,54 @@ def test_a_first_month_without_publish_days_promises_zero_without_shortfall(db):
     view = monthly_view(published_count=0, plan_quota=quota, contract_published_count=0)
     first_page = _page(_html(view), 1)
     assert "남은" not in first_page and "20편" not in first_page
+
+
+def _raised_first_month(db, *, live_slots: int):
+    """10/15 시작으로 첫 달 약속이 7편으로 기록됐고, 운영자가 10월 배정을 늘린 병원."""
+
+    hospital, schedule = seed(db)  # 9월 행 5편은 지난달 것이라 10월 배정에 들지 않는다.
+    schedule.active_from = date(2026, 10, 15)
+    db.add(
+        AdminAuditLog(
+            hospital_id=hospital.id, actor=INITIAL_SCHEDULE_ACTOR, action="set_schedule",
+            target_type="content_schedule", target_id=str(schedule.id),
+            detail={"active_from": "2026-10-15", "first_month_target": 7},
+        )
+    )
+    published_at = datetime(2026, 10, 31, tzinfo=timezone.utc)
+    for number in range(1, live_slots + 1):
+        db.add(
+            ContentItem(
+                hospital_id=hospital.id, schedule_id=schedule.id, sequence_no=number,
+                total_count=7, content_type=ContentType.FAQ,
+                scheduled_date=date(2026, 10, 14 + number), status=ContentStatus.PUBLISHED,
+                first_published_at=published_at, published_at=published_at,
+            )
+        )
+    # 공개된 적 없이 취소된 슬롯은 약속이 아니다.
+    db.add(
+        ContentItem(
+            hospital_id=hospital.id, schedule_id=schedule.id, sequence_no=99, total_count=7,
+            content_type=ContentType.FAQ, scheduled_date=date(2026, 10, 30),
+            status=ContentStatus.CANCELLED,
+        )
+    )
+    db.flush()
+    return hospital
+
+
+def test_a_raised_first_month_allocation_is_the_promise_not_the_old_prorated_count(db):
+    """안분 7편으로 기록된 첫 달에 12편을 배정해 모두 올렸으면 '7편 중 12편'이 아니라 '12편 중 12편'이다."""
+
+    hospital = _raised_first_month(db, live_slots=12)
+    quota = month_content_target_sync(db, hospital.id, OCTOBER, "PLAN_12")
+    assert quota == 12
+
+    view = monthly_view(published_count=12, plan_quota=quota, contract_published_count=12)
+    assert view["tiles"][0]["value"] == "12편 중 12편"
+    assert "12편 중 12편" in _page(_html(view), 1)
+
+
+def test_a_raised_first_month_allocation_never_exceeds_the_plan_quota(db):
+    hospital = _raised_first_month(db, live_slots=13)
+    assert month_content_target_sync(db, hospital.id, OCTOBER, "PLAN_12") == 12
