@@ -25,10 +25,19 @@ sys.path.insert(0, str(ROOT / "backend"))
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape  # noqa: E402
 from pypdf import PdfReader  # noqa: E402
-from report_design_fixtures import PUBLIC_URL, diagnosis_sample, monthly_sample  # noqa: E402
+from report_design_fixtures import (  # noqa: E402
+    PUBLIC_URL,
+    diagnosis_sample,
+    monthly_sample,
+    monthly_v4_sample,
+)
 
 from app.services.doctor_pdf_contracts import DoctorPdfExpectation  # noqa: E402
-from app.services.doctor_pdf_rendering import render_validated_doctor_pdf  # noqa: E402
+from app.services.doctor_pdf_rendering import (  # noqa: E402
+    render_v4_html,
+    render_validated_doctor_pdf,
+)
+from app.services.doctor_report_artifact import build_doctor_pdf_expectation  # noqa: E402
 from app.services.lead_report import render_lead_report_html, render_lead_report_pdf  # noqa: E402
 
 
@@ -77,6 +86,25 @@ def main() -> None:
             write_sample(
                 args.output, name, html, rendered.pdf_bytes, args.png, templates
             )
+        )
+    # 원장용 v4(2026-11-04 설계) — v3 샘플은 그대로 둔다(옛 보고서 템플릿 갱신 경로).
+    for name, state in (
+        ("monthly-v4-growth", "growth"),
+        ("monthly-v4-first", "first"),
+        ("monthly-v4-method-changed", "method-changed"),
+        ("monthly-v4-setup", "setup"),
+        ("monthly-v4-dense", "dense"),
+    ):
+        view = monthly_v4_sample(state)
+        rendered = render_validated_doctor_pdf(
+            view=view,
+            period_label=view.period_ym,
+            public_url=PUBLIC_URL,
+            expectation=build_doctor_pdf_expectation(view, PUBLIC_URL),
+        )
+        html = render_v4_html(view, period_label=view.period_ym, public_url=PUBLIC_URL)
+        manifest.append(
+            write_sample(args.output, name, html, rendered.pdf_bytes, args.png, templates)
         )
     for name, state, internal in (
         ("diagnosis-low", "low", False),

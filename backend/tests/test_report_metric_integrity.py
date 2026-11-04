@@ -40,7 +40,8 @@ def test_unequal_repeats_use_pooled_headline_not_cell_average():
     assert narrative.current == 16.67
     assert "환자 질문을 총 6회 물었고, 1회의 답변에 우리 병원이 언급됐습니다." in narrative.denominator
     assert "평균" not in narrative.denominator
-    assert "질문별로 언급된 비율의 평균 50.0%" in narrative.platform_details[0]
+    # 서비스별 비율도 풀드 k/n이다 — 1/6=16.7%, 셀 평균 50.0%가 아니다(2026-11 v4).
+    assert "언급된 답변 비율 16.7%" in narrative.platform_details[0]
 
 
 @pytest.mark.parametrize("mixed", [False, True])

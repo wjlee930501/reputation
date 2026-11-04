@@ -396,10 +396,12 @@ def build_monthly_narrative(
     ]
     for row in data.get("platforms", []):
         name = platform_name(row["platform"])
-        rate = row.get("mention_rate")
+        attempts = int(row.get("attempts_used") or 0)
+        rate = int(row.get("mentioned_attempts") or 0) / attempts * 100 if attempts else None
         score = f"{rate:.1f}%" if rate is not None else "측정 못 함"
         platforms.append(
-            f"{name} · 질문별로 언급된 비율의 평균 {score} · {row.get('attempts_used', 0)}번 "
+            # 2026-11 v4: 서비스별 비율도 헤드라인과 같은 풀드 k/n이다(저장된 mention_rate가 아니라 답변 수에서 계산).
+            f"{name} · 언급된 답변 비율 {score} · {row.get('attempts_used', 0)}번 "
             f"물어 {row.get('mentioned_attempts', 0)}번 언급 · 질문 {row.get('planned_count', 0)}건 중 "
             f"답 확인 {row.get('success_count', 0)}건, 실패 {row.get('failed_count', 0)}건, "
             f"제외 {row.get('excluded_count', 0)}건"

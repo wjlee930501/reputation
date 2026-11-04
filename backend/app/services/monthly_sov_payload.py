@@ -56,6 +56,7 @@ class PlatformPayload(TypedDict):
     measured_count: int
     mentioned_count: int
     mention_rate: float | None
+    cell_mean_rate: NotRequired[float | None]
     attempts_used: int
     mentioned_attempts: int
     answer_models: list[str]

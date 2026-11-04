@@ -8,6 +8,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
+from markupsafe import Markup, escape
 
 from app.services.doctor_pdf_contracts import (
     DoctorPdfExpectation,
@@ -74,6 +75,12 @@ def render_validated_doctor_pdf(
         raise DoctorPdfValidationError(
             "DOCTOR_PDF_PUBLIC_URL_INVALID",
             "안전한 병원 공개 주소를 확인하지 못해 PDF 링크를 만들지 않았습니다.",
+        )
+    from app.services.doctor_report_v4 import DoctorReportV4
+
+    if isinstance(view, DoctorReportV4):
+        return _render_v4(
+            view=view, period_label=period_label, public_url=public_url, expectation=expectation
         )
     # Summary quotes are excerpts, never a full-answer transcript. Bound both
     # polarities identically; the complete question table is never shortened.
@@ -179,6 +186,82 @@ def render_validated_doctor_pdf(
     if v3:
         from app.services.doctor_pdf_v3 import v3_expectation
         bound = v3_expectation(view, bound, len(document.pages))
+    metadata = validate_doctor_pdf(pdf_bytes, bound)
+    return ValidatedDoctorPdf(
+        pdf_bytes=pdf_bytes, sha256=metadata.sha256, byte_size=metadata.byte_size, metadata=metadata
+    )
+
+
+def mark_highlight(excerpt: str, highlight: str) -> Markup:
+    """발췌 안의 강조 구간만 <mark>로 감싼다. 강조가 없거나 발췌에 없으면 그대로 escape한다."""
+    text = str(excerpt or "")
+    needle = str(highlight or "")
+    if not needle or needle not in text:
+        return Markup(escape(text))
+    before, _, after = text.partition(needle)
+    return Markup(f"{escape(before)}<mark>{escape(needle)}</mark>{escape(after)}")
+
+
+def pct(value: float) -> str:
+    """막대·추이 값 표기. 뷰 모델 `_pct`와 같은 규칙(100은 '100.0%')이라 `facts()`와 글자가 같다."""
+    from app.services.doctor_report_v4 import _pct
+
+    return _pct(float(value))
+
+
+def render_v4_html(
+    view, *, period_label: str, public_url: str, density: str = "comfortable"
+) -> str:
+    """v4 템플릿 HTML(한국어 낱말 보존 포함). 렌더러와 샘플 스크립트·테스트가 같은 경로를 쓴다."""
+    from app.services.report_typography import keep_korean_words
+
+    environment = Environment(
+        loader=FileSystemLoader(str(_TEMPLATE_DIR)),
+        autoescape=select_autoescape(enabled_extensions=("html",)),
+    )
+    environment.filters["mark_highlight"] = mark_highlight
+    environment.filters["pct"] = pct
+    template = environment.get_template("doctor_report_v4.html")
+    return keep_korean_words(
+        template.render(view=view, period_label=period_label, public_url=public_url, density=density)
+    )
+
+
+def _render_v4(*, view, period_label: str, public_url: str, expectation: DoctorPdfExpectation) -> ValidatedDoctorPdf:
+    """v4(설계 2026-11-04): 뷰 모델 하나, 쪽별 앵커, 필수 문구는 `required_texts()`에서."""
+    from app.services.doctor_pdf_v4 import v4_expectation, v4_layout_valid, validate_v4_fields
+
+    validate_v4_fields(view)
+    row_count = len(view.appendix.keyword_rows)
+    try:
+        from weasyprint import HTML
+
+        document = None
+        for density in ("comfortable", "compact"):
+            html = render_v4_html(
+                view, period_label=period_label, public_url=public_url, density=density
+            )
+            candidate = HTML(string=html, base_url=str(_TEMPLATE_DIR)).render()
+            if v4_layout_valid(candidate, row_count):
+                document = candidate
+                break
+        if document is None:
+            raise DoctorPdfValidationError(
+                "DOCTOR_PDF_LAYOUT_OVERFLOW",
+                "본문 쪽이나 키워드표가 페이지 범위를 넘었습니다. 내용을 자르지 않고 중단했습니다.",
+            )
+        pdf_bytes = bytes(document.write_pdf())
+    except DoctorPdfValidationError:
+        raise
+    except Exception as exc:
+        raise DoctorPdfValidationError(
+            "DOCTOR_PDF_RENDER_FAILED", "원장 전달용 PDF를 만드는 중 오류가 발생했습니다."
+        ) from exc
+    from app.services.report_artifact_validation import validate_doctor_pdf
+
+    bound = v4_expectation(
+        view, replace(expectation, period_label=period_label), len(document.pages)
+    )
     metadata = validate_doctor_pdf(pdf_bytes, bound)
     return ValidatedDoctorPdf(
         pdf_bytes=pdf_bytes, sha256=metadata.sha256, byte_size=metadata.byte_size, metadata=metadata

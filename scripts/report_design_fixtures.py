@@ -278,3 +278,170 @@ def diagnosis_sample(state: str, *, internal: bool = False) -> LeadReportPayload
         internal=internal,
         sample_label="검증용 가상 사례",
     )
+
+
+# ── 원장용 v4 (2026-11-04 설계) ────────────────────────────────────────────────
+
+_V4_TREATMENTS = ("위내시경", "대장내시경", "심장초음파", "고혈압", "당뇨", "건강검진")
+_V4_INTENTS = ("추천 탐색", "증상 탐색", "비용 확인", "진료 가능 확인")
+_V4_COMPETITORS = ("검증용 가상 가온내과의원", "검증용 가상 바른속내과의원", "검증용 가상 한빛검진센터")
+_V4_FORMS = ("잘하는 병원", "받을 수 있는 병원", "비용은 어느 정도인가요", "진료 가능한 병원")
+
+
+def monthly_v4_sample(
+    state: str,
+    *,
+    dense: bool = False,
+    reason: str | None = None,
+    kind: str = "MONTHLY",
+    long_name: bool = False,
+):
+    """원장용 v4 뷰 — 가상 병원·가상 키워드. state: growth · first · method-changed · setup ·
+    dense · unavailable. `reason`·`kind`는 state가 정하지 않을 때만 쓴다."""
+    from app.services.doctor_report_v4 import build_doctor_report_v4
+
+    if state == "first":
+        reason = reason or "NO_PRIOR_MANIFEST"
+    elif state == "method-changed":
+        reason = reason or "MEASUREMENT_POLICY_CHANGED"
+    elif state == "setup":
+        kind = "SETUP"
+    elif state == "dense":
+        dense = True
+    unavailable = state == "unavailable"
+    setup = kind == "SETUP"
+    comparable = state in ("growth", "dense") and reason is None
+    name = "검증용 가상 새봄내과건강검진의원"
+    if long_name:
+        name = ("검증용 가상 서울한마음가정의학과건강검진센터내과의원 " * 3)[:60]
+    hospital = SimpleNamespace(
+        id=HOSPITAL_ID, name=name, slug="fictional-clinic",
+        aeo_domain="fictional-clinic.example.invalid", region=["가상시 가상구"],
+        hero_specialties=["위내시경"], treatments=[{"name": "심장초음파"}],
+    )
+    count = 30 if dense else 8
+    keywords = [
+        f"가상구 {_V4_TREATMENTS[i % len(_V4_TREATMENTS)]} {_V4_FORMS[i % len(_V4_FORMS)]} {i + 1:02d}"
+        for i in range(count)
+    ]
+    targets = [
+        SimpleNamespace(
+            id=UUID(int=0x1000 + i), name=keywords[i], variants=[],
+            condition_or_symptom=_V4_TREATMENTS[i % len(_V4_TREATMENTS)], treatment=None,
+            specialty=None, target_intent=_V4_INTENTS[i % len(_V4_INTENTS)], region_terms=["가상구"],
+        )
+        for i in range(count)
+    ]
+    # 플랫폼별 (상태, 노출, 시도): 키워드 순번으로 노출·미노출·실패를 섞는다.
+    def cell(i: int, platform: str) -> tuple[str, int, int]:
+        if unavailable:
+            return ("FAILED", 0, 0)
+        if i % 7 == 6 and platform == "gemini":
+            return ("FAILED", 0, 0)
+        mentioned = [3, 0, 1, 0, 2][i % 5] if platform == "chatgpt" else [2, 0, 0, 0, 1][i % 5]
+        return ("SUCCESS", mentioned, 3)
+
+    queries, cells, question_rows = [], [], []
+    total_attempts = total_mentioned = 0
+    platform_totals = {"chatgpt": [0, 0], "gemini": [0, 0]}
+    for i, text in enumerate(keywords):
+        attempts = mentioned = 0
+        for platform in ("chatgpt", "gemini"):
+            cstate, m, a = cell(i, platform)
+            cells.append({"query_text": text, "platform": platform, "state": cstate, "mentioned_attempts": m, "attempts_used": a})
+            attempts += a
+            mentioned += m
+            platform_totals[platform][0] += m
+            platform_totals[platform][1] += a
+        queries.append({"query_text": text, "query_intent": "LOCAL", "attempts_used": attempts, "mentioned_attempts": mentioned})
+        total_attempts += attempts
+        total_mentioned += mentioned
+        prior_mentioned = [1, 2, 0, 0, 1, 3, 2][i % 7]
+        question_rows.append({
+            "query_text": text, "prior_measured": comparable, "prior_comparable": comparable,
+            "prior_attempts_used": 6 if comparable else 0, "prior_mentioned_attempts": prior_mentioned if comparable else 0,
+            "current_attempts_used": attempts, "current_mentioned_attempts": mentioned,
+        })
+    sov = None if unavailable else round(total_mentioned / total_attempts * 100, 2)
+    prior_rate = 31.0
+    comparison = {
+        "status": "COMPARABLE" if comparable else "NON_COMPARABLE",
+        "reason": "NO_MATCHED_CELLS" if unavailable else (reason or "MATCHED_COHORT"),
+        "matched_cell_count": count * 2 if comparable else 0,
+        "current_sov_pct": sov,
+        "prior_sov_pct": prior_rate if comparable else None,
+    }
+    coverage = {} if setup else {
+        "sov_pct": sov, "attempts_used": total_attempts, "mentioned_attempts": total_mentioned,
+        "comparison": comparison, "planned_count": count * 2,
+        "success_count": 0 if unavailable else sum(1 for c in cells if c["state"] == "SUCCESS"),
+        "failed_count": sum(1 for c in cells if c["state"] == "FAILED"),
+        "platforms": [
+            {"platform": p, "mention_rate": (None if not a else round(m / a * 100, 2)), "attempts_used": a, "mentioned_attempts": m}
+            for p, (m, a) in platform_totals.items()
+        ],
+        "queries": queries, "cells": cells,
+    }
+    attribution = {
+        "has_prior_month": comparable, "question_rows": question_rows,
+        "new_mention_cells": [{"query_text": keywords[2], "platform_label": "ChatGPT"}] if comparable else [],
+        "lost_mention_cells": [{"query_text": keywords[3], "platform_label": "Gemini"}] if comparable else [],
+    }
+    content_count = 20 if dense else 6
+    contents = [
+        SimpleNamespace(
+            id=UUID(int=CONTENT_ID.int + i), hospital_id=HOSPITAL_ID,
+            title=f"검증용 가상 {_V4_TREATMENTS[i % len(_V4_TREATMENTS)]} 안내 {i + 1:02d} — 준비와 확인 사항",
+            status="PUBLISHED", content_type="FAQ", query_target_id=targets[i % count].id,
+            first_published_at=datetime(2026, 10, 1 + i, 2, tzinfo=UTC),
+            content_brief={"target_keyword": f"가상구 {_V4_TREATMENTS[i % len(_V4_TREATMENTS)]}"},
+        )
+        for i in range(content_count)
+    ]
+    citations = None if setup else {
+        "measured_cell_count": 0 if unavailable else count * 2,
+        "cited_cell_count": 0 if unavailable else 2,
+        "cited_content_count": 0 if unavailable else 1,
+        "cited_items": [] if unavailable else [{
+            "content_id": str(contents[0].id), "title": contents[0].title, "cited_cell_count": 2,
+            "queries": [{"query_text": keywords[0], "platform_label": "ChatGPT"}],
+        }],
+    }
+    records = []
+    if not setup and not unavailable:
+        for i, text in enumerate(keywords):
+            for platform in ("chatgpt", "gemini"):
+                cstate, m, a = cell(i, platform)
+                if cstate != "SUCCESS":
+                    continue
+                mentioned = m > 0
+                competitor_mentioned = (i + (platform == "gemini")) % 3 == 0
+                records.append(SimpleNamespace(
+                    is_mentioned=mentioned, measurement_status="SUCCESS", ai_platform=platform, measured_at=WHEN,
+                    matched_text=name if mentioned else None,
+                    raw_response=(
+                        f"가상구에서 {_V4_TREATMENTS[i % len(_V4_TREATMENTS)]}을 받을 수 있는 곳으로 {name}이 있습니다. "
+                        "예약 전에 검사 준비 사항과 진료 시간을 병원에 확인하는 것이 좋습니다. "
+                        "검사 전날 식사 제한이 있는지도 미리 물어보시기 바랍니다."
+                        if mentioned
+                        else f"가상구에서 {_V4_TREATMENTS[i % len(_V4_TREATMENTS)]}을 받으려면 {_V4_COMPETITORS[i % 3]} 등을 살펴보실 수 있습니다. "
+                        "진료 시간과 검사 준비 사항은 병원마다 다르니 방문 전에 확인하시기 바랍니다."
+                    ),
+                    competitor_mentions=[
+                        {"name": _V4_COMPETITORS[(i + j) % 3], "is_mentioned": competitor_mentioned and j == 0}
+                        for j in range(3)
+                    ],
+                    query=SimpleNamespace(query_text=text),
+                ))
+    trend = [("2026-08", 18.0), ("2026-09", 24.0)] if comparable else []
+    view = build_doctor_report_v4(
+        hospital=hospital, period_year=2026, period_month=10, public_url=PUBLIC_URL,
+        report_kind=kind, sov_coverage=coverage, attribution=None if setup else attribution,
+        citations=citations, published_contents=contents, query_targets=targets, records=records,
+        plan_quota=16 if not setup else None, published_count=content_count, fulfilled_count=content_count,
+        cumulative_published_count=content_count + 28, comparison_reason=None if setup else comparison["reason"],
+        reference_prev_sov_pct=prior_rate if state == "method-changed" else None,
+        v0_baseline={"of_hundred": 17, "current_of_hundred": round(sov or 0), "sentence": "초기 측정 참고"} if state == "method-changed" else None,
+        trend_points=trend, platforms=["chatgpt", "gemini"], sample_label="검증용 가상 사례",
+    )
+    return view

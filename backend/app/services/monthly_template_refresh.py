@@ -19,6 +19,15 @@ from datetime import datetime
 from math import isfinite
 from typing import Any
 
+from app.services.doctor_report_v4 import (
+    TEMPLATE_VERSION as V4_TEMPLATE_VERSION,
+)
+from app.services.doctor_report_v4 import (
+    DoctorReportV4,
+    compare_facts_v4,
+    pdf_tokens_v4,
+    stored_facts_v4,
+)
 from app.services.monthly_report_snapshot import (
     LEGACY_RENDER_INPUTS_INCOMPLETE,
     report_render_inputs,
@@ -215,8 +224,26 @@ def _appendix_facts(rows: Iterable[Mapping[str, Any]]) -> dict[str, str]:
     return facts
 
 
-def doctor_view_facts(view: Mapping[str, Any]) -> dict[str, str]:
-    """원장 뷰(템플릿이 그리는 값)의 숫자 사실. 모르는 값(None)은 0과 섞지 않고 뺀다."""
+def facts_are_v4(facts: Mapping[str, str]) -> bool:
+    """v4 뷰의 사실은 `template: "v4"` 표지를 품는다. v3 이하 사실에는 이 키가 없다."""
+    return facts.get("template") == V4_TEMPLATE_VERSION
+
+
+def stored_doctor_view_is_v4(content_summary: Mapping[str, Any]) -> bool:
+    """대체할 버전의 스냅샷에 얼린 원장 뷰가 v4인가(`render_inputs.doctor_view.template_version`)."""
+    render_inputs = report_render_inputs(content_summary)
+    if render_inputs is None:
+        return False
+    return render_inputs.doctor_view.get("template_version") == V4_TEMPLATE_VERSION
+
+
+def doctor_view_facts(view: Mapping[str, Any] | DoctorReportV4) -> dict[str, str]:
+    """원장 뷰(템플릿이 그리는 값)의 숫자 사실. 모르는 값(None)은 0과 섞지 않고 뺀다.
+
+    v4 뷰는 자기 `facts()`가 정본이고(검증과 같은 함수), v3 이하 dict 뷰는 종전 추출 그대로다.
+    """
+    if isinstance(view, DoctorReportV4):
+        return view.facts()
     facts: dict[str, str] = {}
     narrative = view["narrative"]
     for key, value in (
@@ -248,9 +275,14 @@ def stored_doctor_facts(
     뷰 빌더와 같은 함수(`_director_highlights`·`_appendix_rows`)에 저장된 귀속·인용을 먹여
     독립적으로 계산한다. 누적 발행 편수·초기 측정 참고선·지난달 참고 값은 저장 요약에 없으므로
     여기에 없다(뒤의 둘은 호출부가 따로 근거를 댄다).
+
+    대체할 버전의 스냅샷이 v4 뷰를 얼렸으면 v4 사실(`stored_facts_v4`)을 돌려준다 — 옛 v3 보고서의
+    사후 확인 키는 그대로다.
     """
     from app.services.report_engine import _appendix_rows, _director_highlights
 
+    if stored_doctor_view_is_v4(content_summary):
+        return stored_facts_v4(sov_summary, content_summary)
     facts: dict[str, str] = {}
     comparison = _comparable(sov_summary)
     current = comparison["current_sov_pct"] if comparison else sov_summary.get("sov_pct")
@@ -341,7 +373,13 @@ def compare_doctor_facts(
 
     저장 사실이 뷰에서 빠지거나 값이 다르면 차이다. 뷰에만 있는 사실은 `require_backing`에 든
     키만 차이로 본다(누적 발행 편수·초기 측정 참고선은 현재 행에서 읽는 값이다).
+
+    어느 한쪽이라도 v4 사실(`template: "v4"`)이면 v4 대조(`compare_facts_v4` — 부록 행은 집합,
+    근거 필수 키는 v4 자기 목록)를 쓴다. 단 호출부가 `require_backing`을 좁혀 특정 키만 묻는
+    경우(지난달 참고 값)는 판과 무관하게 그 키만 본다.
     """
+    if require_backing is REQUIRE_STORED_BACKING and (facts_are_v4(expected) or facts_are_v4(actual)):
+        return compare_facts_v4(expected, actual)
     problems = [
         (
             f"원장 뷰에 없음: {key}={expected[key]}"
@@ -372,6 +410,9 @@ def _pdf_tokens(facts: Mapping[str, str]) -> list[tuple[str, re.Pattern[str]]]:
     비율은 범위 끝처럼 %가 빠질 수 있어 숫자만 정확히 보고, 'N편 중 M편'·'N개 중 M개'·'N건 중 M건'
     같은 묶음은 그 꼴 그대로 요구한다 — 바뀐 숫자가 근처 다른 숫자에 가려지지 않게 한다.
     """
+    if facts_are_v4(facts):
+        # 'template: v4' 표지는 사실이 아니라 판 이름이다 — PDF 본문에 'v4'를 요구하지 않는다.
+        return pdf_tokens_v4({key: value for key, value in facts.items() if key != "template"})
     tokens: list[tuple[str, re.Pattern[str]]] = []
     for key in sorted(facts):
         value = "".join(facts[key].split())
@@ -413,7 +454,7 @@ def pdf_fact_problems(pdf_text: str, facts: Mapping[str, str]) -> list[str]:
 
 
 def doctor_view_expectations(
-    view: Mapping[str, Any],
+    view: Mapping[str, Any] | DoctorReportV4,
     *,
     sov_summary: Mapping[str, Any],
     content_summary: Mapping[str, Any],

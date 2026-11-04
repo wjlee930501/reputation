@@ -206,7 +206,11 @@ class PlatformSummary:
     excluded_count: int
     measured_count: int
     mentioned_count: int
+    # 풀드 k/n(`mentioned_attempts / attempts_used`). 헤드라인과 같은 추정량이라
+    # 플랫폼 k/n을 합치면 헤드라인 k/n이 된다(2026-11-04 보고서 v4 §7).
     mention_rate: float | None
+    # 옛 값 — 셀 동일 가중(셀 빈도의 평균). 운영 조회 호환용으로만 남긴다.
+    cell_mean_rate: float | None
     attempts_used: int
     mentioned_attempts: int
     answer_models: tuple[str, ...]
@@ -225,6 +229,7 @@ class PlatformSummary:
             "measured_count": self.measured_count,
             "mentioned_count": self.mentioned_count,
             "mention_rate": self.mention_rate,
+            "cell_mean_rate": self.cell_mean_rate,
             "attempts_used": self.attempts_used,
             "mentioned_attempts": self.mentioned_attempts,
             "answer_models": list(self.answer_models),

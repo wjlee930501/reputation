@@ -387,11 +387,17 @@ def test_report_list_hides_internal_summaries_but_keeps_pdf_contract():
     assert "doctor_artifact" not in payload
 
 
-def test_report_detail_exposes_only_safe_authoritative_artifact_evidence():
+@pytest.mark.parametrize(
+    ("version", "pages"), [("doctor-pdf-v1", 1), ("doctor-pdf-v4", 7)]
+)
+def test_report_detail_exposes_only_safe_authoritative_artifact_evidence(version, pages):
     from app.schemas.report import ReportResponse
 
     report = _report()
     artifact = _doctor_artifact(report_id=report.id, path=report.doctor_pdf_path)
+    artifact.validation_metadata = {
+        **artifact.validation_metadata, "validation_version": version, "page_count": pages,
+    }
 
     payload = _serialize(
         report,
@@ -405,9 +411,9 @@ def test_report_detail_exposes_only_safe_authoritative_artifact_evidence():
         "state_label": "원장 전달용 PDF 검증 완료",
         "sha256": sha256(b"a" * 4096).hexdigest(),
         "byte_size": 4096,
-        "page_count": 1,
+        "page_count": pages,
         "validated_at": "2026-05-05T12:35:00+00:00",
-        "validation_version": "doctor-pdf-v1",
+        "validation_version": version,
     }
     assert "path" not in payload["doctor_artifact"]
     assert "validation_metadata" not in payload["doctor_artifact"]

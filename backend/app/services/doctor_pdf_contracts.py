@@ -154,6 +154,8 @@ class DoctorPdfExpectation:
     required_overview_texts: tuple[str, ...] = ()
     required_appendix_texts: tuple[str, ...] = ()
     required_appendix_rows: tuple[tuple[str, ...], ...] = ()
+    # 뷰의 템플릿 판. "v4"면 검증 판 이름이 `doctor-pdf-v4`가 된다. None은 종전(v1~v3) 그대로.
+    template_version: str | None = None
 
 
 class DoctorArtifactMetadata(BaseModel):
@@ -161,7 +163,7 @@ class DoctorArtifactMetadata(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    validation_version: Literal["doctor-pdf-v1", "doctor-pdf-v2", "doctor-pdf-v3"]
+    validation_version: Literal["doctor-pdf-v1", "doctor-pdf-v2", "doctor-pdf-v3", "doctor-pdf-v4"]
     validation_source: Literal["SYSTEM"]
     page_count: int = Field(ge=1, le=32, strict=True)
     page_size: Literal["A4"]

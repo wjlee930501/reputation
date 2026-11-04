@@ -212,15 +212,53 @@ def test_headline_is_pooled_while_platform_breakdown_keeps_equal_weighting() -> 
     # Then: 헤드라인은 성공 시도 3건 중 2건 = 66.67%이고, 자기 구간 안에 있다
     assert summary.sov_pct == 66.67
     assert summary.ci95_low <= summary.sov_pct <= summary.ci95_high
-    # 플랫폼 동일 가중은 버리지 않는다 — breakdown이 플랫폼마다 따로 공개한다
-    assert [(row.platform, row.mention_rate) for row in summary.platforms] == [
-        ("chatgpt", 100.0),
-        ("gemini", 0.0),
+    # 플랫폼 노출률도 풀드 k/n이다(2026-11-04 v4 §7). 옛 셀 평균은 cell_mean_rate로 남는다.
+    assert [(row.platform, row.mention_rate, row.cell_mean_rate) for row in summary.platforms] == [
+        ("chatgpt", 100.0, 100.0),
+        ("gemini", 0.0, 0.0),
     ]
     assert [(row.platform, row.planned_count, row.success_count) for row in summary.platforms] == [
         ("chatgpt", 2, 2),
         ("gemini", 2, 1),
     ]
+
+
+def test_platform_rates_are_pooled_so_they_combine_into_the_headline() -> None:
+    """플랫폼 노출률은 셀 동일 가중 평균이 아니라 풀드 k/n이다(2026-11-04 보고서 v4 §7).
+
+    원장이 플랫폼 두 줄을 합쳐 읽으면 헤드라인이 돼야 한다 — 플랫폼 k의 합 / n의 합 = 헤드라인 k/n.
+    셀마다 반복 수가 달라 셀 평균과 풀드가 갈리는 표본으로 확인한다.
+    """
+    # Given: ChatGPT q1은 4회 중 4회 언급, q2는 1회 중 0회 → 셀 평균 50%, 풀드 4/5 = 80%
+    cells = (
+        _cell("q1", "chatgpt", attempts=tuple(_attempt(i, mentioned=True) for i in range(4))),
+        _cell("q2", "chatgpt", attempts=(_attempt(0, mentioned=False),)),
+        _cell("q1", "gemini", attempts=(_attempt(0, mentioned=True), _attempt(1, mentioned=False))),
+        _cell("q2", "gemini", attempts=(_attempt(0, mentioned=False),)),
+    )
+
+    summary = build_monthly_sov(cells, ("chatgpt", "gemini"))
+
+    by_platform = {row.platform: row for row in summary.platforms}
+    assert by_platform["chatgpt"].mention_rate == 80.0
+    assert by_platform["chatgpt"].cell_mean_rate == 50.0
+    assert by_platform["gemini"].mention_rate == 33.33
+    assert by_platform["gemini"].cell_mean_rate == 25.0
+    mentioned = sum(row.mentioned_attempts for row in summary.platforms)
+    attempts = sum(row.attempts_used for row in summary.platforms)
+    assert (mentioned, attempts) == (summary.mentioned_attempts, summary.attempts_used) == (5, 8)
+    assert summary.sov_pct == round(mentioned / attempts * 100, 2) == 62.5
+    for row in summary.platforms:
+        assert row.mention_rate == round(row.mentioned_attempts / row.attempts_used * 100, 2)
+    payload = summary.to_payload()
+    assert [p["cell_mean_rate"] for p in payload["platforms"]] == [50.0, 25.0]
+
+
+def test_a_platform_without_successful_attempts_has_no_rate() -> None:
+    cells = (_cell("q1", "chatgpt", mentioned=True), _cell("q1", "gemini", state="FAILED"))
+    summary = build_monthly_sov(cells, ("chatgpt", "gemini"))
+    gemini = next(row for row in summary.platforms if row.platform == "gemini")
+    assert (gemini.mention_rate, gemini.cell_mean_rate, gemini.attempts_used) == (None, None, 0)
 
 
 def test_the_headline_always_lies_inside_its_own_confidence_interval() -> None:

@@ -176,8 +176,10 @@ def validate_doctor_pdf(
                 "원장 전달용 PDF가 A4 크기로 만들어지지 않았습니다.",
             )
 
-    extracted_text = "\n".join(sheet.extract_text() or "" for sheet in reader.pages)
+    page_texts_extracted = [sheet.extract_text() or "" for sheet in reader.pages]
+    extracted_text = "\n".join(page_texts_extracted)
     normalized_text = _normalize_text(extracted_text)
+    v4 = expectation.template_version == "v4"
     leaked = internal_markers_in(extracted_text)
     if leaked:
         raise DoctorPdfValidationError(
@@ -193,11 +195,12 @@ def validate_doctor_pdf(
         ("caveat_text", expectation.caveat_text),
     )
     required = (*required, *(("overview", text) for text in expectation.required_overview_texts))
-    required = (
-        *required,
-        *(("main_fact", text) for page_texts in expectation.main_page_texts for text in page_texts),
-        *(("appendix_fact", text) for text in expectation.required_appendix_texts),
-    )
+    if not v4:
+        required = (
+            *required,
+            *(("main_fact", text) for page_texts in expectation.main_page_texts for text in page_texts),
+            *(("appendix_fact", text) for text in expectation.required_appendix_texts),
+        )
     if expectation.period_label is not None:
         required = (*required, ("period", expectation.period_label))
     missing_fields = [
@@ -205,6 +208,22 @@ def validate_doctor_pdf(
         for field_name, text in required
         if _normalize_text(text) not in normalized_text
     ]
+    if v4:
+        # v4는 쪽마다 묶는다 — i번째 튜플은 i번째 쪽에, 부록 문구는 본문 뒤 쪽들에만 있어야 한다.
+        # 전체 문서에서 찾으면 다른 쪽에 밀려난 내용과 비어 버린 쪽을 잡지 못한다.
+        body_pages = len(expectation.main_page_texts)
+        normalized_pages = [_normalize_text(text) for text in page_texts_extracted]
+        for index, page_texts in enumerate(expectation.main_page_texts):
+            page_text = normalized_pages[index] if index < len(normalized_pages) else ""
+            missing_fields.extend(
+                f"p{index + 1}:{text}" for text in page_texts if _normalize_text(text) not in page_text
+            )
+        appendix_text = "".join(normalized_pages[body_pages:])
+        missing_fields.extend(
+            f"appendix:{text}"
+            for text in expectation.required_appendix_texts
+            if _normalize_text(text) not in appendix_text
+        )
     if missing_fields:
         raise DoctorPdfValidationError(
             "DOCTOR_PDF_REQUIRED_TEXT_MISSING",
@@ -215,10 +234,20 @@ def validate_doctor_pdf(
     # Searching each word globally lets an earlier row hide a missing later row.
     # Bind table text to order and occurrence, including repeated labels.
     cursor = 0
+    # v4: 행 검사는 부록 쪽 텍스트 안에서만 한다 — 본문(히트맵·계획표)의 같은 키워드·칸이 부록 행을 대신 채우지 못하게.
+    row_text = (
+        "".join(_normalize_text(text) for text in page_texts_extracted[len(expectation.main_page_texts):])
+        if v4
+        else normalized_text
+    )
     for row in expectation.required_appendix_rows:
         for value in row:
             text = _normalize_text(value)
-            position = normalized_text.find(text, cursor)
+            position = row_text.find(text, cursor)
+            # 숫자 칸('5/6')이 앞 칸 바로 뒤(cursor)가 아니라 다른 숫자 뒤에서 시작하면 그 숫자의 일부다 —
+            # '검사15/6' 안의 '5/6'을 받지 않는다(검토 5-23). 공백을 지운 텍스트라 칸끼리는 붙어 있어도 된다.
+            while position > cursor and text[:1].isdigit() and row_text[position - 1].isdigit():
+                position = row_text.find(text, position + 1)
             if position < 0:
                 raise DoctorPdfValidationError("DOCTOR_PDF_APPENDIX_TEXT_MISSING", "질문표의 행별 결과나 순서가 생성 입력과 일치하지 않습니다.")
             cursor = position + len(text)
@@ -243,7 +272,11 @@ def validate_doctor_pdf(
 
     digest = sha256(pdf_bytes).hexdigest()
     return DoctorArtifactMetadata(
-        validation_version="doctor-pdf-v3" if v3 else DOCTOR_ARTIFACT_VALIDATION_VERSION,
+        validation_version=(
+            "doctor-pdf-v4"
+            if expectation.template_version == "v4"
+            else ("doctor-pdf-v3" if v3 else DOCTOR_ARTIFACT_VALIDATION_VERSION)
+        ),
         validation_source="SYSTEM",
         page_count=page_count,
         page_size="A4",

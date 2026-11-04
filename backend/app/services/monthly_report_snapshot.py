@@ -12,6 +12,12 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, JsonValue, ValidationError
 
 from app.services.doctor_pdf_contracts import DoctorReportView
+from app.services.doctor_report_v4 import (
+    DoctorReportV4,
+    freeze_v4,
+    is_v4_payload,
+    restore_v4,
+)
 from app.services.report_narrative import MonthlyNarrative, PublishedWork
 
 REPORT_SNAPSHOT_SCHEMA_VERSION = 1
@@ -90,8 +96,14 @@ def _json_default(value: datetime | MonthlyNarrative) -> str | dict:
     raise TypeError(msg)
 
 
-def freeze_doctor_view(view: DoctorReportView) -> dict[str, JsonValue]:
-    """Convert the typed view to values accepted by a PostgreSQL JSON column."""
+def freeze_doctor_view(view: DoctorReportView | DoctorReportV4) -> dict[str, JsonValue]:
+    """Convert the typed view to values accepted by a PostgreSQL JSON column.
+
+    v4 뷰(`DoctorReportV4`)는 `template_version: "v4"`를 품은 평범한 dict로 얼리고,
+    v3 이하 TypedDict 뷰는 종전 그대로다. 둘 다 JSON 왕복을 거쳐 datetime·tuple을 지운다.
+    """
+    if isinstance(view, DoctorReportV4):
+        return json.loads(json.dumps(freeze_v4(view), ensure_ascii=False, default=_json_default))
     return json.loads(json.dumps(view, ensure_ascii=False, default=_json_default))
 
 
@@ -101,8 +113,13 @@ def _optional_number(value: JsonValue) -> float | None:
     return float(value)
 
 
-def restore_doctor_view(payload: Mapping[str, JsonValue]) -> DoctorReportView:
-    """Restore runtime dataclasses and datetimes consumed by the doctor template."""
+def restore_doctor_view(payload: Mapping[str, JsonValue]) -> DoctorReportView | DoctorReportV4:
+    """Restore runtime dataclasses and datetimes consumed by the doctor template.
+
+    `template_version == "v4"`면 v4 dataclass로, 아니면(v3 이하) 종전 dict 복원 그대로다.
+    """
+    if is_v4_payload(payload):
+        return restore_v4(payload)
     view = dict(payload)
     evidence = view.get("evidence")
     if isinstance(evidence, Mapping):

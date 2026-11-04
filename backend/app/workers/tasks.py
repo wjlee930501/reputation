@@ -173,6 +173,7 @@ from app.services.content_target_planner import prepare_automatic_content_brief_
 from app.services.content_yield import compute_content_yield
 from app.services.doctor_pdf_contracts import DoctorReportView, DoctorV0Baseline
 from app.services.doctor_report_artifact import generate_doctor_pdf_report
+from app.services.doctor_report_v4 import DoctorReportV4, build_doctor_report_v4
 from app.services.domain_health_control import (
     PUBLIC_SITE_OUTAGE_MIN_HOSPITALS,
     is_public_site_server_error,
@@ -435,7 +436,6 @@ from app.services.report_attribution import (
     build_content_attribution_summary,
 )
 from app.services.report_engine import (
-    build_doctor_report_view,
     build_strategy_summary,
     generate_pdf_report,
 )
@@ -12395,6 +12395,58 @@ def _prior_reported_sov_pct(db, prior_manifest) -> float | None:
     )
 
 
+# 원장용 v4 추이 꺾은선이 거슬러 올라가는 최대 달 수(이번 달 제외).
+TREND_MAX_PRIOR_MONTHS = 11
+
+
+def _stored_comparison_is_matched(sov_summary) -> bool:
+    comparison = sov_summary.get("comparison") if isinstance(sov_summary, dict) else None
+    return (
+        isinstance(comparison, dict)
+        and comparison.get("status") == "COMPARABLE"
+        and comparison.get("reason") == "MATCHED_COHORT"
+    )
+
+
+def _comparable_trend_points(
+    db, hospital_id, now: arrow.Arrow, monthly_sov_payload
+) -> list[tuple[str, float]]:
+    """원장용 v4 추이에 잇는 직전 달들의 노출률 — 비교 사슬이 끊기지 않는 달만, 오래된 달부터.
+
+    각 달의 값은 **그다음 달 보고서가 '지난달'로 비교한 값**(`comparison.prior_sov_pct`)이다 — 이번 달 P1이
+    말하는 지난달 수치와 추이의 지난달 점이 같아야 한다(두 달이 같은 질문으로 비교한 값이고, 그 달 자신의
+    헤드라인(전체 키워드)과는 다를 수 있다). 이번 달 payload가 지난달과 MATCHED_COHORT로 비교 가능해야
+    지난달 점을 싣고, 지난달에 저장된 comparison이 또 그 전달과 비교 가능해야 그 전달 점을 싣는다.
+    비교 불가·보고서 없음·숫자 없음을 처음 만나면 멈추고, 최대 `TREND_MAX_PRIOR_MONTHS`달까지만 거슬러 간다.
+    """
+    points: list[tuple[str, float]] = []
+    anchor = now
+    summary = monthly_sov_payload
+    for _ in range(TREND_MAX_PRIOR_MONTHS):
+        if not _stored_comparison_is_matched(summary):
+            break
+        prior_value = (summary.get("comparison") or {}).get("prior_sov_pct")
+        if not isinstance(prior_value, (int, float)) or isinstance(prior_value, bool):
+            break
+        anchor = anchor.shift(months=-1)
+        points.append((f"{anchor.year:04d}-{anchor.month:02d}", float(prior_value)))
+        summary = db.execute(
+            select(MonthlyReport.sov_summary)
+            .where(
+                MonthlyReport.hospital_id == hospital_id,
+                MonthlyReport.period_year == anchor.year,
+                MonthlyReport.period_month == anchor.month,
+                MonthlyReport.report_type == "MONTHLY",
+            )
+            .order_by(MonthlyReport.version.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+        if not isinstance(summary, dict):
+            break
+    points.reverse()
+    return points
+
+
 def reported_monthly_sov_pct(db, hospital_id, year: int, month: int) -> float | None:
     """그 달 최신 월간 보고서에 저장된 언급 비율. 없거나 숫자가 아니면 None."""
     row = db.execute(
@@ -12912,30 +12964,31 @@ def _build_monthly_report_for_hospital(
     ).scalar_one()
     # 원장 뷰를 AE PDF보다 **먼저** 만든다. 토킹 포인트는 이 뷰가 바인딩한 숫자에서
     # 나오고, 내부 PDF와 Admin이 그 같은 문장을 읽어야 한 자리에서 두 말이 안 된다.
-    doctor_view = build_doctor_report_view(
-        report_kind="SETUP" if manifest is None else "MONTHLY",
-        protocol_label=str(((manifest.platform_provenance or {}).get("measurement_protocol") or {}).get("policy_version") or "기록 없음") if manifest is not None else None,
+    # 2026-11-04 보고서 v4: 뷰 모델 하나(`DoctorReportV4`)가 숫자·문장·검증·대조 계약을 다 갖는다.
+    # v3 빌더(`build_doctor_report_view`)는 이미 나간 보고서의 템플릿 갱신 복원 경로에만 남는다.
+    doctor_view = build_doctor_report_v4(
         hospital=h,
-        sov_pct=sov_pct,
-        prev_sov_pct=prev_sov,
-        published_count=len(actual_published_contents),
-        plan_quota=period_quota,
-        supplementary_count=supplementary_count,
-        early_publication_count=early_publication_count,
-        late_recovery_count=late_recovery_count,
-        contract_published_count=len(contract_contents),
+        period_year=now.year,
+        period_month=now.month,
+        public_url=_public_site_url(h.aeo_domain, h.slug),
+        report_kind="SETUP" if manifest is None else "MONTHLY",
+        sov_coverage=monthly_sov_payload,
         attribution=attribution,
         citations=citations,
         published_contents=list(published_contents),
-        v0_baseline=v0_baseline,
+        query_targets=list(query_targets),
         records=evidence_records,
-        platforms=report_platforms,
-        sov_coverage=monthly_sov_payload,
-        comparison_reason=monthly_sov_payload["comparison"]["reason"],
+        plan_quota=period_quota,
+        published_count=len(actual_published_contents),
+        fulfilled_count=len(contract_contents),
         cumulative_published_count=cumulative_published_count,
+        comparison_reason=monthly_sov_payload["comparison"]["reason"],
         reference_prev_sov_pct=_prior_reported_sov_pct(db, prior_manifest),
+        v0_baseline=v0_baseline,
+        trend_points=_comparable_trend_points(db, h.id, now, monthly_sov_payload),
+        platforms=report_platforms,
     )
-    talking_points = list(doctor_view["talking_points"])
+    talking_points = list(doctor_view.talking_points)
 
     snapshot_cells = [
         {
@@ -13240,12 +13293,170 @@ def build_monthly_template_refresh_plan(
     facts = doctor_view_facts(doctor_view)
     if facts != render_inputs.doctor_metric_facts:
         verdict.add("DIFF", "SNAPSHOT_METRIC_FACTS")
-    return MonthlyTemplateRefreshPlan(
-        latest,
-        doctor_view,
-        copy.deepcopy(latest.content_summary),
-        verdict,
+    content = copy.deepcopy(latest.content_summary)
+    if verdict.status != "BLOCKED" and not isinstance(doctor_view, DoctorReportV4):
+        # v4 배포 전 보고서: 저장된 숫자로 v4 뷰를 새로 만들고 스냅샷도 v4로 바꾼다. 사전 점검과 실행이 같은
+        # 결과를 본다(검토 3-16) — 숫자가 하나라도 어긋나면 DIFF라 실행이 아무것도 쓰지 않는다.
+        doctor_view, problems, warnings = _upgrade_stored_report_to_v4(db, h, latest, now, content)
+        for problem in problems:
+            verdict.add("DIFF", "V4_UPGRADE_FACTS", problem)
+        for warning in warnings:
+            verdict.add("WARN", "V4_PLATFORM_RATE_RECOMPUTED", warning)
+        snapshot = dict(content.get("report_snapshot") or {})
+        inputs = dict(snapshot.get("render_inputs") or {})
+        inputs["doctor_view"] = freeze_doctor_view(doctor_view)
+        inputs["doctor_metric_facts"] = doctor_view_facts(doctor_view)
+        ae_inputs = dict(inputs.get("ae_report") or {})
+        ae_inputs["talking_points"] = doctor_view.talking_points
+        inputs["ae_report"] = ae_inputs
+        snapshot["render_inputs"] = inputs
+        content["report_snapshot"] = snapshot
+        content["talking_points"] = doctor_view.talking_points
+    return MonthlyTemplateRefreshPlan(latest, doctor_view, content, verdict)
+
+
+def _upgrade_stored_report_to_v4(db, h: Hospital, old: MonthlyReport, now: arrow.Arrow, content: dict):
+    """옛 v3 스냅샷의 보고서를 템플릿 갱신할 때 v4 뷰를 **저장된 숫자**로 다시 만든다.
+
+    측정·귀속·인용·발행 편수는 대체할 버전의 저장 요약을 그대로 쓰고, 현재 행에서는 v3 갱신과 같은 것만
+    읽는다 — 공개 글 제목(저장된 마감 시각 기준)·답변 발췌(그 달 매니페스트)·타깃의 진료 항목·누적 편수·
+    지난달 참고치·초기 측정 참고선. 저장 요약에서 다시 만든 사실(`stored_facts_v4`)과 새 뷰의 사실이 키 단위로
+    같지 않으면 `RefreshVerdict` DIFF로 돌려 아무것도 쓰지 않는다. 2026-10월분처럼 v4 배포 전에 만든
+    보고서를 새 형식으로 다시 전달하는 길이다.
+    """
+    from app.services.doctor_report_v4 import (
+        compare_facts_v4,
+        info_query_texts,
+        stored_facts_v4,
+        v3_frozen_facts_problems,
+        v3_platform_rate_changes,
     )
+    from app.services.monthly_template_refresh import stored_observed_at
+
+    render_inputs = report_render_inputs(content)
+    assert render_inputs is not None
+    sov = old.sov_summary or {}
+    period_start = render_inputs.period.starts_at
+    period_end = render_inputs.period.ends_at
+    observed_at = stored_observed_at(content)
+    _actual, published_contents, _contract = _load_monthly_publication_facts(
+        db, h.id, period_start, period_end, observed_at
+    )
+    query_targets = (
+        db.execute(
+            select(AIQueryTarget)
+            .where(AIQueryTarget.hospital_id == h.id)
+            .options(selectinload(AIQueryTarget.variants))
+        )
+        .scalars()
+        .all()
+    )
+    manifest = (
+        db.execute(
+            select(MonthlyMeasurementManifest).where(MonthlyMeasurementManifest.id == old.manifest_id)
+        ).scalar_one_or_none()
+        if old.manifest_id is not None
+        else None
+    )
+    loaded = (
+        load_monthly_sov_manifest(
+            db,
+            manifest,
+            legacy_final=_legacy_manifest_is_final(
+                manifest, deadline_reached=_monthly_sov_deadline_reached(observed_at, now.year, now.month)
+            ),
+        )
+        if manifest is not None
+        else None
+    )
+    # 답변 사례·경쟁 집계는 원래 보고서가 점수에 쓴 관측(스냅샷의 attempt record_id)만 본다(검토 3-17).
+    frozen_record_ids = {
+        str(attempt.get("record_id"))
+        for cell in (render_inputs.measurement.cells or [])
+        for attempt in (cell.get("attempts") or [])
+        if isinstance(attempt, dict) and attempt.get("record_id")
+    }
+    records = [
+        record
+        for record in (loaded.scored_records if loaded is not None else ())
+        if str(getattr(record, "id", "")) in frozen_record_ids
+    ]
+    # 병원 이름·slug는 그 달에 얼린 값, 분류용 필드(지역·주력 진료·경쟁사)만 현재 행이다(검토 3-22).
+    frozen_identity = SimpleNamespace(
+        id=h.id,
+        name=render_inputs.hospital.name,
+        slug=render_inputs.hospital.slug,
+        aeo_domain=h.aeo_domain,
+        region=list(render_inputs.hospital.region or []),
+        hero_specialties=list(getattr(h, "hero_specialties", None) or []),
+        treatments=list(getattr(h, "treatments", None) or []),
+        competitors=list(getattr(h, "competitors", None) or []),
+    )
+    comparison = sov.get("comparison") or {}
+    # 지난달 참고치·초기 측정 참고선은 다시 읽지 않고 그 달에 얼린 v3 사실을 그대로 쓴다(검토 4-25).
+    v3_facts = dict(render_inputs.doctor_metric_facts or {})
+    reference_text = v3_facts.get("rate.reference_previous")
+    reference_prev = float(reference_text[:-1]) if isinstance(reference_text, str) and reference_text.endswith("%") else None
+    v0_baseline = None
+    if "v0.of_hundred" in v3_facts and "v0.current_of_hundred" in v3_facts:
+        v0_baseline = {
+            "of_hundred": int(float(v3_facts["v0.of_hundred"].rstrip("%"))),
+            "current_of_hundred": int(float(v3_facts["v0.current_of_hundred"].rstrip("%"))),
+            "sentence": "",
+        }
+    first_publication_at = func.coalesce(ContentItem.first_published_at, ContentItem.published_at)
+    cumulative_published_count = db.execute(
+        select(func.count())
+        .select_from(ContentItem)
+        .where(ContentItem.hospital_id == h.id, first_publication_at < period_end)
+    ).scalar_one()
+    operations = content.get("operations") or {}
+    timing = content.get("contract_timing") or {}
+    view = build_doctor_report_v4(
+        hospital=frozen_identity,
+        period_year=now.year,
+        period_month=now.month,
+        public_url=render_inputs.public_url,
+        report_kind="SETUP" if sov.get("report_kind") == BASELINE_REPORT_KIND else "MONTHLY",
+        sov_coverage=sov,
+        attribution=content.get("attribution"),
+        citations=content.get("citations"),
+        published_contents=list(published_contents),
+        query_targets=list(query_targets),
+        records=records,
+        plan_quota=operations.get("plan_quota"),
+        published_count=int(content.get("published_count") or 0),
+        fulfilled_count=timing.get("published_for_contract_count"),
+        cumulative_published_count=cumulative_published_count,
+        comparison_reason=comparison.get("reason"),
+        reference_prev_sov_pct=reference_prev,
+        v0_baseline=v0_baseline,
+        trend_points=_comparable_trend_points(db, h.id, now, sov),
+        platforms=list(render_inputs.measurement.platforms or []),
+    )
+    problems = compare_facts_v4(stored_facts_v4(sov, content), view.facts())
+    # 원장이 실제로 받았던 v3 판의 숫자(스냅샷의 doctor_metric_facts·얼린 뷰)와도 맞춘다 — 저장 요약만 보는
+    # 대조는 v4 빌더와 같은 입력을 읽어 동어반복이 될 수 있다.
+    problems.extend(
+        v3_frozen_facts_problems(v3_facts, view, render_inputs.doctor_view, skip_keywords=info_query_texts(sov))
+    )
+    # v3의 질문 수 칸은 INFO 질문까지 센다(v4는 LOCAL만) — v3 규칙 그대로 저장 귀속에서 다시 세어 맞춘다(검토 4-27).
+    from app.services.report_engine import _director_highlights
+
+    recomputed = _director_highlights(
+        attribution=content.get("attribution"),
+        citations=content.get("citations"),
+        published_count=int(content.get("published_count") or 0),
+        cumulative_published_count=None,
+    )
+    for name in ("measured_questions", "mentioned_questions", "cited_questions", "cited_answers_measured"):
+        frozen = v3_facts.get(f"highlight.{name}")
+        value = recomputed.get(name)
+        if frozen is not None and (value is None or str(value) != frozen):
+            problems.append(f"highlight.{name}: v3 {frozen} ≠ 저장 귀속 재계산 {value}")
+    # AI 서비스별 비율은 v3 셀 평균 → v4 답변 k/n으로 계산식이 바뀐다(2026-11 §7, 의도된 변경) — 막지 않고 알린다.
+    warnings = v3_platform_rate_changes(v3_facts, view)
+    return view, problems, warnings
 
 
 def _build_monthly_template_refresh(
@@ -13284,6 +13495,7 @@ def _build_monthly_template_refresh(
     content = plan.content_summary
     render_inputs = report_render_inputs(content)
     assert render_inputs is not None
+    doctor_view = plan.doctor_view  # v3 스냅샷이면 계획 단계에서 이미 v4로 올라와 있다
     frozen_hospital = SimpleNamespace(**render_inputs.hospital.model_dump())
     ae = render_inputs.ae_report
     pdf_path = generate_pdf_report(
@@ -13332,7 +13544,7 @@ def _build_monthly_template_refresh(
         h,
         report,
         render_inputs.period.starts_at,
-        plan.doctor_view,
+        doctor_view,
         now,
         operation_run_id,
         render_hospital=frozen_hospital,
