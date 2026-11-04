@@ -12,6 +12,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 from test_doctor_report_view import BANNED_IN_DOCTOR_COPY
 from test_report_redesign import monthly_view
 
+from app.services.report_narrative import MONTHLY_SAME_BASIS_NOTICE
 from app.utils.medical_filter import check_forbidden
 
 # 9월 보고서에서 원장님이 이해하지 못한 표현과, 같은 결의 내부 용어.
@@ -173,8 +174,8 @@ def test_director_pdf_passes_the_medical_ad_filter(name):
         ("up", "AI 답변이 지난달보다 우리 병원을 더 자주 언급했습니다.", "30.0%"),
         ("down", "다음 달에는 더 넓은 키워드로 AI 답변 속 언급을 다시 늘려 가겠습니다.", "30.0%"),
         ("first", "첫 측정 결과입니다. 앞으로 이 숫자와 견주며 변화를 살피겠습니다.", "첫 측정"),
-        ("method", "이번 결과를 새 기준점으로 두고, 다음 달부터 흐름을 짚어 드리겠습니다.", "비교 없음"),
-        ("method_reference", "이번 달부터 측정 방식이 바뀌어, 지난달 수치는 참고용으로만 함께 적었습니다. 다음 달부터는 같은 방식으로 비교해 드리겠습니다.", "40.0%"),
+        ("method", "동일 측정 기준의 월간 결과입니다. 전월과 같은 방식으로 비교해 주세요.", "비교 없음"),
+        ("method_reference", "동일 측정 기준의 월간 결과입니다. 전월과 같은 방식으로 비교해 주세요.", "40.0%"),
         ("unavailable", "측정을 다시 진행한 뒤, 결과가 확인되는 대로 바로 알려 드리겠습니다.", "비교 없음"),
         ("initial", "첫 측정 결과입니다. 앞으로 이 숫자와 견주며 변화를 살피겠습니다.", "첫 측정"),
     ],
@@ -193,13 +194,65 @@ def test_first_page_leads_with_a_plain_headline_per_branch(name, headline, prior
     "name,reason",
     [
         ("first", "이번이 첫 측정이라 견줄 지난달 숫자는 아직 없습니다."),
-        ("method", "측정 방식이 바뀌어서 지난달 결과와 직접 비교하지는 않았습니다."),
+        ("method", MONTHLY_SAME_BASIS_NOTICE),
     ],
 )
 def test_a_month_that_was_not_compared_says_why_in_one_sentence(name, reason):
     page = _page(_html(_view(name)), 1)
-    assert reason in page
+    assert page.count(reason) == 1
     assert "%p" not in page
+
+
+# 한 번만 나가야 했던 전환 안내(2026-10 보고서)가 매달 되풀이됐다. 월간 보고서 첫 장 상단에는
+# 대표가 확정한 문구만 남는다.
+STALE_TRANSITION_PHRASES = ("다음 달부터", "측정 방식이 바뀌어", "측정 기준이 바뀌어", "새 기준점")
+NONCOMPARABLE_REASONS = (
+    "MEASUREMENT_POLICY_CHANGED", "ANSWER_MODEL_CHANGED", "QUERY_TEXT_CHANGED",
+    "PLATFORM_COHORT_MISSING", "INTENT_SNAPSHOT_MISSING", "NO_MATCHED_CELLS",
+    "ANSWER_MODEL_UNKNOWN", "SAMPLE_SHAPE_CHANGED",
+)
+
+
+def _top_of_report(html: str) -> str:
+    return _body_text(html.split('<div class="hero-band">')[1].split('<p class="story">')[0])
+
+
+def test_confirmed_notice_is_verbatim():
+    assert MONTHLY_SAME_BASIS_NOTICE == "동일 측정 기준의 월간 결과입니다. 전월과 같은 방식으로 비교해 주세요."
+
+
+@pytest.mark.parametrize("reference", [None, 40.0])
+def test_policy_change_month_tops_the_report_with_the_confirmed_notice_only(reference):
+    view = monthly_view(
+        sov_pct=50.3, prev_sov_pct=None, comparison_reason="MEASUREMENT_POLICY_CHANGED",
+        sov_coverage=_coverage(50.3, None, reason="MEASUREMENT_POLICY_CHANGED"),
+        attribution=_attribution(prior=True), reference_prev_sov_pct=reference,
+    )
+    html = _html(view)
+    top = _top_of_report(html)
+    assert view["narrative"].conclusion == MONTHLY_SAME_BASIS_NOTICE
+    assert top.count(MONTHLY_SAME_BASIS_NOTICE) == 1
+    for stale in STALE_TRANSITION_PHRASES:
+        assert stale not in top
+        assert stale not in view["narrative"].comparison_note
+    for stale in ("다음 달부터 다시 견주어", "측정 방식이 바뀌어", "같은 방식으로 비교해 드리겠습니다"):
+        assert stale not in _body_text(html)
+
+
+@pytest.mark.parametrize("reason", NONCOMPARABLE_REASONS)
+@pytest.mark.parametrize("reference", [None, 40.0])
+def test_no_monthly_top_carries_a_one_time_transition_notice(reason, reference):
+    view = monthly_view(
+        sov_pct=50.0, prev_sov_pct=None, comparison_reason=reason,
+        sov_coverage=_coverage(50.0, None, reason=reason),
+        attribution=_attribution(prior=True), reference_prev_sov_pct=reference,
+    )
+    top = _top_of_report(_html(view))
+    for stale in STALE_TRANSITION_PHRASES:
+        assert stale not in top, f"{reason}/{reference}: '{stale}'"
+    if reference is None:
+        assert view["narrative"].conclusion == MONTHLY_SAME_BASIS_NOTICE
+        assert top.count(MONTHLY_SAME_BASIS_NOTICE) == 1
 
 
 def test_every_noncomparable_reason_has_its_own_plain_sentence():
@@ -323,7 +376,6 @@ def test_a_method_change_month_shows_last_month_as_reference_not_as_a_trend():
     assert narrative.reference_previous == 40.0
     assert "지난달(참고)" in page and "40.0%" in page and "50.3%" in page
     assert narrative.conclusion in page
-    assert "지난달 수치는 참고용으로만" in page
     assert "기준점" not in page
     for trend in ("더 자주 언급됐습니다", "줄었", "늘었"):
         assert trend not in narrative.conclusion

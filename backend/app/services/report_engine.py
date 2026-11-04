@@ -39,7 +39,12 @@ from app.services.report_attribution import (
     ContentAttributionPayload,
     QuestionRowPayload,
 )
-from app.services.report_narrative import ReportKind, build_monthly_narrative, platform_name
+from app.services.report_narrative import (
+    MONTHLY_SAME_BASIS_NOTICE,
+    ReportKind,
+    build_monthly_narrative,
+    platform_name,
+)
 from app.services.report_work_evidence import published_work_evidence
 from app.services.sov_statistics import DeltaSignificance
 from app.utils.medical_filter import check_forbidden
@@ -946,7 +951,9 @@ def _talking_points(
     if citations:
         cited_cells = int(citations.get("cited_cell_count") or 0)
         volume = f"{volume} AI 답변이 저희 글·페이지를 인용한 건수는 {cited_cells}건입니다."
-    if measured and this_count is not None:
+    if measured and this_count is not None and delta_sentence == MONTHLY_SAME_BASIS_NOTICE:
+        change = f"환자 질문 100번 중 병원이 나온 횟수는 {this_count}번입니다. {delta_sentence}"
+    elif measured and this_count is not None:
         change = f"환자 질문 100번 중 병원이 나온 횟수는 {this_count}번이고, {delta_sentence}."
     else:
         change = "이번 달은 측정이 충분히 이뤄지지 않아 횟수를 보고드리지 않습니다."
@@ -1323,7 +1330,7 @@ def build_doctor_report_view(
             "PLATFORM_COHORT_MISSING": "확인한 AI 서비스 구성이 달라 이번 달 수치만 봅니다",
             "NO_MATCHED_CELLS": "두 달에 공통으로 확인된 질문이 없어 이번 달 수치만 봅니다",
             "INTENT_SNAPSHOT_MISSING": "지난달 질문 유형 기록이 없어 이번 달 수치만 봅니다",
-            "MEASUREMENT_POLICY_CHANGED": "측정 기준이 바뀌어 다음 달부터 비교합니다",
+            "MEASUREMENT_POLICY_CHANGED": MONTHLY_SAME_BASIS_NOTICE,
             "ANSWER_MODEL_CHANGED": "응답한 AI 모델이 달라 이번 달 수치만 봅니다",
             "ANSWER_MODEL_UNKNOWN": "응답한 AI 모델 기록이 없어 이번 달 수치만 봅니다",
             "QUERY_TEXT_CHANGED": "추적 질문 문장이 달라 이번 달 수치만 봅니다",
@@ -1421,11 +1428,10 @@ def build_doctor_report_view(
         )
     else:
         summary = "이번 달은 측정이 충분히 이뤄지지 않아 횟수를 보고드리지 않습니다."
-    if measured and delta_sentence in {
-        "이번 달이 기준선입니다",
-        "측정 기준이 바뀌어 다음 달부터 비교합니다",
-    }:
+    if measured and delta_sentence == "이번 달이 기준선입니다":
         summary = f"{delta_sentence}. 이번 달 확인한 답변을 환산하면 100번 중 {this_count}번입니다."
+    elif measured and delta_sentence == MONTHLY_SAME_BASIS_NOTICE:
+        summary = f"{delta_sentence} 이번 달 확인한 답변을 환산하면 100번 중 {this_count}번입니다."
 
     shortfall = max(0, plan_quota - fulfilled_count) if plan_quota is not None else 0
     ours = ([f"대상 월 미이행 {shortfall}편의 차단 원인을 확인하고, 안전 기준을 통과한 글부터 보충합니다."]
