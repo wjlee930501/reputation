@@ -174,10 +174,12 @@ def _segment(
 def _platform_summary(cells: tuple[ManifestCellInput, ...], platform: str) -> PlatformSummary:
     rows = tuple(cell for cell in cells if cell.platform == platform)
     local_cells = _scored_cells(rows, "LOCAL")
-    # 플랫폼 breakdown만 **셀 동일 가중**(셀 빈도의 평균)을 유지한다. 헤드라인은
-    # 풀드 추정(`_pooled_rate`)이라 두 숫자가 다를 수 있고, 그건 의도된 것이다 —
-    # 여기서 답하는 질문은 "이 AI 서비스에서는 어땠나"이지 "전체가 얼마인가"가 아니다.
+    # 플랫폼 노출률도 헤드라인과 같은 **풀드 k/n**이다(2026-11-04 보고서 v4 §7) — 셀
+    # 동일 가중 평균을 쓰면 플랫폼 수치를 합쳐도 헤드라인과 맞지 않아 원장이 두 숫자를
+    # 이어 읽을 수 없었다. 옛 셀 평균은 `cell_mean_rate`로 남겨 운영 조회가 깨지지 않게 한다.
     local_frequencies = [cell.mention_frequency or 0.0 for cell in local_cells]
+    attempts_used = sum(cell.attempts_used for cell in local_cells)
+    mentioned_attempts = sum(cell.mentioned_attempts for cell in local_cells)
     # 모델·검색 계측은 셀이 아니라 **모든 성공 시도**를 본다 — 반복 중 한 건만
     # 다른 모델로 답했어도 그 사실이 보여야 비교 게이트가 제 역할을 한다.
     scored_attempts = tuple(
@@ -193,12 +195,15 @@ def _platform_summary(cells: tuple[ManifestCellInput, ...], platform: str) -> Pl
         measured_count=len(local_cells),
         mentioned_count=sum(cell.mentioned_attempts > 0 for cell in local_cells),
         mention_rate=(
+            round(mentioned_attempts / attempts_used * 100, 2) if attempts_used > 0 else None
+        ),
+        cell_mean_rate=(
             round(sum(local_frequencies) / len(local_frequencies) * 100, 2)
             if local_frequencies
             else None
         ),
-        attempts_used=sum(cell.attempts_used for cell in local_cells),
-        mentioned_attempts=sum(cell.mentioned_attempts for cell in local_cells),
+        attempts_used=attempts_used,
+        mentioned_attempts=mentioned_attempts,
         answer_models=tuple(
             sorted({attempt.answer_model for attempt in scored_attempts if attempt.answer_model})
         ),

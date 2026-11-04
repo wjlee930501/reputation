@@ -1,0 +1,226 @@
+/* 원장용 월간 보고서 v4 전용 레이어. report_editorial.css 뒤에 읽혀 그 토큰(Pretendard·주황
+   #ff3d00·진한 주황 #d13200·잉크·헤어라인·마스트헤드·러닝 헤드/풋·A4 17mm 레일)을 그대로 쓴다.
+   v3와 브랜드는 같고 지면 리듬만 다르다 — 본문 6쪽(요약·콘텐츠·노출·경쟁·사례·계획) + 부록.
+   흰 면 · 검정 면 하나 · 주황 한 색, 모서리·그림자·그라데이션 없음(빗금은 측정 실패 표시뿐).
+
+   지면 리듬(DESIGN.md "v4 monthly rhythm"): 간격 눈금 4/8/12/16/24/32/48pt 하나, 마스트헤드→제목 24pt,
+   제목→첫 모듈 32pt, 모듈 사이 32pt(compact 24pt), 모듈 제목→내용 12pt, 모듈 안 행 8~12pt, 캡션 6pt.
+   본문 쪽은 세로 flex 기둥이다 — 모듈은 자연 높이로 쌓이고 `.spring`이 남는 높이를 먹어 마지막 요소
+   (검정 면·안내·시사점 면)를 쪽 아래에 앉힌다. 글자 크기로 빈 자리를 메우지 않는다. */
+.v4 {
+  --dark-text:#bdbdbd; --unmentioned:#a3a3a3; --s12:48pt;
+  --mod:32pt;        /* 모듈 사이 */
+  --mod-in:12pt;     /* 모듈 제목 → 내용 */
+  --row:6pt;         /* 표·막대 행의 위아래 여백(행 사이 12pt) */
+  --fig:40pt;        /* 카드 큰 숫자 */
+  --fig-compound:28pt; --fig-long:23pt; --fig-text:15pt;
+  --band-fig:36pt;   /* 검정 면 숫자 */
+  --heat:18pt;       /* 히트맵 칸 높이 */
+  --key-pad:16pt; --key-text:13pt;
+  --case-gap:32pt;
+}
+/* 자료가 빽빽한 쪽(02·03)은 모듈 사이 28pt(compact 20pt)·제목→첫 모듈도 같은 값. */
+.v4 .content, .v4 .exposure { --mod:28pt; }
+.v4 .exposure { --mod:24pt; }
+.compact.v4 .content, .compact.v4 .exposure { --mod:16pt; }
+.compact.v4 {
+  --mod:24pt; --mod-in:8pt; --row:3pt;
+  --fig:36pt; --fig-compound:25pt; --fig-long:21pt; --fig-text:14pt;
+  --band-fig:32pt; --heat:12pt;
+  --key-pad:11pt; --key-text:12pt; --case-gap:24pt;
+}
+
+/* 쪽 기둥. 본문 영역(A4 259mm) 아래 8pt를 남겨 러닝 풋 헤어라인에 붙지 않는다. @page는 바꾸지 않는다. */
+.v4 .page { display:flex; flex-direction:column; min-height:726pt; }
+.v4 .page > * { margin-top:0; margin-bottom:0; }
+.v4 .spring { flex:1 0 var(--mod); }
+.v4 .masthead { margin-bottom:var(--s6); }
+.v4 .page > h1, .v4 .page-head { margin-bottom:var(--s8); }
+.v4 .content > h1, .v4 .exposure > h1 { margin-bottom:var(--mod); }
+.v4 .page > .page-head > *:last-child { margin-bottom:0; }
+.v4 .module + .module, .v4 .module + .spring, .v4 .empty + .spring, .v4 .page > .empty + .module { margin-top:var(--mod); }
+.v4 .page > .page-foot { margin-top:var(--mod); }
+.v4 p { margin-bottom:var(--s2); }
+.v4 h1 { font-size:28pt; font-weight:800; line-height:1.18; letter-spacing:-.035em; }
+.v4 h2 { font-size:15pt; font-weight:700; margin:0 0 var(--mod-in); padding-top:var(--s2); border-top:0.75pt solid var(--ink); }
+.v4 .module > *:last-child { margin-bottom:0; }
+.v4 .empty { font-size:12pt; font-weight:600; line-height:1.5; margin:0; }
+.v4 .caption { font-size:9pt; color:var(--muted); line-height:1.5; margin:6pt 0 0; }
+.v4 .section-aside { font-size:9pt; font-weight:400; color:var(--muted); margin-left:var(--s3); letter-spacing:0; vertical-align:baseline; }
+.v4 table { font-size:9.5pt; line-height:1.4; }
+.v4 th { font-size:9pt; padding:0 var(--s2) 6pt 0; }
+.v4 td { padding:var(--row) var(--s2) var(--row) 0; }
+.v4 th.num, .v4 td.num { text-align:right; }
+
+/* 01 월간 요약 — 제목 묶음, 카드 4장(라벨·숫자·정의 행이 같은 선에 놓이는 표), 핵심 3줄 원장, 아래 안내. */
+.v4 .summary .eyebrow { color:var(--accent-ink); font-size:9pt; font-weight:800; letter-spacing:.11em; margin:0 0 var(--s2); }
+.v4 .summary .title { font-size:28pt; margin:0 0 var(--s2); }
+.v4 .summary .subtitle { font-size:12pt; color:var(--muted); margin:0; line-height:1.4; }
+.v4 .summary .subtitle .hospital { color:var(--ink); font-weight:700; }
+/* 거터는 칸의 오른쪽 여백(24pt)으로 만든다 — flex 기둥 안에서는 음수 여백 거터가 레일을 넘는다. */
+.v4 .cards { table-layout:fixed; border-collapse:collapse; margin:0; }
+.v4 .cards td { border:0; padding:0 var(--s6) 0 0; vertical-align:top; overflow-wrap:normal; }
+.v4 .cards td:last-child { padding-right:0; }
+.v4 .cards-labels td { padding-bottom:var(--s3); }
+.v4 .cards-labels .card-label { border-top:2pt solid var(--ink); padding-top:var(--s3); }
+.v4 .cards-labels td.accent .card-label { border-top-color:var(--accent); }
+.v4 .cards td.accent .card-label { color:var(--accent-ink); }
+.v4 .card-label { font-size:9pt; color:var(--muted); font-weight:700; letter-spacing:.06em; margin:0; line-height:1.3; }
+.v4 .cards-values td { vertical-align:baseline; padding-bottom:var(--s2); }
+.v4 .card-value { font-size:var(--fig); font-weight:800; letter-spacing:-.03em; line-height:1.1; margin:0; font-variant-numeric:tabular-nums; white-space:nowrap; }
+.v4 .card-value.compound { font-size:var(--fig-compound); letter-spacing:-.025em; }
+.v4 .card-value.long { font-size:var(--fig-long); letter-spacing:-.02em; }
+.v4 .card-value.muted { font-size:var(--fig-text); color:var(--muted); letter-spacing:-.01em; white-space:normal; }
+.v4 .cards-defs td { padding-bottom:var(--s2); }
+.v4 .card-names { font-size:10pt; font-weight:600; line-height:1.4; margin:0 0 var(--s1); }
+.v4 .card-definition { font-size:9.5pt; color:var(--muted); line-height:1.45; margin:0; }
+.v4 .key-lines { border-top:2pt solid var(--ink); border-bottom:2pt solid var(--ink); }
+.v4 .key-line { display:table; width:100%; padding:var(--key-pad) 0; border-top:0.6pt solid var(--rule); break-inside:avoid; }
+.v4 .key-line:first-child { border-top:0; }
+.v4 .key-label { display:table-cell; width:72pt; color:var(--muted); font-weight:700; font-size:9pt; letter-spacing:.06em; vertical-align:top; padding-top:4pt; padding-right:var(--s2); }
+.v4 .key-text { display:table-cell; font-size:var(--key-text); font-weight:600; line-height:1.45; margin:0; vertical-align:top; }
+.v4 .page-foot { border-top:0.6pt solid var(--rule); padding-top:var(--s3); }
+.v4 .page-foot .notice { font-size:10pt; color:var(--muted); line-height:1.5; margin:0 0 var(--s2); }
+.v4 .page-foot .public-link { margin:0; }
+
+/* 가로 막대(편수·비율 공용): 라벨 · 트랙 · 값. 실제 <table>로 그린다 — WeasyPrint는 표 칸 안에
+   중첩한 display:table의 백분율 너비를 바깥 표 기준으로 풀어 두 칸 배치에서 넘친다.
+   트랙은 한 색(#dcdcdc)·한 높이(6pt), 값은 오른쪽 끝 한 선에 맞춘다. */
+.v4 .bars { font-size:11pt; line-height:1.3; }
+.v4 .bars td { padding:var(--row) var(--s2) var(--row) 0; vertical-align:middle; border-bottom:0.6pt solid var(--rule); }
+.v4 .bars tr:last-child td { border-bottom:0.6pt solid var(--rule); }
+.v4 .bar-label { font-weight:600; }
+.v4 .bar-track { background:var(--rule); height:6pt; }
+.v4 .bar-fill { height:6pt; background:var(--accent); }
+.v4 .bar-value { text-align:right; font-weight:700; font-size:11pt; font-variant-numeric:tabular-nums; white-space:nowrap; padding-right:0; }
+.v4 .bar-value.muted { color:var(--muted); font-weight:400; }
+.v4 .bar-detail { display:block; font-size:9pt; color:var(--muted); font-weight:400; letter-spacing:0; line-height:1.3; margin-top:1pt; }
+.v4 .two-col .bars { font-size:10pt; line-height:1.2; }
+.v4 .two-col .bars td { padding-top:2pt; padding-bottom:2pt; }
+
+/* 02 콘텐츠 발행 현황. */
+.v4 .content-table .title-cell { font-weight:600; }
+
+/* 03 AI 노출 성과 — 추이 꺾은선(SVG)·막대·그룹 표·히트맵. 두 칸 배치는 모두 같은 24pt 거터. */
+.v4 .trend { margin:0; }
+.v4 .trend-svg { display:block; width:100%; height:auto; }
+.v4 .trend-labels { display:table; width:100%; table-layout:fixed; border-top:0.6pt solid var(--rule); padding-top:2pt; }
+.v4 .trend-label { display:table-cell; text-align:center; font-size:9pt; color:var(--muted); font-weight:700; letter-spacing:.04em; }
+.v4 .trend-label.current { color:var(--accent-ink); }
+.v4 .two-col { display:table; width:100%; table-layout:fixed; border-collapse:collapse; margin:0; }
+.v4 .two-col .col { display:table-cell; width:50%; vertical-align:top; }
+.v4 .two-col .col:first-child { padding-right:var(--s3); }
+.v4 .two-col .col:last-child { padding-left:var(--s3); }
+.v4 .col > h2 + h2, .v4 .col > * + h2 { margin-top:var(--s6); }
+.v4 .col > *:last-child { margin-bottom:0; }
+.v4 .group-table { font-size:9.5pt; line-height:1.3; }
+.v4 .group-table td { padding:3.5pt var(--s2) 3.5pt 0; white-space:nowrap; }
+.v4 .group-table th { white-space:nowrap; }
+.v4 .group-table .num { padding-left:6pt; }
+.v4 .group-code { display:inline-block; min-width:12pt; color:var(--accent-ink); font-weight:800; }
+.v4 .platform-note { margin-top:6pt; }
+.v4 .caption-cell { font-size:9pt; color:var(--muted); letter-spacing:-.01em; }
+.v4 .heatmap { font-size:9pt; line-height:1.2; }
+/* 히트맵: 헤어라인 행 하나의 체계 — 칸은 행 높이를 꽉 채운 색면(1pt 틈 없음), 글자는 가운데, 한 줄이면 18pt.
+   11개 키워드부터는 표 하나에 두 벌을 나란히 두어(가운데 24pt 빈 칸) 왼쪽·오른쪽 같은 행이 같은 높이로 맞는다. */
+.v4 .heatmap th { padding:0 0 4pt; border-bottom:0.75pt solid var(--ink); text-align:left; }
+.v4 .heatmap .heat-keyword-head { padding-right:var(--s3); }
+.v4 .heatmap .heat-head { text-align:center; white-space:nowrap; letter-spacing:0; }
+.v4 .heatmap td { height:var(--heat); padding:0; border-bottom:0.6pt solid var(--rule); vertical-align:middle; }
+.v4 .heatmap .heat-keyword { padding-right:var(--s3); line-height:1.2; letter-spacing:-.01em; }
+.v4 .heatmap .heat-gap, .v4 .heatmap .heat-blank { border-bottom:0; }
+/* 2-up: 두 벌의 키워드 칸은 같은 너비, 8.5pt·자간 -0.01em·줄바꿈 없음 — 모든 행이 같은 높이다. */
+.v4 .heatmap-2up { font-size:8.5pt; }
+.v4 .heatmap-2up td { border-bottom-width:0.5pt; }
+.v4 .heatmap-2up .heat-keyword { white-space:nowrap; letter-spacing:-.01em; padding-right:var(--s2); }
+.v4 .heatmap-2up .heat-head { letter-spacing:-.01em; }
+.v4 .heat { text-align:center; font-weight:700; font-variant-numeric:tabular-nums; }
+.v4 .heat-mentioned { background:var(--accent); color:var(--white); }
+.v4 .heat-unmentioned { background:var(--unmentioned); color:var(--white); }
+.v4 .heat-failed { background:repeating-linear-gradient(135deg, var(--white) 0, var(--white) 2pt, var(--unmentioned) 2pt, var(--unmentioned) 3pt); color:var(--ink); }
+.v4 .heat-unmeasured { background:var(--surface); color:var(--muted); }
+.v4 .exposure .closing { margin-top:var(--s6); }
+.v4 .closing { border-top:2pt solid var(--ink); padding-top:var(--s2); }
+.v4 .closing .figure-band { margin:0 0 var(--s4); }
+.v4 .citation { font-size:11pt; font-weight:600; line-height:1.4; margin:0 0 var(--s1); }
+.v4 .citation:last-child { margin-bottom:0; }
+
+/* 04 경쟁 현황. 수치는 오른쪽 한 선, 경쟁 병원 막대는 잉크(주황은 검정 면의 숫자 하나뿐). */
+.v4 .basis { font-size:10pt; color:var(--muted); margin:var(--s2) 0 0; line-height:1.4; }
+.v4 .competitor-table { font-size:11pt; }
+.v4 .competitor-table td { padding-top:var(--s2); padding-bottom:var(--s2); }
+.v4 .competitor-name { font-weight:600; }
+.v4 .count-cell { font-variant-numeric:tabular-nums; white-space:nowrap; }
+.v4 .rate-cell { font-weight:700; font-variant-numeric:tabular-nums; white-space:nowrap; }
+.v4 .mini-track { display:inline-block; width:64pt; height:6pt; background:var(--rule); vertical-align:middle; margin-right:var(--s2); }
+.v4 .mini-fill { display:block; height:6pt; background:var(--ink); }
+.v4 .rate-figure { display:inline-block; min-width:40pt; text-align:right; vertical-align:middle; }
+.v4 .ledger { border-bottom:0.6pt solid var(--rule); }
+.v4 .replaced-row { display:table; width:100%; padding:7pt 0; margin:0; }
+.v4 .replaced-row:first-child { border-top:0; }
+.v4 .replaced-keyword { display:table-cell; width:58%; font-weight:600; font-size:11pt; margin:0; padding-right:var(--s6); vertical-align:top; }
+.v4 .replaced-names { display:table-cell; width:42%; color:var(--ink); font-weight:700; font-size:11pt; margin:0; vertical-align:top; }
+.v4 .figure-band { background:var(--black); color:var(--white); padding:var(--s6) var(--s8); break-inside:avoid; }
+.v4 .figure-label { color:var(--dark-text); font-size:9pt; font-weight:700; letter-spacing:.06em; margin:0 0 var(--s2); }
+.v4 .figure-value { color:var(--accent); font-size:var(--band-fig); font-weight:800; letter-spacing:-.035em; line-height:1.1; margin:0; font-variant-numeric:tabular-nums; }
+.v4 .figure-band .caption { color:var(--dark-text); margin:var(--s2) 0 0; }
+
+/* 05 대표 답변 사례 — 사례 둘은 흰 면에 2pt 잉크 선, 시사점은 쪽 아래의 회색 면 하나. 강조는 주황 바탕. */
+.v4 .case-block { border-top:2pt solid var(--ink); padding-top:var(--s3); break-inside:avoid; }
+.v4 .case-block + .case-block { margin-top:var(--case-gap); }
+.v4 .case-label { color:var(--accent-ink); font-size:9pt; font-weight:800; letter-spacing:.08em; margin:0 0 var(--s2); }
+.v4 .case-block.missing .case-label { color:var(--muted); }
+.v4 .case-keyword { border:0; padding:0; margin:0 0 var(--s3); font-size:15pt; }
+.v4 .excerpt { font-size:11pt; line-height:1.65; margin:0; }
+.v4 .case-block .caption { margin-top:6pt; }
+.v4 mark { background:var(--accent); color:var(--white); padding:0 2pt; }
+.v4 .insight-panel { background:var(--surface); padding:var(--s4) var(--s6); break-inside:avoid; }
+.v4 .insight-panel .panel-label { font-size:9pt; font-weight:800; letter-spacing:.08em; color:var(--muted); margin:0 0 var(--s1); }
+.v4 .insight { display:table; width:100%; margin:0; padding:var(--s2) 0; border-top:0.6pt solid var(--rule); }
+.v4 .panel-label + .insight { border-top:0; }
+.v4 .insight-label { display:table-cell; width:72pt; color:var(--accent-ink); font-weight:700; font-size:9pt; letter-spacing:.06em; vertical-align:top; padding-top:3pt; padding-right:var(--s2); }
+.v4 .insight.missing .insight-label { color:var(--muted); }
+.v4 .insight-text { display:table-cell; font-size:11pt; font-weight:600; line-height:1.5; vertical-align:top; }
+
+/* 06 다음 달 실행 계획. 우선순위 번호는 큰 옅은 숫자, 최적화 행만 잉크. */
+.v4 .plan-table td { padding-top:var(--s2); padding-bottom:var(--s2); }
+.v4 .plan-table .priority .number { font-size:15pt; line-height:1; }
+.v4 .plan-optimize .priority .number { color:var(--ink); }
+.v4 .plan-table .keyword-cell { color:var(--muted); font-size:9.5pt; }
+.v4 .plan .figure-band { margin:0; }
+
+/* 부록 — 흐르는 면. 같은 눈금(모듈 사이 24pt·제목→내용 8pt·셀 4pt). */
+.v4 .appendix { font-size:9.5pt; line-height:1.5; }
+.v4 .appendix h1 { font-size:22pt; margin:0 0 var(--s4); }
+.v4 .appendix h2 { font-size:12pt; margin:var(--s6) 0 var(--s2); padding-top:var(--s2); }
+.v4 .appendix table { font-size:9pt; }
+.v4 .appendix th { padding-bottom:5pt; }
+.v4 .appendix td { padding:4pt var(--s2) 4pt 0; }
+.v4 .appendix .total-cell { font-weight:700; }
+.v4 .appendix .caption { margin-top:6pt; }
+.v4 .appendix-lines p { margin-bottom:var(--s1); }
+.v4 .glossary-row { display:table; width:100%; border-top:0.6pt solid var(--rule); padding:5pt 0; }
+.v4 .glossary-row .term { display:table-cell; width:20%; font-weight:700; margin:0; vertical-align:top; padding-right:var(--s2); }
+.v4 .glossary-row .definition { display:table-cell; width:80%; margin:0; vertical-align:top; }
+.v4 .caveats { border-top:0.6pt solid var(--rule); padding-top:var(--s2); color:var(--muted); }
+
+/* compact 밀도(두 번째 시도): 모듈 사이 24pt·숫자 36/32pt·히트맵 14pt·표 행 4pt. 글자 크기 하한 9pt는 같다. */
+.compact.v4 .masthead { margin-bottom:var(--s4); }
+.compact.v4 .page > h1, .compact.v4 .page-head { margin-bottom:var(--s6); }
+.compact.v4 .content > h1, .compact.v4 .exposure > h1 { margin-bottom:var(--mod); }
+.compact.v4 .two-col .bars { font-size:9.5pt; line-height:1.2; }
+.compact.v4 .two-col .bars td { padding-top:2pt; padding-bottom:2pt; }
+.compact.v4 .bar-detail { line-height:1.2; }
+.compact.v4 .group-table td { padding-top:3pt; padding-bottom:3pt; }
+.compact.v4 .competitor-table td, .compact.v4 .plan-table td { padding-top:5pt; padding-bottom:5pt; }
+.compact.v4 .replaced-row { padding:4pt 0; }
+.compact.v4 .figure-band { padding:var(--s4) var(--s6); }
+.compact.v4 .excerpt { line-height:1.55; }
+.compact.v4 .appendix td { padding-top:2.5pt; padding-bottom:2.5pt; }
+.compact.v4 .exposure .masthead { margin-bottom:var(--s3); }
+.compact.v4 .exposure h2 { margin-bottom:6pt; }
+.compact.v4 .exposure .closing { margin-top:var(--s4); }
+.compact.v4 .two-col .bars td { padding-top:1.5pt; padding-bottom:1.5pt; }
+.compact.v4 .two-col .bars { line-height:1.15; }
+.compact.v4 .group-table td { padding-top:2pt; padding-bottom:2pt; }
+.compact.v4 .appendix h2 { margin-top:var(--s4); }

@@ -1414,7 +1414,7 @@ def build_doctor_report_view(
             "label": f"{_platform_label(platform_id)} 노출도",
             "value": f"{rate:.1f}%" if rate is not None and attempts else "측정 미완료",
             "hint": (
-                f"질문별 평균 · 답변 {attempts}개 중 언급 {mentions}개"
+                f"답변 {attempts}개 중 언급 {mentions}개"
                 if attempts else "확인된 측정 결과가 없습니다."
             ),
         })

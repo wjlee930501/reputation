@@ -28,6 +28,7 @@ def _metadata(version: str, pages: int) -> dict:
     ("doctor-pdf-v1", 1), ("doctor-pdf-v1", 2),
     ("doctor-pdf-v2", 1), ("doctor-pdf-v2", 7),
     ("doctor-pdf-v3", 4), ("doctor-pdf-v3", 32),
+    ("doctor-pdf-v4", 7), ("doctor-pdf-v4", 9),
 ])
 def test_legacy_and_v3_metadata_survive_admin_serialization(version, pages):
     parsed = parse_doctor_artifact_metadata(_metadata(version, pages))
@@ -42,7 +43,7 @@ def test_legacy_and_v3_metadata_survive_admin_serialization(version, pages):
 
 
 @pytest.mark.parametrize("version,pages", [
-    ("doctor-pdf-v1", 33), ("doctor-pdf-v2", 33), ("doctor-pdf-v3", 33),
+    ("doctor-pdf-v1", 33), ("doctor-pdf-v2", 33), ("doctor-pdf-v3", 33), ("doctor-pdf-v4", 33),
 ])
 def test_all_versions_reject_unreadable_page_counts(version, pages):
     assert parse_doctor_artifact_metadata(_metadata(version, pages)) is None

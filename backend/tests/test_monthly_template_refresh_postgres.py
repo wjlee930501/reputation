@@ -21,6 +21,7 @@ from app.models.monthly_control import MonthlyMeasurementManifest, MonthlyReport
 from app.models.operations import OperationRun, OperationRunState
 from app.models.report import MonthlyReport
 from app.models.sov import ExposureAction
+from app.services.doctor_report_v4 import DoctorReportV4
 from app.services.monthly_period import ReportBuildReason
 from app.services.monthly_report_snapshot import report_render_inputs, restore_doctor_view
 from app.services.monthly_template_refresh import (
@@ -203,11 +204,14 @@ def test_template_refresh_keeps_every_number_when_live_rows_changed(pg_session, 
     pg_session.refresh(action)
     assert action.linked_report_id is None
     first_view, second_view = renders["doctor"]
-    assert first_view["hospital_name"] == second_view["hospital_name"] == "템플릿 갱신 가상 의원"
+    # 2026-11-04 v4: 원장 뷰는 `DoctorReportV4` dataclass다(얼린 스냅샷에서 같은 형으로 복원된다).
+    assert isinstance(first_view, DoctorReportV4) and isinstance(second_view, DoctorReportV4)
+    assert first_view.hospital_name == second_view.hospital_name == "템플릿 갱신 가상 의원"
     assert "마감 뒤 바뀐 현재 글 제목" not in str(second_view)
     assert renders["ae"][1]["hospital"].name == "템플릿 갱신 가상 의원"
-    assert second_view["tiles"][0]["value"] == first_view["tiles"][0]["value"]
-    assert second_view["narrative"].current == first_view["narrative"].current
+    assert second_view.summary.cards[0].value == first_view.summary.cards[0].value
+    assert second_view.current_rate == first_view.current_rate
+    assert second_view == first_view
     assert renders["ae"][1]["published_count"] == renders["ae"][0]["published_count"]
     assert renders["ae"][1]["content_operations"] == renders["ae"][0]["content_operations"]
 
@@ -390,17 +394,13 @@ def _rendered_text(view) -> str:
 
     from pypdf import PdfReader
 
-    from app.services.doctor_pdf_contracts import DoctorPdfExpectation
     from app.services.doctor_pdf_rendering import render_validated_doctor_pdf
+    from app.services.doctor_report_artifact import build_doctor_pdf_expectation
 
     url = "https://fictional.example.invalid/"
     rendered = render_validated_doctor_pdf(
         view=view, period_label="2026-07", public_url=url,
-        expectation=DoctorPdfExpectation(
-            view["hospital_name"], view["coverage_text"],
-            "이 결과는 진료의 질을 평가하거나 환자 수 증가를 보장하지 않습니다.", url,
-            appendix_expected=bool(view["appendix_rows"]),
-        ),
+        expectation=build_doctor_pdf_expectation(view, url),
     )
     return "\n".join(page.extract_text() for page in PdfReader(BytesIO(rendered.pdf_bytes)).pages)
 
@@ -430,7 +430,242 @@ def test_cli_precheck_and_postcheck_pass_for_a_number_preserving_refresh(
     after = cli.postcheck_hospital(pg_session, hospital, 2026, 7)
     assert after.verdict.status == "PASS", after.verdict.summary()
 
-    assert re.search(r"12\s*편\s*중\s*3\s*편", texts["new"])
-    texts["new"] = re.sub(r"12\s*편\s*중\s*3\s*편", "12편 중 4편", texts["new"])
+    # v4 카드 1: 큰 숫자 '3편'(발행 콘텐츠). 숫자를 바꾼 본문은 사후 확인이 막는다.
+    assert re.search(r"(?<![\d.])3\s*편", texts["new"])
+    texts["new"] = re.sub(r"(?<![\d.])3\s*편", "4편", texts["new"])
     flagged = cli.postcheck_hospital(pg_session, hospital, 2026, 7)
     assert flagged.verdict.status == "DIFF"
+
+
+# ── v4 배포 전(v3 스냅샷) 보고서의 템플릿 갱신 = v4 승격 ──────────────────────────
+
+
+def _v3_snapshot_version(session: Session, monkeypatch, texts: dict):
+    """실제 매니페스트·셀·답변 기록으로 보고서를 만든 뒤, 스냅샷을 v4 배포 전 모양(v3 뷰)으로 되돌린다."""
+    from app.models.sov import AIQueryTarget, QueryMatrix, SovRecord
+    from app.services.doctor_pdf_rendering import render_validated_doctor_pdf
+    from app.services.doctor_report_artifact import build_doctor_pdf_expectation
+    from app.services.doctor_report_v4 import DoctorReportV4
+    from app.services.monthly_manifest import (
+        ManifestCellSpec,
+        freeze_monthly_manifest,
+        link_attempt,
+    )
+    from app.services.monthly_report_snapshot import freeze_doctor_view
+    from app.services.report_artifact_validation import PublishedDoctorPdf
+    from app.services.report_engine import build_doctor_report_view
+
+    url = "https://fictional.example.invalid/"
+    monkeypatch.setattr(tasks, "_public_site_url", lambda *_a: url)
+
+    def real_doctor(_hospital, report_id, period_start, view, public_url):
+        # 실제로 렌더·검증해 판 이름(doctor-pdf-v4)이 진짜가 되게 하고, 저장소 업로드만 생략한다.
+        rendered = render_validated_doctor_pdf(
+            view=view, period_label=arrow.get(period_start).format("YYYY-MM"), public_url=public_url,
+            expectation=build_doctor_pdf_expectation(view, public_url),
+        )
+        texts[report_id] = _pdf_bytes_text(rendered.pdf_bytes)
+        return PublishedDoctorPdf(
+            path=f"gs://qa-private/monthly/{report_id}.pdf", sha256=rendered.sha256,
+            byte_size=rendered.byte_size, metadata=rendered.metadata,
+        )
+
+    monkeypatch.setattr(tasks, "generate_doctor_pdf_report", real_doctor)
+    monkeypatch.setattr(tasks, "generate_pdf_report", lambda **_k: "gs://qa-private/ae-upgrade.pdf")
+
+    async def quiet(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(tasks, "record_monthly_artifact_failure", quiet)
+    monkeypatch.setattr(tasks, "recover_monthly_artifact_failures", quiet)
+
+    hospital = Hospital(name="승격 가상 의원", slug=f"upgrade-{uuid.uuid4().hex}", region=["가상동"])
+    session.add(hospital)
+    session.flush()
+    schedule = ContentSchedule(
+        hospital_id=hospital.id, plan="PLAN_12", publish_days=[0],
+        active_from=date(2026, 7, 1), is_active=True,
+    )
+    session.add(schedule)
+    session.flush()
+    items = [
+        _item(hospital, schedule, 1, scheduled=date(2026, 7, 6),
+              published_at=datetime(2026, 7, 6, 1, tzinfo=timezone.utc)),
+        _item(hospital, schedule, 2, scheduled=date(2026, 7, 13),
+              published_at=datetime(2026, 7, 13, 1, tzinfo=timezone.utc)),
+    ]
+    session.add_all(items)
+    target = AIQueryTarget(
+        hospital_id=hospital.id, name="가상동 위내시경 잘하는 병원", target_intent="추천 탐색",
+        platforms=["chatgpt", "gemini"], treatment="위내시경",
+    )
+    query = QueryMatrix(hospital_id=hospital.id, query_text="가상동 위내시경 잘하는 병원", query_intent="LOCAL")
+    session.add_all((target, query))
+    session.flush()
+    manifest = freeze_monthly_manifest(
+        session, hospital.id, 2026, 7,
+        [
+            ManifestCellSpec(
+                query_key=f"query:{query.id}", query_text=query.query_text, platform=platform,
+                query_matrix_id=query.id, query_target_id=target.id, query_variant_id=None,
+                query_intent="LOCAL",
+            )
+            for platform in ("chatgpt", "gemini")
+        ],
+        gemini_configured=True,
+    )
+    records = [
+        SovRecord(
+            hospital_id=hospital.id, query_id=query.id, ai_query_target_id=target.id, ai_platform=platform,
+            is_mentioned=mentioned, measurement_status="SUCCESS",
+            raw_response=(
+                "가상동에서는 승격 가상 의원의 위내시경 상담을 받아볼 수 있습니다."
+                if mentioned else "가상동에는 여러 내과가 있어 가까운 곳에서 상담해 보세요."
+            ),
+        )
+        for platform, mentioned in (("chatgpt", True), ("gemini", False))
+    ]
+    session.add_all(records)
+    session.flush()
+    cells = {cell.platform: cell for cell in manifest.cells}
+    session.add_all(link_attempt(cells[r.ai_platform], r) for r in records)
+    # 매니페스트는 불변이다 — 마감은 보고서 생성이 저장된 마감 시각(ORIGINAL_CUTOFF)으로 닫는다.
+    session.commit()
+
+    outcome = tasks._build_monthly_report_for_hospital(
+        session, hospital, ANCHOR, observed_at=ORIGINAL_CUTOFF,
+        build_reason=ReportBuildReason.SCHEDULED_CLOSE, correlation_key=f"test:v3:{hospital.id}",
+    )
+    assert outcome == "created"
+    first = session.execute(
+        select(MonthlyReport).where(MonthlyReport.hospital_id == hospital.id)
+    ).scalar_one()
+    frozen = report_render_inputs(first.content_summary)
+    assert frozen is not None and isinstance(restore_doctor_view(frozen.doctor_view), DoctorReportV4)
+
+    # v4 배포 전 코드가 저장하던 모양: v3 뷰를 같은 저장 요약으로 만들어 스냅샷에 얼린다.
+    content = dict(first.content_summary)
+    sov = first.sov_summary
+    operations = content.get("operations") or {}
+    timing = content.get("contract_timing") or {}
+    v3_view = build_doctor_report_view(
+        report_kind="MONTHLY", protocol_label="기록 없음", hospital=hospital,
+        sov_pct=sov["sov_pct"], prev_sov_pct=None, published_count=content["published_count"],
+        plan_quota=operations.get("plan_quota"), contract_published_count=timing.get("published_for_contract_count"),
+        attribution=content.get("attribution"), citations=content.get("citations"),
+        published_contents=list(items), v0_baseline=None, records=records, platforms=["chatgpt", "gemini"],
+        sov_coverage=sov, comparison_reason=sov["comparison"]["reason"], cumulative_published_count=2,
+    )
+    snapshot = dict(content["report_snapshot"])
+    inputs = dict(snapshot["render_inputs"])
+    inputs["doctor_view"] = freeze_doctor_view(v3_view)
+    inputs["doctor_metric_facts"] = doctor_view_facts(v3_view)
+    inputs["ae_report"] = {**inputs["ae_report"], "talking_points": list(v3_view["talking_points"])}
+    snapshot["render_inputs"] = inputs
+    content["report_snapshot"] = snapshot
+    content["talking_points"] = list(v3_view["talking_points"])
+    first.content_summary = content
+    session.commit()
+    session.refresh(first)
+    persisted = report_render_inputs(first.content_summary)
+    assert persisted is not None and not isinstance(restore_doctor_view(persisted.doctor_view), DoctorReportV4)
+    assert "template" not in persisted.doctor_metric_facts
+    return hospital, first
+
+
+def _pdf_bytes_text(data: bytes) -> str:
+    from io import BytesIO
+
+    from pypdf import PdfReader
+
+    return "\n".join(page.extract_text() or "" for page in PdfReader(BytesIO(data)).pages)
+
+
+def test_template_refresh_upgrades_a_v3_snapshot_report_to_v4(pg_session, monkeypatch):
+    from app.utils import monthly_template_refresh as cli
+
+    texts: dict = {}
+    hospital, first = _v3_snapshot_version(pg_session, monkeypatch, texts)
+
+    outcome = tasks._build_monthly_template_refresh(
+        pg_session, hospital, ANCHOR, correlation_key=f"test:upgrade:{hospital.id}"
+    )
+
+    assert outcome == "created"
+    second = pg_session.execute(
+        select(MonthlyReport).where(MonthlyReport.hospital_id == hospital.id, MonthlyReport.version == 2)
+    ).scalar_one()
+    assert second.supersedes_report_id == first.id
+    assert second.sov_summary == first.sov_summary
+    artifact = pg_session.execute(
+        select(MonthlyReportArtifact).where(MonthlyReportArtifact.report_id == second.id)
+    ).scalar_one()
+    assert artifact.validated is True
+    assert artifact.validation_metadata["validation_version"] == "doctor-pdf-v4"
+    upgraded = report_render_inputs(second.content_summary)
+    assert upgraded is not None
+    assert upgraded.doctor_view["template_version"] == "v4"
+    assert upgraded.doctor_metric_facts["template"] == "v4"
+    assert upgraded.doctor_metric_facts["card.published"] == "2편"
+    assert second.content_summary["talking_points"] == list(upgraded.ae_report.talking_points)
+    assert "승격 가상 의원" in "".join(texts[second.id].split()).replace("승격가상의원", "승격 가상 의원")
+
+    monkeypatch.setattr(
+        cli, "_stored_doctor_text",
+        lambda _db, report, _verdict: texts.get(report.id, "옛 PDF 본문"),
+    )
+    after = cli.postcheck_hospital(pg_session, hospital, 2026, 7)
+    assert after.verdict.status == "PASS", after.verdict.summary()
+
+
+def test_template_refresh_refuses_a_v3_upgrade_whose_facts_disagree_without_writing(pg_session, monkeypatch):
+    """승격 뷰의 사실이 저장 요약에서 다시 만든 사실과 어긋나면 V4_UPGRADE_FACTS로 거절하고 아무것도 쓰지 않는다.
+
+    저장된 `published_count`를 손대면 승격 뷰와 저장 사실이 **같은 값**을 읽어 어긋나지 않는다(둘 다 저장
+    요약이 근거다). 그래서 거절 경로는 저장 사실 쪽을 바꿔 확인한다.
+    """
+    from app.services import doctor_report_v4
+
+    texts: dict = {}
+    hospital, _first = _v3_snapshot_version(pg_session, monkeypatch, texts)
+    real = doctor_report_v4.stored_facts_v4
+    monkeypatch.setattr(
+        doctor_report_v4, "stored_facts_v4",
+        lambda sov, content: {**real(sov, content), "card.published": "9편"},
+    )
+
+    with pytest.raises(TemplateRefreshRefused) as caught:
+        tasks._build_monthly_template_refresh(
+            pg_session, hospital, ANCHOR, correlation_key=f"test:upgrade-tamper:{hospital.id}"
+        )
+    assert "V4_UPGRADE_FACTS" in caught.value.verdict.summary()
+    assert "card.published: 저장 9편 ≠ 뷰 2편" in caught.value.verdict.summary()
+    pg_session.rollback()
+    versions = pg_session.execute(
+        select(MonthlyReport.version).where(MonthlyReport.hospital_id == hospital.id)
+    ).scalars().all()
+    assert versions == [1]
+    assert len(texts) == 1  # 새 원장 PDF를 그리지 않았다
+
+
+def test_a_tampered_stored_published_count_is_caught_by_the_frozen_v3_facts(pg_session, monkeypatch):
+    """저장 요약만 보는 대조는 동어반복이지만, 원장이 받았던 v3 판의 숫자(doctor_metric_facts)와는 어긋나 거절한다."""
+    texts: dict = {}
+    hospital, first = _v3_snapshot_version(pg_session, monkeypatch, texts)
+    tampered = dict(first.content_summary)
+    tampered["published_count"] = int(tampered["published_count"]) + 1
+    first.content_summary = tampered
+    pg_session.commit()
+
+    with pytest.raises(TemplateRefreshRefused) as caught:
+        tasks._build_monthly_template_refresh(
+            pg_session, hospital, ANCHOR, correlation_key=f"test:upgrade-tamper2:{hospital.id}"
+        )
+
+    assert "V4_UPGRADE_FACTS" in caught.value.verdict.summary()
+    assert "highlight.published_this_month" in caught.value.verdict.summary()
+    pg_session.rollback()
+    versions = pg_session.execute(
+        select(MonthlyReport.version).where(MonthlyReport.hospital_id == hospital.id)
+    ).scalars().all()
+    assert versions == [1]

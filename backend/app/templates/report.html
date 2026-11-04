@@ -111,7 +111,7 @@
 </p>
 {% set platform_labels = {'chatgpt':'ChatGPT','gemini':'Gemini'} %}
 <table>
-  <tr><th>AI 서비스</th><th>실제 응답 모델</th><th>검색 사용</th><th>계획</th><th>측정 완료</th><th>측정 못함</th><th>사전 제외</th><th>병원 언급</th></tr>
+  <tr><th>AI 서비스</th><th>실제 응답 모델</th><th>검색 사용</th><th>계획</th><th>측정 완료</th><th>측정 못함</th><th>사전 제외</th><th>언급된 질문(셀)</th><th>답변 노출(풀드)</th></tr>
   {% for row in sov_coverage.platforms %}
   <tr>
     <td>{{ platform_labels.get(row.platform, '기타 AI 서비스') }}</td>
@@ -121,7 +121,9 @@
     <td>{{ row.success_count }}개</td>
     <td>{{ row.failed_count }}개</td>
     <td>{{ row.excluded_count }}개</td>
-    <td>{% if row.mention_rate is not none %}{{ row.mentioned_count }}/{{ row.measured_count }}개 · {{ "%.1f"|format(row.mention_rate) }}%{% else %}산출하지 않음{% endif %}</td>
+    <td>{% if row.measured_count %}{{ row.mentioned_count }}/{{ row.measured_count }}개{% else %}산출하지 않음{% endif %}</td>
+    {# 2026-11-04 v4 §7: mention_rate는 셀 평균이 아니라 답변 k/n(풀드)이다 — 셀 수와 나란히 두지 않는다. #}
+    <td>{% if row.attempts_used %}답변 {{ row.attempts_used }}건 중 {{ row.mentioned_attempts }}건 · {{ "%.1f"|format(row.mentioned_attempts / row.attempts_used * 100) }}%{% else %}산출하지 않음{% endif %}</td>
   </tr>
   {% endfor %}
 </table>

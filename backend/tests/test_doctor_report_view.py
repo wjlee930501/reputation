@@ -22,8 +22,9 @@ from app.services.report_narrative import MONTHLY_NOTICE_PRIMARY, MONTHLY_NOTICE
 HOSPITAL = SimpleNamespace(name="장편한외과의원")
 
 # 원장 화면에 나오면 안 되는 표현. 사내·업계 용어이거나 숫자를 왜곡하는 표기다.
+# 2026-11-04 R3: '언급률'은 v4 용어(AI 노출률)로 바뀌어 금지어에서 뺐다.
 BANNED_IN_DOCTOR_COPY = [
-    "SoV", "sov", "언급률", "노출 갭", "심각도", "쿼리", "질의",
+    "SoV", "sov", "노출 갭", "심각도", "쿼리", "질의",
     "%p", "지수", "스코어", "AEO",
 ]
 

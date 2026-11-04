@@ -37,24 +37,28 @@ from app.core.database import SyncSessionLocal
 from app.models.hospital import Hospital
 from app.models.monthly_control import MonthlyReportArtifact
 from app.models.report import MonthlyReport
-from app.services.doctor_pdf_contracts import DoctorPdfExpectation, DoctorPdfValidationError
+from app.services.doctor_pdf_contracts import DoctorPdfValidationError
 from app.services.doctor_pdf_rendering import render_validated_doctor_pdf
+from app.services.doctor_report_artifact import build_doctor_pdf_expectation
+from app.services.doctor_report_v4 import _pct as _pct_v4
 from app.services.monthly_period import MonthlyPeriodError, require_closed_period
 from app.services.monthly_report_delivery import monthly_doctor_artifact_is_valid
+from app.services.monthly_report_snapshot import report_render_inputs
 from app.services.monthly_template_refresh import (
     RefreshVerdict,
     compare_doctor_facts,
     doctor_view_facts,
+    facts_are_v4,
     number_tokens,
     numeric_diff,
     pdf_fact_problems,
     stored_doctor_facts,
+    stored_doctor_view_is_v4,
     stored_only_facts,
 )
 from app.services.report_file_integrity import ReportFileUnavailable, read_verified_report
 
 SYSTEM_JOB = "monthly-template-refresh"
-_CAVEAT = "이 결과는 진료의 질을 평가하거나 환자 수 증가를 보장하지 않습니다."
 _TERMINAL_RUN_STATES = {"SUCCEEDED", "PARTIAL", "FAILED", "CANCELLED"}
 
 
@@ -73,6 +77,14 @@ def _anchor(year: int, month: int) -> arrow.Arrow:
 
 def _pdf_text(data: bytes) -> str:
     return "\n".join(page.extract_text() or "" for page in PdfReader(BytesIO(data)).pages)
+
+
+def _secondary_facts(facts: dict[str, str], sov_summary) -> dict[str, str]:
+    """PDF 이차 확인에 쓰는 사실. v3는 저장 요약에만 있는 범위·횟수를 더하고, v4는 뷰 사실만 본다
+    (v4 템플릿은 신뢰구간·확정 횟수를 찍지 않는다 — 부록 B는 뷰 사실의 계획/확인/실패 수다)."""
+    if facts_are_v4(facts):
+        return dict(facts)
+    return {**facts, **stored_only_facts(sov_summary or {})}
 
 
 def _doctor_artifact(db, report: MonthlyReport) -> MonthlyReportArtifact | None:
@@ -139,13 +151,7 @@ def precheck_hospital(
                 view=view,
                 period_label=f"{anchor.year:04d}-{anchor.month:02d}",
                 public_url=public_url,
-                expectation=DoctorPdfExpectation(
-                    hospital_name=str(view["hospital_name"]),
-                    coverage_text=str(view["coverage_text"]),
-                    caveat_text=_CAVEAT,
-                    public_url=public_url,
-                    appendix_expected=bool(view.get("appendix_rows")),
-                ),
+                expectation=build_doctor_pdf_expectation(view, public_url),
             )
         except DoctorPdfValidationError as exc:
             verdict.add("DIFF", "NEW_DOCTOR_PDF_INVALID", exc.code)
@@ -153,15 +159,10 @@ def precheck_hospital(
             facts = doctor_view_facts(view)
             # 뷰와 저장 요약의 대조(계획 단계)는 이미 끝났다. 여기서는 지난달 보고서에서 읽어
             # 새 뷰가 '지난달(참고)'로 옮겨 적는 값만 그 근거와 맞춰 본다.
-            reference_key = {"rate.reference_previous"}
-            for problem in compare_doctor_facts(
-                _prior_reference_fact(db, latest),
-                {key: value for key, value in facts.items() if key in reference_key},
-                require_backing=frozenset(reference_key),
-            ):
+            for problem in _reference_fact_problems(db, latest, facts):
                 verdict.add("DIFF", "DOCTOR_VIEW_NUMBER", problem)
             for problem in pdf_fact_problems(
-                _pdf_text(rendered.pdf_bytes), {**facts, **stored_only_facts(latest.sov_summary)}
+                _pdf_text(rendered.pdf_bytes), _secondary_facts(facts, latest.sov_summary)
             ):
                 verdict.add("DIFF", "DOCTOR_PDF_NUMBER", problem)
     return HospitalResult(
@@ -169,11 +170,67 @@ def precheck_hospital(
     )
 
 
-def _prior_reference_fact(db, report: MonthlyReport) -> dict[str, str]:
+def _reference_fact_problems(db, report: MonthlyReport, facts: dict[str, str]) -> list[str]:
+    """새 뷰의 '지난달(참고)' 값과 지난달 보고서의 근거를 맞춘다.
+
+    v4 뷰는 직접 비교한 달에 참고치를 쓰지 않고 `rate.previous`를 쓴다(비교·참고를 함께 적지
+    않는다). 그래서 v4는 얼린 뷰 사실에 `rate.reference_previous`가 있을 때만 근거와 대조하고,
+    없으면 건너뛴다 — 지난달 보고서가 있다는 이유만으로 참고치를 요구하지 않는다. v3는 종전 그대로다.
+    """
+    reference_key = {"rate.reference_previous"}
+    v4 = facts_are_v4(facts)
+    if v4 and not (reference_key & set(facts)):
+        return []
+    expected = _prior_reference_fact(db, report, v4=v4)
+    if v4 and not stored_doctor_view_is_v4(report.content_summary or {}):
+        # v3→v4 승격: 승격 뷰는 지난달 보고서를 다시 읽지 않고 그 달에 얼린 v3 참고치를 쓴다 — 같은 값으로 대조한다.
+        frozen = report_render_inputs(report.content_summary or {})
+        frozen_reference = (frozen.doctor_metric_facts or {}).get("rate.reference_previous") if frozen else None
+        if isinstance(frozen_reference, str) and frozen_reference.endswith("%"):
+            expected = {"rate.reference_previous": _pct_v4(float(frozen_reference[:-1]))}
+    return compare_doctor_facts(
+        expected,
+        {key: value for key, value in facts.items() if key in reference_key},
+        require_backing=frozenset(reference_key),
+    )
+
+
+def _without_doctor_view(content_summary: dict) -> dict:
+    """스냅샷의 원장 뷰·뷰 사실·AE 핵심 3줄을 뺀 content_summary(v3→v4 승격 비교용). 나머지는 그대로다."""
+    content = dict(content_summary)
+    snapshot = content.get("report_snapshot")
+    if not isinstance(snapshot, dict):
+        return content
+    snapshot = dict(snapshot)
+    inputs = dict(snapshot.get("render_inputs") or {})
+    inputs.pop("doctor_view", None)
+    inputs.pop("doctor_metric_facts", None)
+    ae_report = inputs.get("ae_report")
+    if isinstance(ae_report, dict):
+        inputs["ae_report"] = {key: value for key, value in ae_report.items() if key != "talking_points"}
+    snapshot["render_inputs"] = inputs
+    content["report_snapshot"] = snapshot
+    return content
+
+
+def _frozen_view_facts(report: MonthlyReport) -> dict[str, str]:
+    """대체한 버전이 스냅샷에 얼린 원장 뷰 사실(`render_inputs.doctor_metric_facts`).
+
+    v4의 진료 항목·그룹·경쟁·추이 사실은 저장 요약만으로 다시 만들 수 없어(현재 행의 값) 저장
+    요약 사실에 더해 이 얼린 사실까지 새 PDF에 찍혔는지 본다. 스냅샷이 없으면 빈 dict다.
+    """
+    render_inputs = report_render_inputs(report.content_summary or {})
+    if render_inputs is None:
+        return {}
+    return dict(render_inputs.doctor_metric_facts)
+
+
+def _prior_reference_fact(db, report: MonthlyReport, *, v4: bool = False) -> dict[str, str]:
     """지난달 보고서에 저장된 언급 비율 — 새 PDF가 '지난달(참고)' 칸에 옮겨 적는 사실.
 
     측정 방식이 바뀌어 비교하지 않는 달에 새 템플릿이 처음 보여 주는 숫자다. 새 뷰가 아니라
     지난달 보고서 행에서 따로 읽어, 그 값과 정확히 같을 때만 숫자가 바뀐 것으로 보지 않는다.
+    v4 뷰는 비율을 정수 %로 적으므로(`doctor_report_v4._pct`) 같은 꼴로 만든다.
     """
     from app.workers.tasks import reported_monthly_sov_pct
 
@@ -183,7 +240,9 @@ def _prior_reference_fact(db, report: MonthlyReport) -> dict[str, str]:
         else (report.period_year, report.period_month - 1)
     )
     value = reported_monthly_sov_pct(db, report.hospital_id, prior_year, prior_month)
-    return {} if value is None else {"rate.reference_previous": f"{value:.1f}%"}
+    if value is None:
+        return {}
+    return {"rate.reference_previous": _pct_v4(value) if v4 else f"{value:.1f}%"}
 
 
 def postcheck_hospital(db, hospital: Hospital, year: int, month: int) -> HospitalResult:
@@ -218,6 +277,13 @@ def postcheck_hospital(db, hospital: Hospital, year: int, month: int) -> Hospita
     new_content = dict(latest.content_summary or {})
     old_points = old_content.pop("talking_points", [])
     new_points = new_content.pop("talking_points", [])
+    # v4 배포 전(v3 스냅샷) 보고서의 갱신은 원장 뷰·뷰 사실·핵심 3줄을 v4로 바꿔 저장한다 — 그 세 칸은
+    # 형식이 달라 숫자 칸으로 비교할 수 없고, 승격 뷰의 숫자는 생성 단계가 저장 요약과 대조했다.
+    upgraded = stored_doctor_view_is_v4(new_content) and not stored_doctor_view_is_v4(old_content)
+    if upgraded:
+        verdict.add("WARN", "V3_TO_V4_UPGRADE")
+        old_content = _without_doctor_view(old_content)
+        new_content = _without_doctor_view(new_content)
     for prefix, old, new in (
         ("sov_summary", previous.sov_summary, latest.sov_summary),
         ("content_summary", old_content, new_content),
@@ -225,17 +291,19 @@ def postcheck_hospital(db, hospital: Hospital, year: int, month: int) -> Hospita
     ):
         for line in numeric_diff(old, new, prefix=prefix):
             verdict.add("DIFF", "STORED_NUMBER", line)
-    if number_tokens(old_points) != number_tokens(new_points):
+    if not upgraded and number_tokens(old_points) != number_tokens(new_points):
         verdict.add("DIFF", "TALKING_POINT_NUMBERS")
     # 옛 버전은 검증된 산출물이 있는지만 본다. 새 PDF에는 저장된 숫자 사실이 모두 찍혀 있어야 한다
     # (옛 PDF 본문과 비교하지 않는다 — 문구만 바뀐 달이 막히던 정규식 대조를 없앴다).
     _stored_doctor_text(db, previous, verdict)
     new_text = _stored_doctor_text(db, latest, verdict)
     if new_text is not None:
-        facts = {
-            **stored_doctor_facts(latest.sov_summary or {}, latest.content_summary or {}),
-            **stored_only_facts(latest.sov_summary or {}),
-        }
+        stored = stored_doctor_facts(latest.sov_summary or {}, latest.content_summary or {})
+        facts = _secondary_facts(stored, latest.sov_summary)
+        if facts_are_v4(stored):
+            # 저장 요약 사실 + 얼린 뷰 사실(진료 항목·그룹·경쟁·추이). 같은 키는 저장 요약과 같아야
+            # 하고(계획 단계가 이미 대조), 얼린 사실만의 키도 새 PDF에 찍혀 있어야 한다.
+            facts = {**facts, **_frozen_view_facts(latest)}
         for problem in pdf_fact_problems(new_text, facts):
             verdict.add("DIFF", "DOCTOR_PDF_NUMBER", problem)
     return HospitalResult(hospital.id, hospital.name, latest.version, verdict)
