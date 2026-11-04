@@ -17,7 +17,7 @@ from test_report_plain_language import (
 from test_report_redesign import monthly_view
 
 from app.services.monthly_template_refresh import pdf_fact_problems, stored_only_facts
-from app.services.report_narrative import PRIORITY_APPENDIX_LEAD
+from app.services.report_narrative import MONTHLY_SAME_BASIS_NOTICE, PRIORITY_APPENDIX_LEAD
 
 # 피드백에서 지운 표현. '그 결과'는 글과 답변의 인과를 암시하므로 어디에도 쓰지 않는다.
 BANNED_PHRASES = [
@@ -101,10 +101,9 @@ def test_page_three_points_to_appendix_only_when_more_than_three_priorities():
 def test_reference_month_says_it_once_on_page_one_and_short_note_in_appendix():
     view = _view("method_reference")
     html = _html(view)
-    sentence = "이번 달부터 측정 방식이 바뀌어, 지난달 수치는 참고용으로만 함께 적었습니다."
-    assert _body_text(html).count(sentence) == 1
-    assert sentence in _page(html, 1)
-    assert view["narrative"].comparison_note == "이번 달부터 측정 방식이 바뀌어 지난달 수치는 참고용으로만 적었습니다."
+    assert _body_text(html).count(MONTHLY_SAME_BASIS_NOTICE) == 1
+    assert MONTHLY_SAME_BASIS_NOTICE in _page(html, 1)
+    assert view["narrative"].comparison_note == "지난달 수치는 참고용으로만 함께 적었습니다."
     appendix = _body_text(html.split('id="appendix-start"')[1])
     assert view["narrative"].comparison_note in appendix
     assert view["narrative"].comparison_note not in _page(html, 1)

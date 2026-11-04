@@ -111,7 +111,12 @@ def v3_expectation(
             else n.previous_label
         ),
     ]
-    if n.previous is None and n.current is not None and n.reference_previous is None:
+    if (
+        n.previous is None
+        and n.current is not None
+        and n.reference_previous is None
+        and n.comparison_note != n.conclusion
+    ):
         page1.append(n.comparison_note)
     if n.current is not None and round(n.current) > 0:
         page1.append(f"100번 물으면 약 {round(n.current)}번 우리 병원이 언급된 셈입니다.")

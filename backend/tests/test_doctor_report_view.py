@@ -17,6 +17,7 @@ from uuid import uuid4
 import pytest
 
 from app.services.report_engine import build_doctor_report_view
+from app.services.report_narrative import MONTHLY_SAME_BASIS_NOTICE
 
 HOSPITAL = SimpleNamespace(name="장편한외과의원")
 
@@ -196,11 +197,18 @@ def test_first_month_explicitly_names_the_baseline():
     assert view["headline"]["delta_sentence"] == "이번 달이 기준선입니다"
 
 
-def test_incomparable_month_explicitly_names_the_policy_change():
+def test_policy_change_month_uses_the_evergreen_monthly_notice():
+    """측정 기준이 바뀐 달의 문장은 매달 나가도 참인 확정 문구다 — 한 번짜리 전환 안내가 아니다."""
     view = _view(comparison_reason="MEASUREMENT_POLICY_CHANGED")
 
     assert view["headline"]["delta"] is None
-    assert view["headline"]["delta_sentence"] == "측정 기준이 바뀌어 다음 달부터 비교합니다"
+    assert view["headline"]["delta_sentence"] == MONTHLY_SAME_BASIS_NOTICE
+    assert view["summary"].startswith(f"{MONTHLY_SAME_BASIS_NOTICE} 이번 달 확인한 답변을")
+    for copy in (view["headline"]["delta_sentence"], view["summary"], *view["talking_points"]):
+        for stale in ("다음 달부터", "측정 기준이 바뀌어", "측정 방식이 바뀌어"):
+            assert stale not in copy
+    assert any(MONTHLY_SAME_BASIS_NOTICE in line for line in view["talking_points"])
+    assert ".." not in " ".join(view["talking_points"])
 
 
 @pytest.mark.parametrize("banned", BANNED_IN_DOCTOR_COPY)

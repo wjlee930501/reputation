@@ -17,7 +17,7 @@
 <p class="descriptor">{% if ym|length == 2 %}{{ ym[0] }}년 {{ ym[1]|int }}월 · {% endif %}{{ n.title }}</p>
 <p class="identity hero-identity">{{ view.hospital_name }}</p>
 <h1 class="editorial-result">{{ n.conclusion }}</h1>
-{% if n.previous is none and n.current is not none and n.reference_previous is none %}<p class="headline-note">{{ n.comparison_note }}</p>{% endif %}
+{% if n.previous is none and n.current is not none and n.reference_previous is none and n.comparison_note != n.conclusion %}<p class="headline-note">{{ n.comparison_note }}</p>{% endif %}
 </div>
 
 <p class="story">{{ n.result_story }}</p>

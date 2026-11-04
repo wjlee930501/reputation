@@ -75,6 +75,10 @@ class MonthlyNarrative:
     plan_story: str = ""
 
 
+# 월간 보고서 첫 장 상단의 안내 문구(2026-11 대표 확정, 글자 그대로). 매달 나가도 참이어야
+# 하므로 '이번 달부터 바뀌어'·'다음 달부터 비교' 같은 한 번짜리 전환 안내를 대신한다.
+MONTHLY_SAME_BASIS_NOTICE = "동일 측정 기준의 월간 결과입니다. 전월과 같은 방식으로 비교해 주세요."
+
 # 비교하지 않은 이유를 원장님이 읽을 수 있는 한 문장으로. 한 보고서에는 하나만 나온다.
 _NOT_COMPARED = "지난달 결과와 직접 비교하지는 않았습니다."
 _FIRST_MEASUREMENT_NOTE = (
@@ -83,9 +87,7 @@ _FIRST_MEASUREMENT_NOTE = (
 _COMPARISON_NOTES = {
     "NO_PRIOR_MANIFEST": _FIRST_MEASUREMENT_NOTE,
     "ANSWER_MODEL_CHANGED": f"AI 서비스의 답변 모델이 바뀌어서 {_NOT_COMPARED}",
-    "MEASUREMENT_POLICY_CHANGED": (
-        f"측정 방식이 바뀌어서 {_NOT_COMPARED} 다음 달부터 다시 견주어 보여 드리겠습니다."
-    ),
+    "MEASUREMENT_POLICY_CHANGED": MONTHLY_SAME_BASIS_NOTICE,
     "QUERY_TEXT_CHANGED": f"AI에게 묻는 질문 문장이 달라져서 {_NOT_COMPARED}",
     "PLATFORM_COHORT_MISSING": f"두 달 동안 물어본 AI 서비스가 서로 달라서 {_NOT_COMPARED}",
     "INTENT_SNAPSHOT_MISSING": f"지난달 질문 기록이 일부 비어 있어서 {_NOT_COMPARED}",
@@ -96,21 +98,12 @@ _COMPARISON_NOTES = {
 _DEFAULT_COMPARISON_NOTE = f"지난달과 같은 조건에서 물었는지 확인되지 않아 {_NOT_COMPARED}"
 # 지난달 수치를 참고로만 두는 달. 첫 장에서는 한 번(제목 문장)만 말하고, 부록의 읽는 법에서는
 # 짧게 되풀이한다 — 같은 말을 세 번 하지 않는다(2026-10 마케팅 검토).
-_REFERENCE_CONCLUSIONS = {
-    "MEASUREMENT_POLICY_CHANGED": (
-        "이번 달부터 측정 방식이 바뀌어, 지난달 수치는 참고용으로만 함께 적었습니다. "
-        "다음 달부터는 같은 방식으로 비교해 드리겠습니다."
-    ),
-}
+_REFERENCE_CONCLUSIONS = {"MEASUREMENT_POLICY_CHANGED": MONTHLY_SAME_BASIS_NOTICE}
 _REFERENCE_CONCLUSION = (
     "지난달과 같은 조건으로 비교할 수 없어, 지난달 수치는 참고용으로만 함께 적었습니다."
 )
 _REFERENCE_TAIL = "지난달 수치는 참고용으로만 함께 적었습니다."
-_REFERENCE_NOTES = {
-    "MEASUREMENT_POLICY_CHANGED": (
-        "이번 달부터 측정 방식이 바뀌어 지난달 수치는 참고용으로만 적었습니다."
-    ),
-}
+_REFERENCE_NOTES = {"MEASUREMENT_POLICY_CHANGED": _REFERENCE_TAIL}
 _COMPARABLE_NOTE = "지난달과 같은 질문을 같은 방식으로 물어 두 달의 결과를 비교했습니다."
 # 다음 달 할 일 한 줄은 `“질문”: 할 일.` 꼴이다. 인용한 질문이 곧 목표 질문이므로
 # "~처럼 … 질문에서도" 같은 틀 문장을 앞에 붙이지 않는다(예시가 따로 있는 듯 읽히고,
@@ -136,7 +129,7 @@ def _conclusion(value: float | None, prior: float | None, *, first: bool) -> str
     if first:
         return "첫 측정 결과입니다. 앞으로 이 숫자와 견주며 변화를 살피겠습니다."
     if prior is None:
-        return "이번 결과를 새 기준점으로 두고, 다음 달부터 흐름을 짚어 드리겠습니다."
+        return MONTHLY_SAME_BASIS_NOTICE
     if value > prior:
         return "AI 답변이 지난달보다 우리 병원을 더 자주 언급했습니다."
     if value < prior:
