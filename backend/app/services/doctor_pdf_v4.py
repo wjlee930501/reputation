@@ -70,7 +70,12 @@ def validate_v4_fields(view: DoctorReportV4) -> None:
 
 
 def v4_layout_valid(document: RenderedDocument, keyword_row_count: int) -> bool:
-    """본문 6쪽은 쪽마다 한 장, 부록은 7쪽부터 이어진다. 앵커가 60pt 여백 안에 있어야 한다."""
+    """본문 6쪽은 쪽마다 한 장, 부록은 7쪽부터 이어진다. 앵커가 @page 여백 안에 있어야 한다.
+
+    `p`로 시작하는 모든 앵커가 검사 대상이다 — 쪽 앵커 `p{n}-start/end`뿐 아니라 넓은 표의 맨 오른쪽
+    칸에 둔 `p2-table-end`·`p3-heat-end`·`p4-table-end`·`p6-table-end`도 포함이라, 표가 오른쪽 레일을
+    넘으면(2-up 히트맵의 긴 키워드 등) 그 앵커가 레일 밖에 놓여 거절된다.
+    """
     if not MIN_PAGES <= len(document.pages) <= MAX_PAGES:
         return False
     for index in range(BODY_PAGES):

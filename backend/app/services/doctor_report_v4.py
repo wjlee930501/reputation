@@ -22,6 +22,7 @@ from typing import Any, Literal
 
 import arrow
 
+from app.services.content_citations import normalize_cited_url
 from app.services.query_target_structure import (
     INTENT_AVAILABILITY,
     INTENT_COMPARISON,
@@ -767,7 +768,7 @@ def build_doctor_report_v4(
     )
     cases = _cases_page(
         records=records, hospital_name=hospital_name, setup=setup, by_text=by_text,
-        regions=regions, citations=citations, registered=registered,
+        regions=regions, works=works, registered=registered,
     )
     appendix = _appendix(
         keywords=keywords, platform_ids=platform_ids, comparable=comparable,
@@ -1149,19 +1150,31 @@ def _normalize_answer(text: str) -> str:
     return _excerpt_around(text or "", "", width=10**7)
 
 
-def _cases_page(*, records, hospital_name, setup, by_text, regions, citations, registered) -> CasesPage:
+def _record_cites(record: Any, urls_to_title: Mapping[str, str]) -> str:
+    """고른 답변 자신의 출처 URL이 발행 콘텐츠 URL과 같을 때만 그 제목 — 같은 질문의 다른 반복이 인용한 것을 이 답변의 것으로 말하지 않는다(검토 7-5)."""
+    for value in getattr(record, "source_urls", None) or []:
+        normalized = normalize_cited_url(value)
+        if normalized is None:
+            continue
+        title = urls_to_title.get(f"{normalized.host}{normalized.path}")
+        if title:
+            return title
+    return ""
+
+
+def _cases_page(*, records, hospital_name, setup, by_text, regions, works, registered) -> CasesPage:
     headline = "대표 답변 사례"
     if setup:
         return CasesPage(headline, None, None, "AI 답변 사례는 다음 달 첫 측정부터 보여 드립니다.")
     usable = [r for r in records if _successful(r) and (getattr(r, "raw_response", None) or "").strip()]
     found_record = next((r for r in usable if r.is_mentioned), None)
     missing_record = next((r for r in usable if not r.is_mentioned), None)
-    # 인용은 (키워드, AI 서비스) 짝으로 고른 답변에만 묶는다(검토 13).
-    cited_title_by_cell = {
-        (str(q.get("query_text") or "").strip(), str(q.get("platform_label") or "").strip()): str(item.get("title") or "")
-        for item in (citations or {}).get("cited_items") or []
-        for q in item.get("queries") or []
-    }
+    # 인용 주장은 고른 답변 자신의 출처 URL이 발행 콘텐츠 URL과 맞을 때만 한다.
+    urls_to_title: dict[str, str] = {}
+    for work in works:
+        normalized = normalize_cited_url(work.url) if work.url else None
+        if normalized is not None:
+            urls_to_title[f"{normalized.host}{normalized.path}"] = work.title
 
     def _case(record: Any, *, found: bool) -> Case | None:
         if record is None:
@@ -1182,7 +1195,7 @@ def _cases_page(*, records, hospital_name, setup, by_text, regions, citations, r
         measured_on = arrow.get(measured_at).to("Asia/Seoul").format("YYYY-MM-DD") if measured_at else ""
         platform = platform_name(getattr(record, "ai_platform", ""))
         if found:
-            cited_title = cited_title_by_cell.get((keyword, platform), "")
+            cited_title = _record_cites(record, urls_to_title)
             if cited_title:
                 insight = f"'{cited_title}' 콘텐츠가 출처로 쓰였습니다 → 같은 형식으로 다른 항목도 발행"
             else:

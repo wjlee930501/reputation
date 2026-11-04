@@ -13,20 +13,20 @@
   --mod-in:12pt;     /* 모듈 제목 → 내용 */
   --row:6pt;         /* 표·막대 행의 위아래 여백(행 사이 12pt) */
   --fig:40pt;        /* 카드 큰 숫자 */
-  --fig-compound:28pt; --fig-long:23pt; --fig-text:15pt;
+  --fig-compound:28pt; --fig-long:22pt; --fig-longer:20pt; --fig-longest:18pt; --fig-text:15pt;
   --band-fig:36pt;   /* 검정 면 숫자 */
-  --heat:18pt;       /* 히트맵 칸 높이 */
+  --heat-pad:5pt;    /* 히트맵 칸 위아래 여백(한 줄 행 22pt) */
   --key-pad:16pt; --key-text:13pt;
   --case-gap:32pt;
 }
 /* 자료가 빽빽한 쪽(02·03)은 모듈 사이 28pt(compact 20pt)·제목→첫 모듈도 같은 값. */
 .v4 .content, .v4 .exposure { --mod:28pt; }
-.v4 .exposure { --mod:24pt; }
-.compact.v4 .content, .compact.v4 .exposure { --mod:16pt; }
+.v4 .exposure { --mod:20pt; }
+.compact.v4 .content { --mod:16pt; }
 .compact.v4 {
   --mod:24pt; --mod-in:8pt; --row:3pt;
-  --fig:36pt; --fig-compound:25pt; --fig-long:21pt; --fig-text:14pt;
-  --band-fig:32pt; --heat:12pt;
+  --fig:36pt; --fig-compound:25pt; --fig-long:20pt; --fig-longer:18pt; --fig-longest:16pt; --fig-text:14pt;
+  --band-fig:32pt; --heat-pad:3pt;
   --key-pad:11pt; --key-text:12pt; --case-gap:24pt;
 }
 
@@ -49,7 +49,7 @@
 .v4 .section-aside { font-size:9pt; font-weight:400; color:var(--muted); margin-left:var(--s3); letter-spacing:0; vertical-align:baseline; }
 .v4 table { font-size:9.5pt; line-height:1.4; }
 .v4 th { font-size:9pt; padding:0 var(--s2) 6pt 0; }
-.v4 td { padding:var(--row) var(--s2) var(--row) 0; }
+.v4 td { padding-top:var(--row); padding-bottom:var(--row); padding-left:0; padding-right:var(--s2); }  /* WeasyPrint는 var()로 시작하는 padding 축약을 풀지 못한다 — 개별 속성으로 쓴다 */
 .v4 th.num, .v4 td.num { text-align:right; }
 
 /* 01 월간 요약 — 제목 묶음, 카드 4장(라벨·숫자·정의 행이 같은 선에 놓이는 표), 핵심 3줄 원장, 아래 안내. */
@@ -67,15 +67,19 @@
 .v4 .cards td.accent .card-label { color:var(--accent-ink); }
 .v4 .card-label { font-size:9pt; color:var(--muted); font-weight:700; letter-spacing:.06em; margin:0; line-height:1.3; }
 .v4 .cards-values td { vertical-align:baseline; padding-bottom:var(--s2); }
-.v4 .card-value { font-size:var(--fig); font-weight:800; letter-spacing:-.03em; line-height:1.1; margin:0; font-variant-numeric:tabular-nums; white-space:nowrap; }
+/* 큰 숫자는 추정 너비로 크기를 정한다(템플릿 value_class) — 40pt → 28pt → 22pt → 20pt → 18pt 가운데 한 줄에
+   들어가는 가장 큰 단계. 칸을 넘지 않는 것이 먼저라 마지막 수단으로 어디서든 줄을 바꾼다. */
+.v4 .card-value { font-size:var(--fig); font-weight:800; letter-spacing:-.03em; line-height:1.1; margin:0; font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
 .v4 .card-value.compound { font-size:var(--fig-compound); letter-spacing:-.025em; }
 .v4 .card-value.long { font-size:var(--fig-long); letter-spacing:-.02em; }
-.v4 .card-value.muted { font-size:var(--fig-text); color:var(--muted); letter-spacing:-.01em; white-space:normal; }
+.v4 .card-value.longer { font-size:var(--fig-longer); letter-spacing:-.02em; }
+.v4 .card-value.longest { font-size:var(--fig-longest); letter-spacing:-.02em; }
+.v4 .card-value.muted { font-size:var(--fig-text); color:var(--muted); letter-spacing:-.01em; }
 .v4 .cards-defs td { padding-bottom:var(--s2); }
 .v4 .card-names { font-size:10pt; font-weight:600; line-height:1.4; margin:0 0 var(--s1); }
 .v4 .card-definition { font-size:9.5pt; color:var(--muted); line-height:1.45; margin:0; }
 .v4 .key-lines { border-top:2pt solid var(--ink); border-bottom:2pt solid var(--ink); }
-.v4 .key-line { display:table; width:100%; padding:var(--key-pad) 0; border-top:0.6pt solid var(--rule); break-inside:avoid; }
+.v4 .key-line { display:table; width:100%; padding-top:var(--key-pad); padding-bottom:var(--key-pad); border-top:0.6pt solid var(--rule); break-inside:avoid; }
 .v4 .key-line:first-child { border-top:0; }
 .v4 .key-label { display:table-cell; width:72pt; color:var(--muted); font-weight:700; font-size:9pt; letter-spacing:.06em; vertical-align:top; padding-top:4pt; padding-right:var(--s2); }
 .v4 .key-text { display:table-cell; font-size:var(--key-text); font-weight:600; line-height:1.45; margin:0; vertical-align:top; }
@@ -87,7 +91,7 @@
    중첩한 display:table의 백분율 너비를 바깥 표 기준으로 풀어 두 칸 배치에서 넘친다.
    트랙은 한 색(#dcdcdc)·한 높이(6pt), 값은 오른쪽 끝 한 선에 맞춘다. */
 .v4 .bars { font-size:11pt; line-height:1.3; }
-.v4 .bars td { padding:var(--row) var(--s2) var(--row) 0; vertical-align:middle; border-bottom:0.6pt solid var(--rule); }
+.v4 .bars td { padding-top:var(--row); padding-bottom:var(--row); padding-left:0; padding-right:var(--s2); vertical-align:middle; border-bottom:0.6pt solid var(--rule); }
 .v4 .bars tr:last-child td { border-bottom:0.6pt solid var(--rule); }
 .v4 .bar-label { font-weight:600; }
 .v4 .bar-track { background:var(--rule); height:6pt; }
@@ -96,7 +100,7 @@
 .v4 .bar-value.muted { color:var(--muted); font-weight:400; }
 .v4 .bar-detail { display:block; font-size:9pt; color:var(--muted); font-weight:400; letter-spacing:0; line-height:1.3; margin-top:1pt; }
 .v4 .two-col .bars { font-size:10pt; line-height:1.2; }
-.v4 .two-col .bars td { padding-top:2pt; padding-bottom:2pt; }
+.v4 .two-col .bars td { padding-top:1.5pt; padding-bottom:1.5pt; }
 
 /* 02 콘텐츠 발행 현황. */
 .v4 .content-table .title-cell { font-weight:600; }
@@ -114,32 +118,33 @@
 .v4 .col > h2 + h2, .v4 .col > * + h2 { margin-top:var(--s6); }
 .v4 .col > *:last-child { margin-bottom:0; }
 .v4 .group-table { font-size:9.5pt; line-height:1.3; }
-.v4 .group-table td { padding:3.5pt var(--s2) 3.5pt 0; white-space:nowrap; }
+.v4 .group-table td { padding:2pt var(--s2) 2pt 0; white-space:nowrap; }
 .v4 .group-table th { white-space:nowrap; }
 .v4 .group-table .num { padding-left:6pt; }
 .v4 .group-code { display:inline-block; min-width:12pt; color:var(--accent-ink); font-weight:800; }
 .v4 .platform-note { margin-top:6pt; }
 .v4 .caption-cell { font-size:9pt; color:var(--muted); letter-spacing:-.01em; }
-.v4 .heatmap { font-size:9pt; line-height:1.2; }
-/* 히트맵: 헤어라인 행 하나의 체계 — 칸은 행 높이를 꽉 채운 색면(1pt 틈 없음), 글자는 가운데, 한 줄이면 18pt.
-   11개 키워드부터는 표 하나에 두 벌을 나란히 두어(가운데 24pt 빈 칸) 왼쪽·오른쪽 같은 행이 같은 높이로 맞는다. */
-.v4 .heatmap th { padding:0 0 4pt; border-bottom:0.75pt solid var(--ink); text-align:left; }
+.v4 .heatmap { font-size:9.5pt; line-height:1.3; table-layout:fixed; width:100%; }
+/* 히트맵: 헤어라인 행 하나의 체계 — 칸은 행 높이를 꽉 채운 색면, 글자는 가운데. 열 너비는 고정(플랫폼
+   56pt, 2-up 44pt, 키워드가 나머지)이라 표가 레일을 넘지 않고, 키워드는 칸 안에서 줄을 바꾼다(어디서든,
+   한국어 낱말은 지킨다). 한 줄 행은 22pt(comfortable)·18pt(compact)·16pt(compact 21개 이상) 이상이다.
+   11개 키워드부터는 표 하나에 두 벌을 나란히 두어(가운데 16pt 빈 칸) 왼쪽·오른쪽 같은 행이 같은 높이로 맞는다. */
+.v4 .heatmap th { padding:0 0 5pt; border-bottom:0.75pt solid var(--ink); text-align:left; }
 .v4 .heatmap .heat-keyword-head { padding-right:var(--s3); }
 .v4 .heatmap .heat-head { text-align:center; white-space:nowrap; letter-spacing:0; }
-.v4 .heatmap td { height:var(--heat); padding:0; border-bottom:0.6pt solid var(--rule); vertical-align:middle; }
-.v4 .heatmap .heat-keyword { padding-right:var(--s3); line-height:1.2; letter-spacing:-.01em; }
+.v4 .heatmap td { padding-top:var(--heat-pad); padding-bottom:var(--heat-pad); padding-left:0; padding-right:0; border-bottom:0.6pt solid var(--rule); vertical-align:middle; }
+.v4 .heatmap .heat-keyword { padding-right:var(--s3); white-space:normal; overflow-wrap:anywhere; word-break:keep-all; letter-spacing:-.01em; }
 .v4 .heatmap .heat-gap, .v4 .heatmap .heat-blank { border-bottom:0; }
-/* 2-up: 두 벌의 키워드 칸은 같은 너비, 8.5pt·자간 -0.01em·줄바꿈 없음 — 모든 행이 같은 높이다. */
-.v4 .heatmap-2up { font-size:8.5pt; }
-.v4 .heatmap-2up td { border-bottom-width:0.5pt; }
-.v4 .heatmap-2up .heat-keyword { white-space:nowrap; letter-spacing:-.01em; padding-right:var(--s2); }
+.v4 .heatmap-2up .heat-keyword { font-size:9pt; padding-right:var(--s2); }
 .v4 .heatmap-2up .heat-head { letter-spacing:-.01em; }
 .v4 .heat { text-align:center; font-weight:700; font-variant-numeric:tabular-nums; }
 .v4 .heat-mentioned { background:var(--accent); color:var(--white); }
 .v4 .heat-unmentioned { background:var(--unmentioned); color:var(--white); }
 .v4 .heat-failed { background:repeating-linear-gradient(135deg, var(--white) 0, var(--white) 2pt, var(--unmentioned) 2pt, var(--unmentioned) 3pt); color:var(--ink); }
 .v4 .heat-unmeasured { background:var(--surface); color:var(--muted); }
-.v4 .exposure .closing { margin-top:var(--s6); }
+.v4 .exposure .closing { margin-top:var(--s4); }
+.v4 .exposure .masthead { margin-bottom:var(--s4); }
+.v4 .exposure h2 { margin-bottom:var(--s2); }
 .v4 .closing { border-top:2pt solid var(--ink); padding-top:var(--s2); }
 .v4 .closing .figure-band { margin:0 0 var(--s4); }
 .v4 .citation { font-size:11pt; font-weight:600; line-height:1.4; margin:0 0 var(--s1); }
@@ -160,7 +165,7 @@
 .v4 .replaced-row:first-child { border-top:0; }
 .v4 .replaced-keyword { display:table-cell; width:58%; font-weight:600; font-size:11pt; margin:0; padding-right:var(--s6); vertical-align:top; }
 .v4 .replaced-names { display:table-cell; width:42%; color:var(--ink); font-weight:700; font-size:11pt; margin:0; vertical-align:top; }
-.v4 .figure-band { background:var(--black); color:var(--white); padding:var(--s6) var(--s8); break-inside:avoid; }
+.v4 .figure-band { background:var(--black); color:var(--white); padding-top:var(--s6); padding-bottom:var(--s6); padding-left:var(--s8); padding-right:var(--s8); break-inside:avoid; }
 .v4 .figure-label { color:var(--dark-text); font-size:9pt; font-weight:700; letter-spacing:.06em; margin:0 0 var(--s2); }
 .v4 .figure-value { color:var(--accent); font-size:var(--band-fig); font-weight:800; letter-spacing:-.035em; line-height:1.1; margin:0; font-variant-numeric:tabular-nums; }
 .v4 .figure-band .caption { color:var(--dark-text); margin:var(--s2) 0 0; }
@@ -174,9 +179,9 @@
 .v4 .excerpt { font-size:11pt; line-height:1.65; margin:0; }
 .v4 .case-block .caption { margin-top:6pt; }
 .v4 mark { background:var(--accent); color:var(--white); padding:0 2pt; }
-.v4 .insight-panel { background:var(--surface); padding:var(--s4) var(--s6); break-inside:avoid; }
+.v4 .insight-panel { background:var(--surface); padding-top:var(--s4); padding-bottom:var(--s4); padding-left:var(--s6); padding-right:var(--s6); break-inside:avoid; }
 .v4 .insight-panel .panel-label { font-size:9pt; font-weight:800; letter-spacing:.08em; color:var(--muted); margin:0 0 var(--s1); }
-.v4 .insight { display:table; width:100%; margin:0; padding:var(--s2) 0; border-top:0.6pt solid var(--rule); }
+.v4 .insight { display:table; width:100%; margin:0; padding-top:var(--s2); padding-bottom:var(--s2); border-top:0.6pt solid var(--rule); }
 .v4 .panel-label + .insight { border-top:0; }
 .v4 .insight-label { display:table-cell; width:72pt; color:var(--accent-ink); font-weight:700; font-size:9pt; letter-spacing:.06em; vertical-align:top; padding-top:3pt; padding-right:var(--s2); }
 .v4 .insight.missing .insight-label { color:var(--muted); }
@@ -209,17 +214,27 @@
 .compact.v4 .page > h1, .compact.v4 .page-head { margin-bottom:var(--s6); }
 .compact.v4 .content > h1, .compact.v4 .exposure > h1 { margin-bottom:var(--mod); }
 .compact.v4 .two-col .bars { font-size:9.5pt; line-height:1.2; }
-.compact.v4 .two-col .bars td { padding-top:2pt; padding-bottom:2pt; }
+.compact.v4 .two-col .bars td { padding-top:1.5pt; padding-bottom:1.5pt; }
 .compact.v4 .bar-detail { line-height:1.2; }
 .compact.v4 .group-table td { padding-top:3pt; padding-bottom:3pt; }
 .compact.v4 .competitor-table td, .compact.v4 .plan-table td { padding-top:5pt; padding-bottom:5pt; }
 .compact.v4 .replaced-row { padding:4pt 0; }
-.compact.v4 .figure-band { padding:var(--s4) var(--s6); }
+.compact.v4 .figure-band { padding-top:var(--s4); padding-bottom:var(--s4); padding-left:var(--s6); padding-right:var(--s6); }
 .compact.v4 .excerpt { line-height:1.55; }
 .compact.v4 .appendix td { padding-top:2.5pt; padding-bottom:2.5pt; }
-.compact.v4 .exposure .masthead { margin-bottom:var(--s3); }
+.compact.v4 .exposure .masthead { margin-bottom:var(--s2); }
+.compact.v4 .exposure > h1 { margin-bottom:var(--s2); }
 .compact.v4 .exposure h2 { margin-bottom:6pt; }
-.compact.v4 .exposure .closing { margin-top:var(--s4); }
+.compact.v4 .exposure .closing { margin-top:var(--s3); }
+.compact.v4 .heatmap-many { --heat-pad:2.6pt; font-size:9pt; line-height:1.2; }  /* 21개 이상: 한 줄 행 16pt */
+.compact.v4 .heatmap-2up .heat-keyword { font-size:8.5pt; }  /* compact 2-up: 20자 키워드가 한 줄에 든다(유일한 9pt 미만) */
+.compact.v4 .heatmap th { padding-bottom:2pt; }
+.compact.v4 .heatmap-2up .heat-keyword { line-height:1.2; }
+.compact.v4 .exposure { --mod:12pt; }
+.compact.v4 .exposure h2 { margin-bottom:4pt; }
+.compact.v4 .exposure .closing { margin-top:var(--s1); }
+.compact.v4 .exposure .two-col .bars td { padding-top:1pt; padding-bottom:1pt; }
+.compact.v4 .exposure .two-col .bars, .compact.v4 .exposure .bar-detail { line-height:1.1; }
 .compact.v4 .two-col .bars td { padding-top:1.5pt; padding-bottom:1.5pt; }
 .compact.v4 .two-col .bars { line-height:1.15; }
 .compact.v4 .group-table td { padding-top:2pt; padding-bottom:2pt; }

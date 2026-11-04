@@ -360,6 +360,122 @@ def test_layout_contract_requires_six_body_pages_then_appendix():
     assert not v4_layout_valid(_document(spill), 2)
 
 
+def test_layout_contract_rejects_table_end_anchors_past_the_rail():
+    """넓은 표의 맨 오른쪽 칸 앵커(p2-table-end·p3-heat-end·p4-table-end·p6-table-end)도 레일 검사를 받는다."""
+    pages = _valid_pages()
+    pages[1]["p2-table-end"] = (700.0, 500.0, 700.0, 520.0)
+    pages[2]["p3-heat-end"] = (720.0, 700.0, 720.0, 712.0)
+    pages[3]["p4-table-end"] = (710.0, 300.0, 710.0, 320.0)
+    pages[5]["p6-table-end"] = (715.0, 300.0, 715.0, 320.0)
+    assert v4_layout_valid(_document(pages), 2)
+    for page_index, name in ((1, "p2-table-end"), (2, "p3-heat-end"), (3, "p4-table-end"), (5, "p6-table-end")):
+        wide = _valid_pages()
+        wide[page_index][name] = (740.0, 500.0, 760.0, 520.0)  # 오른쪽 레일(729.45px) 밖
+        assert not v4_layout_valid(_document(wide), 2), name
+
+
+def _layout(html: str):
+    from weasyprint import HTML
+
+    from app.services.doctor_pdf_rendering import _TEMPLATE_DIR
+
+    return HTML(string=html, base_url=str(_TEMPLATE_DIR)).render()
+
+
+def _walk(box):
+    yield box
+    for child in getattr(box, "children", ()):
+        yield from _walk(child)
+
+
+def _element_boxes(document, tag: str, css_class: str):
+    for page in document.pages:
+        for box in _walk(page._page_box):
+            element = getattr(box, "element", None)
+            if element is not None and element.tag == tag and css_class in (element.get("class") or "").split():
+                yield box
+
+
+def test_rendered_pages_carry_table_end_anchors_inside_the_rail():
+    for scenario in ("comparable", "dense"):
+        view = _view(scenario)
+        documents = [
+            _layout(render_v4_html(view, period_label=view.period_ym, public_url=PUBLIC_URL, density=density))
+            for density in ("comfortable", "compact")
+        ]
+        valid = [doc for doc in documents if v4_layout_valid(doc, len(view.appendix.keyword_rows))]
+        assert valid, scenario  # 렌더러가 고르는 밀도(comfortable, 안 되면 compact) 중 하나는 통과한다
+        names = {name for page in valid[0].pages for name in page.anchors}
+        assert {"p2-table-end", "p3-heat-end", "p4-table-end", "p6-table-end"} <= names, scenario
+
+
+def test_over_wide_heatmap_fails_the_layout_contract():
+    """2-up 히트맵이 레일보다 넓어지면(긴 키워드·잘못된 열 너비) p3-heat-end가 레일 밖에 놓여 거절된다."""
+    view = _view("dense")
+    html = render_v4_html(view, period_label=view.period_ym, public_url=PUBLIC_URL, density="compact")
+    assert v4_layout_valid(_layout(html), len(view.appendix.keyword_rows))
+    forced = html.replace("</style>", ".v4 .heatmap { width:140% !important; }</style>", 1)
+    assert not v4_layout_valid(_layout(forced), len(view.appendix.keyword_rows))
+
+
+CARD_VALUE_SAMPLES = ("15개 중 15개", "15개 중 0개", "100.0%", "다음 달부터 측정", "측정 미완료", "12개 항목", "0개 항목", "20편")
+
+
+@pytest.mark.parametrize("value", CARD_VALUE_SAMPLES)
+def test_card_values_never_cross_into_the_next_card(value):
+    """카드 큰 숫자는 글자 수로 크기를 정하고 마지막 수단으로 줄을 바꾸므로, 어떤 값도 옆 카드로 흘러들지 않는다."""
+    view = _view("long-name")
+    summary = replace(view.summary, cards=tuple(replace(card, value=value) for card in view.summary.cards))
+    view = replace(view, summary=summary)
+    for density in ("comfortable", "compact"):
+        document = _layout(render_v4_html(view, period_label=view.period_ym, public_url=PUBLIC_URL, density=density))
+        cells = [box for box in _element_boxes(document, "td", "card-cell") if type(box).__name__ == "TableCellBox"]
+        assert len(cells) == 4, density
+        cells.sort(key=lambda box: box.position_x)
+        for index, cell in enumerate(cells):
+            limit = cells[index + 1].position_x if index + 1 < len(cells) else RAIL[1] + 1.0
+            lines = [line for line in _walk(cell) if type(line).__name__ == "LineBox"]
+            assert lines, (density, index, value)  # 두 줄로 접혀도 되지만 옆 카드로는 흘러들지 않는다
+            right = max(line.position_x + line.width for line in lines)
+            assert right <= limit, (density, index, value, right, limit)
+
+
+def _long_keyword_view() -> DoctorReportV4:
+    """키워드 18개(2-up), 글자 40자짜리 긴 키워드 — 칸 안에서 줄을 바꿔야 한다."""
+    view = _view("dense")
+    rows = tuple(
+        replace(row, keyword=(f"가상구에서 {TREATMENTS[i % 6]} 진료와 검사를 함께 받을 수 있는 병원 추천해줘 {i + 1:02d} 야간진료").ljust(40, "가")[:40])
+        for i, row in enumerate(view.exposure.heatmap[:18])
+    )
+    assert all(len(row.keyword) == 40 for row in rows)
+    return replace(view, exposure=replace(view.exposure, heatmap=rows))
+
+
+@pytest.mark.parametrize("fixture, min_row_pt", (("dense", 16.0), ("long-keywords", 18.0)))
+@pytest.mark.parametrize("density", ("comfortable", "compact"))
+def test_heatmap_keywords_stay_inside_their_cells(fixture, min_row_pt, density):
+    """키워드 글줄은 칸을 넘지 않고(x2 ≤ 칸 오른쪽), 행은 밀도별 최소 높이 이상이다(21개 이상 compact 16pt)."""
+    view = _view("dense") if fixture == "dense" else _long_keyword_view()
+    document = _layout(render_v4_html(view, period_label=view.period_ym, public_url=PUBLIC_URL, density=density))
+    cells = [box for box in _element_boxes(document, "td", "heat-keyword") if type(box).__name__ == "TableCellBox"]
+    assert len(cells) >= len(view.exposure.heatmap) // 2
+    for cell in cells:
+        lines = [line for line in _walk(cell) if type(line).__name__ == "LineBox"]
+        for line in lines:
+            assert line.position_x + line.width <= cell.position_x + cell.width + 0.5, (fixture, density)
+    rows = [
+        box for page in document.pages for box in _walk(page._page_box)
+        if type(box).__name__ == "TableRowBox" and getattr(box, "element", None) is not None
+        and any(getattr(child, "element", None) is not None and "heat-keyword" in (child.element.get("class") or "").split() for child in box.children)
+    ]
+    assert rows
+    floor = (min_row_pt if (density == "compact" or fixture == "long-keywords") else 22.0) * 96 / 72
+    if fixture == "dense" and density == "comfortable":
+        floor = 22.0 * 96 / 72
+    for row in rows:
+        assert row.height >= floor - 0.5, (fixture, density, row.height, floor)
+
+
 def test_v4_expectation_is_drawn_from_the_view_model():
     view = _view("comparable")
     base = DoctorPdfExpectation(view.hospital_name, "coverage", "caveat", PUBLIC_URL, appendix_expected=True)
