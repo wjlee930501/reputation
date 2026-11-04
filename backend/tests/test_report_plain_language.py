@@ -12,7 +12,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 from test_doctor_report_view import BANNED_IN_DOCTOR_COPY
 from test_report_redesign import monthly_view
 
-from app.services.report_narrative import MONTHLY_SAME_BASIS_NOTICE
+from app.services.report_narrative import MONTHLY_NOTICE_PRIMARY, MONTHLY_NOTICE_SECONDARY
 from app.utils.medical_filter import check_forbidden
 
 # 9월 보고서에서 원장님이 이해하지 못한 표현과, 같은 결의 내부 용어.
@@ -174,8 +174,8 @@ def test_director_pdf_passes_the_medical_ad_filter(name):
         ("up", "AI 답변이 지난달보다 우리 병원을 더 자주 언급했습니다.", "30.0%"),
         ("down", "다음 달에는 더 넓은 키워드로 AI 답변 속 언급을 다시 늘려 가겠습니다.", "30.0%"),
         ("first", "첫 측정 결과입니다. 앞으로 이 숫자와 견주며 변화를 살피겠습니다.", "첫 측정"),
-        ("method", "동일 측정 기준의 월간 결과입니다. 전월과 같은 방식으로 비교해 주세요.", "비교 없음"),
-        ("method_reference", "동일 측정 기준의 월간 결과입니다. 전월과 같은 방식으로 비교해 주세요.", "40.0%"),
+        ("method", "환자가 AI에 물어볼 만한 질문으로, 우리 병원이 얼마나 언급되는지 분석했습니다.", "비교 없음"),
+        ("method_reference", "환자가 AI에 물어볼 만한 질문으로, 우리 병원이 얼마나 언급되는지 분석했습니다.", "40.0%"),
         ("unavailable", "측정을 다시 진행한 뒤, 결과가 확인되는 대로 바로 알려 드리겠습니다.", "비교 없음"),
         ("initial", "첫 측정 결과입니다. 앞으로 이 숫자와 견주며 변화를 살피겠습니다.", "첫 측정"),
     ],
@@ -194,7 +194,7 @@ def test_first_page_leads_with_a_plain_headline_per_branch(name, headline, prior
     "name,reason",
     [
         ("first", "이번이 첫 측정이라 견줄 지난달 숫자는 아직 없습니다."),
-        ("method", MONTHLY_SAME_BASIS_NOTICE),
+        ("method", MONTHLY_NOTICE_SECONDARY),
     ],
 )
 def test_a_month_that_was_not_compared_says_why_in_one_sentence(name, reason):
@@ -205,7 +205,9 @@ def test_a_month_that_was_not_compared_says_why_in_one_sentence(name, reason):
 
 # 한 번만 나가야 했던 전환 안내(2026-10 보고서)가 매달 되풀이됐다. 월간 보고서 첫 장 상단에는
 # 대표가 확정한 문구만 남는다.
-STALE_TRANSITION_PHRASES = ("다음 달부터", "측정 방식이 바뀌어", "측정 기준이 바뀌어", "새 기준점")
+STALE_TRANSITION_PHRASES = (
+    "다음 달부터", "측정 방식이 바뀌어", "측정 기준이 바뀌어", "새 기준점", "동일 측정 기준",
+)
 NONCOMPARABLE_REASONS = (
     "MEASUREMENT_POLICY_CHANGED", "ANSWER_MODEL_CHANGED", "QUERY_TEXT_CHANGED",
     "PLATFORM_COHORT_MISSING", "INTENT_SNAPSHOT_MISSING", "NO_MATCHED_CELLS",
@@ -217,8 +219,20 @@ def _top_of_report(html: str) -> str:
     return _body_text(html.split('<div class="hero-band">')[1].split('<p class="story">')[0])
 
 
+def _hero_lines(html: str) -> list[tuple[str, str]]:
+    hero = html.split('<div class="hero-band">')[1].split("</div>")[0]
+    return [
+        (tag_class, _body_text(text))
+        for tag_class, text in re.findall(r'<(?:h1|p) class="([^"]+)">(.*?)</(?:h1|p)>', hero)
+    ]
+
+
 def test_confirmed_notice_is_verbatim():
-    assert MONTHLY_SAME_BASIS_NOTICE == "동일 측정 기준의 월간 결과입니다. 전월과 같은 방식으로 비교해 주세요."
+    assert MONTHLY_NOTICE_PRIMARY == "환자가 AI에 물어볼 만한 질문으로, 우리 병원이 얼마나 언급되는지 분석했습니다."
+    assert MONTHLY_NOTICE_SECONDARY == (
+        "AI 답변은 같은 질문에도 시기마다 조금씩 달라질 수 있어, "
+        "한 달 결과보다 몇 달간의 흐름으로 보시는 것이 더 정확합니다."
+    )
 
 
 @pytest.mark.parametrize("reference", [None, 40.0])
@@ -230,8 +244,15 @@ def test_policy_change_month_tops_the_report_with_the_confirmed_notice_only(refe
     )
     html = _html(view)
     top = _top_of_report(html)
-    assert view["narrative"].conclusion == MONTHLY_SAME_BASIS_NOTICE
-    assert top.count(MONTHLY_SAME_BASIS_NOTICE) == 1
+    assert view["narrative"].conclusion == MONTHLY_NOTICE_PRIMARY
+    assert view["narrative"].conclusion_note == MONTHLY_NOTICE_SECONDARY
+    # 앞 문장은 제목(h1), 뒤 문장은 그 바로 아래 작은 보조 문장이다. 둘 다 한 번씩만.
+    assert _hero_lines(html)[-2:] == [
+        ("editorial-result", MONTHLY_NOTICE_PRIMARY),
+        ("headline-note", MONTHLY_NOTICE_SECONDARY),
+    ]
+    assert top.count(MONTHLY_NOTICE_PRIMARY) == 1
+    assert top.count(MONTHLY_NOTICE_SECONDARY) == 1
     for stale in STALE_TRANSITION_PHRASES:
         assert stale not in top
         assert stale not in view["narrative"].comparison_note
@@ -251,8 +272,9 @@ def test_no_monthly_top_carries_a_one_time_transition_notice(reason, reference):
     for stale in STALE_TRANSITION_PHRASES:
         assert stale not in top, f"{reason}/{reference}: '{stale}'"
     if reference is None:
-        assert view["narrative"].conclusion == MONTHLY_SAME_BASIS_NOTICE
-        assert top.count(MONTHLY_SAME_BASIS_NOTICE) == 1
+        assert view["narrative"].conclusion == MONTHLY_NOTICE_PRIMARY
+        assert top.count(MONTHLY_NOTICE_PRIMARY) == 1
+        assert top.count(MONTHLY_NOTICE_SECONDARY) == 1
 
 
 def test_every_noncomparable_reason_has_its_own_plain_sentence():

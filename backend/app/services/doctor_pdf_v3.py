@@ -19,6 +19,7 @@ def validate_v3_fields(view: DoctorReportView) -> None:
         view["coverage_text"],
         n.title,
         n.conclusion,
+        n.conclusion_note,
         n.comparison_note,
         *n.priorities,
         *n.methods,
@@ -111,11 +112,13 @@ def v3_expectation(
             else n.previous_label
         ),
     ]
+    if n.conclusion_note:
+        page1.append(n.conclusion_note)
     if (
         n.previous is None
         and n.current is not None
         and n.reference_previous is None
-        and n.comparison_note != n.conclusion
+        and n.comparison_note not in (n.conclusion, n.conclusion_note)
     ):
         page1.append(n.comparison_note)
     if n.current is not None and round(n.current) > 0:

@@ -121,7 +121,7 @@ flowchart LR
 
 기본 요금은 월 60/90/120만원, 부가세 별도다. 위 배분은 기본값이며 노출 부족을 반영해 FAQ/DISEASE/TREATMENT/LOCAL 간 일부 슬롯을 조정할 수 있다. 총편수와 COLUMN/HEALTH/NOTICE는 유지한다. 코드의 [배분](../../backend/app/models/content.py)과 [노출 기반 조정](../../backend/app/services/gap_driven_slots.py)을 함께 본다.
 
-일정 API는 유효한 Essence를 요구하고 새 스케줄을 저장하면서 슬롯을 만든다. 첫 일정은 Essence 자동 승인 뒤 시스템이 같은 슬롯 생성기와 같은 감사행(`set_schedule`, actor `system:essence-auto-approval`)으로 만들며, 이 시스템 첫 일정만 첫 달 약속 편수를 남은 게시 요일로 안분한다(남은 요일이 없으면 0편, `content_month_target`). 과거 시작일이나 허용 날짜가 부족한 최초 설정은 거부한다. 반복 월간 생성은 `ensure_quota=True`로 계약 편수를 우선하므로 지정 요일 밖이나 하루 복수 슬롯이 생길 수 있다. 스케줄 교체 시 공개 이력·이월 슬롯을 보존한다. 월간 복구는 병원 advisory lock 아래 빠진 순번을 채운다. [일정 API](../../backend/app/api/admin/content.py), [캘린더](../../backend/app/services/content_calendar.py), [월간 슬롯](../../backend/app/workers/monthly_slots.py)
+일정 API는 유효한 Essence를 요구하고 새 스케줄을 저장하면서 슬롯을 만든다. 첫 일정은 Essence 자동 승인 뒤 시스템이 같은 슬롯 생성기와 같은 감사행(`set_schedule`, actor `system:essence-auto-approval`)으로 만들며, 이 시스템 첫 일정만 첫 달 약속 편수를 남은 게시 요일로 안분한다(남은 요일이 없으면 0편, `content_month_target`). 그 달에 살아 있는 슬롯이 안분 편수보다 많으면(운영자가 첫 달 배정을 늘린 경우) 슬롯 수가 약속이다(요금제 편수가 상한). 과거 시작일이나 허용 날짜가 부족한 최초 설정은 거부한다. 반복 월간 생성은 `ensure_quota=True`로 계약 편수를 우선하므로 지정 요일 밖이나 하루 복수 슬롯이 생길 수 있다. 스케줄 교체 시 공개 이력·이월 슬롯을 보존한다. 월간 복구는 병원 advisory lock 아래 빠진 순번을 채운다. [일정 API](../../backend/app/api/admin/content.py), [캘린더](../../backend/app/services/content_calendar.py), [월간 슬롯](../../backend/app/workers/monthly_slots.py)
 
 ### 생성과 검증
 

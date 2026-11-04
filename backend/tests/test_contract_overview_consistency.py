@@ -1,9 +1,10 @@
 """Admin contract-month facts must agree with the autonomous contract ledger."""
 
-from datetime import date
+from datetime import UTC, date, datetime
 from unittest.mock import AsyncMock
 
 import arrow
+from test_first_month_proration_report import _raised_first_month
 from test_geo_autonomy_hardening import NOW, AsyncDB, seed
 from test_geo_autonomy_hardening import db as db
 
@@ -118,3 +119,16 @@ async def test_overview_promises_zero_for_a_first_month_without_publish_days(db,
     result = await overview._month_summary(AsyncDB(db), hospital)
 
     assert result.planned_total == 0
+
+
+async def test_overview_promises_a_raised_first_month_allocation(db, monkeypatch):
+    """안분 7편으로 기록된 첫 달에 12편을 배정해 모두 올렸으면 현황 카드도 12편을 약속으로 보인다."""
+
+    hospital = _raised_first_month(db, live_slots=12)
+    october_end = arrow.get(datetime(2026, 10, 31, 9, tzinfo=UTC))
+    monkeypatch.setattr(overview.arrow, "now", lambda *args: october_end)
+    monkeypatch.setattr(overview, "weekly_mention_trend", AsyncMock(return_value=[]))
+
+    result = await overview._month_summary(AsyncDB(db), hospital)
+
+    assert (result.planned_total, result.published_count) == (12, 12)
