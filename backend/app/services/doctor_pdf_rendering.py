@@ -210,9 +210,13 @@ def pct(value: float) -> str:
 
 
 def render_v4_html(
-    view, *, period_label: str, public_url: str, density: str = "comfortable"
+    view, *, period_label: str, public_url: str, density: str = "comfortable", breaks=None
 ) -> str:
-    """v4 템플릿 HTML(한국어 낱말 보존 포함). 렌더러와 샘플 스크립트·테스트가 같은 경로를 쓴다."""
+    """v4 템플릿 HTML(한국어 낱말 보존 포함). 렌더러와 샘플 스크립트·테스트가 같은 경로를 쓴다.
+
+    `breaks`는 쪽 넘김 정리(`doctor_pdf_pagination.PageBreaks`)가 정한 강제 넘김 — 없으면 빈 값.
+    """
+    from app.services.doctor_pdf_pagination import PageBreaks
     from app.services.report_typography import keep_korean_words
 
     environment = Environment(
@@ -223,8 +227,36 @@ def render_v4_html(
     environment.filters["pct"] = pct
     template = environment.get_template("doctor_report_v4.html")
     return keep_korean_words(
-        template.render(view=view, period_label=period_label, public_url=public_url, density=density)
+        template.render(
+            view=view, period_label=period_label, public_url=public_url, density=density,
+            breaks=breaks or PageBreaks(),
+        )
     )
+
+
+def layout_v4(
+    view, *, period_label: str, public_url: str, density: str = "comfortable", fix_orphans: bool = True
+):
+    """밀도 하나로 v4를 그린다 — 쪽 넘김 정리를 수렴할 때까지(최대 MAX_PASSES) 되풀이한 레이아웃과 강제 넘김.
+
+    `fix_orphans=False`면 정리 없이 한 번만 그린다(정리가 쪽 상한을 넘기는 극단 입력의 물러서기).
+    """
+    from weasyprint import HTML
+
+    from app.services.doctor_pdf_pagination import MAX_PASSES, PageBreaks, plan_fixups
+
+    breaks = PageBreaks()
+    document = None
+    for _ in range(MAX_PASSES if fix_orphans else 1):
+        html = render_v4_html(view, period_label=period_label, public_url=public_url, density=density, breaks=breaks)
+        document = HTML(string=html, base_url=str(_TEMPLATE_DIR)).render()
+        if not fix_orphans:
+            break
+        fixed = plan_fixups(document, breaks)
+        if fixed is None:
+            break
+        breaks = fixed
+    return document, breaks
 
 
 def _render_v4(*, view, period_label: str, public_url: str, expectation: DoctorPdfExpectation) -> ValidatedDoctorPdf:
@@ -241,16 +273,18 @@ def _render_v4(*, view, period_label: str, public_url: str, expectation: DoctorP
     row_count = len(view.appendix.keyword_rows)
     table_anchors = required_table_anchors(view)
     try:
-        from weasyprint import HTML
-
         document = None
-        for density in ("comfortable", "compact"):
-            html = render_v4_html(
-                view, period_label=period_label, public_url=public_url, density=density
-            )
-            candidate = HTML(string=html, base_url=str(_TEMPLATE_DIR)).render()
-            if v4_layout_valid(candidate, row_count, required_anchors=table_anchors):
-                document = candidate
+        # 고아 정리는 최선의 노력이다 — 정리한 레이아웃이 쪽 상한을 넘기면(극단 입력) 정리 없는 레이아웃으로 물러선다.
+        # 순서: comfortable(정리) → compact(정리) → comfortable(없음) → compact(없음).
+        for fix_orphans in (True, False):
+            for density in ("comfortable", "compact"):
+                candidate, _ = layout_v4(
+                    view, period_label=period_label, public_url=public_url, density=density, fix_orphans=fix_orphans
+                )
+                if v4_layout_valid(candidate, row_count, required_anchors=table_anchors):
+                    document = candidate
+                    break
+            if document is not None:
                 break
         if document is None:
             raise DoctorPdfValidationError(
