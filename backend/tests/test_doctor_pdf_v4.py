@@ -19,7 +19,9 @@ from pypdf import PdfReader
 from test_doctor_report_view import BANNED_IN_DOCTOR_COPY
 
 from app.services.doctor_pdf_contracts import DoctorPdfExpectation, DoctorPdfValidationError
+from app.services.doctor_pdf_pagination import orphan_fragments
 from app.services.doctor_pdf_rendering import (
+    layout_v4,
     mark_highlight,
     render_v4_html,
     render_validated_doctor_pdf,
@@ -53,7 +55,7 @@ BANNED_IN_V4 = (
 SCENARIOS = ("comparable", "first", "method-changed", "unavailable", "setup", "dense", "long-name")
 
 
-def _view(scenario: str) -> DoctorReportV4:
+def _view(scenario: str, *, count: int | None = None, content_count: int | None = None) -> DoctorReportV4:
     kind = "SETUP" if scenario == "setup" else "MONTHLY"
     setup = kind == "SETUP"
     dense = scenario == "dense"
@@ -69,7 +71,7 @@ def _view(scenario: str) -> DoctorReportV4:
         aeo_domain="fictional-clinic.example.invalid", region=["가상시 가상구"],
         hero_specialties=["위내시경"], treatments=[{"name": "심장초음파"}],
     )
-    count = 30 if dense else 8
+    count = count or (30 if dense else 8)
     keywords = [f"가상구 {TREATMENTS[i % 6]} {FORMS[i % 4]} {i + 1:02d}" for i in range(count)]
     targets = [
         SimpleNamespace(
@@ -133,7 +135,7 @@ def _view(scenario: str) -> DoctorReportV4:
         "new_mention_cells": [{"query_text": keywords[2], "platform_label": "ChatGPT"}] if comparable else [],
         "lost_mention_cells": [{"query_text": keywords[3], "platform_label": "Gemini"}] if comparable else [],
     }
-    content_count = 20 if dense else 6
+    content_count = content_count or (20 if dense else 6)
     contents = [
         SimpleNamespace(
             id=UUID(int=CONTENT_ID.int + i), hospital_id=HOSPITAL_ID,
@@ -220,9 +222,9 @@ def _lines(html: str) -> list[str]:
 
 
 def _validated_layout(view: DoctorReportV4):
-    """렌더러와 같은 선택: comfortable이 앵커 검사를 통과하면 그것, 아니면 compact."""
+    """렌더러와 같은 선택: comfortable이 앵커 검사를 통과하면 그것, 아니면 compact(쪽 넘김 정리 포함)."""
     for density in ("comfortable", "compact"):
-        document = _layout(render_v4_html(view, period_label=view.period_ym, public_url=PUBLIC_URL, density=density))
+        document, _ = layout_v4(view, period_label=view.period_ym, public_url=PUBLIC_URL, density=density)
         if v4_layout_valid(document, len(view.appendix.keyword_rows), required_anchors=required_table_anchors(view)):
             return document, density
     raise AssertionError("no density validates")
@@ -540,7 +542,7 @@ def _long_keyword_view() -> DoctorReportV4:
 def test_heatmap_keywords_stay_inside_their_cells(fixture, density):
     """키워드 글줄은 칸을 넘지 않고(x2 ≤ 칸 오른쪽), 행은 밀도와 무관하게 22pt 이상이다."""
     view = _view("dense") if fixture == "dense" else _long_keyword_view()
-    document = _layout(render_v4_html(view, period_label=view.period_ym, public_url=PUBLIC_URL, density=density))
+    document, _ = layout_v4(view, period_label=view.period_ym, public_url=PUBLIC_URL, density=density)
     cells = [box for box in _element_boxes(document, "td", "heat-keyword") if type(box).__name__ == "TableCellBox"]
     assert len(cells) >= len(view.exposure.heatmap) // 2
     for cell in cells:
@@ -599,7 +601,7 @@ def test_readability_minimums(fixture, density):
     """읽기 최소치(2026-11 대표 확정): 막대 행 30pt·표/원장 행 22pt 이상, 글줄은 헤어라인에서 4pt 이상 떨어지고
     한 행 안의 글줄끼리 겹치지 않는다 — 밀도(compact)도 이 값을 줄이지 못한다."""
     view = _long_keyword_view() if fixture == "long-keywords" else _view("comparable" if fixture == "growth" else "dense")
-    document = _layout(render_v4_html(view, period_label=view.period_ym, public_url=PUBLIC_URL, density=density))
+    document, _ = layout_v4(view, period_label=view.period_ym, public_url=PUBLIC_URL, density=density)
     px = 96 / 72
     rows = list(_readability_rows(document))
     assert len(rows) > 20
@@ -616,6 +618,77 @@ def test_readability_minimums(fixture, density):
                 assert line.position_y + line.height <= bottom - MIN_CLEARANCE_PT * px + 0.5, (fixture, density, kind)
             for first, second in zip(lines, lines[1:], strict=False):
                 assert second.position_y >= first.position_y + first.height - 0.5, (fixture, density, kind)
+
+
+def _page_has(page, predicate) -> bool:
+    return any(predicate(getattr(box, "element", None), box) for box in _walk(page._page_box))
+
+
+ORPHAN_SWEEP = [(30, c) for c in range(8, 22)] + [(k, 20) for k in range(11, 31, 2)]
+
+
+@pytest.mark.parametrize(("count", "content_count"), ORPHAN_SWEEP)
+def test_tables_never_leave_orphan_rows(count, content_count):
+    """쪽 넘김 고아·과부(2026-11-05): 흐르는 표의 조각은 어느 쪽에서도 3행 이상이고, 검정 면·시사점은 표 뒤에
+    혼자 새 쪽에 서지 않는다(앞 행을 끌고 간다). 키워드 수·콘텐츠 수를 훑어 쪽 경계가 표의 여러 자리에 떨어지게 한다."""
+    view = _view("dense", count=count, content_count=content_count)
+    document, _ = _validated_layout(view)
+    assert orphan_fragments(document) == {}, (count, content_count, orphan_fragments(document))
+    # 검정 면·시사점이 쪽의 유일한 본문이면 안 된다(절의 첫 쪽은 제목이 함께 있다).
+    for page in document.pages:
+        has_band = _page_has(page, lambda el, _b: el is not None and el.tag == "div" and ({"figure-band", "insight-panel"} & set((el.get("class") or "").split())))
+        if not has_band:
+            continue
+        has_body = _page_has(page, lambda el, b: (el is not None and el.tag in ("h1", "h2", "p") and not ({"running-head", "figure-label", "figure-value", "caption", "panel-label", "insight", "insight-label", "insight-text"} & set((el.get("class") or "").split()))) or type(b).__name__ == "TableRowBox")
+        assert has_body, (count, content_count, "band alone on a page")
+
+
+def _wide_keyword_dense_view(width: int = 48) -> DoctorReportV4:
+    """Codex 13차 반례: 30개 키워드를 48자로 늘리면 정리 전 레이아웃이 14쪽 상한에 딱 닿는다."""
+    view = _view("dense")
+    long_keyword = lambda text: (text + " 검사 준비 사항과 진료 시간 안내 문의")[:width].ljust(width, "가")  # noqa: E731
+    exposure = replace(view.exposure, heatmap=tuple(replace(row, keyword=long_keyword(row.keyword)) for row in view.exposure.heatmap))
+    appendix = replace(view.appendix, keyword_rows=tuple(replace(row, keyword=long_keyword(row.keyword)) for row in view.appendix.keyword_rows))
+    return replace(view, exposure=exposure, appendix=appendix)
+
+
+def test_pagination_fixups_never_reject_a_previously_valid_layout():
+    """고아 정리가 쪽 상한(14)을 넘기면 정리 없는 레이아웃으로 물러선다 — 정리 전에 통과하던 입력은 계속 통과한다."""
+    view = _wide_keyword_dense_view()
+    rendered = render_validated_doctor_pdf(
+        view=view, period_label=view.period_ym, public_url=PUBLIC_URL,
+        expectation=build_doctor_pdf_expectation(view, PUBLIC_URL),
+    )
+    assert rendered.metadata.validation_version == "doctor-pdf-v4"
+    assert rendered.metadata.page_count <= 14
+
+
+def test_pagination_fixups_fall_back_when_binary_validation_rejects_the_fixed_layout():
+    """Codex 14차 반례: 계획 키워드 두 개를 300자로 늘리면 정리가 p6 모듈을 넘겨 제목만 남은 쪽(7자)을 만든다 —
+    이진 검증(DOCTOR_PDF_PAGE_EMPTY)이 그 변형을 거절하면 정리 없는 변형으로 물러서 전처럼 통과한다."""
+    view = _view("dense")
+    rows = list(view.plan.rows)
+    rows[0] = replace(rows[0], keyword="가" * 300)
+    rows[1] = replace(rows[1], keyword="가" * 300)
+    view = replace(view, plan=replace(view.plan, rows=tuple(rows)))
+    rendered = render_validated_doctor_pdf(
+        view=view, period_label=view.period_ym, public_url=PUBLIC_URL,
+        expectation=build_doctor_pdf_expectation(view, PUBLIC_URL),
+    )
+    assert rendered.metadata.validation_version == "doctor-pdf-v4"
+    assert rendered.metadata.page_count <= 14
+
+
+def test_pagination_fixups_leave_the_appendix_start_alone():
+    """부록 표의 첫 조각은 고치지 않는다(마스트헤드만 남은 빈 쪽을 만들지 않는다) — 600자 키워드 4행 스트레스."""
+    view = _view("comparable")
+    rows = tuple(replace(row, keyword=(row.keyword + " ") * 60) for row in view.appendix.keyword_rows[:4])
+    view = replace(view, appendix=replace(view.appendix, keyword_rows=rows))
+    document, breaks = layout_v4(view, period_label=view.period_ym, public_url=PUBLIC_URL)
+    assert "appendix-table" not in breaks.before_table
+    for page in document.pages:
+        text = "".join(getattr(box, "text", "") for box in _walk(page._page_box))
+        assert len(text.strip()) > 40, "masthead-only page"
 
 
 def test_v4_expectation_is_drawn_from_the_view_model():

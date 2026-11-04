@@ -446,6 +446,13 @@ def natural_patient_question(query_text: str) -> str:
 
 
 _PARTICLE_SUFFIX_RE = re.compile(r"(에서|에게|에|의|은|는|이|가|을|를|로|으로)$")
+# 주제어가 될 수 없는 조각 — 서술어 어간('치료하'·'진료하는'), 비용·시간 표현('치료비'·'9시까지'·'밤').
+# 어간만 있는 '검사'·'수술'·'상담'은 글의 주제어일 수 있어 그대로 둔다(접미가 붙은 꼴만 거른다).
+# 2026-11-05: '치료하는'은 멈춤 토큰이지만 조사 '는'을 뗀 '치료하'가 통과해 원장 보고서의 진료 항목이 '치료하'로 찍혔다.
+_NON_SUBJECT_RE = re.compile(
+    r"^(치료|진료|수술|검사|상담|예약|추천|비교|확인|방문|내원)(하|하는|해|해줘|해주는|받|받는|받을|되는|비|비용|가능|가능한|중인)$"
+    r"|^\d+시(까지|부터|에)?$|^(밤|낮|오전|오후|주말|공휴일|야간|평일)(에|에도|까지|부터)?$"
+)
 
 # 조사·기관어만 남은 토큰은 글의 주제어가 될 수 없다.
 _STOP_TOKENS: frozenset[str] = frozenset(
@@ -473,6 +480,9 @@ def clinical_keyword_from_query(
         token = _PARTICLE_SUFFIX_RE.sub("", raw) or raw
         if (
             token in _STOP_TOKENS
+            or raw in _STOP_TOKENS
+            or _NON_SUBJECT_RE.match(token)
+            or _NON_SUBJECT_RE.match(raw)
             or token in regions
             or _looks_like_region(token)
             or len(token) < 2

@@ -222,3 +222,20 @@ def test_clinical_keyword_fallback_skips_region_and_stopwords():
         == "허리디스크"
     )
     assert clinical_keyword_from_query("강남역 병원 추천해줘", ["강남역"]) is None
+
+
+@pytest.mark.parametrize(
+    "query_text,expected",
+    [
+        ("경산에서 소아 탈수 치료하는 병원 알려줘", "소아"),  # '치료하'(치료하는 − 는)는 주제어가 아니다
+        ("경산에서 경산 치료하는 병원", None),
+        ("노원구 골절 치료비 어느 정도야?", "골절"),
+        ("경산에서 밤 9시까지 진료하는 내과", "내과"),
+        ("강남역에서 도수치료 받을 수 있는 병원", "도수치료"),  # 실제 치료명은 그대로
+        ("강남역 검사 병원 추천해줘", "검사"),  # 어간만 있는 주제어는 거르지 않는다(Codex 13차)
+        ("강남역 수술 상담 가능한 병원", "수술"),
+    ],
+)
+def test_clinical_keyword_skips_verb_cost_and_time_fragments(query_text, expected):
+    """2026-11-05: 서술어 어간·비용·시간 조각이 원장 보고서의 진료 항목으로 찍히지 않는다."""
+    assert clinical_keyword_from_query(query_text, ["경산", "노원구", "강남역"]) == expected

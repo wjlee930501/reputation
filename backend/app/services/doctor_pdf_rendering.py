@@ -210,9 +210,13 @@ def pct(value: float) -> str:
 
 
 def render_v4_html(
-    view, *, period_label: str, public_url: str, density: str = "comfortable"
+    view, *, period_label: str, public_url: str, density: str = "comfortable", breaks=None
 ) -> str:
-    """v4 템플릿 HTML(한국어 낱말 보존 포함). 렌더러와 샘플 스크립트·테스트가 같은 경로를 쓴다."""
+    """v4 템플릿 HTML(한국어 낱말 보존 포함). 렌더러와 샘플 스크립트·테스트가 같은 경로를 쓴다.
+
+    `breaks`는 쪽 넘김 정리(`doctor_pdf_pagination.PageBreaks`)가 정한 강제 넘김 — 없으면 빈 값.
+    """
+    from app.services.doctor_pdf_pagination import PageBreaks
     from app.services.report_typography import keep_korean_words
 
     environment = Environment(
@@ -223,8 +227,36 @@ def render_v4_html(
     environment.filters["pct"] = pct
     template = environment.get_template("doctor_report_v4.html")
     return keep_korean_words(
-        template.render(view=view, period_label=period_label, public_url=public_url, density=density)
+        template.render(
+            view=view, period_label=period_label, public_url=public_url, density=density,
+            breaks=breaks or PageBreaks(),
+        )
     )
+
+
+def layout_v4(
+    view, *, period_label: str, public_url: str, density: str = "comfortable", fix_orphans: bool = True
+):
+    """밀도 하나로 v4를 그린다 — 쪽 넘김 정리를 수렴할 때까지(최대 MAX_PASSES) 되풀이한 레이아웃과 강제 넘김.
+
+    `fix_orphans=False`면 정리 없이 한 번만 그린다(정리가 쪽 상한을 넘기는 극단 입력의 물러서기).
+    """
+    from weasyprint import HTML
+
+    from app.services.doctor_pdf_pagination import MAX_PASSES, PageBreaks, plan_fixups
+
+    breaks = PageBreaks()
+    document = None
+    for _ in range(MAX_PASSES if fix_orphans else 1):
+        html = render_v4_html(view, period_label=period_label, public_url=public_url, density=density, breaks=breaks)
+        document = HTML(string=html, base_url=str(_TEMPLATE_DIR)).render()
+        if not fix_orphans:
+            break
+        fixed = plan_fixups(document, breaks)
+        if fixed is None:
+            break
+        breaks = fixed
+    return document, breaks
 
 
 def _render_v4(*, view, period_label: str, public_url: str, expectation: DoctorPdfExpectation) -> ValidatedDoctorPdf:
@@ -236,40 +268,44 @@ def _render_v4(*, view, period_label: str, public_url: str, expectation: DoctorP
         v4_layout_valid,
         validate_v4_fields,
     )
+    from app.services.report_artifact_validation import validate_doctor_pdf
 
     validate_v4_fields(view)
     row_count = len(view.appendix.keyword_rows)
     table_anchors = required_table_anchors(view)
-    try:
-        from weasyprint import HTML
-
-        document = None
+    bound_expectation = replace(expectation, period_label=period_label)
+    # 고아 정리는 최선의 노력이다 — 정리한 레이아웃이 쪽 상한을 넘기거나(극단 입력) 이진 검증(빈 쪽 등)에 걸리면
+    # 다음 변형으로 물러선다. 순서: comfortable(정리) → compact(정리) → comfortable(없음) → compact(없음).
+    # 정리 없는 변형은 정리 전 렌더러와 같으므로, 전에 통과하던 입력은 계속 통과한다(Codex 14차 P1).
+    first_error: DoctorPdfValidationError | None = None
+    for fix_orphans in (True, False):
         for density in ("comfortable", "compact"):
-            html = render_v4_html(
-                view, period_label=period_label, public_url=public_url, density=density
+            try:
+                document, _ = layout_v4(
+                    view, period_label=period_label, public_url=public_url, density=density, fix_orphans=fix_orphans
+                )
+                if not v4_layout_valid(document, row_count, required_anchors=table_anchors):
+                    continue
+                pdf_bytes = bytes(document.write_pdf())
+            except DoctorPdfValidationError:
+                raise
+            except Exception as exc:
+                raise DoctorPdfValidationError(
+                    "DOCTOR_PDF_RENDER_FAILED", "원장 전달용 PDF를 만드는 중 오류가 발생했습니다."
+                ) from exc
+            bound = v4_expectation(view, bound_expectation, len(document.pages), section_pages(document))
+            try:
+                metadata = validate_doctor_pdf(pdf_bytes, bound)
+            except DoctorPdfValidationError as exc:
+                first_error = first_error or exc
+                continue
+            return ValidatedDoctorPdf(
+                pdf_bytes=pdf_bytes, sha256=metadata.sha256, byte_size=metadata.byte_size, metadata=metadata
             )
-            candidate = HTML(string=html, base_url=str(_TEMPLATE_DIR)).render()
-            if v4_layout_valid(candidate, row_count, required_anchors=table_anchors):
-                document = candidate
-                break
-        if document is None:
-            raise DoctorPdfValidationError(
-                "DOCTOR_PDF_LAYOUT_OVERFLOW",
-                "본문 쪽이나 키워드표가 페이지 범위를 넘었습니다. 내용을 자르지 않고 중단했습니다.",
-            )
-        pdf_bytes = bytes(document.write_pdf())
-    except DoctorPdfValidationError:
-        raise
-    except Exception as exc:
-        raise DoctorPdfValidationError(
-            "DOCTOR_PDF_RENDER_FAILED", "원장 전달용 PDF를 만드는 중 오류가 발생했습니다."
-        ) from exc
-    from app.services.report_artifact_validation import validate_doctor_pdf
+    if first_error is not None:
+        raise first_error
+    raise DoctorPdfValidationError(
+        "DOCTOR_PDF_LAYOUT_OVERFLOW",
+        "본문 쪽이나 키워드표가 페이지 범위를 넘었습니다. 내용을 자르지 않고 중단했습니다.",
+    )
 
-    bound = v4_expectation(
-        view, replace(expectation, period_label=period_label), len(document.pages), section_pages(document)
-    )
-    metadata = validate_doctor_pdf(pdf_bytes, bound)
-    return ValidatedDoctorPdf(
-        pdf_bytes=pdf_bytes, sha256=metadata.sha256, byte_size=metadata.byte_size, metadata=metadata
-    )

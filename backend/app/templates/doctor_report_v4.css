@@ -118,7 +118,6 @@
    트랙은 한 색(#dcdcdc)·한 높이(6pt), 값은 오른쪽 끝 한 선에 맞춘다. 한 행은 30pt 이상(라벨 11/700 + 캡션 9, 7pt+7pt). */
 .v4 .bars { font-size:11pt; line-height:1.35; }
 .v4 .bars td { height:30pt; padding-top:var(--bar-pad); padding-bottom:var(--bar-pad); padding-left:0; padding-right:var(--s2); vertical-align:middle; border-bottom:0.6pt solid var(--rule); }  /* height는 표 칸의 최소 높이 — 캡션 없는 편수 막대도 30pt */
-.v4 .bars tr { break-inside:avoid; }
 .v4 .bar-label { font-weight:700; }
 .v4 .bar-track { background:var(--rule); height:6pt; }
 .v4 .bar-fill { height:6pt; background:var(--accent); }
@@ -231,6 +230,25 @@
 .v4 .caveats { border-top:0.6pt solid var(--rule); padding-top:var(--s2); color:var(--muted); break-inside:avoid; }
 .v4 .appendix h2 { break-after:avoid; }
 .v4 .appendix-lines, .v4 .glossary { break-inside:avoid; }
+
+/* 쪽 넘김의 고아·과부 규칙(2026-11-05, 10월분 실물 점검). 흐르는 표·원장은 쪽 경계 양쪽에 3행 미만을 남기지 않는다 —
+   머리 행과 첫 3행은 함께 다음 쪽으로 가고(h2 → thead → 행 사슬), 마지막 3행은 뒤 요소와 함께 간다. 표 뒤의 마무리
+   (검정 면·시사점·캡션·인용 줄)는 `break-before:avoid`로 앞 행 셋을 끌고 가 혼자 새 쪽에 서지 않는다. WeasyPrint 69가
+   tr·블록의 break-before/after:avoid를 지키는 것을 실측했다(brkprobe). 6행 이하 표는 통째로 한 쪽에 선다.
+   행에 `break-inside:avoid`를 두면 WeasyPrint가 들어가지 않는 행을 다음 쪽으로 밀 때 앞 행의 break-after:avoid를 무시해
+   고아 행이 다시 생긴다(brkprobe3·5 실측). 행은 쪼개지면 안 되므로(report_editorial.css의 `tr { break-inside:avoid }`)
+   avoid 사슬은 첫 시도일 뿐이고, 남는 고아는 렌더러가 레이아웃을 읽어 `page-start`(강제 넘김)로 결정적으로 정리한다
+   (`services/doctor_pdf_pagination.py`). */
+.v4 .page-start { break-before:page !important; }  /* 렌더러의 쪽 넘김 정리(doctor_pdf_pagination)가 행·모듈에 붙인다 */
+.v4 .content-table thead, .v4 .heatmap thead, .v4 .competitor-table thead, .v4 .plan-table thead, .v4 .keyword-table thead,
+.v4 .content-table tbody tr:nth-child(-n+3), .v4 .heatmap tbody tr:nth-child(-n+3), .v4 .competitor-table tbody tr:nth-child(-n+3),
+.v4 .plan-table tbody tr:nth-child(-n+3), .v4 .keyword-table tbody tr:nth-child(-n+3), .v4 .bars tbody tr:nth-child(-n+3),
+.v4 .ledger .replaced-row:nth-child(-n+3) { break-after:avoid; }
+.v4 .content-table tbody tr:nth-last-child(-n+3), .v4 .heatmap tbody tr:nth-last-child(-n+3), .v4 .competitor-table tbody tr:nth-last-child(-n+3),
+.v4 .plan-table tbody tr:nth-last-child(-n+3), .v4 .keyword-table tbody tr:nth-last-child(-n+3), .v4 .bars tbody tr:nth-last-child(-n+3),
+.v4 .ledger .replaced-row:nth-last-child(-n+3) { break-before:avoid; }
+.v4 .figure-band, .v4 .closing, .v4 .insight-panel, .v4 .module > .caption, .v4 .anchor-box + .caption, .v4 .appendix .caption,
+.v4 .plan .figure-band, .v4 .page > .figure-band { break-before:avoid; }
 
 /* compact 밀도: 마스트헤드·제목 여백과 검정 면 안쪽 여백만 조인다. 행·칸·줄 간격은 손대지 않는다. */
 .compact.v4 .masthead { margin-bottom:var(--s4); }
