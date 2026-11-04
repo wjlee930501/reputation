@@ -147,6 +147,7 @@ def restore_doctor_view(payload: Mapping[str, JsonValue]) -> DoctorReportView:
             result_story=str(raw.get("result_story") or ""),
             work_story=str(raw.get("work_story") or ""),
             plan_story=str(raw.get("plan_story") or ""),
+            conclusion_note=str(raw.get("conclusion_note") or ""),
         )
     return view
 

@@ -17,7 +17,7 @@ from uuid import uuid4
 import pytest
 
 from app.services.report_engine import build_doctor_report_view
-from app.services.report_narrative import MONTHLY_SAME_BASIS_NOTICE
+from app.services.report_narrative import MONTHLY_NOTICE_PRIMARY, MONTHLY_NOTICE_SECONDARY
 
 HOSPITAL = SimpleNamespace(name="장편한외과의원")
 
@@ -202,12 +202,13 @@ def test_policy_change_month_uses_the_evergreen_monthly_notice():
     view = _view(comparison_reason="MEASUREMENT_POLICY_CHANGED")
 
     assert view["headline"]["delta"] is None
-    assert view["headline"]["delta_sentence"] == MONTHLY_SAME_BASIS_NOTICE
-    assert view["summary"].startswith(f"{MONTHLY_SAME_BASIS_NOTICE} 이번 달 확인한 답변을")
+    notice = f"{MONTHLY_NOTICE_PRIMARY} {MONTHLY_NOTICE_SECONDARY}"
+    assert view["headline"]["delta_sentence"] == MONTHLY_NOTICE_PRIMARY
+    assert view["summary"].startswith(f"{notice} 이번 달 확인한 답변을")
     for copy in (view["headline"]["delta_sentence"], view["summary"], *view["talking_points"]):
-        for stale in ("다음 달부터", "측정 기준이 바뀌어", "측정 방식이 바뀌어"):
+        for stale in ("다음 달부터", "측정 기준이 바뀌어", "측정 방식이 바뀌어", "동일 측정 기준"):
             assert stale not in copy
-    assert any(MONTHLY_SAME_BASIS_NOTICE in line for line in view["talking_points"])
+    assert any(notice in line for line in view["talking_points"])
     assert ".." not in " ".join(view["talking_points"])
 
 
