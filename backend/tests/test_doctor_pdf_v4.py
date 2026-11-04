@@ -714,7 +714,8 @@ def test_v4_binary_validation_is_page_bound():
     writer = PdfWriter()
     for index in range(sections.appendix_start):
         writer.add_page(reader.pages[index])
-    writer.add_page(reader.pages[0])
+    for _ in range(sections.appendix_start, len(reader.pages)):
+        writer.add_page(reader.pages[0])  # 쪽 수는 그대로(범위 검증을 통과해 문구 검증까지 간다)
     moved = BytesIO()
     writer.write(moved)
     with pytest.raises(DoctorPdfValidationError) as caught:
@@ -803,3 +804,43 @@ def test_public_url_mismatch_fails_before_rendering():
             expectation=expectation,
         )
     assert caught.value.code == "DOCTOR_PDF_PUBLIC_URL_INVALID"
+
+
+def test_layout_contract_closes_the_appendix_boundary_holes():
+    """뒤에 남는 빈 쪽, 부록 첫 쪽의 p* 앵커, 부록 끝 뒤의 kw-row 앵커는 모두 거절한다(검토 11)."""
+    trailing_blank = _valid_pages()
+    trailing_blank.append({})  # 부록 끝 뒤에 아무 앵커도 없는 쪽
+    assert not v4_layout_valid(_document(trailing_blank), 2)
+    heat_in_appendix = _valid_pages()
+    heat_in_appendix[6]["p3-heat"] = (RAIL[0], 300.0, RAIL[1], 420.0)  # 부록 첫 쪽에 본문 표
+    assert not v4_layout_valid(_document(heat_in_appendix), 2)
+    row_after_end = _valid_pages()
+    row_after_end.append({"kw-row-1": (RAIL[0], 200.0, RAIL[1], 230.0), "kw-row-1-end": (677.9, 205.0, 677.9, 225.0)})
+    row_after_end[6].pop("kw-row-1")
+    row_after_end[6].pop("kw-row-1-end")
+    assert not v4_layout_valid(_document(row_after_end), 2)
+
+
+def test_binary_validation_rejects_malformed_section_ranges():
+    """넘겨받은 쪽 범위는 본문 6 + 부록, 오름차순·겹침 없음·쪽 안·부록 끝 = 마지막 쪽이어야 한다."""
+    from dataclasses import replace as _replace
+
+    from app.services.report_artifact_validation import validate_doctor_pdf
+
+    view, rendered, _ = _rendered("comparable")
+    page_count = rendered.metadata.page_count
+    document, _ = _validated_layout(view)
+    good = v4_expectation(view, build_doctor_pdf_expectation(view, PUBLIC_URL), page_count, section_pages(document))
+    assert validate_doctor_pdf(rendered.pdf_bytes, good).validation_version == "doctor-pdf-v4"
+    overlapping = tuple((0, page_count - 1) for _ in range(7))
+    with pytest.raises(DoctorPdfValidationError) as caught:
+        validate_doctor_pdf(rendered.pdf_bytes, _replace(good, section_page_ranges=overlapping))
+    assert caught.value.code == "DOCTOR_PDF_PAGE_COUNT_INVALID"
+    short_appendix = (*good.section_page_ranges[:-1], (good.section_page_ranges[-1][0], page_count - 2))
+    with pytest.raises(DoctorPdfValidationError) as caught:
+        validate_doctor_pdf(rendered.pdf_bytes, _replace(good, section_page_ranges=short_appendix))
+    assert caught.value.code == "DOCTOR_PDF_PAGE_COUNT_INVALID"
+    five_body = _replace(good, main_page_texts=good.main_page_texts[:5], section_page_ranges=good.section_page_ranges[:6])
+    with pytest.raises(DoctorPdfValidationError) as caught:
+        validate_doctor_pdf(rendered.pdf_bytes, five_body)
+    assert caught.value.code == "DOCTOR_PDF_PAGE_COUNT_INVALID"

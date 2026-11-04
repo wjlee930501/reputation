@@ -171,11 +171,14 @@ def v4_layout_valid(
             return False
     if not required_anchors <= anchors:
         return False
+    # 부록 끝이 문서의 마지막 쪽이어야 한다 — 뒤에 설명되지 않는 빈 쪽을 남기지 않는다.
+    if sections.appendix_end != len(document.pages) - 1:
+        return False
     for index, page in enumerate(document.pages):
         for name in page.anchors:
-            if name.startswith("p") and index > sections.appendix_start:
+            if name.startswith("p") and index >= sections.appendix_start:
                 return False
-            if name.startswith("kw-row-") and index < sections.appendix_start:
+            if name.startswith("kw-row-") and not sections.appendix_start <= index <= sections.appendix_end:
                 return False
     for page in document.pages:
         left, top = _RAIL_X_PX - _TOLERANCE_PX, _HEAD_PX - _TOLERANCE_PX

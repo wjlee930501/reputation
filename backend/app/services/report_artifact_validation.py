@@ -217,7 +217,18 @@ def validate_doctor_pdf(
         ranges = expectation.section_page_ranges
         body_pages = len(expectation.main_page_texts)
         if ranges:
-            if len(ranges) != body_pages + 1:
+            # 범위는 본문 6절 + 부록 7개, 오름차순·겹치지 않음·쪽 범위 안, 부록 끝 = 마지막 쪽이어야 한다.
+            ordered = all(
+                0 <= start <= end < page_count and (index == 0 or start > ranges[index - 1][1])
+                for index, (start, end) in enumerate(ranges)
+            )
+            if (
+                body_pages != 6
+                or len(ranges) != body_pages + 1
+                or not ordered
+                or ranges[0][0] != 0
+                or ranges[-1][1] != page_count - 1
+            ):
                 raise DoctorPdfValidationError(
                     "DOCTOR_PDF_PAGE_COUNT_INVALID", "절의 쪽 범위와 검증 기준이 일치하지 않습니다."
                 )
