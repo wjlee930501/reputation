@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import re
 from dataclasses import dataclass
 from hashlib import sha256
 from typing import Any
@@ -209,21 +210,39 @@ def validate_doctor_pdf(
         if _normalize_text(text) not in normalized_text
     ]
     if v4:
-        # v4는 쪽마다 묶는다 — i번째 튜플은 i번째 쪽에, 부록 문구는 본문 뒤 쪽들에만 있어야 한다.
+        # v4는 절의 쪽 범위로 묶는다 — i번째 튜플은 i번째 범위(레이아웃 증명 `section_page_ranges`)의 쪽들에,
+        # 부록 문구는 부록 범위에만 있어야 한다. 범위가 없으면(옛 호출) '절 n = 쪽 n'이다.
         # 전체 문서에서 찾으면 다른 쪽에 밀려난 내용과 비어 버린 쪽을 잡지 못한다.
-        body_pages = len(expectation.main_page_texts)
         normalized_pages = [_normalize_text(text) for text in page_texts_extracted]
+        ranges = expectation.section_page_ranges
+        body_pages = len(expectation.main_page_texts)
+        if ranges:
+            if len(ranges) != body_pages + 1:
+                raise DoctorPdfValidationError(
+                    "DOCTOR_PDF_PAGE_COUNT_INVALID", "절의 쪽 범위와 검증 기준이 일치하지 않습니다."
+                )
+            appendix_range = ranges[-1]
+        else:
+            ranges = tuple((index, index) for index in range(body_pages))
+            appendix_range = (body_pages, max(body_pages, len(normalized_pages) - 1))
         for index, page_texts in enumerate(expectation.main_page_texts):
-            page_text = normalized_pages[index] if index < len(normalized_pages) else ""
+            start, end = ranges[index]
+            page_text = "".join(normalized_pages[start : end + 1])
             missing_fields.extend(
                 f"p{index + 1}:{text}" for text in page_texts if _normalize_text(text) not in page_text
             )
-        appendix_text = "".join(normalized_pages[body_pages:])
+        appendix_text = "".join(normalized_pages[appendix_range[0] : appendix_range[1] + 1])
         missing_fields.extend(
             f"appendix:{text}"
             for text in expectation.required_appendix_texts
             if _normalize_text(text) not in appendix_text
         )
+        # 빈 쪽·설명되지 않는 쪽: 부록 끝 쪽까지 모든 쪽에 러닝 헤드·풋을 뺀 글자가 80자 이상 있어야 한다.
+        for index in range(0, min(appendix_range[1], len(normalized_pages) - 1) + 1):
+            if len(_without_running_text(normalized_pages[index])) < _MIN_PAGE_CHARS:
+                raise DoctorPdfValidationError(
+                    "DOCTOR_PDF_PAGE_EMPTY", f"원장 전달용 PDF의 {index + 1}쪽에 내용이 없습니다."
+                )
     if missing_fields:
         raise DoctorPdfValidationError(
             "DOCTOR_PDF_REQUIRED_TEXT_MISSING",
@@ -236,7 +255,7 @@ def validate_doctor_pdf(
     cursor = 0
     # v4: 행 검사는 부록 쪽 텍스트 안에서만 한다 — 본문(히트맵·계획표)의 같은 키워드·칸이 부록 행을 대신 채우지 못하게.
     row_text = (
-        "".join(_normalize_text(text) for text in page_texts_extracted[len(expectation.main_page_texts):])
+        "".join(normalized_pages[appendix_range[0] : appendix_range[1] + 1])
         if v4
         else normalized_text
     )
@@ -301,6 +320,21 @@ def internal_markers_in(text: str) -> list[str]:
 def _normalize_text(value: str) -> str:
     # PDF extraction may insert whitespace inside a word at a visual line wrap.
     return "".join(value.split())
+
+
+# 빈 쪽 하한. 러닝 헤드·풋·마스트헤드만 남은 쪽은 0자가 되고, 정당하게 짧은 쪽(발행 0편의 02, 사례 없는 05,
+# 검정 면 하나만 넘어간 06 이어짐 쪽 "다음 달 대응 키워드 14개"=11자)도 있어 8자로 가른다 — 80자는 그런
+# 쪽을 거짓으로 거절한다. 러닝 글자를 뺀 뒤이므로 0과 8 사이에 정당한 쪽은 없다.
+_MIN_PAGE_CHARS = 8
+# v4 러닝 헤드·풋과 마스트헤드 라벨(공백을 뺀 꼴). 빈 쪽 판정에서 이 글자는 세지 않는다.
+_RUNNING_TEXT = re.compile(
+    r"NEWVISIT·RE:PUTATION|MOTIONLABSINC\.|Re:putation/\d{4}-\d{2}|\d+/\d+|\(이어짐\)|검증용가상사례"
+    r"|0[1-6]/(?:월간요약|콘텐츠발행현황|AI노출성과|경쟁현황|대표답변사례|다음달실행계획)|부록/자세한기록|·"
+)
+
+
+def _without_running_text(normalized_page: str) -> str:
+    return _RUNNING_TEXT.sub("", normalized_page)
 
 
 def _pretendard_font_facts(page: DictionaryObject) -> tuple[bool, bool]:

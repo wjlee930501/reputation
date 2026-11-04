@@ -153,12 +153,12 @@
 <div id="p5-end"></div>
 </section>
 
-<section class="page plan anchored" id="p6-start">
+<section class="page plan{{ ' anchored' if (p.rows|length) <= 6 else '' }}" id="p6-start">
 {{ masthead('06', '다음 달 실행 계획') }}
 <h1>{{ p.headline }}</h1>
 {% if p.rows %}<div class="module">{{ plan_table(p.rows, 'p6-table') }}
 {% if p.continued %}<p class="caption">나머지 {{ p.continued|length }}개는 부록에 이어집니다.</p>{% endif %}</div>
-<div class="spring"></div>
+{% if (p.rows|length) <= 6 %}<div class="spring"></div>{% endif %}
 <div class="figure-band"><p class="figure-label">다음 달 대응 키워드</p><p class="figure-value">{{ (p.rows|length) + (p.continued|length) }}개</p></div>
 {% else %}<p class="empty">{{ p.empty_text }}</p>
 <div class="spring"></div>
@@ -180,7 +180,7 @@
 {% if a.keyword_note %}<p class="caption keyword-note">{{ a.keyword_note }}</p>{% endif %}
 
 {% if p.continued %}<h2>다음 달 실행 계획 (이어짐)</h2>
-{{ plan_table(p.continued) }}{% endif %}
+{{ plan_table(p.continued, 'appendix-plan-table') }}{% endif %}
 
 <h2>B. 측정 방법</h2>
 <div class="appendix-lines">{% for line in a.method_lines %}<p>{{ line }}</p>

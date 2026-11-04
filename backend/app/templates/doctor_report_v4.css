@@ -228,7 +228,9 @@
 .v4 .glossary-row { display:table; width:100%; border-top:0.6pt solid var(--rule); padding:5pt 0; }
 .v4 .glossary-row .term { display:table-cell; width:20%; font-weight:700; margin:0; vertical-align:top; padding-right:var(--s2); }
 .v4 .glossary-row .definition { display:table-cell; width:80%; margin:0; vertical-align:top; }
-.v4 .caveats { border-top:0.6pt solid var(--rule); padding-top:var(--s2); color:var(--muted); }
+.v4 .caveats { border-top:0.6pt solid var(--rule); padding-top:var(--s2); color:var(--muted); break-inside:avoid; }
+.v4 .appendix h2 { break-after:avoid; }
+.v4 .appendix-lines, .v4 .glossary { break-inside:avoid; }
 
 /* compact 밀도: 마스트헤드·제목 여백과 검정 면 안쪽 여백만 조인다. 행·칸·줄 간격은 손대지 않는다. */
 .compact.v4 .masthead { margin-bottom:var(--s4); }

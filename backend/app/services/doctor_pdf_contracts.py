@@ -156,6 +156,9 @@ class DoctorPdfExpectation:
     required_appendix_rows: tuple[tuple[str, ...], ...] = ()
     # 뷰의 템플릿 판. "v4"면 검증 판 이름이 `doctor-pdf-v4`가 된다. None은 종전(v1~v3) 그대로.
     template_version: str | None = None
+    # v4: 레이아웃 증명(앵커)으로 읽은 절의 쪽 범위 — 본문 6절 + 부록(7번째), (첫 쪽, 끝 쪽) 0부터 양 끝 포함.
+    # `main_page_texts[i]`는 i번째 범위의 쪽 글자를 이어 붙인 것에서, 부록 문구·행은 부록 범위에서만 찾는다.
+    section_page_ranges: tuple[tuple[int, int], ...] = ()
 
 
 class DoctorArtifactMetadata(BaseModel):

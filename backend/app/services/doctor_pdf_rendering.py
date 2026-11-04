@@ -231,6 +231,7 @@ def _render_v4(*, view, period_label: str, public_url: str, expectation: DoctorP
     """v4(설계 2026-11-04): 뷰 모델 하나, 쪽별 앵커, 필수 문구는 `required_texts()`에서."""
     from app.services.doctor_pdf_v4 import (
         required_table_anchors,
+        section_pages,
         v4_expectation,
         v4_layout_valid,
         validate_v4_fields,
@@ -266,7 +267,7 @@ def _render_v4(*, view, period_label: str, public_url: str, expectation: DoctorP
     from app.services.report_artifact_validation import validate_doctor_pdf
 
     bound = v4_expectation(
-        view, replace(expectation, period_label=period_label), len(document.pages)
+        view, replace(expectation, period_label=period_label), len(document.pages), section_pages(document)
     )
     metadata = validate_doctor_pdf(pdf_bytes, bound)
     return ValidatedDoctorPdf(
