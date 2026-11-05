@@ -107,10 +107,12 @@ test('draft starts from the current printed values and sends only what the user 
 
 test('a finished run counts as done only when the report version rose past the edited one', () => {
   assert.equal(aeEditRunOutcome(undefined, 2), 'running')
-  assert.equal(aeEditRunOutcome({ isActive: true, reportVersion: 2 }, 2), 'running')
-  assert.equal(aeEditRunOutcome({ isActive: false, reportVersion: 2 }, 2), 'failed')
-  assert.equal(aeEditRunOutcome({ isActive: false, reportVersion: null }, 2), 'failed')
-  assert.equal(aeEditRunOutcome({ isActive: false, reportVersion: 3 }, 2), 'done')
+  assert.equal(aeEditRunOutcome({ isActive: true, failed: false, reportVersion: 2 }, 2), 'running')
+  assert.equal(aeEditRunOutcome({ isActive: false, failed: false, reportVersion: 2 }, 2), 'failed')
+  assert.equal(aeEditRunOutcome({ isActive: false, failed: false, reportVersion: null }, 2), 'failed')
+  assert.equal(aeEditRunOutcome({ isActive: false, failed: false, reportVersion: 3 }, 2), 'done')
+  // 다른 작업이 먼저 v3를 만들어 이 요청이 STALE로 실패한 경우 — 버전이 올라도 실패다(검토 2-P2-1).
+  assert.equal(aeEditRunOutcome({ isActive: false, failed: true, reportVersion: 3 }, 2), 'failed')
 })
 
 test('request keys and fingerprints are stable for the same field set', () => {

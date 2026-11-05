@@ -266,10 +266,11 @@ export function buildAeEditFields(
 
 /** 작업 기록에서 이 요청의 결과를 읽는다 — 실패한 작업도 그 달의 기존 보고서 버전을 싣기 때문에 버전이 **올랐는지** 본다(검토 1-P2-3). */
 export function aeEditRunOutcome(
-  run: { readonly isActive: boolean; readonly reportVersion: number | null } | undefined,
+  run: { readonly isActive: boolean; readonly failed: boolean; readonly reportVersion: number | null } | undefined,
   versionBefore: number,
 ): 'running' | 'done' | 'failed' {
   if (!run || run.isActive) return 'running'
+  if (run.failed) return 'failed'
   return run.reportVersion !== null && run.reportVersion > versionBefore ? 'done' : 'failed'
 }
 

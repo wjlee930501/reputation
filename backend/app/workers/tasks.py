@@ -13217,7 +13217,7 @@ def _carry_ae_overrides(
             for path in list(kept):
                 if validate_ae_fields({path: kept[path]}, doctor_view, case_candidates=candidates):
                     dropped[path] = kept.pop(path)
-        kept = normalize_ae_fields(kept, doctor_view)
+        kept = normalize_ae_fields(kept, doctor_view, case_candidates=candidates)
     if kept:
         edited = apply_ae_overrides(doctor_view, kept, case_candidates=candidates)
         if ae_edit_fact_problems(doctor_view, edited):
@@ -13333,7 +13333,7 @@ def _apply_ae_edit_to_plan(
             problems.append(("BLOCKER", "AE_EDIT_INVALID", f"{problem.path}: {problem.code}"))
         if problems:
             return doctor_view, problems
-    merged = normalize_ae_fields(merged, base)
+    merged = normalize_ae_fields(merged, base, case_candidates=candidates)
     edited = apply_ae_overrides(base, merged, case_candidates=candidates) if merged else base
     for problem in ae_edit_fact_problems(base, edited):
         problems.append(("DIFF", "AE_EDIT_NUMBERS", problem))

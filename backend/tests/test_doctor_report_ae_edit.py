@@ -267,6 +267,16 @@ def test_normalize_drops_values_equal_to_the_original_and_merge_removes_with_non
     originals = editable_fields(view)
     fields = {"summary.key_lines[0]": f"  {originals['summary.key_lines[0]']} ", "summary.key_lines[1]": "새 문장", "x.y": "z"}
     assert normalize_ae_fields(fields, view) == {"summary.key_lines[1]": "새 문장"}
+    # 라벨 때문에 자동으로 바뀐 실행 내용을 원문으로 되돌린 값은 원문과 같아도 남는다(검토 2-P2-2).
+    top = _plan_keyword(view)
+    original_action = originals[f"plan.action[{top}]"]
+    kept = normalize_ae_fields({f"treatment_label[{top}]": "새 항목", f"plan.action[{top}]": original_action}, view)
+    assert kept == {f"treatment_label[{top}]": "새 항목", f"plan.action[{top}]": original_action}
+    applied = apply_ae_overrides(view, kept)
+    assert (*applied.plan.rows, *applied.plan.continued)[0].action == original_action
+    # 라벨에서 파생된 문장을 그대로 보내면 군더더기라 뺀다.
+    derived_action = (*apply_ae_overrides(view, {f"treatment_label[{top}]": "새 항목"}).plan.rows,)[0].action
+    assert normalize_ae_fields({f"treatment_label[{top}]": "새 항목", f"plan.action[{top}]": derived_action}, view) == {f"treatment_label[{top}]": "새 항목"}
     merged = merge_ae_fields({"summary.key_lines[1]": "옛 문장", LABEL: "라벨"}, {"summary.key_lines[1]": None, "summary.key_lines[2]": "셋"})
     assert merged == {LABEL: "라벨", "summary.key_lines[2]": "셋"}
     changes = field_changes(view, {"summary.key_lines[1]": "옛 문장"}, {"summary.key_lines[2]": "셋"})
@@ -595,6 +605,33 @@ async def test_ae_edit_context_requires_the_latest_v4_version(monkeypatch):
     with pytest.raises(HTTPException) as caught:
         await operations._load_ae_edit_context(db, older.hospital_id, v3.id)
     assert caught.value.status_code == 409 and caught.value.detail["code"] == "AE_EDIT_REQUIRES_V4"
+
+
+@pytest.mark.asyncio
+async def test_operations_center_retry_carries_the_ae_edit_payload(monkeypatch):
+    """운영센터 재시도는 같은 인자로 새 실행을 만든다 — `ae_edit`를 잇지 않으면 수정 없는 템플릿 갱신이 된다(검토 2-P2-3)."""
+    from app.services import operation_runs
+
+    hospital_id = uuid.uuid4()
+    previous = OperationRun(
+        id=uuid.uuid4(), hospital_id=hospital_id, operation_type="GENERATE_MONTHLY_REPORT", state=OperationRunState.FAILED,
+        request_payload={
+            "_dispatch": {"target_type": "hospital", "target_id": str(hospital_id), "queue": "reports", "task_args": [str(hospital_id), 2026, 10, True, False, True]},
+            "ae_edit": {"report_id": "r", "fields": {"summary.key_lines[0]": "x"}},
+        },
+    )
+    seen: dict = {}
+
+    async def dispatch(_db, command, _task):
+        seen["command"] = command
+        return SimpleNamespace(run=previous, replayed=False)
+
+    monkeypatch.setattr(operation_runs, "dispatch_operation", dispatch)
+    db = AsyncMock()
+    db.get = AsyncMock(return_value=previous)
+    await operation_runs.retry_operation_run(db, operation_runs.RetryCommand(run_id=previous.id, requested_by_id=None, audit_actor="ae", request_key="k"), lambda: None)
+    assert seen["command"].request_payload_extra == {"ae_edit": previous.request_payload["ae_edit"]}
+    assert seen["command"].task_args == (str(hospital_id), 2026, 10, True, False, True)
 
 
 def test_task_reads_the_ae_edit_request_from_the_operation_run_payload():

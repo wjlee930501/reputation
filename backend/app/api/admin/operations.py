@@ -1490,7 +1490,7 @@ def _ae_edit_preview_payload(
     preview = None
     fact_problems: list[str] = []
     if not problems:
-        normalized = normalize_ae_fields(merged, base)
+        normalized = normalize_ae_fields(merged, base, case_candidates=candidates)
         edited = apply_ae_overrides(base, normalized, case_candidates=candidates) if normalized else base
         fact_problems = ae_edit_fact_problems(base, edited)
         fact_problems.extend(

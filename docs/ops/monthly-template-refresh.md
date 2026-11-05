@@ -151,7 +151,7 @@ PDF를 만든다. 템플릿 갱신과 **같은 경로**(`generate_monthly_report
   사례 후보와 적용 결과·거절 사유를 돌려준다. `POST …/ae-edit`(본문 `{reason?, fields}`, `Idempotency-Key` 필수, 사람 계정만 — `require_active_account`라
   시스템 actor는 403)는 같은 요청 키의 기존 실행이 있으면 먼저 그 영수증을 돌려주고(수정 값이 다르면 409), 그 뒤 최신 버전·v4 스냅샷일 때만 받고(아니면 409 `AE_EDIT_NOT_LATEST`·`AE_EDIT_REQUIRES_V4`), 감사
   `generate_monthly_report_rebuild_requested`에 `mode: AE_EDIT`·`report_id`·필드별 전/후(`changes`)를 남긴 뒤
-  템플릿 갱신과 같은 OperationRun(`request_payload.ae_edit`)을 큐에 넣는다. 새 버전은 `supersedes_report_id`로 이어지고
+  템플릿 갱신과 같은 OperationRun(`request_payload.ae_edit`)을 큐에 넣는다. 실패한 실행을 운영센터에서 재시도하면 같은 인자와 `ae_edit`가 그대로 이어진다. 새 버전은 `supersedes_report_id`로 이어지고
   전달 기록은 건드리지 않으며 **다시 전달해야 반영된다**.
 - **Admin**: 보고서 다이얼로그 2번 구획 '문구·라벨 고치기 (선택)'(`ReportAeEditPanel`)에서 편집 가능 칸만 입력란으로
   보이고(원문·현재 값, 숫자 칸은 읽기 전용), '저장 전 검증'이 미리보기로 거절 사유를 칸 옆에 보이며, '새 버전

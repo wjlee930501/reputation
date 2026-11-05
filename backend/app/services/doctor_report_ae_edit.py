@@ -223,10 +223,20 @@ def validate_ae_fields(
     return problems
 
 
-def normalize_ae_fields(fields: Mapping[str, Any], view: DoctorReportV4) -> dict[str, Any]:
-    """저장할 수정 값 — 공백을 다듬고, 원문과 같은 값·None(수정 취소)은 뺀다(경로 정렬)."""
-    originals = editable_fields(view)
-    normalized: dict[str, Any] = {}
+def normalize_ae_fields(
+    fields: Mapping[str, Any],
+    view: DoctorReportV4,
+    *,
+    case_candidates: Sequence[CaseCandidate] = (),
+) -> dict[str, Any]:
+    """저장할 수정 값 — 공백을 다듬고, None(수정 취소)과 **없어도 같은 값이 찍히는** 문장은 뺀다(경로 정렬).
+
+    문장이 군더더기인지는 원문이 아니라 라벨·사례 교체만 적용한 뷰(파생 뷰)와 비교한다 — 라벨 때문에 자동으로 바뀐
+    실행 내용을 사람이 원문으로 되돌린 값은 원문과 같아도 명시 수정으로 남아야 한다(검토 2-P2-2).
+    """
+    from app.services.doctor_report_v4 import apply_ae_overrides
+
+    cleaned: dict[str, Any] = {}
     for path in sorted(fields):
         value = fields[path]
         if value is None or parse_ae_path(path) is None:
@@ -235,10 +245,19 @@ def normalize_ae_fields(fields: Mapping[str, Any], view: DoctorReportV4) -> dict
             value = value.strip()
         elif isinstance(value, (list, tuple)):
             value = [str(item).strip() for item in value]
-        if path in originals and originals[path] == value:
-            continue
-        normalized[path] = value
-    return normalized
+        cleaned[path] = value
+    structural = {
+        path: value
+        for path, value in cleaned.items()
+        if parse_ae_path(path).kind in (AE_FIELD_TREATMENT_LABEL, AE_FIELD_CASE_RECORD)
+    }
+    derived = apply_ae_overrides(view, structural, case_candidates=case_candidates) if structural else view
+    baseline = editable_fields(derived)
+    return {
+        path: value
+        for path, value in cleaned.items()
+        if path in structural or baseline.get(path) != value
+    }
 
 
 # ── 숫자 보존 판정 ──────────────────────────────────────────────────────────────

@@ -46,6 +46,9 @@ class _TaskPolicy:
     target_type: str
     arg_count: int
     allow_rebuild_true_arg: bool = False
+    # 템플릿 갱신·AE 수정 판의 인자 꼴 `(…, True, False, True[, True])`(rebuild, automatic_recovery=False, template_only
+    # [, allow_recovery_pending]) — 자율 복구의 재배달 정책(`autonomous_recovery`)과 같은 모양만 받는다.
+    allow_template_refresh_args: bool = False
 
 
 _TASK_POLICIES: Final[dict[str, _TaskPolicy]] = {
@@ -53,7 +56,7 @@ _TASK_POLICIES: Final[dict[str, _TaskPolicy]] = {
     "RUN_SOV": _TaskPolicy(run_sov_for_hospital, "sov", "hospital", 1),
     "REBUILD_SITE": _TaskPolicy(build_aeo_site, "default", "hospital", 1),
     "GENERATE_MONTHLY_REPORT": _TaskPolicy(
-        generate_monthly_report_for_hospital, "reports", "hospital", 3, True
+        generate_monthly_report_for_hospital, "reports", "hospital", 3, True, True
     ),
     "REGENERATE_CONTENT": _TaskPolicy(regenerate_content_item, "content", "content_item", 1),
     "REGENERATE_CONTENT_IMAGE": _TaskPolicy(generate_content_image, "content", "content_item", 1),
@@ -330,8 +333,9 @@ def _args_match_policy(
         return False
     if len(args) == policy.arg_count:
         return True
-    return (
-        policy.allow_rebuild_true_arg
-        and len(args) == policy.arg_count + 1
-        and args[-1] is True
-    )
+    if policy.allow_rebuild_true_arg and len(args) == policy.arg_count + 1 and args[-1] is True:
+        return True
+    if policy.allow_template_refresh_args:
+        tail = tuple(args[policy.arg_count:])
+        return tail in ((True, False, True), (True, False, True, True))
+    return False
