@@ -501,7 +501,7 @@ def test_rejudge_delivery_steps_aside_when_another_copy_holds_the_hospital_lock(
 
     released: list = []
     monkeypatch.setattr(competitor_refresh, "SyncSessionPinnedConnection", _Session)
-    monkeypatch.setattr(competitor_refresh, "try_acquire_hospital_advisory_session_lock_sync", lambda *_a: False)
+    monkeypatch.setattr(competitor_refresh, "try_acquire_hospital_advisory_session_lock_sync", lambda *_a, **_k: False)
     monkeypatch.setattr(competitor_refresh, "_release_session_lock", lambda *a: released.append(a))
     monkeypatch.setattr(competitor_refresh, "execute_rejudge", lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("판정을 사면 안 된다")))
     task = competitor_refresh.rejudge_month_competitors
@@ -514,3 +514,71 @@ def test_rejudge_delivery_steps_aside_when_another_copy_holds_the_hospital_lock(
     pg_session.refresh(parent)
     assert parent.state == OperationRunState.RUNNING  # 주인 사본의 실행 기록은 그대로다
     assert released == [] and budget["reserve"] == []
+
+
+def test_rejudge_delivery_that_finds_the_run_already_terminal_buys_nothing(pg_session, quiet_renders, budget, monkeypatch):  # noqa: F811 - pytest fixture
+    hospital, _records, _first = _first_version(pg_session)
+    _register(pg_session, hospital, [RIVAL])
+    parent = OperationRun(
+        id=uuid.uuid4(), hospital_id=hospital.id, operation_type=cr.REJUDGE_OPERATION_TYPE,
+        state=OperationRunState.SUCCEEDED, idempotency_key=f"test:{uuid.uuid4()}", task_id="t", request_payload={},
+        result_summary={"stage": "REPORT_REFRESH_QUEUED", "report_run_id": "child-1"},
+    )
+    pg_session.add(parent)
+    pg_session.commit()
+
+    class _Session:
+        def __enter__(self):
+            return pg_session
+
+        def __exit__(self, *_exc):
+            return False
+
+    monkeypatch.setattr(competitor_refresh, "SyncSessionPinnedConnection", _Session)
+    monkeypatch.setattr(competitor_refresh, "execute_rejudge", lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("판정을 사면 안 된다")))
+    task = competitor_refresh.rejudge_month_competitors
+    task.push_request(headers={"operation_run_id": str(parent.id)}, retries=0, id="t")
+    try:
+        result = task.run(str(hospital.id), 2026, 7)
+    finally:
+        task.pop_request()
+    assert result == {"status": "already_finished", "report_run_id": "child-1"}
+    pg_session.refresh(parent)
+    assert parent.result_summary["stage"] == "REPORT_REFRESH_QUEUED" and budget["reserve"] == []
+
+
+def test_publish_failure_after_commit_leaves_a_recoverable_child_and_returns_its_id(pg_session, quiet_renders, budget, monkeypatch):  # noqa: F811 - pytest fixture
+    hospital, _records, _first = _first_version(pg_session)
+    _register(pg_session, hospital, [RIVAL])
+    parent = OperationRun(
+        id=uuid.uuid4(), hospital_id=hospital.id, operation_type=cr.REJUDGE_OPERATION_TYPE,
+        state=OperationRunState.QUEUED, idempotency_key=f"test:{uuid.uuid4()}", task_id="t", request_payload={}, result_summary={},
+    )
+    pg_session.add(parent)
+    pg_session.commit()
+
+    class _Session:
+        def __enter__(self):
+            return pg_session
+
+        def __exit__(self, *_exc):
+            pg_session.expire_all()
+            return False
+
+    def broken_publish(**_kwargs):
+        raise OSError("broker down")
+
+    monkeypatch.setattr(competitor_refresh, "SyncSessionPinnedConnection", _Session)
+    monkeypatch.setattr(competitor_refresh, "execute_rejudge", lambda db, h, y, m, *, run_id, **_k: cr.execute_rejudge(db, h, y, m, run_id=run_id, judge=_async_judge))
+    monkeypatch.setattr(tasks.generate_monthly_report_for_hospital, "apply_async", broken_publish)
+    task = competitor_refresh.rejudge_month_competitors
+    task.push_request(headers={"operation_run_id": str(parent.id)}, retries=0, id="t")
+    try:
+        result = task.run(str(hospital.id), 2026, 7)
+    finally:
+        task.pop_request()
+    assert result["status"] == "report_refresh_queued"
+    child = pg_session.get(OperationRun, uuid.UUID(result["report_run_id"]))
+    assert child.state == OperationRunState.REQUESTED and child.parent_run_id == parent.id  # 자율 복구가 재배달한다
+    pg_session.refresh(parent)
+    assert parent.state == OperationRunState.SUCCEEDED

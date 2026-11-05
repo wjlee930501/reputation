@@ -57,6 +57,14 @@ STAGE_COST_BLOCKED = "COST_BLOCKED"
 # 자식 보고서 실행의 인자 — `generate_monthly_report_for_hospital(hospital, year, month, rebuild=True,
 # automatic_recovery=False, template_only=True, allow_recovery_pending=False, competitor_refresh=True)`.
 REPORT_REFRESH_TASK_FLAGS: tuple[Any, ...] = (True, False, True, False, True)
+# 재판정 직렬화 락의 이름공간 — 프로필 저장·V0가 쓰는 병원 공용 키와 분리한다(짧은 PATCH가 유일한 배달을 물러나게 하지 않게).
+LOCK_NAMESPACE = "competitor-rejudge"
+_TERMINAL_STATES = (
+    OperationRunState.SUCCEEDED,
+    OperationRunState.PARTIAL,
+    OperationRunState.FAILED,
+    OperationRunState.CANCELLED,
+)
 _OPEN_STATES = (OperationRunState.REQUESTED, OperationRunState.QUEUED, OperationRunState.RUNNING)
 
 
@@ -136,7 +144,7 @@ def _release_session_lock(db, hospital_uuid: uuid.UUID) -> None:
     쓰기를 막는다. 먼저 롤백하고, 해제를 확인하지 못하면 커넥션을 폐기한다."""
     try:
         db.rollback()
-        if release_hospital_advisory_session_lock_sync(db, hospital_uuid) is False:
+        if release_hospital_advisory_session_lock_sync(db, hospital_uuid, namespace=LOCK_NAMESPACE) is False:
             logger.error("competitor rejudge session lock for %s was not held by this connection; discarding it", hospital_uuid)
             db.invalidate()
         return
@@ -294,15 +302,20 @@ def rejudge_month_competitors(self, hospital_id: str, year: int, month: int) -> 
                 safe_error_message=str(exc),
             )
             return {"status": "period_not_closed"}
-        _note_progress(db, run_id, {"stage": "RUNNING", **period})
         hospital_uuid = hospital.id
         # 같은 병원의 재판정은 한 번에 하나만 돈다 — 같은 task id로 다시 배달된 사본이 살아 있는 lease를 다시 claim해
-        # 같은 이름의 판정을 두 번 사지 않도록 세션 advisory lock으로 직렬화한다. 기다리지 않는다: 못 잡은 사본은
-        # 조용히 물러난다(Ignore — 실패도 재시도 소모도 아니다). 주인 사본이 끝내고 자식을 큐에 넣는다.
-        if not try_acquire_hospital_advisory_session_lock_sync(db, hospital_uuid):
+        # 같은 이름의 판정을 두 번 사지 않도록 세션 advisory lock(전용 이름공간)으로 직렬화한다. 기다리지 않는다:
+        # 못 잡은 사본은 조용히 물러난다(Ignore — 실패도 재시도 소모도 아니다). 주인 사본이 끝내고 자식을 큐에 넣는다.
+        if not try_acquire_hospital_advisory_session_lock_sync(db, hospital_uuid, namespace=LOCK_NAMESPACE):
             logger.info("competitor rejudge already running for hospital=%s; this delivery steps aside", hospital_uuid)
             raise Ignore()
+        report_run_id: str | None = None
         try:
+            # 락을 잡은 뒤 실행 상태를 다시 읽는다 — 먼저 끝난 사본이 있으면 진행 기록도 유료 판정도 하지 않는다.
+            current = db.get(OperationRun, run_id, populate_existing=True) if run_id is not None else None
+            if current is not None and current.state in _TERMINAL_STATES:
+                return {"status": "already_finished", "report_run_id": (current.result_summary or {}).get("report_run_id")}
+            _note_progress(db, run_id, {"stage": "RUNNING", **period})
             try:
                 outcome: RejudgeOutcome = execute_rejudge(db, hospital, int(year), int(month), run_id=run_id)
             except Exception:
@@ -340,9 +353,10 @@ def rejudge_month_competitors(self, hospital_id: str, year: int, month: int) -> 
             if run_id is not None and not owned:
                 db.rollback()
                 return {"status": "already_finished", **outcome.summary()}
+            report_run_id = str(report_run.id)  # 세션이 닫힌 뒤에도 쓸 수 있게 스칼라로 들고 간다
             db.commit()
             db.expire_all()
-            report_run = _publish_child_run(db, db.get(OperationRun, report_run.id))
+            _publish_child_run(db, db.get(OperationRun, report_run.id))
         finally:
             _release_session_lock(db, hospital_uuid)
-    return {"status": "report_refresh_queued", "report_run_id": str(report_run.id), **outcome.summary()}
+    return {"status": "report_refresh_queued", "report_run_id": report_run_id, **outcome.summary()}
