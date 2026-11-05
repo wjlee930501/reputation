@@ -288,3 +288,8 @@ test('revert, delete, row delete and row restore in sequence always send the rig
   assert.match(panel, /ADMIN_COPY\.aeEditChangedOnly/)
   assert.match(panel, /data-testid="ae-submit-blocked"/)
 })
+
+test('the CSP lets the in-panel PDF preview frame a blob URL', () => {
+  const config = readFileSync(new URL('../next.config.js', import.meta.url), 'utf8')
+  assert.match(config, /"frame-src 'self' blob:"/)
+})

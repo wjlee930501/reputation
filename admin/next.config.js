@@ -11,6 +11,8 @@ const contentSecurityPolicy = [
   "img-src 'self' data: blob: https://storage.googleapis.com https://*.storage.googleapis.com",
   "font-src 'self' data:",
   "connect-src 'self'",
+  // 보고서 고치기의 PDF 미리보기는 같은 화면 안 iframe에 blob: URL로 띄운다(새 탭은 팝업 차단을 받는다).
+  "frame-src 'self' blob:",
 ].join('; ')
 
 const securityHeaders = [
