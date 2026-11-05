@@ -29,8 +29,9 @@ export function CompetitorRefreshPanel({
 }: {
   hospitalId: string
   report: ReportView
-  /** 체인을 요청했을 때와 체인이 끝났을 때 — 작업 기록과 보고서 목록을 다시 읽게 한다(새 버전이 목록에 보이도록). */
-  onChanged?: () => void
+  /** 체인을 요청했을 때와 끝났을 때. 끝났을 때는 새 버전의 보고서 ID를 함께 준다 — 부모가 그 버전을 열어 파일·전달
+   * 조작이 옛 버전에 남지 않게 한다. */
+  onChanged?: (newReportId?: string | null) => void
 }) {
   const [status, setStatus] = useState<CompetitorRefreshStatus | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -57,7 +58,7 @@ export function CompetitorRefreshPanel({
     if (!status) return
     const active = competitorRefreshIsActive(status.latestRun)
     // 진행 중 → 끝남으로 바뀌면 부모에게 알린다 — 새 버전이 목록·작업 기록에 보여야 운영자가 옛 버전을 전달하지 않는다.
-    if (wasActive.current && !active) onChanged?.()
+    if (wasActive.current && !active) onChanged?.(status.latestRun?.reportRun?.reportId ?? null)
     wasActive.current = active
     if (!active) return
     const timer = window.setInterval(() => void load(), 5000)

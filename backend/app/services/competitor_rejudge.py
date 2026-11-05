@@ -34,6 +34,11 @@ from app.models.monthly_control import MonthlyMeasurementManifest
 from app.models.report import MonthlyReport
 from app.models.sov import AIQueryTarget, SovRecord
 from app.services import cost_guard, sov_engine
+from app.services.competitor_scope import (
+    competitor_key,
+    registered_competitor_names,
+    scope_competitor_records,
+)
 from app.services.measurement_manifest_policy import legacy_manifest_is_final
 from app.services.monthly_period import monthly_recovery_deadline
 from app.services.monthly_report_snapshot import report_render_inputs
@@ -68,18 +73,8 @@ def _run_async(coro):
 # ── 순수 함수: 이름·판정 합치기 ──────────────────────────────────────────────
 
 
-def registered_competitor_names(hospital: Any) -> list[str]:
-    """병원 정보 탭에 등록된 경쟁 병원 이름(공백 정리·중복 제거, 순서 유지)."""
-    names: list[str] = []
-    for raw in getattr(hospital, "competitors", None) or []:
-        name = str(raw or "").strip()
-        if name and name not in names:
-            names.append(name)
-    return names
-
-
 def _name_key(name: str) -> str:
-    return sov_engine._normalize_for_prefilter(name)
+    return competitor_key(name)
 
 
 def judged_names(mentions: Iterable[Any] | None) -> set[str]:
@@ -171,30 +166,6 @@ def align_judgments(
 # ── 저장 요약(귀속)의 경쟁 집계 ─────────────────────────────────────────────
 
 
-def _scoped_mentions(record: Any, registered: Sequence[str]) -> Any:
-    """등록 경쟁사만 남긴 기록 뷰(보고서 조립 `doctor_report_v4._scope_competitors`와 같은 규칙). 등록이 비면 그대로."""
-    if not registered:
-        return record
-    keys = {_name_key(name) for name in registered}
-    mentions = [
-        item
-        for item in (getattr(record, "competitor_mentions", None) or [])
-        if isinstance(item, Mapping) and _name_key(str(item.get("name") or "")) in keys
-    ]
-    return _MentionsView(record, mentions)
-
-
-class _MentionsView:
-    __slots__ = ("_record", "competitor_mentions")
-
-    def __init__(self, record: Any, mentions: list[Any]) -> None:
-        self._record = record
-        self.competitor_mentions = mentions
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._record, name)
-
-
 def refresh_competitor_outcomes(
     summary: Mapping[str, Any] | None,
     records: Sequence[Any],
@@ -225,14 +196,16 @@ def refresh_competitor_outcomes(
         target_id = getattr(record, "ai_query_target_id", None)
         key = str(target_id) if target_id else query_to_target.get(str(getattr(record, "query_id", "")))
         if key:
-            by_target.setdefault(key, []).append(_scoped_mentions(record, registered_names))
+            by_target.setdefault(key, []).append(record)
     refreshed = copy.deepcopy(dict(attribution))
     rows = refreshed.get("query_targets")
     if not isinstance(rows, list):
         return refreshed
     for row in rows:
         if isinstance(row, dict) and row.get("id") is not None:
-            row["competitor_outcomes"] = _competitor_outcomes(by_target.get(str(row["id"]), []))
+            row["competitor_outcomes"] = _competitor_outcomes(
+                scope_competitor_records(by_target.get(str(row["id"]), []), registered_names)
+            )
     return refreshed
 
 

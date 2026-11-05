@@ -59,7 +59,7 @@ export function ReportDialog({
   onAction: (action: DeliveryAction) => void
   onCopyDeveloperInfo: () => void
   /** 경쟁 병원 반영 체인을 요청했거나 끝났을 때 — 작업 기록·목록을 다시 읽게 한다. 월간 보고서에만 쓴다. */
-  onCompetitorRefreshRequested?: () => void
+  onCompetitorRefreshRequested?: (newReportId?: string | null) => void
 }) {
   const panelRef = useRef<HTMLDivElement>(null)
   const closeRef = useRef<HTMLButtonElement>(null)

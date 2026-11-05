@@ -16,6 +16,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 from app.core.config import settings
 from app.models.hospital import Hospital
 from app.services import sov_engine
+from app.services.competitor_scope import registered_competitor_names, scope_competitor_records
 from app.services.content_citations import (
     normalize_cited_url,
     platform_owned_source_roots,
@@ -232,6 +233,7 @@ def build_strategy_summary(
 ) -> dict[str, Any]:
     """Build the durable monthly Query Target → evidence → action snapshot."""
     targets_by_id = {str(target.id): target for target in query_targets}
+    registered_competitors = registered_competitor_names(hospital) if hospital is not None else []
     query_to_target: dict[str, str] = {}
     for target in query_targets:
         for variant in getattr(target, "variants", None) or []:
@@ -289,7 +291,8 @@ def build_strategy_summary(
             "successful_measurement_count": len(successful),
             "failed_measurement_count": len(records) - len(successful),
             **source_metrics,
-            "competitor_outcomes": _competitor_outcomes(successful),
+            # 원장 뷰(doctor_report_v4)와 같은 투영 — 지금 등록된 경쟁사만, 등록 표기로 센다.
+            "competitor_outcomes": _competitor_outcomes(scope_competitor_records(successful, registered_competitors)),
             "last_measured_at": _iso_or_none(max(
                 (getattr(record, "measured_at", None) for record in records),
                 default=None,

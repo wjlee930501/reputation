@@ -403,7 +403,7 @@ def test_rejudge_task_finishes_its_run_and_chains_the_report_refresh(pg_session,
             return False
 
     dispatched: list[dict] = []
-    monkeypatch.setattr(competitor_refresh, "SyncSessionLocal", _Session)
+    monkeypatch.setattr(competitor_refresh, "SyncSessionPinnedConnection", _Session)
     monkeypatch.setattr(
         competitor_refresh, "execute_rejudge",
         lambda db, h, y, m, *, run_id, **_k: cr.execute_rejudge(db, h, y, m, run_id=run_id, judge=_async_judge),
@@ -429,6 +429,8 @@ def test_rejudge_task_finishes_its_run_and_chains_the_report_refresh(pg_session,
     assert child.parent_run_id == parent.id and child.operation_type == "GENERATE_MONTHLY_REPORT"
     assert child.state == OperationRunState.QUEUED
     assert child.request_payload["competitor_refresh"]["rejudge_run_id"] == str(parent.id)
+    # 부모 종결과 자식 행은 같은 커밋이다 — 부모가 SUCCEEDED인데 자식이 없는 창이 없다.
+    assert child.requested_at is not None and parent.completed_at is not None
     assert dispatched[0]["args"] == [str(hospital.id), 2026, 7, True, False, True, False, True]
     assert dispatched[0]["queue"] == "reports" and dispatched[0]["headers"]["operation_run_id"] == str(child.id)
     # 같은 부모로 다시 불러도 자식은 하나다.

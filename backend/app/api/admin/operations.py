@@ -1037,6 +1037,7 @@ async def _competitor_refresh_run_view(db: AsyncSession, run: OperationRun | Non
         "state": str(run.state),
         "stage": summary.get("stage") if isinstance(summary.get("stage"), str) else None,
         "safe_error_code": run.safe_error_code,
+        "failure_code": summary.get("failure_code") if isinstance(summary.get("failure_code"), str) else None,
         "requested_at": run.requested_at.isoformat() if run.requested_at else None,
         "completed_at": run.completed_at.isoformat() if run.completed_at else None,
         "records_total": rejudge.get("records_total"),
@@ -1185,13 +1186,14 @@ async def request_competitor_refresh(
     for run in await _competitor_refresh_runs(db, hospital.id, period.year, period.month):
         if run.idempotency_key == normalized_key or not await _competitor_chain_active(db, run):
             continue
-        await db.rollback()
+        active_run_id = str(run.id)  # rollback이 ORM 속성을 만료시키므로 먼저 읽는다
+        await db.rollback()  # 준비해 둔 사유 감사도 함께 버린다
         raise HTTPException(
             status_code=409,
             detail={
                 "code": "COMPETITOR_REFRESH_IN_FLIGHT",
                 "message": "이 달의 경쟁 병원 반영이 이미 진행 중입니다. 끝난 뒤 다시 확인해 주세요.",
-                "operation_run_id": str(run.id),
+                "operation_run_id": active_run_id,
             },
         )
     task_args: list[JSONValue] = [str(hospital.id), period.year, period.month]

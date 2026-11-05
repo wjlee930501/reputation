@@ -93,6 +93,10 @@ def _record(target_id, query_id, *, mentions, status="SUCCESS", verdict="MATCHED
         measurement_status=status,
         mention_verdict=verdict,
         is_mentioned=True,
+        ai_platform="chatgpt",
+        measured_at=datetime(2026, 10, 15, tzinfo=UTC),
+        source_urls=[],
+        raw_response="가상 답변",
     )
 
 
@@ -139,11 +143,12 @@ def test_v4_competition_counts_only_currently_registered_competitors():
     assert {row.name for row in everyone.competition.rows} == {"가상동 다른의원", "가상 중앙의원"}
 
     scoped = build(hospital=_hospital(competitors=["가상 중앙 의원"]), records=_records())
-    assert [row.name for row in scoped.competition.rows] == ["가상 중앙의원"]
+    # 등록 표기로 이름을 맞춘다 — 기록의 "가상 중앙의원"이 등록한 "가상 중앙 의원"으로 보인다.
+    assert [row.name for row in scoped.competition.rows] == ["가상 중앙 의원"]
     assert scoped.competition.basis == "등록한 경쟁 병원 1곳 기준"
     assert all("가상동 다른의원" not in row.competitors for row in scoped.competition.replaced)
     facts = scoped.facts()
-    assert "competitor.가상동 다른의원" not in facts and "competitor.가상 중앙의원" in facts
+    assert "competitor.가상동 다른의원" not in facts and "competitor.가상 중앙 의원" in facts
     # 다른 사실은 그대로다 — 경쟁 사실만 다르다.
     assert {k: v for k, v in everyone.facts().items() if not k.startswith("competitor.")} == {
         k: v for k, v in facts.items() if not k.startswith("competitor.")
@@ -424,7 +429,7 @@ def test_strategy_competitor_outcomes_respect_current_registration():
     strategy = {"query_targets": [{"id": str(target), "competitor_outcomes": []}]}
     records = [_record(target, None, mentions=[{"name": "가나 의원", "is_mentioned": True}, {"name": "옛경쟁의원", "is_mentioned": True}])]
     refreshed = cr.refresh_competitor_outcomes(strategy, records, [SimpleNamespace(id=target, variants=[])], registered_names=["가나의원"])
-    assert [row["name"] for row in refreshed["query_targets"][0]["competitor_outcomes"]] == ["가나 의원"]
+    assert [row["name"] for row in refreshed["query_targets"][0]["competitor_outcomes"]] == ["가나의원"]
     everyone = cr.refresh_competitor_outcomes(strategy, records, [SimpleNamespace(id=target, variants=[])])
     assert len(everyone["query_targets"][0]["competitor_outcomes"]) == 2
 
@@ -462,3 +467,68 @@ def test_rejudge_task_has_an_operation_policy_and_requires_a_run():
     )
     identity = terminal_outcome_identity(run)
     assert identity is not None and identity.period == "2026-10"
+
+
+# ── 2차 검토 반영: 표기 통합·혼합 판정·전략 요약 투영 ─────────────────────────────
+
+
+def test_competitor_aliases_collapse_into_the_registered_spelling():
+    from test_doctor_report_v4 import _hospital, build
+    from test_doctor_report_v4 import _record as v4_record
+
+    from app.services.competitor_scope import scope_competitor_mentions, scope_competitor_records
+
+    mentions = [
+        {"name": "가나 의원", "is_mentioned": None, "verdict": "UNRESOLVED"},
+        {"name": "가나의원", "is_mentioned": True, "mention_rank": 1},
+        {"name": "옛경쟁의원", "is_mentioned": True},
+    ]
+    assert scope_competitor_mentions(mentions, ["가나 의원"]) == [{"name": "가나 의원", "is_mentioned": True, "mention_rank": 1}]
+    assert scope_competitor_records([SimpleNamespace(competitor_mentions=mentions)], []) [0].competitor_mentions is mentions
+
+    records = [
+        v4_record("가상동 위내시경 가능한 병원", mentioned=False, competitors=[{"name": "가나 의원", "is_mentioned": True, "mention_rank": 1}]),
+        v4_record("가상동 심장초음파 잘하는 병원", mentioned=True, competitors=[{"name": "가나의원", "is_mentioned": False}]),
+    ]
+    view = build(hospital=_hospital(competitors=["가나의원"]), records=records)
+    assert [(row.name, row.count_label, row.rate) for row in view.competition.rows] == [("가나의원", "2건 중 1건", 50.0)]
+    assert view.competition.basis == "등록한 경쟁 병원 1곳 기준"
+
+
+def test_mixed_false_and_unresolved_judgments_do_not_claim_non_mention():
+    from test_doctor_report_v4 import _hospital, build
+    from test_doctor_report_v4 import _record as v4_record
+
+    mixed = [{"name": "가나의원", "is_mentioned": False}, {"name": "다라의원", "is_mentioned": None, "verdict": "UNRESOLVED"}]
+    view = build(hospital=_hospital(competitors=["가나의원", "다라의원"]), records=[v4_record("가상동 위내시경 가능한 병원", mentioned=False, competitors=mixed)])
+    assert "경쟁 병원도 언급되지 않았습니다" not in view.cases.missing.insight
+    both = [{"name": "가나의원", "is_mentioned": False}, {"name": "다라의원", "is_mentioned": False}]
+    view = build(hospital=_hospital(competitors=["가나의원", "다라의원"]), records=[v4_record("가상동 위내시경 가능한 병원", mentioned=False, competitors=both)])
+    assert "경쟁 병원도 언급되지 않았습니다" in view.cases.missing.insight
+
+
+def test_ordinary_strategy_summary_uses_the_same_registration_projection():
+    from datetime import datetime, timezone
+
+    from app.services.report_engine import build_strategy_summary
+
+    target = SimpleNamespace(id=uuid.uuid4(), name="가상동 위내시경", priority="NORMAL", platforms=["chatgpt"], status="ACTIVE", variants=[])
+    records = [
+        _record(target.id, None, mentions=[{"name": "가나 의원", "is_mentioned": True}, {"name": "옛경쟁의원", "is_mentioned": True}]),
+        _record(target.id, None, mentions=[{"name": "가나의원", "is_mentioned": False}]),
+    ]
+    summary = build_strategy_summary(
+        hospital=SimpleNamespace(id=uuid.uuid4(), competitors=["가나의원"]),
+        query_targets=[target], sov_records=records, exposure_gaps=[], exposure_actions=[],
+        period_start=datetime(2026, 10, 1, tzinfo=timezone.utc), period_end=datetime(2026, 11, 1, tzinfo=timezone.utc),
+        next_month="2026-11",
+    )
+    outcomes = summary["query_targets"][0]["competitor_outcomes"]
+    assert outcomes == [{"name": "가나의원", "observed_count": 2, "mention_count": 1, "mention_pct": 50.0}]
+    legacy = build_strategy_summary(
+        hospital=SimpleNamespace(id=uuid.uuid4(), competitors=[]),
+        query_targets=[target], sov_records=records, exposure_gaps=[], exposure_actions=[],
+        period_start=datetime(2026, 10, 1, tzinfo=timezone.utc), period_end=datetime(2026, 11, 1, tzinfo=timezone.utc),
+        next_month="2026-11",
+    )
+    assert len(legacy["query_targets"][0]["competitor_outcomes"]) == 3

@@ -27,7 +27,7 @@ import arrow
 from sqlalchemy import select, update
 
 from app.core.celery_app import celery_app
-from app.core.database import SyncSessionLocal
+from app.core.database import SyncSessionPinnedConnection
 from app.models.hospital import Hospital
 from app.models.operations import OperationRun, OperationRunState
 from app.services import operation_run_payloads
@@ -37,6 +37,10 @@ from app.services.competitor_rejudge import (
     execute_rejudge,
 )
 from app.services.monthly_period import MonthlyPeriodError, require_closed_period
+from app.utils.db_locks import (
+    acquire_hospital_advisory_session_lock_sync,
+    release_hospital_advisory_session_lock_sync,
+)
 from app.workers.dispatch_auth import require_dispatch
 from app.workers.dispatch_envelope import build_dispatch_headers
 from app.workers.generation_run_control import explicit_run_context
@@ -81,9 +85,11 @@ def _finish(
     summary: dict[str, Any],
     safe_error_code: str | None = None,
     safe_error_message: str | None = None,
+    commit: bool = True,
 ) -> bool:
     """실행을 종결한다. 공통 claim 문맥이 있으면 그 울타리(task_id·lease·버전)로만 쓴다 — 다른 사본이 가져간
-    실행은 건드리지 않는다. 문맥이 없으면(직접 호출·테스트) 열린 상태만 보고 쓴다. 종결했으면 True."""
+    실행은 건드리지 않는다. 문맥이 없으면(직접 호출·테스트) 열린 상태만 보고 쓴다. 종결했으면 True.
+    `commit=False`면 호출자가 같은 트랜잭션에 다른 행(자식 실행)을 함께 묶어 커밋한다."""
     if run_id is None:
         return False
     run = db.get(OperationRun, run_id)
@@ -121,14 +127,32 @@ def _finish(
     else:
         statement = statement.where(OperationRun.state.in_(_OPEN_STATES))
     finished = db.execute(statement).scalar_one_or_none()
-    db.commit()
-    db.expire_all()
+    if commit:
+        db.commit()
+        db.expire_all()
     if finished is None:
         logger.info("competitor rejudge run not finished by this delivery (fenced): run_id=%s", run_id)
     return finished is not None
 
 
-def dispatch_competitor_report_refresh(
+def _existing_child_run(db, idempotency_key: str) -> OperationRun | None:
+    return db.execute(
+        select(OperationRun).where(
+            OperationRun.operation_type == "GENERATE_MONTHLY_REPORT",
+            OperationRun.idempotency_key == idempotency_key,
+        )
+    ).scalar_one_or_none()
+
+
+def _child_idempotency_key(hospital: Hospital, year: int, month: int, parent_run_id: uuid.UUID | None) -> str:
+    return (
+        f"competitor-refresh:{parent_run_id}:report"
+        if parent_run_id is not None
+        else f"competitor-refresh:{hospital.id}:{year:04d}-{month:02d}:{uuid.uuid4()}"
+    )
+
+
+def _stage_child_run(
     db,
     hospital: Hospital,
     year: int,
@@ -136,26 +160,12 @@ def dispatch_competitor_report_refresh(
     *,
     parent_run_id: uuid.UUID | None,
     rejudge_summary: dict[str, Any],
-) -> OperationRun:
-    """재판정 결과를 실을 템플릿 갱신(COMPETITOR_REFRESH)을 자식 실행으로 큐에 넣는다. 같은 부모에 한 번만."""
-    from app.workers.tasks import (
-        _mark_weekly_sov_operation_queued,
-        generate_monthly_report_for_hospital,
-    )
-
-    idempotency_key = (
-        f"competitor-refresh:{parent_run_id}:report"
-        if parent_run_id is not None
-        else f"competitor-refresh:{hospital.id}:{year:04d}-{month:02d}:{uuid.uuid4()}"
-    )
-    existing = db.execute(
-        select(OperationRun).where(
-            OperationRun.operation_type == "GENERATE_MONTHLY_REPORT",
-            OperationRun.idempotency_key == idempotency_key,
-        )
-    ).scalar_one_or_none()
+) -> tuple[OperationRun, bool]:
+    """자식 실행 행을 REQUESTED로 **세션에만** 올린다(커밋은 호출자). 같은 부모의 자식이 있으면 그것을 돌려준다."""
+    idempotency_key = _child_idempotency_key(hospital, year, month, parent_run_id)
+    existing = _existing_child_run(db, idempotency_key)
     if existing is not None:
-        return existing
+        return existing, False
     hospital_id = str(hospital.id)
     task_args = (hospital_id, year, month, *REPORT_REFRESH_TASK_FLAGS)
     run = OperationRun(
@@ -185,13 +195,26 @@ def dispatch_competitor_report_refresh(
         version=1,
     )
     db.add(run)
-    db.commit()
+    db.flush()
+    return run, True
+
+
+def _publish_child_run(db, run: OperationRun) -> OperationRun:
+    """커밋된 REQUESTED 자식을 브로커에 싣는다. 실패해도 행은 남아 자율 복구가 재배달한다."""
+    from app.workers.tasks import (
+        _mark_weekly_sov_operation_queued,
+        generate_monthly_report_for_hospital,
+    )
+
+    if run.state != OperationRunState.REQUESTED:
+        return run
     try:
+        dispatch = operation_run_payloads.parse_stored_dispatch(run.request_payload.get("_dispatch"))
         generate_monthly_report_for_hospital.apply_async(
-            args=list(task_args),
+            args=list(dispatch.task_args),
             queue="reports",
             headers={
-                **build_dispatch_headers("generate-monthly-report", hospital_id),
+                **build_dispatch_headers("generate-monthly-report", str(run.hospital_id)),
                 "operation_run_id": str(run.id),
             },
             task_id=run.task_id,
@@ -199,11 +222,28 @@ def dispatch_competitor_report_refresh(
     except Exception:  # noqa: BLE001 — REQUESTED 실행은 자율 복구가 재배달한다.
         logger.exception(
             "competitor report refresh dispatch failed; reconciler will retry",
-            extra={"hospital_id": hospital_id, "operation_run_id": str(run.id)},
+            extra={"hospital_id": str(run.hospital_id), "operation_run_id": str(run.id)},
         )
         return run
     _mark_weekly_sov_operation_queued(db, run.id, datetime.now(UTC))
     return run
+
+
+def dispatch_competitor_report_refresh(
+    db,
+    hospital: Hospital,
+    year: int,
+    month: int,
+    *,
+    parent_run_id: uuid.UUID | None,
+    rejudge_summary: dict[str, Any],
+) -> OperationRun:
+    """재판정 결과를 실을 템플릿 갱신(COMPETITOR_REFRESH)을 자식 실행으로 큐에 넣는다. 같은 부모에 한 번만."""
+    run, _created = _stage_child_run(
+        db, hospital, year, month, parent_run_id=parent_run_id, rejudge_summary=rejudge_summary
+    )
+    db.commit()
+    return _publish_child_run(db, run)
 
 
 @celery_app.task(
@@ -222,12 +262,13 @@ def rejudge_month_competitors(self, hospital_id: str, year: int, month: int) -> 
     run_id = _operation_run_id(self)
     now = arrow.now("Asia/Seoul")
     period = {"period_year": year, "period_month": month}
-    with SyncSessionLocal() as db:
+    # 세션 락은 커넥션에 붙는다 — 기록 단위 커밋이 커넥션을 풀에 돌려주지 않도록 커넥션을 고정한다(V0와 같은 이유).
+    with SyncSessionPinnedConnection() as db:
         hospital = db.get(Hospital, uuid.UUID(str(hospital_id)))
         if hospital is None:
             _finish(
                 db, self, run_id, state=OperationRunState.FAILED,
-                summary={"stage": "FAILED", **period}, safe_error_code="HOSPITAL_NOT_FOUND",
+                summary={"stage": "FAILED", "failure_code": "HOSPITAL_NOT_FOUND", **period},
                 safe_error_message="병원을 찾지 못해 경쟁 병원 반영을 시작하지 않았습니다.",
             )
             return {"status": "hospital_not_found"}
@@ -236,43 +277,55 @@ def rejudge_month_competitors(self, hospital_id: str, year: int, month: int) -> 
         except MonthlyPeriodError as exc:
             _finish(
                 db, self, run_id, state=OperationRunState.FAILED,
-                summary={"stage": "FAILED", **period},
-                safe_error_code="PERIOD_NOT_CLOSED", safe_error_message=str(exc),
+                summary={"stage": "FAILED", "failure_code": "PERIOD_NOT_CLOSED", **period},
+                safe_error_message=str(exc),
             )
             return {"status": "period_not_closed"}
         _note_progress(db, run_id, {"stage": "RUNNING", **period})
+        # 같은 병원의 재판정은 한 번에 하나만 돈다 — 같은 task id로 다시 배달된 사본이 살아 있는 lease를 다시 claim해
+        # 같은 이름의 판정을 두 번 사지 않도록 세션 advisory lock으로 직렬화한다(뒤에 온 사본은 남은 이름이 없다).
+        acquire_hospital_advisory_session_lock_sync(db, hospital.id)
         try:
-            outcome: RejudgeOutcome = execute_rejudge(db, hospital, int(year), int(month), run_id=run_id)
-        except Exception:
-            db.rollback()
-            if self.request.retries >= self.max_retries:
+            try:
+                outcome: RejudgeOutcome = execute_rejudge(db, hospital, int(year), int(month), run_id=run_id)
+            except Exception:
+                db.rollback()
+                if self.request.retries >= self.max_retries:
+                    # 원인 코드는 요약에만 남긴다 — 종결 사고의 식별자는 원인과 무관해야 뒤의 성공한 실행이 그 사고를 닫는다.
+                    _finish(
+                        db, self, run_id, state=OperationRunState.FAILED,
+                        summary={"stage": "FAILED", "failure_code": "COMPETITOR_REJUDGE_FAILED", **period},
+                        safe_error_message="경쟁 병원 판정을 끝내지 못했습니다. 잠시 뒤 다시 시도해 주세요.",
+                    )
+                raise
+            summary = {**period, "rejudge": outcome.summary()}
+            if outcome.cost_blocked:
                 _finish(
-                    db, self, run_id, state=OperationRunState.FAILED,
-                    summary={"stage": "FAILED", **period},
-                    safe_error_code="COMPETITOR_REJUDGE_FAILED",
-                    safe_error_message="경쟁 병원 판정을 끝내지 못했습니다. 잠시 뒤 다시 시도해 주세요.",
+                    db, self, run_id, state=OperationRunState.PARTIAL,
+                    summary={
+                        **summary, "stage": STAGE_COST_BLOCKED, "report_run_id": None,
+                        "failure_code": "COMPETITOR_REJUDGE_COST_BLOCKED",
+                    },
+                    safe_error_message="비용 한도로 경쟁 병원 판정을 보류했습니다. 한도가 열린 뒤 다시 실행해 주세요.",
                 )
-            raise
-        summary = {**period, "rejudge": outcome.summary()}
-        if outcome.cost_blocked:
-            _finish(
-                db, self, run_id, state=OperationRunState.PARTIAL,
-                summary={**summary, "stage": STAGE_COST_BLOCKED, "report_run_id": None},
-                safe_error_code="COMPETITOR_REJUDGE_COST_BLOCKED",
-                safe_error_message="비용 한도로 경쟁 병원 판정을 보류했습니다. 한도가 열린 뒤 다시 실행해 주세요.",
+                return {"status": "cost_blocked", **outcome.summary()}
+            # 부모 종결과 자식 REQUESTED 행을 **한 트랜잭션**에 쓴다 — 그 사이에 죽어도 '끝난 부모에 자식 없음'이
+            # 남지 않고, API는 커밋 직후부터 열린 자식을 진행 중 체인으로 본다. 이 배달이 실행의 주인이 아니면
+            # (울타리 불일치) 자식 행도 버린다 — 주인 사본이 만든다.
+            report_run, _created = _stage_child_run(
+                db, hospital, int(year), int(month), parent_run_id=run_id, rejudge_summary=outcome.summary(),
             )
-            return {"status": "cost_blocked", **outcome.summary()}
-        # 부모를 먼저 종결한다 — 자식의 숫자 보존 판정이 진행 중인 재판정을 기다리지 않게. 이 배달이 실행의
-        # 주인이 아니면(울타리 불일치) 자식도 만들지 않는다 — 주인 사본이 만든다.
-        owned = _finish(
-            db, self, run_id, state=OperationRunState.SUCCEEDED,
-            summary={**summary, "stage": STAGE_REPORT_REFRESH_QUEUED, "report_run_id": None},
-        )
-        if run_id is not None and not owned:
-            return {"status": "stale_delivery", **outcome.summary()}
-        report_run = dispatch_competitor_report_refresh(
-            db, hospital, int(year), int(month),
-            parent_run_id=run_id, rejudge_summary=outcome.summary(),
-        )
-        _note_progress(db, run_id, {"report_run_id": str(report_run.id)})
+            owned = _finish(
+                db, self, run_id, state=OperationRunState.SUCCEEDED,
+                summary={**summary, "stage": STAGE_REPORT_REFRESH_QUEUED, "report_run_id": str(report_run.id)},
+                commit=False,
+            )
+            if run_id is not None and not owned:
+                db.rollback()
+                return {"status": "stale_delivery", **outcome.summary()}
+            db.commit()
+            db.expire_all()
+            report_run = _publish_child_run(db, db.get(OperationRun, report_run.id))
+        finally:
+            release_hospital_advisory_session_lock_sync(db, hospital.id)
     return {"status": "report_refresh_queued", "report_run_id": str(report_run.id), **outcome.summary()}

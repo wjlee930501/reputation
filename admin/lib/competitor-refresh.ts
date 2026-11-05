@@ -20,6 +20,7 @@ export type CompetitorRefreshRunView = {
   readonly state: string
   readonly stage: string | null
   readonly safeErrorCode: string | null
+  readonly failureCode: string | null
   readonly requestedAt: string | null
   readonly completedAt: string | null
   readonly judgedRecords: number | null
@@ -79,6 +80,7 @@ export function parseCompetitorRefreshRun(value: unknown): CompetitorRefreshRunV
     state,
     stage: text(value.stage),
     safeErrorCode: text(value.safe_error_code),
+    failureCode: text(value.failure_code),
     requestedAt: text(value.requested_at),
     completedAt: text(value.completed_at),
     judgedRecords: count(value.judged_records),
@@ -178,7 +180,7 @@ export function competitorRefreshProgress(run: CompetitorRefreshRunView | null):
       tone: 'problem',
     }
   }
-  if (run.costBlocked || run.safeErrorCode === 'COMPETITOR_REJUDGE_COST_BLOCKED') {
+  if (run.costBlocked || run.failureCode === 'COMPETITOR_REJUDGE_COST_BLOCKED' || run.safeErrorCode === 'COMPETITOR_REJUDGE_COST_BLOCKED') {
     return { label: '비용 한도로 보류됨', detail: '이번에는 판정을 보충하지 못했습니다. 한도가 열린 뒤 다시 실행해 주세요.', tone: 'problem' }
   }
   return { label: '경쟁 병원 판정을 끝내지 못했습니다', detail: `${counts}. 잠시 뒤 다시 실행하면 미확정으로 남은 답변만 다시 확인합니다.`, tone: 'problem' }

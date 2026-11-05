@@ -88,24 +88,24 @@ test('a finished chain reports counts, the new version and the redeliver warning
 
 test('failures are told apart: cost hold, judgment failure, refused new version', () => {
   const cost = competitorRefreshProgress({
-    runId: 'r', state: 'PARTIAL', stage: 'COST_BLOCKED', safeErrorCode: 'COMPETITOR_REJUDGE_COST_BLOCKED',
+    runId: 'r', state: 'PARTIAL', stage: 'COST_BLOCKED', safeErrorCode: null, failureCode: 'COMPETITOR_REJUDGE_COST_BLOCKED',
     requestedAt: null, completedAt: null, judgedRecords: 0, unresolvedRecords: 12, pendingRecords: 12, costBlocked: true, reportRun: null,
   })
   assert.equal(cost?.label, '비용 한도로 보류됨')
   const failed = competitorRefreshProgress({
-    runId: 'r', state: 'FAILED', stage: 'FAILED', safeErrorCode: 'COMPETITOR_REJUDGE_FAILED',
+    runId: 'r', state: 'FAILED', stage: 'FAILED', safeErrorCode: null, failureCode: 'COMPETITOR_REJUDGE_FAILED',
     requestedAt: null, completedAt: null, judgedRecords: null, unresolvedRecords: null, pendingRecords: null, costBlocked: false, reportRun: null,
   })
   assert.equal(failed?.tone, 'problem')
   assert.match(failed?.detail ?? '', /미확정으로 남은 답변만 다시 확인/)
   const refused = competitorRefreshProgress({
-    runId: 'r', state: 'SUCCEEDED', stage: 'REPORT_REFRESH_QUEUED', safeErrorCode: null,
+    runId: 'r', state: 'SUCCEEDED', stage: 'REPORT_REFRESH_QUEUED', safeErrorCode: null, failureCode: null,
     requestedAt: null, completedAt: null, judgedRecords: 12, unresolvedRecords: 0, pendingRecords: 12, costBlocked: false,
     reportRun: { runId: 'c', state: 'FAILED', stage: 'FAILED', reportVersion: null, reportId: null },
   })
   assert.equal(refused?.label, '새 버전을 만들지 못했습니다')
   const blocked = competitorRefreshProgress({
-    runId: 'r', state: 'SUCCEEDED', stage: 'REPORT_REFRESH_QUEUED', safeErrorCode: null,
+    runId: 'r', state: 'SUCCEEDED', stage: 'REPORT_REFRESH_QUEUED', safeErrorCode: null, failureCode: null,
     requestedAt: null, completedAt: null, judgedRecords: 12, unresolvedRecords: 0, pendingRecords: 12, costBlocked: false,
     reportRun: { runId: 'c', state: 'PARTIAL', stage: 'BLOCKED', reportVersion: 5, reportId: 'r5' },
   })
