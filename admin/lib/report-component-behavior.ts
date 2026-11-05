@@ -39,3 +39,11 @@ export function preflightDeliveryAction(
   }
   return null
 }
+
+/**
+ * 닫기 경로(우상단 X·Esc·바깥 클릭·패널 '닫기')가 공유하는 한 규칙 — 저장 안 한 수정이 있으면 확인을 받아야 닫는다.
+ * `confirm`은 확인 창을 띄우는 함수(브라우저 `window.confirm`)라 수정이 없을 때는 부르지 않는다.
+ */
+export function dialogCloseAllowed(dirty: boolean, confirm: () => boolean): boolean {
+  return !dirty || confirm()
+}

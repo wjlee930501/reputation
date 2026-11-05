@@ -286,10 +286,148 @@ test('revert, delete, row delete and row restore in sequence always send the rig
   assert.match(panel, /sticky bottom-0/)
   assert.match(panel, /data-testid="ae-search"/)
   assert.match(panel, /ADMIN_COPY\.aeEditChangedOnly/)
-  assert.match(panel, /data-testid="ae-submit-blocked"/)
+  assert.match(panel, /ae-submit-blocked/)
 })
 
 test('the CSP lets the in-panel PDF preview frame a blob URL', () => {
   const config = readFileSync(new URL('../next.config.js', import.meta.url), 'utf8')
   assert.match(config, /"frame-src 'self' blob:"/)
+})
+
+// ── 2차 UX(2026-11-06) ────────────────────────────────────────────────────────
+
+import {
+  aeBundleKey,
+  aeFieldId,
+  bulkDeleteTargets,
+  bulkRestoreTargets,
+  bundleAeEditGroups,
+  describeAeItem,
+  filterAeSections,
+  firstProblemTarget,
+} from './report-ae-edit.ts'
+import { dialogCloseAllowed } from './report-component-behavior.ts'
+
+const PLACE_COPY = { bundles: ADMIN_COPY.aeEditBundles, columns: ADMIN_COPY.aeEditColumns, kinds: ADMIN_COPY.aeEditKinds, line: ADMIN_COPY.aeEditLine, column: ADMIN_COPY.aeEditColumn }
+
+const uxItems = [
+  item('summary.cards[1].label', { type: 'label', original: 'AI 노출률', value: 'AI 노출률', row: 'summary.cards[1]', context: '2', row_deletable: false }),
+  item('summary.cards[1].value', { type: 'label', original: '42%', value: '42%', row: 'summary.cards[1]', context: '2', row_deletable: false }),
+  item('summary.key_labels[0]', { type: 'label', original: '잘된 점', value: '잘된 점', row: 'summary.key_lines[0]', context: '1' }),
+  item('summary.key_lines[0]', { original: '첫 줄', value: '첫 줄', row: 'summary.key_lines[0]', context: '1' }),
+  item('summary.key_labels[1]', { type: 'label', original: '아쉬운 점', value: '아쉬운 점', row: 'summary.key_lines[1]', context: '2' }),
+  item('summary.key_lines[1]', { original: '둘째 줄', value: '둘째 줄', row: 'summary.key_lines[1]', context: '2' }),
+  item('summary.notice', { original: '비교 안내', value: '비교 안내' }),
+  item('exposure.heatmap[가상동 위내시경].keyword', { section: 'p3', type: 'label', original: '가상동 위내시경', value: '가상동 위내시경', row: 'exposure.heatmap[가상동 위내시경]', context: '가상동 위내시경' }),
+  item('exposure.heatmap[가상동 위내시경].cells[chatgpt].detail', { section: 'p3', type: 'label', kind: 'exposure.heatmap.cells.detail', original: '실패 3회', value: '실패 3회', row: 'exposure.heatmap[가상동 위내시경]', context: '가상동 위내시경 · ChatGPT' }),
+  item('appendix.method_heading', { section: 'appendix', original: '부록 B 측정 방법', value: '부록 B 측정 방법' }),
+  item('appendix.method_lines[0]', { section: 'appendix', original: '방법 1', value: '방법 1', context: '1' }),
+  item('appendix.method_lines[1]', { section: 'appendix', original: '방법 2', value: '방법 2', context: '2' }),
+  item('appendix.caveat_heading', { section: 'appendix', original: '부록 D 유의사항', value: '부록 D 유의사항' }),
+  item('appendix.caveat_lines[0]', { section: 'appendix', original: '유의 1', value: '유의 1', context: '1' }),
+  item('appendix.caveat_lines[1]', { section: 'appendix', original: '유의 2', value: '유의 2', context: '2' }),
+  item('appendix.caveat_lines[2]', { section: 'appendix', original: '유의 3', value: '유의 3', context: '3' }),
+]
+
+test('항목 이름은 PDF에서 보이는 위치(묶음·행 머리)와 짧은 칸 이름으로 나뉜다', () => {
+  const preview = parseAeEditPreview({ ...payload, items: uxItems })!
+  const values = draftFromItems(preview.items).values
+  const by = (path: string) => describeAeItem(preview.items.find((entry) => entry.path === path)!, preview.items, values, PLACE_COPY)
+  assert.deepEqual(by('summary.cards[1].value'), { place: '1면 카드 2 (AI 노출률)', name: '값' })
+  assert.deepEqual(by('summary.key_lines[1]'), { place: '핵심 3줄 · 2번째 줄', name: '문장' })
+  assert.deepEqual(by('summary.key_labels[1]'), { place: '핵심 3줄 · 2번째 줄', name: '라벨' })
+  assert.deepEqual(by('summary.notice'), { place: '', name: '비교 안내 문장' })
+  assert.deepEqual(by('exposure.heatmap[가상동 위내시경].cells[chatgpt].detail'), { place: '키워드별 노출 · 가상동 위내시경 · ChatGPT', name: '글자' })
+  assert.deepEqual(by('appendix.method_lines[1]'), { place: '부록 B 측정 방법 · 2번째 줄', name: '측정 방법 줄' })
+  assert.deepEqual(by('appendix.caveat_lines[0]'), { place: '부록 D 유의사항 · 1번째 줄', name: '유의사항 줄' })
+  assert.deepEqual(by('appendix.caveat_heading'), { place: '부록 D 유의사항', name: '부록 D 제목' })
+  // 카드 라벨을 고치면 머리의 괄호도 지금 값으로 바뀐다.
+  assert.equal(describeAeItem(preview.items[1], preview.items, { ...values, 'summary.cards[1].label': '노출률' }, PLACE_COPY).place, '1면 카드 2 (노출률)')
+})
+
+test('묶음은 연속된 같은 종류(부록 하위 절·번호 목록·같은 표의 행)이고 통째로 지우거나 원래대로 할 수 있다', () => {
+  const preview = parseAeEditPreview({ ...payload, items: uxItems, overrides: {} })!
+  assert.equal(aeBundleKey(preview.items[0]), 'summary.cards')
+  assert.equal(aeBundleKey(preview.items.find((entry) => entry.path === 'appendix.caveat_lines[1]')!), 'appendix-d')
+  assert.equal(aeBundleKey(preview.items.find((entry) => entry.path === 'appendix.method_heading')!), 'appendix-b')
+  const sections = groupAeEditItems(preview.items)
+  const appendix = bundleAeEditGroups(sections.find((section) => section.section === 'appendix')!.groups)
+  assert.deepEqual(appendix.map((bundle) => [bundle.key, bundle.groups.length, bundle.bulk]), [['appendix-b', 3, true], ['appendix-d', 4, true]])
+  const d = appendix[1]
+  // 부록 D 전체: 제목 + 3줄을 한 번에 — 행이 아니라 칸 단위로 지운다.
+  assert.deepEqual(bulkDeleteTargets(d), { rows: [], paths: ['appendix.caveat_heading', 'appendix.caveat_lines[0]', 'appendix.caveat_lines[1]', 'appendix.caveat_lines[2]'] })
+  assert.deepEqual(bulkRestoreTargets(d).items.map((entry) => entry.path), bulkDeleteTargets(d).paths)
+  const p1 = bundleAeEditGroups(sections[0].groups)
+  assert.deepEqual(p1.map((bundle) => [bundle.key, bundle.bulk]), [['summary.cards', true], ['summary.key_lines', true], ['summary.notice', false]])
+  // 핵심 줄은 행 단위로 지울 수 있어 행 경로로 지운다(칸 둘이 아니라 행 하나).
+  assert.deepEqual(bulkDeleteTargets(p1[1]), { rows: ['summary.key_lines[0]', 'summary.key_lines[1]'], paths: [] })
+  // 지운 뒤 보낼 필드: 부록 D는 칸마다 {deleted}, 핵심 줄은 행마다 {deleted}.
+  const draft = draftFromItems(preview.items)
+  const deletedD = { ...draft, values: { ...draft.values, ...Object.fromEntries(bulkDeleteTargets(d).paths.map((path) => [path, AE_DELETE])) }, rows: { ...draft.rows, 'summary.key_lines[0]': true, 'summary.key_lines[1]': true } }
+  const fields = buildAeEditFields(preview.items, deletedD, preview.overrides)
+  assert.deepEqual(Object.keys(fields).sort(), ['appendix.caveat_heading', 'appendix.caveat_lines[0]', 'appendix.caveat_lines[1]', 'appendix.caveat_lines[2]', 'summary.key_lines[0]', 'summary.key_lines[1]'])
+  assert.ok(Object.values(fields).every(isDeleteMarker))
+  // 모두 원래대로 → 보낼 것 없음.
+  const restored = { ...deletedD, values: { ...deletedD.values, ...Object.fromEntries(bulkRestoreTargets(d).items.map((entry) => [entry.path, entry.original])) }, rows: { ...deletedD.rows, 'summary.key_lines[0]': false, 'summary.key_lines[1]': false } }
+  assert.deepEqual(buildAeEditFields(preview.items, restored, preview.overrides), {})
+})
+
+test('검색 중에는 맞는 항목이 없는 절이 빠지고 행 묶음의 머리는 남으며, 거르지 않으면 모든 절이 그대로다', () => {
+  const preview = parseAeEditPreview({ ...payload, items: uxItems })!
+  const sections = groupAeEditItems(preview.items)
+  const all = filterAeSections(sections, () => true, false)
+  assert.deepEqual(all.map((section) => section.section), ['p1', 'p3', 'appendix'])
+  const only = filterAeSections(sections, (entry) => entry.path === 'appendix.caveat_lines[1]', true)
+  assert.deepEqual(only.map((section) => [section.section, section.matches]), [['appendix', 1]])
+  assert.equal(only[0].bundles[0].groups[0].items[0].path, 'appendix.caveat_lines[1]')
+  const card = filterAeSections(sections, (entry) => entry.path === 'summary.cards[1].value', true)
+  assert.equal(card[0].bundles[0].groups[0].row, 'summary.cards[1]')
+  assert.deepEqual(filterAeSections(sections, () => false, true), [])
+})
+
+test('첫 문제는 칸 → 행 → 절 순서로 화면 위치를 가리키고 모르는 경로는 건너뛴다', () => {
+  const preview = parseAeEditPreview({ ...payload, items: uxItems })!
+  assert.deepEqual(firstProblemTarget([{ path: '', code: 'PDF', message: 'x' }, { path: 'summary.key_lines[1]', code: 'FORBIDDEN_EXPRESSION', message: '완치' }], preview.items), { kind: 'field', section: 'p1', id: aeFieldId('summary.key_lines[1]') })
+  assert.deepEqual(firstProblemTarget([{ path: 'summary.cards[3].names[1]', code: 'TOO_LONG', message: 'x' }], [...preview.items, ...parseAeEditPreview(payload)!.items]), { kind: 'field', section: 'p1', id: aeFieldId(AE_CARD_NAMES_PATH) })
+  assert.deepEqual(firstProblemTarget([{ path: 'summary.key_lines[0]', code: 'ROW', message: 'x' }], preview.items.filter((entry) => entry.path !== 'summary.key_lines[0]')), { kind: 'row', section: 'p1', id: 'summary.key_lines[0]' })
+  assert.deepEqual(firstProblemTarget([{ path: 'appendix', code: 'SECTION_EMPTY', message: '빈 절' }], preview.items), { kind: 'section', section: 'appendix', id: 'appendix' })
+  assert.equal(firstProblemTarget([{ path: 'nope.path', code: 'X', message: 'x' }], preview.items), null)
+  assert.equal(aeFieldId('summary.key_lines[1]'), 'ae-summary.key_lines%5B1%5D')
+})
+
+test('닫기 규칙: 수정이 없으면 묻지 않고 닫고, 있으면 확인해야 닫는다', () => {
+  let asked = 0
+  assert.equal(dialogCloseAllowed(false, () => { asked += 1; return false }), true)
+  assert.equal(asked, 0)
+  assert.equal(dialogCloseAllowed(true, () => { asked += 1; return false }), false)
+  assert.equal(dialogCloseAllowed(true, () => { asked += 1; return true }), true)
+  assert.equal(asked, 2)
+})
+
+test('다이얼로그의 X·Esc·바깥 클릭이 모두 같은 닫기 확인을 거치고, 탭 닫기·새로고침에는 beforeunload 경고가 있다', () => {
+  const dialog = readFileSync(new URL('../app/hospitals/[id]/reports/ReportDialog.tsx', import.meta.url), 'utf8')
+  const panel = readFileSync(new URL('../app/hospitals/[id]/reports/ReportAeEditPanel.tsx', import.meta.url), 'utf8')
+  assert.match(dialog, /dialogCloseAllowed\(dirty, \(\) => window\.confirm\(ADMIN_COPY\.aeEditDiscardConfirm\)\)/)
+  assert.match(dialog, /if \(decision === 'close'\) \{ event\.preventDefault\(\); requestClose\(\); return \}/)
+  assert.match(dialog, /if \(event\.target === event\.currentTarget\) requestClose\(\)/)
+  assert.match(dialog, /onClick=\{requestClose\} aria-label="보고서 닫기"/)
+  assert.doesNotMatch(dialog, /onClick=\{onClose\}/)
+  assert.match(dialog, /addEventListener\('beforeunload', onBeforeUnload\)/)
+  assert.match(dialog, /onDirtyChange=\{setDirty\} onOpenChange=\{setEditing\}/)
+  assert.match(dialog, /data-dialog-header-compact=/)
+  assert.match(panel, /onDirtyChange\?\.\(open && changed\)/)
+  // 하단 바는 한 줄(이유 칸 + 버튼)·상태 한 줄이고 높이만큼 스크롤 여백을 준다.
+  assert.match(panel, /data-testid="ae-bar"/)
+  assert.match(panel, /scroll-margin-bottom:calc\(var\(--ae-bar-h\)\+16px\)/)
+  assert.match(panel, /new ResizeObserver/)
+  assert.match(panel, /data-testid="ae-go-first-problem"/)
+  assert.match(panel, /data-testid="ae-bundle-delete"/)
+  assert.match(panel, /data-testid="ae-search-count"/)
+  assert.match(panel, /data-testid="ae-pdf-progress"/)
+  assert.match(panel, /data-testid="ae-deleted-original"[^>]*>/)
+  assert.match(panel, /line-through/)
+  assert.match(panel, /function AutoTextarea/)
+  assert.match(panel, /rows=\{1\}/)
+  assert.doesNotMatch(panel, /rows=\{2\}/)
+  assert.match(panel, /calc\(100vh - var\(--ae-bar-h\)/)
 })

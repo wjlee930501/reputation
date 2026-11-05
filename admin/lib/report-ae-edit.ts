@@ -484,3 +484,163 @@ export function displayValue(item: Pick<AeEditItem, 'type'>, value: unknown): st
   if (Array.isArray(value)) return value.map((entry) => String(entry)).join(', ')
   return String(value)
 }
+
+// ── 2차 UX(2026-11-06): 항목 위치 이름·묶음·첫 문제·검색 절 숨김 ─────────────────────────────
+
+/** 항목의 묶음 키 — 연속된 같은 종류(번호 목록·같은 표의 행·검정 면 한 장·부록 하위 절)를 한 묶음으로 본다. */
+export function aeBundleKey(item: Pick<AeEditItem, 'path' | 'row' | 'section'>): string {
+  const path = item.path
+  if (item.section === 'appendix') {
+    if (/^appendix\.method/.test(path)) return 'appendix-b'
+    if (/^appendix\.glossary/.test(path)) return 'appendix-c'
+    if (/^appendix\.caveat/.test(path)) return 'appendix-d'
+    return 'appendix-a'
+  }
+  if (item.row) {
+    const match = /^([^[]+)\[/.exec(item.row)
+    if (match) return match[1]
+    if (/^cases\.(found|missing)$/.test(item.row)) return 'cases'
+    return item.row
+  }
+  const indexed = /^([^[]+)\[\d+\]$/.exec(path)
+  return indexed ? indexed[1] : path
+}
+
+export type AeEditBundle = {
+  readonly key: string
+  readonly groups: readonly AeEditGroup[]
+  /** '이 묶음 모두 지우기 / 모두 원래대로'를 보일 만한가 — 지울 수 있는 대상이 둘 이상이다. */
+  readonly bulk: boolean
+}
+
+/** 절의 행 묶음을 연속된 묶음 키로 다시 묶는다(보고서 순서 그대로). */
+export function bundleAeEditGroups(groups: readonly AeEditGroup[]): AeEditBundle[] {
+  const bundles: { key: string; groups: AeEditGroup[] }[] = []
+  for (const group of groups) {
+    const key = aeBundleKey(group.items[0])
+    const last = bundles.at(-1)
+    if (last && last.key === key) last.groups.push(group)
+    else bundles.push({ key, groups: [group] })
+  }
+  return bundles.map((bundle) => {
+    const targets = bulkDeleteTargets(bundle)
+    return { ...bundle, bulk: targets.rows.length + targets.paths.length >= 2 }
+  })
+}
+
+/** 묶음을 통째로 지울 때 바꿀 것 — 행 단위로 지울 수 있는 행은 행 경로로, 나머지는 지울 수 있는 칸마다. */
+export function bulkDeleteTargets(bundle: Pick<AeEditBundle, 'groups'>): { readonly rows: string[]; readonly paths: string[] } {
+  const rows: string[] = []
+  const paths: string[] = []
+  for (const group of bundle.groups) {
+    if (group.row && group.rowDeletable) rows.push(group.row)
+    else for (const item of group.items) if (item.deletable) paths.push(item.path)
+  }
+  return { rows, paths }
+}
+
+/** 묶음을 통째로 원래대로 — 지운 행은 되살리고 모든 칸은 원문 값으로. */
+export function bulkRestoreTargets(bundle: Pick<AeEditBundle, 'groups'>): { readonly rows: string[]; readonly items: AeEditItem[] } {
+  const rows: string[] = []
+  const items: AeEditItem[] = []
+  for (const group of bundle.groups) {
+    if (group.row && group.rowDeletable) rows.push(group.row)
+    items.push(...group.items)
+  }
+  return { rows, items }
+}
+
+export type AeEditPlace = {
+  /** 묶음·행 머리에 보이는 위치(예: '1면 카드 2 (AI 노출률)', '부록 D 유의사항 · 1번째 줄'). 행이 없는 낱개 항목은 ''. */
+  readonly place: string
+  /** 입력란 라벨(예: '값', '문장', '보고서 제목'). */
+  readonly name: string
+}
+
+type PlaceCopy = {
+  readonly bundles: Readonly<Record<string, string>>
+  readonly columns: Readonly<Record<string, string>>
+  readonly kinds: Readonly<Record<string, string>>
+  readonly line: string
+  readonly column: string
+}
+
+function cardLabel(item: AeEditItem, items: readonly AeEditItem[], values: Readonly<Record<string, unknown>>): string {
+  const label = items.find((other) => other.row === item.row && other.kind === 'summary.cards.label')
+  if (!label) return ''
+  const shown = displayValue(label, values[label.path] ?? label.value)
+  return shown ? ` (${shown})` : ''
+}
+
+/**
+ * 항목이 PDF 어디에 있는지 — 검색·'고친 항목만 보기'에서도 위치가 보이도록 묶음·행 머리(place)와 짧은 칸 이름(name)을 나눈다.
+ * 카드는 같은 행의 라벨(지금 값)을 괄호에 넣고, 번호 목록은 'N번째 줄', 표 머리글은 'N번째 칸'이다.
+ */
+export function describeAeItem(item: AeEditItem, items: readonly AeEditItem[], values: Readonly<Record<string, unknown>>, copy: PlaceCopy): AeEditPlace {
+  const kindLabel = copy.kinds[item.kind] ?? item.kind
+  const bundle = aeBundleKey(item)
+  const bundleName = copy.bundles[bundle] ?? ''
+  const last = item.kind.split('.').at(-1) ?? item.kind
+  const indexed = /^[^[]+\[(\d+)\]$/.exec(item.path)
+  if (item.row) {
+    if (item.kind === 'treatment_label') return { place: `${bundleName} · ${item.context}`, name: kindLabel }
+    if (/^summary\.cards\[/.test(item.row)) return { place: `${bundleName} ${item.context}${cardLabel(item, items, values)}`, name: copy.columns[last] ?? kindLabel }
+    if (/^summary\.key_lines\[/.test(item.row)) return { place: `${bundleName} · ${item.context}${copy.line}`, name: (item.kind === 'summary.key_lines' ? copy.columns.sentence : copy.columns.label) ?? kindLabel }
+    if (/^cases\.(found|missing)$/.test(item.row)) return { place: `${bundleName} · ${copy.columns[item.context] ?? item.context}`, name: copy.columns[last] ?? kindLabel }
+    if (item.kind.endsWith('.cells') || item.kind.endsWith('.cells.detail') || item.kind.endsWith('.cells.state')) return { place: `${bundleName} · ${item.context}`, name: copy.columns[last] ?? kindLabel }
+    if (!item.row.includes('[')) return { place: bundleName || kindLabel, name: copy.columns[last] ?? kindLabel } // 검정 면
+    return { place: `${bundleName} · ${item.context}`, name: copy.columns[last] ?? kindLabel }
+  }
+  if (indexed) {
+    const unit = /headers$|^platform_labels$/.test(item.kind) ? copy.column : copy.line
+    return { place: `${bundleName || kindLabel} · ${item.context}${unit}`, name: kindLabel }
+  }
+  if (item.section === 'appendix') return { place: bundleName, name: kindLabel }
+  return { place: '', name: kindLabel }
+}
+
+export type AeProblemTarget = { readonly kind: 'field' | 'row' | 'section'; readonly section: string; readonly id: string }
+
+/**
+ * 검증 문제 목록의 첫 문제가 가리키는 화면 위치 — 칸(id = 입력란 id), 행(묶음 상자), 절(빈 절). 모르는 경로는 건너뛴다.
+ * 화면은 그 절을 펼친 뒤 요소로 스크롤·포커스한다.
+ */
+export function firstProblemTarget(problems: readonly AeEditProblem[], items: readonly AeEditItem[]): AeProblemTarget | null {
+  const byPath = new Map(items.map((item) => [item.path, item]))
+  const rows = new Map<string, AeEditItem>()
+  for (const item of items) if (item.row && !rows.has(item.row)) rows.set(item.row, item)
+  for (const problem of problems) {
+    let path = problem.path
+    if (!path) continue
+    const match = /^(.+)\[\d+\]$/.exec(path)
+    if (!byPath.has(path) && match && byPath.has(match[1])) path = match[1]
+    const item = byPath.get(path)
+    if (item) return { kind: 'field', section: item.section, id: aeFieldId(item.path) }
+    const rowItem = rows.get(path)
+    if (rowItem) return { kind: 'row', section: rowItem.section, id: path }
+    if (/^(p[1-6]|appendix)$/.test(path)) return { kind: 'section', section: path, id: path }
+  }
+  return null
+}
+
+export function aeFieldId(path: string): string {
+  return `ae-${encodeURIComponent(path)}`
+}
+
+export type AeVisibleSection = { readonly section: string; readonly bundles: readonly AeEditBundle[]; readonly matches: number }
+
+/**
+ * 검색·'고친 항목만 보기'를 적용한 절 목록 — 거르는 중이면 맞는 항목이 없는 절은 빠지고(빈 절 머리가 결과를 밀어내지 않게),
+ * 거르지 않으면 모든 절이 그대로다. 행 묶음은 항목을 걸러도 머리(위치)를 유지한다.
+ */
+export function filterAeSections(sections: readonly AeEditSectionGroup[], visible: (item: AeEditItem) => boolean, filtering: boolean): AeVisibleSection[] {
+  const out: AeVisibleSection[] = []
+  for (const section of sections) {
+    const groups = filtering
+      ? section.groups.map((group) => ({ ...group, items: group.items.filter(visible) })).filter((group) => group.items.length > 0)
+      : section.groups
+    if (filtering && groups.length === 0) continue
+    out.push({ section: section.section, bundles: bundleAeEditGroups(groups), matches: groups.reduce((sum, group) => sum + group.items.length, 0) })
+  }
+  return out
+}
