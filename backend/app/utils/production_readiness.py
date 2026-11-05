@@ -69,6 +69,7 @@ EXPECTED_TASKS = {
     "app.workers.indexnow_retry.drain",
     "app.workers.provider_usage_recovery.drain",
     "app.workers.autonomous_recovery.reconcile",
+    "app.workers.competitor_refresh.rejudge_month_competitors",
     "app.workers.content_backlog_recovery.reconcile",
     "app.workers.domain_certificate_tasks.provision_domain_certificate",
     "app.workers.profile_autofill_tasks.autofill_registered_hospital_profile",
@@ -188,6 +189,7 @@ def _workflow_facts() -> dict[str, bool]:
     # deployed image can load every task and populates the registry used below.
     import app.workers.autonomous_recovery  # noqa: F401, PLC0415
     import app.workers.canary_tasks  # noqa: F401, PLC0415
+    import app.workers.competitor_refresh  # noqa: F401, PLC0415
     import app.workers.content_backlog_recovery  # noqa: F401, PLC0415
     import app.workers.domain_certificate_tasks  # noqa: F401, PLC0415
     import app.workers.indexnow_retry  # noqa: F401, PLC0415
