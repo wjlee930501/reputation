@@ -1,6 +1,17 @@
 # Re:putation — 현재 프로젝트 개발 안내
 
-## 최신 운영 배포 — 2026-11-05 원장용 월간 보고서 v4 (두 번 배포·10월분 재갱신)
+## 최신 운영 배포 — 2026-11-05 오후 AE 수정 판·경쟁 병원 반영
+
+main `4fa3e61f`(PR #286 AE 수정 판 + PR #287 경쟁 병원 반영)를 14:13~14:22 KST에 Backend·Admin에 배포했다(같은 날 세 번째 릴리스, `--override-reason`).
+**현재 리비전은 api `00279-bvp`, worker `00269-rz2`, beat `00264-n8w`, admin `00116-8g2`**, Site `00149-6ck`·DB head 그대로(마이그레이션 없음).
+AE 수정 판: 원장 v4 보고서의 서술 문구·진료 항목 라벨·사례 선택만 고쳐 숫자 그대로 새 버전(`TEMPLATE_REFRESH` 사유 `AE_EDIT`, `render_inputs.ae_overrides`,
+`services/doctor_report_ae_edit.py`) — 저장은 사람 계정 서명 필수. 경쟁 병원 반영: 저장 답변 원문에서 지금 등록된 경쟁사 중 판정 없는 이름만 재판정
+(`REJUDGE_COMPETITORS`, `sov` 큐·예산, 답변 재구매 없음)한 뒤 경쟁 현황만 다시 계산한 새 버전(사유 `COMPETITOR_REFRESH`), CLI
+`app.utils.monthly_competitor_refresh precheck/execute/postcheck`. 운영 확인: AE 미리보기 정상·거절 4종 정상, 세종다온 10월 경쟁 반영 실제 실행 → v4 PASS.
+**알려진 버그**: AE 라벨 수정으로 노출 진료 항목 수가 바뀌어도 1면 카드 4의 n·이름 목록이 따라오지 않는다(수정 PR 진행 중 — 그 전에는 묶음을 가르는 라벨 수정을 저장하지 않는다).
+롤백 좌표 `.omo/rollback-feat1105/{backend,admin}`. 상세는 [배포 기록](docs/releases/2026-11-05-doctor-report-v4-production.md)의 '3차 배포'.
+
+## 이전 운영 배포 — 2026-11-05 원장용 월간 보고서 v4 (두 번 배포·10월분 재갱신)
 
 main `27710adb`(PR #282·#283, 보고서 v4)를 02:03~02:10 KST에, 이어 main `547c743b`(PR #284, 쪽 넘김 고아·과부 정리와 진료 항목 폴백 조각 제거)를
 08:46~08:51 KST에 Backend에 배포했다(둘 다 배치 시간대 밖, 2차는 같은 날 두 번째 릴리스라 `--override-reason`). **현재 리비전은 api `00278-bmk`,
