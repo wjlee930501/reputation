@@ -10,16 +10,20 @@ import {
   aeEditIdempotencyKey,
   aeEditRunOutcome,
   buildAeEditFields,
+  changedCountBySection,
   displayValue,
   draftFromItems,
   groupAeEditItems,
   hasAeEditChanges,
   isDeleteMarker,
+  itemIsChanged,
+  itemMatchesQuery,
   numbersDiffer,
   parseAeEditPreview,
   problemsByPath,
   problemsFromRejection,
   recountedCard,
+  submitBlockedBy,
 } from './report-ae-edit.ts'
 
 const summary = {
@@ -237,4 +241,50 @@ test('the panel only speaks through ADMIN_COPY and the ae-edit endpoints, offers
   assert.doesNotMatch(panel, />[^<{]*[가-힣][^<{]*</)
   assert.doesNotMatch(panel, /placeholder="[^"]*[가-힣]/)
   assert.doesNotMatch(panel, /\? '[가-힣][^']*' : '[가-힣]/)
+})
+
+test('search, changed-only counts and the submit-blocked reason follow the draft', () => {
+  const preview = parseAeEditPreview(payload)!
+  const draft = draftFromItems(preview.items)
+  const title = preview.items[0]
+  assert.ok(itemMatchesQuery(title, draft.values[title.path], '2026년 10월', '보고서 제목'))
+  assert.ok(itemMatchesQuery(title, draft.values[title.path], '보고서제목', '보고서 제목'))
+  assert.ok(!itemMatchesQuery(title, draft.values[title.path], '없는 말', '보고서 제목'))
+  const fields = buildAeEditFields(preview.items, { ...draft, values: { ...draft.values, 'summary.title': AE_DELETE, 'appendix.caveat_lines[1]': AE_DELETE }, rows: { ...draft.rows, 'exposure.platform_bars[ChatGPT]': true } }, preview.overrides)
+  assert.ok(itemIsChanged(title, fields) && !itemIsChanged(preview.items[1], fields))
+  assert.deepEqual(changedCountBySection(preview.items, fields), { p1: 1, appendix: 1, p3: 1 })
+  assert.equal(submitBlockedBy({ changed: false, validated: false, stale: false, problems: 0, reasonLength: 0 }), 'no_changes')
+  assert.equal(submitBlockedBy({ changed: true, validated: false, stale: false, problems: 0, reasonLength: 5 }), 'validate_first')
+  assert.equal(submitBlockedBy({ changed: true, validated: false, stale: true, problems: 0, reasonLength: 5 }), 'revalidate')
+  assert.equal(submitBlockedBy({ changed: true, validated: true, stale: false, problems: 2, reasonLength: 5 }), 'problems')
+  assert.equal(submitBlockedBy({ changed: true, validated: true, stale: false, problems: 0, reasonLength: 2 }), 'reason')
+  assert.equal(submitBlockedBy({ changed: true, validated: true, stale: false, problems: 0, reasonLength: 3 }), null)
+})
+
+test('revert, delete, row delete and row restore in sequence always send the right fields', () => {
+  const preview = parseAeEditPreview(payload)!
+  const draft = draftFromItems(preview.items)
+  const row = 'exposure.platform_bars[ChatGPT]'
+  const valuePath = `${row}.value`
+  const steps = [
+    { values: { ...draft.values, [valuePath]: '40' }, rows: draft.rows, expect: { [valuePath]: 40 } },
+    { values: { ...draft.values, [valuePath]: AE_DELETE }, rows: draft.rows, expect: { [valuePath]: AE_DELETE } },
+    { values: { ...draft.values, [valuePath]: 33.33 }, rows: draft.rows, expect: {} }, // 원래대로
+    { values: { ...draft.values, [valuePath]: '40' }, rows: { ...draft.rows, [row]: true }, expect: { [row]: AE_DELETE, [valuePath]: 40 } },
+    { values: { ...draft.values, [valuePath]: '40' }, rows: { ...draft.rows, [row]: false }, expect: { [valuePath]: 40 } }, // 행 원래대로
+    { values: { ...draft.values, [valuePath]: '' }, rows: draft.rows, expect: { [valuePath]: AE_DELETE } }, // 비울 수 있는 수를 비움 = 지움
+  ]
+  for (const step of steps) assert.deepEqual(buildAeEditFields(preview.items, { ...draft, values: step.values, rows: step.rows }, preview.overrides), step.expect)
+  // 원문이 비어 있던 수(측정 없음 '—')는 손대지 않으면 보내지 않는다 — 운영 10월 픽스처에서 '1곳 고침'이 거짓으로 뜨던 버그.
+  const blank = parseAeEditPreview({ ...payload, items: [...items, item('exposure.group_rows[A].rate', { section: 'p3', type: 'pct_opt', original: null, value: null, row: 'exposure.group_rows[A]', context: 'A' })] })!
+  assert.deepEqual(buildAeEditFields(blank.items, draftFromItems(blank.items), blank.overrides), {})
+  const panel = readFileSync(new URL('../app/hospitals/[id]/reports/ReportAeEditPanel.tsx', import.meta.url), 'utf8')
+  assert.match(panel, /<iframe title=\{ADMIN_COPY\.aeEditPdfPreviewTitle\} src=\{pdfUrl\}/)
+  assert.doesNotMatch(panel, /window\.open\(/)
+  assert.match(panel, /window\.confirm\(ADMIN_COPY\.aeEditDiscardConfirm\)/)
+  assert.match(panel, /inputMode=\{numeric \? 'decimal' : 'text'\}/)
+  assert.match(panel, /sticky bottom-0/)
+  assert.match(panel, /data-testid="ae-search"/)
+  assert.match(panel, /ADMIN_COPY\.aeEditChangedOnly/)
+  assert.match(panel, /data-testid="ae-submit-blocked"/)
 })

@@ -16,6 +16,7 @@ import type { ReportView } from '@/lib/report-review'
 import { dialogKeyDecision } from '@/lib/report-component-behavior'
 import { reportOperationsHref } from '@/lib/operations-center'
 import { CompetitorRefreshPanel } from './CompetitorRefreshPanel'
+import { ADMIN_COPY } from '@/lib/admin-copy'
 import { ReportAeEditPanel } from './ReportAeEditPanel'
 import { ReportEvidence } from './ReportEvidence'
 
@@ -159,7 +160,7 @@ export function ReportDialog({
           <div>
             <p className="text-xs font-bold text-[var(--color-revisit-primary-40)]">{report.statusLabel}</p>
             <h3 id="report-dialog-title" className="mt-1 text-lg font-bold text-[var(--color-revisit-text-title)] [word-break:keep-all]">{report.periodYear}년 {report.periodMonth}월 {report.typeLabel}</h3>
-            <p id="report-dialog-description" className="mt-1 text-sm text-[var(--color-revisit-text-helper)]">원장 전달용 파일을 열고, 필요하면 문구·라벨을 고쳐 새 버전을 만들고, 전달 기록과 이력을 남깁니다.</p>
+            <p id="report-dialog-description" className="mt-1 text-sm text-[var(--color-revisit-text-helper)]">{ADMIN_COPY.aeEditDialogDescription}</p>
           </div>
           <button ref={closeRef} type="button" onClick={onClose} aria-label="보고서 닫기" className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg border border-[var(--color-revisit-coolgrey-20)]">
             <svg aria-hidden="true" viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 6l12 12M18 6L6 18" /></svg>

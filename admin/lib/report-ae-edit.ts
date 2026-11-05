@@ -337,10 +337,10 @@ export function buildAeEditFields(
     }
     if (!(item.path in draft.values)) continue
     let next = normalizeValue(item, draft.values[item.path])
-    // 비울 수 있는 수(막대 값·그룹 노출률)의 입력란을 비우면 '지움'이지 원문 복귀가 아니다(Codex 3-P2-4).
-    if (next === null && (item.type === 'count' || item.type === 'pct_opt')) next = AE_DELETE
     const stored = item.path in overrides ? (isDeleteMarker(overrides[item.path]) ? AE_DELETE : normalizeValue(item, overrides[item.path])) : undefined
     const original = normalizeValue(item, item.original)
+    // 비울 수 있는 수(막대 값·그룹 노출률)의 입력란을 비우면 '지움'이지 원문 복귀가 아니다(Codex 3-P2-4) — 원문이 이미 비어 있던 칸은 그대로다.
+    if (next === null && original !== null && (item.type === 'count' || item.type === 'pct_opt')) next = AE_DELETE
     const storedState = stored === undefined ? original : stored
     if (sameValue(next, storedState)) continue
     if (sameValue(next, original)) {
@@ -356,6 +356,44 @@ export function buildAeEditFields(
     } else if (choice !== 'keep') fields[caseRecordPath(slot)] = choice
   }
   return fields
+}
+
+/** 검색어가 항목의 원문·지금 값·행 키·종류 이름에 들어 있는가(공백·대소문자 무시). */
+export function itemMatchesQuery(item: AeEditItem, value: unknown, query: string, kindLabel: string): boolean {
+  const needle = query.replace(/\s+/g, '').toLowerCase()
+  if (!needle) return true
+  const hay = [displayValue(item, item.original), displayValue(item, value), item.context, kindLabel].join('\u0000').replace(/\s+/g, '').toLowerCase()
+  return hay.includes(needle)
+}
+
+/** 항목이 저장될 수정에 들어가는가 — 그 경로나 행 경로가 보낼 `fields`에 있다. */
+export function itemIsChanged(item: AeEditItem, fields: Readonly<Record<string, unknown>>): boolean {
+  return item.path in fields || (item.row !== null && item.row in fields)
+}
+
+/** 절마다 보낼 수정이 있는 항목 수(행 지우기는 행의 칸 수만큼이 아니라 1로 센다). */
+export function changedCountBySection(items: readonly AeEditItem[], fields: Readonly<Record<string, unknown>>): Readonly<Record<string, number>> {
+  const counts: Record<string, number> = {}
+  const countedRows = new Set<string>()
+  for (const item of items) {
+    if (item.path in fields) counts[item.section] = (counts[item.section] ?? 0) + 1
+    else if (item.row !== null && item.row in fields && !countedRows.has(item.row)) {
+      countedRows.add(item.row)
+      counts[item.section] = (counts[item.section] ?? 0) + 1
+    }
+  }
+  return counts
+}
+
+export type AeEditSubmitBlock = 'no_changes' | 'validate_first' | 'revalidate' | 'problems' | 'reason' | null
+
+/** '새 버전 만들기'가 꺼진 이유 하나 — 화면이 버튼 옆에 한 줄로 보인다. */
+export function submitBlockedBy(args: { changed: boolean; validated: boolean; stale: boolean; problems: number; reasonLength: number }): AeEditSubmitBlock {
+  if (!args.changed) return 'no_changes'
+  if (!args.validated) return args.stale ? 'revalidate' : 'validate_first'
+  if (args.problems > 0) return 'problems'
+  if (args.reasonLength < 3) return 'reason'
+  return null
 }
 
 export type AeEditGroup = {
