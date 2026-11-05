@@ -569,7 +569,8 @@ function GroupBlock({ group, items, draft, problems, recounted, onValue, onRow }
           {group.rowDeletable && <button type="button" onClick={() => onRow(group.row as string, !rowDeleted)} className={SMALL_BUTTON}>{rowDeleted ? ADMIN_COPY.aeEditRestoreRow : ADMIN_COPY.aeEditDeleteRow}</button>}
         </div>
       )}
-      {problems[group.row ?? '']?.map((text) => group.row && <span key={text} className="mt-1 block text-xs text-[var(--color-revisit-red-50)]" role="alert">{text}</span>)}
+      {/* 행 경로 자체에 걸린 문제만 행 아래 — 행 경로가 칸 경로와 같으면(핵심 줄) 칸 아래에만 보인다(중복 표시 방지). */}
+      {group.row && !group.items.some((item) => item.path === group.row) && problems[group.row]?.map((text) => <span key={text} className="mt-1 block text-xs text-[var(--color-revisit-red-50)]" role="alert">{text}</span>)}
       {group.items.map((item) => (
         <ItemField key={item.path} item={item} name={describeAeItem(item, items, draft.values, PLACE_COPY).name} value={draft.values[item.path]} problems={problems[item.path]} recounted={item.path === 'summary.cards[3].names' ? recounted : null} onChange={(value) => onValue(item.path, value)} />
       ))}

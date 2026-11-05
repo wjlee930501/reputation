@@ -339,8 +339,8 @@ test('항목 이름은 PDF에서 보이는 위치(묶음·행 머리)와 짧은 
   assert.deepEqual(by('summary.key_labels[1]'), { place: '핵심 3줄 · 2번째 줄', name: '라벨' })
   assert.deepEqual(by('summary.notice'), { place: '', name: '비교 안내 문장' })
   assert.deepEqual(by('exposure.heatmap[가상동 위내시경].cells[chatgpt].detail'), { place: '키워드별 노출 · 가상동 위내시경 · ChatGPT', name: '글자' })
-  assert.deepEqual(by('appendix.method_lines[1]'), { place: '부록 B 측정 방법 · 2번째 줄', name: '측정 방법 줄' })
-  assert.deepEqual(by('appendix.caveat_lines[0]'), { place: '부록 D 유의사항 · 1번째 줄', name: '유의사항 줄' })
+  assert.deepEqual(by('appendix.method_lines[1]'), { place: '부록 B 측정 방법 · 2번째 줄', name: '문장' })
+  assert.deepEqual(by('appendix.caveat_lines[0]'), { place: '부록 D 유의사항 · 1번째 줄', name: '문장' })
   assert.deepEqual(by('appendix.caveat_heading'), { place: '부록 D 유의사항', name: '부록 D 제목' })
   // 카드 라벨을 고치면 머리의 괄호도 지금 값으로 바뀐다.
   assert.equal(describeAeItem(preview.items[1], preview.items, { ...values, 'summary.cards[1].label': '노출률' }, PLACE_COPY).place, '1면 카드 2 (노출률)')
@@ -434,6 +434,8 @@ test('다이얼로그의 X·Esc·바깥 클릭이 모두 같은 닫기 확인을
   assert.match(panel, /data-testid="ae-deleted-original"[^>]*>/)
   assert.match(panel, /line-through/)
   assert.match(panel, /function AutoTextarea/)
+  // 행 경로가 칸 경로와 같은 행(핵심 줄)의 문제는 칸 아래에만 — 행 수준 중복 표시 없음.
+  assert.match(panel, /group\.row && !group\.items\.some\(\(item\) => item\.path === group\.row\) && problems\[group\.row\]/)
   assert.match(panel, /rows=\{1\}/)
   assert.doesNotMatch(panel, /rows=\{2\}/)
   assert.match(panel, /calc\(100vh - var\(--ae-bar-h\)/)

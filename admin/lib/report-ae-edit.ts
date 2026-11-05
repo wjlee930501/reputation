@@ -604,8 +604,9 @@ export function describeAeItem(item: AeEditItem, items: readonly AeEditItem[], v
     return { place: `${bundleName} · ${item.context}`, name: copy.columns[last] ?? kindLabel }
   }
   if (indexed) {
-    const unit = /headers$|^platform_labels$/.test(item.kind) ? copy.column : copy.line
-    return { place: `${bundleName || kindLabel} · ${item.context}${unit}`, name: kindLabel }
+    const header = /headers$|^platform_labels$/.test(item.kind)
+    // 머리가 위치('부록 D 유의사항 · 1번째 줄')를 말하므로 칸 이름은 짧게 — 줄은 '문장', 머리글 칸은 '글자'.
+    return { place: `${bundleName || kindLabel} · ${item.context}${header ? copy.column : copy.line}`, name: (header ? copy.columns.detail : copy.columns.sentence) ?? kindLabel }
   }
   if (item.section === 'appendix') return { place: bundleName, name: kindLabel }
   return { place: '', name: kindLabel }
