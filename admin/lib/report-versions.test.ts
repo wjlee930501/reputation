@@ -30,6 +30,18 @@ test('같은 달·종류 안에서 만든 시각 순서로 버전을 세고 마�
   assert.equal(reportVersionBadge(undefined), '')
 })
 
+test('서버 버전이 일부에만 있으면 무시하고 만든 시각 순이라 입력 순서와 무관하다(Codex ux2-5)', () => {
+  const a = report('A', '2026-11-01T00:00:00Z', { version: 3 })
+  const b = report('B', '2026-11-02T00:00:00Z')
+  const c = report('C', '2026-11-03T00:00:00Z', { version: 2 })
+  for (const list of [[a, b, c], [a, c, b], [c, b, a]]) {
+    const info = annotateReportVersions(list)
+    assert.equal(info.get('C')?.latest, true, JSON.stringify(list.map((x) => x.id)))
+    assert.deepEqual([info.get('A')?.version, info.get('B')?.version, info.get('C')?.version], [1, 2, 3])
+    assert.deepEqual(groupReportVersions(list).map((row) => [row.latest.id, row.older.map((x) => x.id)]), [['C', ['B', 'A']]])
+  }
+})
+
 test('서버가 버전을 주면 그 값을 쓰고, 같은 시각이면 id로 안정되게 정한다', () => {
   const info = annotateReportVersions([
     report('x', '2026-11-01T00:00:00Z', { version: 4 }),
@@ -70,7 +82,7 @@ test('목록 카드는 최신·이전 버전 표시와 접기 버튼을, 다이�
   assert.match(list, /ADMIN_COPY\.reportOlderVersionsShow\b/)
   assert.match(list, /ADMIN_COPY\.reportOlderVersionsHide\b/)
   assert.match(dialog, /data-testid="dialog-version-badge"/)
-  assert.match(dialog, /isLatest \? \(\s*<ReportAeEditPanel/)
+  assert.match(dialog, /showPanel \? \(\s*<ReportAeEditPanel/)
   assert.match(dialog, /data-testid="ae-edit-not-latest"/)
   assert.match(dialog, /ADMIN_COPY\.aeEditNotLatest\b/)
   assert.match(dialog, /onOpenLatest\(versionInfo\.latestId\)/)

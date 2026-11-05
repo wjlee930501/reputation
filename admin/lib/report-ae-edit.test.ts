@@ -306,6 +306,7 @@ import {
   describeAeItem,
   filterAeSections,
   firstProblemTarget,
+  fullAeBundles,
 } from './report-ae-edit.ts'
 import { dialogCloseAllowed } from './report-component-behavior.ts'
 
@@ -412,7 +413,7 @@ test('닫기 규칙: 수정이 없으면 묻지 않고 닫고, 있으면 확인�
 test('다이얼로그의 X·Esc·바깥 클릭이 모두 같은 닫기 확인을 거치고, 탭 닫기·새로고침에는 beforeunload 경고가 있다', () => {
   const dialog = readFileSync(new URL('../app/hospitals/[id]/reports/ReportDialog.tsx', import.meta.url), 'utf8')
   const panel = readFileSync(new URL('../app/hospitals/[id]/reports/ReportAeEditPanel.tsx', import.meta.url), 'utf8')
-  assert.match(dialog, /dialogCloseAllowed\(dirty, \(\) => window\.confirm\(ADMIN_COPY\.aeEditDiscardConfirm\)\)/)
+  assert.match(dialog, /dialogCloseAllowed\(dirtyRef\.current, \(\) => window\.confirm\(ADMIN_COPY\.aeEditDiscardConfirm\)\)/)
   assert.match(dialog, /if \(decision === 'close'\) \{ event\.preventDefault\(\); requestClose\(\); return \}/)
   assert.match(dialog, /if \(event\.target === event\.currentTarget\) requestClose\(\)/)
   assert.match(dialog, /onClick=\{requestClose\} aria-label="보고서 닫기"/)
@@ -420,7 +421,7 @@ test('다이얼로그의 X·Esc·바깥 클릭이 모두 같은 닫기 확인을
   assert.match(dialog, /addEventListener\('beforeunload', onBeforeUnload\)/)
   assert.match(dialog, /onDirtyChange=\{setDirty\} onOpenChange=\{setEditing\}/)
   assert.match(dialog, /data-dialog-header-compact=/)
-  assert.match(panel, /onDirtyChange\?\.\(open && changed\)/)
+  assert.match(panel, /onDirtyChange\?\.\(dirty\)/)
   // 하단 바는 한 줄(이유 칸 + 버튼)·상태 한 줄이고 높이만큼 스크롤 여백을 준다.
   assert.match(panel, /data-testid="ae-bar"/)
   assert.match(panel, /scroll-margin-bottom:calc\(var\(--ae-bar-h\)\+16px\)/)
@@ -439,4 +440,30 @@ test('다이얼로그의 X·Esc·바깥 클릭이 모두 같은 닫기 확인을
   assert.match(panel, /rows=\{1\}/)
   assert.doesNotMatch(panel, /rows=\{2\}/)
   assert.match(panel, /calc\(100vh - var\(--ae-bar-h\)/)
+})
+
+test('Codex ux2: 수정한 핵심 줄을 행 지우기하면 행 마커가 본문 값보다 우선하고, 검색으로 걸러도 묶음 작업은 전체가 대상이다', () => {
+  const preview = parseAeEditPreview({ ...payload, items: uxItems.map((entry) => entry.path === 'summary.key_lines[0]' ? { ...entry, value: '저장된 수정', overridden: true } : entry), overrides: { 'summary.key_lines[0]': '저장된 수정' } })!
+  const draft = draftFromItems(preview.items)
+  // 본문을 고친 뒤 행 지우기 → {deleted}만(고친 본문은 보내지 않는다)
+  const edited = { ...draft, values: { ...draft.values, 'summary.key_lines[1]': '고친 둘째 줄' }, rows: { ...draft.rows, 'summary.key_lines[1]': true } }
+  assert.deepEqual(buildAeEditFields(preview.items, edited, preview.overrides), { 'summary.key_lines[1]': AE_DELETE })
+  // 저장된 수정을 원문으로 돌린 뒤 행 지우기 → null이 아니라 {deleted}
+  const reverted = { ...draft, values: { ...draft.values, 'summary.key_lines[0]': '첫 줄' }, rows: { ...draft.rows, 'summary.key_lines[0]': true } }
+  assert.deepEqual(buildAeEditFields(preview.items, reverted, preview.overrides), { 'summary.key_lines[0]': AE_DELETE })
+  // 검색이 부록 D의 제목·첫 줄만 남겨도 전체 묶음은 4칸이다.
+  const sections = groupAeEditItems(preview.items)
+  const filtered = filterAeSections(sections, (entry) => entry.path === 'appendix.caveat_heading' || entry.path === 'appendix.caveat_lines[0]', true)
+  assert.equal(filtered[0].bundles[0].groups.length, 2)
+  const full = fullAeBundles(sections).get('appendix:appendix-d')!
+  assert.deepEqual(bulkDeleteTargets(full).paths, ['appendix.caveat_heading', 'appendix.caveat_lines[0]', 'appendix.caveat_lines[1]', 'appendix.caveat_lines[2]'])
+  assert.equal(fullAeBundles(sections).get('p1:summary.key_lines')?.groups.length, 2)
+  const panel = readFileSync(new URL('../app/hospitals/[id]/reports/ReportAeEditPanel.tsx', import.meta.url), 'utf8')
+  assert.match(panel, /onDeleteAll=\{\(\) => bulkDelete\(full\)\} onRestoreAll=\{\(\) => bulkRestore\(full\)\}/)
+  assert.match(panel, /const dirty = open && changed && fingerprint !== submittedFingerprint/)
+  assert.match(panel, /target\?\.focus\(\{ preventScroll: true \}\)/)
+  const dialog = readFileSync(new URL('../app/hospitals/[id]/reports/ReportDialog.tsx', import.meta.url), 'utf8')
+  assert.match(dialog, /const showPanel = isLatest \|\| editing/)
+  assert.match(dialog, /dialogCloseAllowed\(dirtyRef\.current, /)
+  assert.match(dialog, /\}, \[onClose\]\)/)
 })

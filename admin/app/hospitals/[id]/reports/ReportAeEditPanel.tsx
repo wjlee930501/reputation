@@ -23,6 +23,7 @@ import {
   draftFromItems,
   filterAeSections,
   firstProblemTarget,
+  fullAeBundles,
   groupAeEditItems,
   hasAeEditChanges,
   isDeleteMarker,
@@ -83,7 +84,8 @@ const TONE_CLASS: Record<StatusTone, string> = {
  * 맨 위 '문장 찾기'로 PDF에서 본 문장을 바로 찾고(맞는 절만 남고 첫 결과로 스크롤), 항목마다 '지우기'와 '원래대로', 행마다 '행 지우기',
  * 묶음(부록 D 전체·핵심 3줄 등)마다 '이 묶음 모두 지우기'가 있다. 저장 전에 서버 검증(금지 표현·내부 표식·빈 절)과 실제 PDF 미리보기
  * (패널 안)를 받고, 검증에 걸리면 '첫 문제로 이동'이 그 칸을 펼쳐 보인다. 하단 바는 한 줄이고 그 높이만큼 스크롤 여백을 둔다.
- * 저장 안 한 수정은 다이얼로그(`onDirtyChange`)가 모든 닫기 경로에서 확인한다. 새 버전은 다시 전달해야 반영된다.
+ * 저장 안 한 수정은 다이얼로그(`onDirtyChange`)가 모든 닫기 경로에서 확인한다(새 버전을 요청한 수정 묶음은 제외). 화면에는 거른 항목만 보여도
+ * 묶음 작업은 거르지 않은 전체 묶음(`fullAeBundles`)이 대상이고, '첫 문제로 이동'의 행·절 상자는 tabIndex=-1로 포커스를 받는다. 새 버전은 다시 전달해야 반영된다.
  */
 export function ReportAeEditPanel({
   hospitalId,
@@ -120,6 +122,7 @@ export function ReportAeEditPanel({
   const [openSections, setOpenSections] = useState<Readonly<Record<string, boolean>>>({ p1: true })
   const [focusTarget, setFocusTarget] = useState<AeProblemTarget | null>(null)
   const [barHeight, setBarHeight] = useState(0)
+  const [submittedFingerprint, setSubmittedFingerprint] = useState<string | null>(null)
   const keys = useRef(new Map<string, string>())
   const barRef = useRef<HTMLDivElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
@@ -202,13 +205,14 @@ export function ReportAeEditPanel({
           : root?.querySelector<HTMLElement>(`[data-ae-section="${CSS.escape(focusTarget.id)}"]`)
       const target = element ?? (root?.querySelector<HTMLElement>(`[data-ae-section="${CSS.escape(focusTarget.section)}"]`) ?? null)
       target?.scrollIntoView({ block: 'center' })
-      if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement) target.focus({ preventScroll: true })
+      target?.focus({ preventScroll: true })
       setFocusTarget(null)
     })
     return () => window.cancelAnimationFrame(frame)
   }, [focusTarget])
 
   const sections = useMemo(() => (preview ? groupAeEditItems(preview.items) : []), [preview])
+  const fullBundles = useMemo(() => fullAeBundles(sections), [sections])
   const knownPaths = useMemo(() => new Set(preview?.items.map((item) => item.path) ?? []), [preview])
 
   const fields = useMemo(() => (preview && draft ? buildAeEditFields(preview.items, draft, preview.overrides) : {}), [preview, draft])
@@ -223,7 +227,8 @@ export function ReportAeEditPanel({
   const trimmedQuery = query.trim()
   const filtering = trimmedQuery.length > 0 || changedOnly
 
-  useEffect(() => { onDirtyChange?.(open && changed) }, [open, changed, onDirtyChange])
+  const dirty = open && changed && fingerprint !== submittedFingerprint
+  useEffect(() => { onDirtyChange?.(dirty) }, [dirty, onDirtyChange])
 
   const visibleItem = useCallback((item: AeEditItem): boolean => {
     if (!draft) return false
@@ -284,7 +289,7 @@ export function ReportAeEditPanel({
   }
 
   function close() {
-    if (!dialogCloseAllowed(changed, () => window.confirm(ADMIN_COPY.aeEditDiscardConfirm))) return
+    if (!dialogCloseAllowed(dirty, () => window.confirm(ADMIN_COPY.aeEditDiscardConfirm))) return
     setOpen(false)
     setValidation(null)
     setPdfUrl(null)
@@ -358,6 +363,7 @@ export function ReportAeEditPanel({
         body: JSON.stringify({ reason: reason.trim(), fields }),
       })
       keys.current.delete(fingerprint)
+      setSubmittedFingerprint(fingerprint)
       setMessage(ADMIN_COPY.aeEditRequested)
       setRunId(typeof response.operation_run_id === 'string' ? response.operation_run_id : null)
       setRunState('running')
@@ -429,7 +435,7 @@ export function ReportAeEditPanel({
               const isOpen = filtering ? true : openSections[section.section] === true
               const count = changedCounts[section.section] ?? 0
               return (
-                <details key={section.section} open={isOpen} onToggle={(event) => { if (!filtering) setOpenSections((current) => ({ ...current, [section.section]: (event.target as HTMLDetailsElement).open })) }} className={`rounded-lg border border-[var(--color-revisit-coolgrey-20)] p-3 ${SCROLL_MARGIN}`} data-ae-section={section.section}>
+                <details key={section.section} open={isOpen} tabIndex={-1} onToggle={(event) => { if (!filtering) setOpenSections((current) => ({ ...current, [section.section]: (event.target as HTMLDetailsElement).open })) }} className={`rounded-lg border border-[var(--color-revisit-coolgrey-20)] p-3 outline-none focus:ring-2 focus:ring-[var(--color-revisit-primary-40)] ${SCROLL_MARGIN}`} data-ae-section={section.section}>
                   <summary className="cursor-pointer text-sm font-bold text-[var(--color-revisit-text-title)]">
                     {ADMIN_COPY.aeEditSections[section.section] ?? section.section}
                     {count > 0 && <span className="ml-2 rounded bg-[var(--color-revisit-primary-40)] px-1.5 text-xs text-white" data-testid="ae-section-count">{count}{ADMIN_COPY.aeEditChangedCount}</span>}
@@ -463,9 +469,10 @@ export function ReportAeEditPanel({
                     )}
                     {section.section === 'appendix' && !filtering && <p className="text-xs leading-5 text-[var(--color-revisit-text-helper)] [word-break:keep-all]">{ADMIN_COPY.aeEditLabelHint}</p>}
                     {problems[section.section]?.map((text) => <p key={text} className="text-xs text-[var(--color-revisit-red-50)]" role="alert">{text}</p>)}
-                    {section.bundles.map((bundle) => (
-                      <BundleBlock key={bundle.key} bundle={bundle} items={preview.items} draft={draft} problems={problems} recounted={recounted} onValue={setValue} onRow={setRow} onDeleteAll={() => bulkDelete(bundle)} onRestoreAll={() => bulkRestore(bundle)} />
-                    ))}
+                    {section.bundles.map((bundle) => {
+                      const full = fullBundles.get(`${section.section}:${bundle.key}`) ?? bundle
+                      return <BundleBlock key={bundle.key} bundle={bundle} full={full} items={preview.items} draft={draft} problems={problems} recounted={recounted} onValue={setValue} onRow={setRow} onDeleteAll={() => bulkDelete(full)} onRestoreAll={() => bulkRestore(full)} />
+                    })}
                   </div>
                 </details>
               )
@@ -516,8 +523,10 @@ export function ReportAeEditPanel({
 }
 
 /** 묶음 — 연속된 같은 종류의 행·줄(부록 D 유의사항 전체, 핵심 3줄, 콘텐츠 목록 …). 지울 대상이 둘 이상이면 '이 묶음 모두 지우기 / 모두 원래대로'가 있다. */
-function BundleBlock({ bundle, items, draft, problems, recounted, onValue, onRow, onDeleteAll, onRestoreAll }: {
+function BundleBlock({ bundle, full, items, draft, problems, recounted, onValue, onRow, onDeleteAll, onRestoreAll }: {
   bundle: AeEditBundle
+  /** 거르지 않은 전체 묶음 — 버튼 유무·'모두' 작업의 기준. */
+  full: AeEditBundle
   items: readonly AeEditItem[]
   draft: AeEditDraft
   problems: Readonly<Record<string, string[]>>
@@ -528,12 +537,12 @@ function BundleBlock({ bundle, items, draft, problems, recounted, onValue, onRow
   onRestoreAll: () => void
 }) {
   const name = ADMIN_COPY.aeEditBundles[bundle.key]
-  const anyChanged = bundleDiffersFromOriginal(bundle, draft)
-  const targets = bulkDeleteTargets(bundle)
+  const anyChanged = bundleDiffersFromOriginal(full, draft)
+  const targets = bulkDeleteTargets(full)
   const allDeleted = targets.rows.every((row) => draft.rows[row] === true) && targets.paths.every((path) => isDeleteMarker(draft.values[path]))
   return (
     <div className="space-y-2" data-ae-bundle={bundle.key}>
-      {bundle.bulk && name && (
+      {full.bulk && name && (
         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--color-revisit-coolgrey-20)] pb-1">
           <p className="text-xs font-bold text-[var(--color-revisit-text-title)]">{name}</p>
           <span className="flex gap-3">
@@ -562,7 +571,7 @@ function GroupBlock({ group, items, draft, problems, recounted, onValue, onRow }
   const rowDeleted = group.row !== null && draft.rows[group.row] === true
   const place = describeAeItem(group.items[0], items, draft.values, PLACE_COPY).place
   return (
-    <div className={`rounded-lg border p-2 ${SCROLL_MARGIN} ${rowDeleted ? 'border-dashed border-[var(--color-revisit-red-50)] bg-[var(--color-revisit-coolgrey-90)] opacity-70' : 'border-[var(--color-revisit-coolgrey-20)]'}`} data-ae-group={group.key}>
+    <div tabIndex={-1} className={`rounded-lg border p-2 outline-none focus:ring-2 focus:ring-[var(--color-revisit-primary-40)] ${SCROLL_MARGIN} ${rowDeleted ? 'border-dashed border-[var(--color-revisit-red-50)] bg-[var(--color-revisit-coolgrey-90)] opacity-70' : 'border-[var(--color-revisit-coolgrey-20)]'}`} data-ae-group={group.key}>
       {(place || group.rowDeletable) && (
         <div className="flex flex-wrap items-center justify-between gap-2">
           <p className="text-xs font-bold text-[var(--color-revisit-text-caption)] [word-break:keep-all]" data-testid="ae-group-place">{place}{rowDeleted ? ` · ${ADMIN_COPY.aeEditRowDeleted}` : ''}</p>

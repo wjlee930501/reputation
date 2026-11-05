@@ -93,11 +93,16 @@ export function ReportDialog({
   // 보고서 고치기 패널의 저장 안 한 수정 — X·Esc·바깥 클릭·탭 닫기 모두 같은 확인을 거친다(운영에서 6곳 고친 채 X로 닫혀 유실됐다).
   const [dirty, setDirty] = useState(false)
   const [editing, setEditing] = useState(false)
+  // dirty를 ref로 읽어 requestClose 참조가 바뀌지 않게 한다 — 바뀌면 초기화 effect가 다시 돌아 첫 글자 입력에 포커스가 X로 갔다(Codex ux2-2).
+  const dirtyRef = useRef(false)
+  useEffect(() => { dirtyRef.current = dirty }, [dirty])
   const requestClose = useCallback(() => {
-    if (!dialogCloseAllowed(dirty, () => window.confirm(ADMIN_COPY.aeEditDiscardConfirm))) return
+    if (!dialogCloseAllowed(dirtyRef.current, () => window.confirm(ADMIN_COPY.aeEditDiscardConfirm))) return
     onClose()
-  }, [dirty, onClose])
+  }, [onClose])
+  // 편집 중(패널 열림)에는 목록 갱신으로 이 보고서가 옛 버전이 돼도 패널을 내리지 않는다 — 새 버전 요청 뒤 추가 수정이 확인 없이 사라졌다(Codex ux2-1).
   const isLatest = versionInfo ? versionInfo.latest : true
+  const showPanel = isLatest || editing
 
   useEffect(() => setMounted(true), [])
 
@@ -232,7 +237,7 @@ export function ReportDialog({
           {!report.isInitialReport && (
             <section data-report-section="ae-edit" className="rounded-xl border border-[var(--color-revisit-coolgrey-20)] p-4" aria-labelledby="report-ae-edit-heading">
               <h4 id="report-ae-edit-heading" className="text-lg font-bold text-[var(--color-revisit-text-title)]">2. 보고서 고치기 (선택)</h4>
-              {isLatest ? (
+              {showPanel ? (
                 <ReportAeEditPanel key={report.id} hospitalId={report.hospitalId} reportId={report.id} onRequested={onAeEditRequested} onDirtyChange={setDirty} onOpenChange={setEditing} />
               ) : (
                 <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center" data-testid="ae-edit-not-latest">

@@ -336,6 +336,8 @@ export function buildAeEditFields(
       else if (!nowDeleted && wasDeleted) fields[item.row] = null
     }
     if (!(item.path in draft.values)) continue
+    // 행 경로가 칸 경로와 같은 행(핵심 줄)은 행 지우기가 칸 값보다 우선한다(Codex ux2-3) — 지운 행의 본문 수정은 보내지 않는다.
+    if (item.row === item.path && draft.rows[item.row] === true) continue
     let next = normalizeValue(item, draft.values[item.path])
     const stored = item.path in overrides ? (isDeleteMarker(overrides[item.path]) ? AE_DELETE : normalizeValue(item, overrides[item.path])) : undefined
     const original = normalizeValue(item, item.original)
@@ -638,6 +640,28 @@ export function firstProblemTarget(problems: readonly AeEditProblem[], items: re
 
 export function aeFieldId(path: string): string {
   return `ae-${encodeURIComponent(path)}`
+}
+
+/**
+ * 절마다 **거르지 않은** 전체 묶음(키 → 묶음) — 검색 중 화면에는 맞는 항목만 보여도 '이 묶음 모두 지우기 / 모두 원래대로'는
+ * 숨은 칸까지 전체를 대상으로 해야 한다(Codex ux2-4). 같은 키가 떨어져 두 번 나오면 하나로 합친다.
+ */
+export function fullAeBundles(sections: readonly AeEditSectionGroup[]): ReadonlyMap<string, AeEditBundle> {
+  const merged = new Map<string, { key: string; groups: AeEditGroup[] }>()
+  for (const section of sections) {
+    for (const bundle of bundleAeEditGroups(section.groups)) {
+      const id = `${section.section}:${bundle.key}`
+      const existing = merged.get(id)
+      if (existing) existing.groups.push(...bundle.groups)
+      else merged.set(id, { key: bundle.key, groups: [...bundle.groups] })
+    }
+  }
+  const out = new Map<string, AeEditBundle>()
+  for (const [id, bundle] of merged) {
+    const targets = bulkDeleteTargets(bundle)
+    out.set(id, { ...bundle, bulk: targets.rows.length + targets.paths.length >= 2 })
+  }
+  return out
 }
 
 export type AeVisibleSection = { readonly section: string; readonly bundles: readonly AeEditBundle[]; readonly matches: number }

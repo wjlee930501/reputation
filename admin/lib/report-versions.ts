@@ -26,10 +26,15 @@ export function reportVersionGroupKey(report: Pick<VersionedReport, 'periodYear'
   return `${report.isInitialReport ? 'V0' : 'MONTHLY'}:${report.periodYear}-${report.periodMonth}`
 }
 
-function order(a: VersionedReport, b: VersionedReport): number {
-  if (typeof a.version === 'number' && typeof b.version === 'number' && a.version !== b.version) return a.version - b.version
+function byCreated(a: VersionedReport, b: VersionedReport): number {
   if (a.createdAt !== b.createdAt) return a.createdAt < b.createdAt ? -1 : 1
   return a.id < b.id ? -1 : a.id > b.id ? 1 : 0
+}
+
+/** 그룹 안 **모두**에 서버 버전이 있을 때만 버전으로 정렬·번호를 매긴다 — 일부만 있으면 입력 순서에 따라 결과가 달라지므로(Codex ux2-5) 전부 만든 시각 순이다. */
+function groupOrder(list: readonly VersionedReport[]): (a: VersionedReport, b: VersionedReport) => number {
+  const allVersioned = list.every((report) => typeof report.version === 'number' && report.version > 0)
+  return (a, b) => (allVersioned && a.version !== b.version ? (a.version as number) - (b.version as number) : byCreated(a, b))
 }
 
 /** 보고서 id → 버전 정보. 같은 달·종류 안에서 1부터 세고 마지막이 최신이다. */
@@ -43,10 +48,11 @@ export function annotateReportVersions(reports: readonly VersionedReport[]): Rea
   }
   const out = new Map<string, ReportVersionInfo>()
   for (const list of groups.values()) {
-    const sorted = [...list].sort(order)
+    const allVersioned = list.every((report) => typeof report.version === 'number' && report.version > 0)
+    const sorted = [...list].sort(groupOrder(list))
     const latestId = sorted[sorted.length - 1].id
     sorted.forEach((report, index) => {
-      const version = typeof report.version === 'number' && report.version > 0 ? report.version : index + 1
+      const version = allVersioned ? (report.version as number) : index + 1
       out.set(report.id, { version, total: sorted.length, latest: report.id === latestId, latestId })
     })
   }
@@ -71,7 +77,10 @@ export function groupReportVersions<T extends VersionedReport>(reports: readonly
     if (info.get(report.id)?.latest) row.latest = report
     else row.older.push(report)
   }
-  return rows.map((row) => ({ latest: row.latest, older: [...row.older].sort((a, b) => order(b, a)) }))
+  return rows.map((row) => {
+    const order = groupOrder([row.latest, ...row.older])
+    return { latest: row.latest, older: [...row.older].sort((a, b) => order(b, a)) }
+  })
 }
 
 /** '버전 N · 최신' / '버전 N · 이전 버전' — 목록 카드와 다이얼로그 제목이 같은 글자를 쓴다. */
