@@ -465,6 +465,28 @@ def test_child_refresh_ignores_its_own_parent_even_if_still_marked_running(pg_se
     )
     assert own.verdict.passed, own.verdict.summary()
     pg_session.rollback()
+    # 같은 병원의 **다른 달** 재판정(락이 바빠 미뤄진 실행 등)은 이 달의 갱신을 막지 않는다 — 그 달의 경쟁 현황만 바꾼다.
+    parent.state = OperationRunState.SUCCEEDED
+    child.state = OperationRunState.SUCCEEDED
+    other_month = OperationRun(
+        id=uuid.uuid4(), hospital_id=hospital.id, operation_type=cr.REJUDGE_OPERATION_TYPE,
+        state=OperationRunState.QUEUED, idempotency_key=f"test:{uuid.uuid4()}", task_id="o", request_payload={},
+        result_summary={"stage": "DEFERRED_LOCK_BUSY", "period_year": 2026, "period_month": 6},
+    )
+    pg_session.add(other_month)
+    pg_session.commit()
+    unaffected = tasks.build_monthly_template_refresh_plan(
+        pg_session, hospital, ANCHOR, observed_now=datetime.now(timezone.utc), competitor_refresh=True
+    )
+    assert unaffected.verdict.passed, unaffected.verdict.summary()
+    pg_session.rollback()
+    other_month.result_summary = {"period_year": 2026, "period_month": 7}
+    pg_session.commit()
+    same_month = tasks.build_monthly_template_refresh_plan(
+        pg_session, hospital, ANCHOR, observed_now=datetime.now(timezone.utc), competitor_refresh=True
+    )
+    assert any(f.code == "OPERATION_IN_FLIGHT" for f in same_month.verdict.findings)
+    pg_session.rollback()
 
 
 def test_report_without_snapshot_evidence_has_nothing_to_rejudge(pg_session, quiet_renders, budget):  # noqa: F811 - pytest fixture

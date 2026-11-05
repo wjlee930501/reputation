@@ -13261,13 +13261,20 @@ def _template_refresh_blockers(
                 "RECOVERY_PENDING",
                 "측정이 덜 끝나 1일 새벽(00:15~07:00) 자동 복구 대상 — 측정 마감 뒤 실행",
             )
-    in_flight = db.execute(
-        select(OperationRun.id, OperationRun.operation_type).where(
-            OperationRun.hospital_id == h.id,
-            OperationRun.operation_type.in_(IN_FLIGHT_OPERATION_TYPES),
-            OperationRun.state.in_(IN_FLIGHT_STATES),
-        )
-    ).all()
+    in_flight = [
+        (run.id, run.operation_type)
+        for run in db.execute(
+            select(OperationRun).where(
+                OperationRun.hospital_id == h.id,
+                OperationRun.operation_type.in_(IN_FLIGHT_OPERATION_TYPES),
+                OperationRun.state.in_(IN_FLIGHT_STATES),
+            )
+        ).scalars()
+        # 경쟁사 재판정은 그 달의 경쟁 현황만 바꾼다 — 다른 달의 재판정(락이 바빠 미뤄진 실행 포함)은 이 달의 갱신을
+        # 막지 않는다. 달을 모르는 기록은 종전처럼 막는다(fail closed).
+        if run.operation_type != "REJUDGE_COMPETITORS"
+        or _operation_run_period(run) in (None, (now.year, now.month))
+    ]
     excluded = {exclude_run_id} if exclude_run_id is not None else set()
     if exclude_run_id is not None:
         # 경쟁 병원 반영의 자식 갱신은 자기 부모(재판정 실행)를 기다리지 않는다 — 부모는 자식을 큐에 넣기 전에 끝나지만,
@@ -13285,6 +13292,21 @@ def _template_refresh_blockers(
         return
     for path in missing_stored_paths(latest.content_summary, latest.sov_summary):
         verdict.add("BLOCKER", path)
+
+
+def _operation_run_period(run: OperationRun) -> tuple[int, int] | None:
+    """실행이 가리키는 연월 — 결과 요약, 없으면 저장된 디스패치 인자(병원, 연, 월 …). 모르면 None."""
+    summary = run.result_summary if isinstance(run.result_summary, dict) else {}
+    year, month = summary.get("period_year"), summary.get("period_month")
+    if isinstance(year, int) and isinstance(month, int):
+        return year, month
+    try:
+        dispatch = operation_run_payloads.parse_stored_dispatch((run.request_payload or {}).get("_dispatch"))
+    except (AttributeError, operation_run_payloads.UnsafeDispatchPayload):
+        return None
+    if len(dispatch.task_args) >= 3 and isinstance(dispatch.task_args[1], int) and isinstance(dispatch.task_args[2], int):
+        return int(dispatch.task_args[1]), int(dispatch.task_args[2])
+    return None
 
 
 def build_monthly_template_refresh_plan(
