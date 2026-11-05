@@ -480,6 +480,21 @@ def test_child_refresh_ignores_its_own_parent_even_if_still_marked_running(pg_se
     )
     assert unaffected.verdict.passed, unaffected.verdict.summary()
     pg_session.rollback()
+    # 다른 달 체인의 **자식 보고서 실행**이 큐에 있어도 마찬가지다 — 두 달의 자식이 서로를 FAILED로 만들지 않는다.
+    other_child = OperationRun(
+        id=uuid.uuid4(), hospital_id=hospital.id, operation_type="GENERATE_MONTHLY_REPORT", parent_run_id=other_month.id,
+        state=OperationRunState.QUEUED, idempotency_key=f"test:{uuid.uuid4()}", task_id="oc",
+        request_payload={"_dispatch": {"target_type": "hospital", "target_id": str(hospital.id), "queue": "reports",
+                                       "task_args": [str(hospital.id), 2026, 6, True, False, True, False, True]}},
+        result_summary={},
+    )
+    pg_session.add(other_child)
+    pg_session.commit()
+    unaffected = tasks.build_monthly_template_refresh_plan(
+        pg_session, hospital, ANCHOR, observed_now=datetime.now(timezone.utc), competitor_refresh=True
+    )
+    assert unaffected.verdict.passed, unaffected.verdict.summary()
+    pg_session.rollback()
     other_month.result_summary = {"period_year": 2026, "period_month": 7}
     pg_session.commit()
     same_month = tasks.build_monthly_template_refresh_plan(

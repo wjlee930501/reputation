@@ -13270,9 +13270,10 @@ def _template_refresh_blockers(
                 OperationRun.state.in_(IN_FLIGHT_STATES),
             )
         ).scalars()
-        # 경쟁사 재판정은 그 달의 경쟁 현황만 바꾼다 — 다른 달의 재판정(락이 바빠 미뤄진 실행 포함)은 이 달의 갱신을
-        # 막지 않는다. 달을 모르는 기록은 종전처럼 막는다(fail closed).
-        if run.operation_type != "REJUDGE_COMPETITORS"
+        # 병원 단위 월간 보고서 실행(재생성·갱신·경쟁 병원 반영의 자식)과 경쟁사 재판정은 **그 달**의 저장값·경쟁 현황만
+        # 바꾼다 — 다른 달의 실행(락이 바빠 미뤄진 재판정, 다른 달 체인의 자식 포함)은 이 달의 갱신을 막지 않는다.
+        # 달을 모르는 기록은 종전처럼 막는다(fail closed). 측정(RUN_SOV)·월간 배치는 종전처럼 병원 단위로 막는다.
+        if run.operation_type not in ("REJUDGE_COMPETITORS", "GENERATE_MONTHLY_REPORT")
         or _operation_run_period(run) in (None, (now.year, now.month))
     ]
     excluded = {exclude_run_id} if exclude_run_id is not None else set()
