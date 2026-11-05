@@ -250,7 +250,8 @@ PDF를 만든다. 템플릿 갱신과 **같은 경로**(`generate_monthly_report
   pristine 뷰의 숫자·키워드 집합이 같으면 전부, 바뀌었으면 **라벨만** 잇고 문장·사례 교체는 버려
   (pristine끼리의 비교라 카드 4의 n 변화도 '바뀐 숫자'다 — 그 수를 담은 문장을 잇지 않기 위해; 막대 `treatment.*`만 보지 않는다)
   `render_inputs.ae_overrides_dropped = {fields, reason: NUMBERS_CHANGED, from_report_id}`로 남긴다. 사라진 키워드의
-  라벨도 버린다(`NO_LONGER_APPLIES`).
+  라벨도 버린다(`NO_LONGER_APPLIES`). 이어진 값의 검증은 경로 하나씩이 아니라 **전체 문맥**(이어진 라벨 포함)으로 한다
+  (`invalid_carry_paths`) — 카드 4 이름 목록의 상한이 라벨을 적용해 다시 센 n이기 때문이다.
 - **옛 판 보정**: #286 코드로 저장된 AE 판은 라벨을 합치거나 갈라도 카드 4의 n·'외 N개'가 그대로였다. 그런 판은 다음 AE 수정 판·
   템플릿 갱신이 pristine 뷰에서 다시 세어 바로잡고, 경쟁 병원 반영의 얼린 뷰·사실 대조와 그 postcheck는 저장된 수정 값을 지금
   규칙으로 다시 얹은 카드로 바꿔 비교한다(`doctor_report_ae_edit.legacy_card_corrected`, WARN `AE_LEGACY_CARD_RECOUNTED`).

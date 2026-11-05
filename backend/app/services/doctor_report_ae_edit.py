@@ -234,6 +234,35 @@ def validate_ae_fields(
     return problems
 
 
+def invalid_carry_paths(
+    fields: Mapping[str, Any],
+    view: DoctorReportV4,
+    *,
+    case_candidates: Sequence[CaseCandidate] | None = None,
+) -> set[str]:
+    """이어진(저장된) 수정 값 중 새 pristine 뷰에서 더는 맞지 않는 경로 — **전체 fields 문맥**으로 검증한다.
+
+    카드 4 이름 목록은 라벨을 적용해 다시 센 n을 기준으로 보므로 경로 하나씩 따로 검사하면 라벨 문맥을 잃는다(분리 뒤
+    유효한 목록을 버리거나 합친 뒤 무효한 옛 목록을 남긴다 — Codex 4-P1). 경로를 뺄 때마다 n이 달라질 수 있어 문제가
+    없을 때까지 되풀이한다. 전체 모양 문제(경로 '')는 어느 경로도 지목하지 않으므로 무시한다.
+    """
+    remaining = dict(fields)
+    invalid: set[str] = set()
+    for _ in range(len(remaining) + 1):
+        problems = validate_ae_fields(remaining, view, case_candidates=case_candidates)
+        paths = {
+            AE_PATH_CARD_NAMES if problem.path.startswith(f"{AE_PATH_CARD_NAMES}[") else problem.path
+            for problem in problems
+            if problem.path
+        } & set(remaining)
+        if not paths:
+            break
+        invalid |= paths
+        for path in paths:
+            remaining.pop(path, None)
+    return invalid
+
+
 def _distinct_names(value: Sequence[Any]) -> list[str]:
     seen: list[str] = []
     for item in value:

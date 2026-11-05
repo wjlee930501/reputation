@@ -38,6 +38,7 @@ from app.services.doctor_report_ae_edit import (
     editable_fields,
     editable_summary,
     field_changes,
+    invalid_carry_paths,
     is_treatment_grouping_fact,
     legacy_card_corrected,
     merge_ae_fields,
@@ -822,6 +823,45 @@ def test_explicit_names_cannot_exceed_the_recounted_count():
     content = copy.deepcopy(latest.content_summary)
     edited, problems = tasks._apply_ae_edit_to_plan(None, None, latest, arrow.get("2026-10-31T23:59:00+09:00"), content, view, {"report_id": str(latest.id), "fields": {CHEST_LABEL: "심장초음파", AE_PATH_CARD_NAMES: ["초음파 검사"]}})
     assert problems == [] and edited.summary.cards[3].names == ("초음파 검사",) and edited.summary.cards[3].value == "1개 항목"
+
+
+def test_carry_validates_the_card_names_with_the_carried_labels(monkeypatch):
+    """승계 경로(일반 재생성·경쟁 병원 반영)는 경로 하나씩이 아니라 이어진 라벨을 포함한 전체 문맥으로 검증한다(Codex 4-P1).
+
+    분리 라벨 + 이름 2개는 유효하니 잇고, 합친 라벨 + 옛 이름 2개는 이름 목록만 버린다.
+    """
+    view = build()
+    shared = apply_ae_overrides(view, {CHEST_LABEL: "심장초음파"})  # pristine n=1
+    split_with_names = {CHEST_LABEL: "흉통", AE_PATH_CARD_NAMES: ["초음파 검사", "가슴 통증"]}
+    assert invalid_carry_paths(split_with_names, shared) == set()
+    assert invalid_carry_paths({AE_PATH_CARD_NAMES: ["초음파 검사", "가슴 통증"]}, shared) == {AE_PATH_CARD_NAMES}
+    merge_with_names = {CHEST_LABEL: "심장초음파", AE_PATH_CARD_NAMES: ["초음파 검사", "가슴 통증"]}
+    assert invalid_carry_paths(merge_with_names, view) == {AE_PATH_CARD_NAMES}
+    # 모르는 키워드의 라벨은 버리고, 그 라벨이 없을 때의 n으로 이름 목록을 다시 본다.
+    assert invalid_carry_paths({"treatment_label[없는 키워드]": "x", AE_PATH_CARD_NAMES: ["a", "b"]}, shared) == {"treatment_label[없는 키워드]", AE_PATH_CARD_NAMES}
+    # 일반 재생성 승계: 같은 pristine(n=1)으로 다시 만든 판에 분리 라벨 + 이름 2개가 그대로 이어진다.
+    db = SimpleNamespace(get=lambda _model, _id: previous)
+    overrides = build_ae_overrides(
+        fields=split_with_names, base_view_payload=freeze_doctor_view(shared), edited_by="ae@example.invalid",
+        edited_at="2026-11-05T01:00:00+00:00", previous=None, changed_paths=sorted(split_with_names), report_version=2,
+    )
+    _sov, content = _stored(apply_ae_overrides(shared, split_with_names), {})
+    content["report_snapshot"]["render_inputs"]["ae_overrides"] = overrides
+    previous = SimpleNamespace(id=uuid.uuid4(), content_summary=content)
+    applied, carried, dropped = tasks._carry_ae_overrides(db, previous.id, shared, _records_with_ids(), arrow.get("2026-11-05T01:00:00+00:00"))
+    assert carried["fields"] == split_with_names and dropped is None
+    assert applied.summary.cards[3].value == "2개 항목" and applied.summary.cards[3].names == ("초음파 검사", "가슴 통증")
+    # 옛 판(합친 라벨 + 이름 2개)을 이으면 이름 목록만 버리고 라벨은 잇는다.
+    legacy = build_ae_overrides(
+        fields=merge_with_names, base_view_payload=freeze_doctor_view(view), edited_by="ae@example.invalid",
+        edited_at="2026-11-05T01:00:00+00:00", previous=None, changed_paths=sorted(merge_with_names), report_version=2,
+    )
+    _sov, legacy_content = _stored(apply_ae_overrides(view, merge_with_names), {})
+    legacy_content["report_snapshot"]["render_inputs"]["ae_overrides"] = legacy
+    previous = SimpleNamespace(id=uuid.uuid4(), content_summary=legacy_content)
+    applied, carried, dropped = tasks._carry_ae_overrides(db, previous.id, view, _records_with_ids(), arrow.get("2026-11-05T01:00:00+00:00"))
+    assert carried["fields"] == {CHEST_LABEL: "심장초음파"} and dropped["fields"] == {AE_PATH_CARD_NAMES: ["초음파 검사", "가슴 통증"]}
+    assert dropped["reason"] == "NO_LONGER_APPLIES" and applied.summary.cards[3].names == ("심장초음파",)
 
 
 def test_legacy_versions_saved_with_the_old_card_rule_are_corrected_before_competitor_comparisons():
