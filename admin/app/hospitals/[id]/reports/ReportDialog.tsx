@@ -1,7 +1,7 @@
 'use client'
 
 import Link from 'next/link'
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import {
   deliveryEventLabel,
@@ -13,7 +13,8 @@ import {
   type DeliveryIssue,
 } from '@/lib/report-delivery'
 import type { ReportView } from '@/lib/report-review'
-import { dialogKeyDecision } from '@/lib/report-component-behavior'
+import { dialogCloseAllowed, dialogKeyDecision } from '@/lib/report-component-behavior'
+import { reportVersionBadge, type ReportVersionInfo } from '@/lib/report-versions'
 import { reportOperationsHref } from '@/lib/operations-center'
 import { CompetitorRefreshPanel } from './CompetitorRefreshPanel'
 import { ADMIN_COPY } from '@/lib/admin-copy'
@@ -49,6 +50,8 @@ export function ReportDialog({
   onCopyDeveloperInfo,
   onCompetitorRefreshRequested,
   onAeEditRequested,
+  versionInfo,
+  onOpenLatest,
 }: {
   report: ReportView
   issue: DeliveryIssue | null
@@ -65,6 +68,10 @@ export function ReportDialog({
   onCompetitorRefreshRequested?: (newReportId?: string | null) => void
   /** AE 수정 판(보고서를 고친 새 버전)을 요청한 뒤 — 목록·작업 기록을 다시 읽는다. */
   onAeEditRequested: () => void
+  /** 같은 달 안의 버전 정보(목록이 센 값). 없으면 버전 표시를 하지 않는다. */
+  versionInfo?: ReportVersionInfo
+  /** 이전 버전을 열었을 때 '최신 버전 열기'. */
+  onOpenLatest?: (reportId: string) => void
 }) {
   const panelRef = useRef<HTMLDivElement>(null)
   const closeRef = useRef<HTMLButtonElement>(null)
@@ -83,8 +90,31 @@ export function ReportDialog({
   const [downloadError, setDownloadError] = useState<string | null>(null)
   const deliveryValid = recipient.trim().length > 0 && channel.trim().length > 0
   const reasonValid = reason.trim().length >= 2
+  // 보고서 고치기 패널의 저장 안 한 수정 — X·Esc·바깥 클릭·탭 닫기 모두 같은 확인을 거친다(운영에서 6곳 고친 채 X로 닫혀 유실됐다).
+  const [dirty, setDirty] = useState(false)
+  const [editing, setEditing] = useState(false)
+  // dirty를 ref로 읽어 requestClose 참조가 바뀌지 않게 한다 — 바뀌면 초기화 effect가 다시 돌아 첫 글자 입력에 포커스가 X로 갔다(Codex ux2-2).
+  const dirtyRef = useRef(false)
+  useEffect(() => { dirtyRef.current = dirty }, [dirty])
+  const requestClose = useCallback(() => {
+    if (!dialogCloseAllowed(dirtyRef.current, () => window.confirm(ADMIN_COPY.aeEditDiscardConfirm))) return
+    onClose()
+  }, [onClose])
+  // 편집 중(패널 열림)에는 목록 갱신으로 이 보고서가 옛 버전이 돼도 패널을 내리지 않는다 — 새 버전 요청 뒤 추가 수정이 확인 없이 사라졌다(Codex ux2-1).
+  const isLatest = versionInfo ? versionInfo.latest : true
+  const showPanel = isLatest || editing
 
   useEffect(() => setMounted(true), [])
+
+  useEffect(() => {
+    if (!dirty) return
+    function onBeforeUnload(event: BeforeUnloadEvent) {
+      event.preventDefault()
+      event.returnValue = ADMIN_COPY.aeEditDirtyUnload
+    }
+    window.addEventListener('beforeunload', onBeforeUnload)
+    return () => window.removeEventListener('beforeunload', onBeforeUnload)
+  }, [dirty])
 
   useEffect(() => {
     if (!mounted) return
@@ -106,7 +136,7 @@ export function ReportDialog({
         document.activeElement === first,
         document.activeElement === last,
       )
-      if (decision === 'close') { event.preventDefault(); onClose(); return }
+      if (decision === 'close') { event.preventDefault(); requestClose(); return }
       if (!focusable.length || decision === 'native') return
       event.preventDefault()
       if (decision === 'first') first.focus()
@@ -120,7 +150,7 @@ export function ReportDialog({
       document.body.style.overflow = oldOverflow
       previous?.focus()
     }
-  }, [mounted, onClose])
+  }, [mounted, requestClose])
 
   useEffect(() => {
     if (issue) window.requestAnimationFrame(() => issueRef.current?.focus())
@@ -154,15 +184,19 @@ export function ReportDialog({
 
   if (!mounted) return null
   return createPortal(
-    <div className="fixed inset-0 z-50 overflow-y-auto bg-[color-mix(in_srgb,var(--color-revisit-nav)_60%,transparent)] p-2 sm:p-5" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
+    <div className="fixed inset-0 z-50 overflow-y-auto bg-[color-mix(in_srgb,var(--color-revisit-nav)_60%,transparent)] p-2 [--ae-overlay-pad:0.5rem] sm:p-5 sm:[--ae-overlay-pad:1.25rem]" onMouseDown={(event) => { if (event.target === event.currentTarget) requestClose() }}>
       <div ref={panelRef} role="dialog" aria-modal="true" aria-labelledby="report-dialog-title" aria-describedby="report-dialog-description" className="mx-auto my-2 w-full max-w-4xl rounded-xl bg-white sm:my-5">
-        <header className="sticky top-0 z-10 flex items-start justify-between gap-3 rounded-t-xl border-b border-[var(--color-revisit-coolgrey-20)] bg-white p-4 sm:p-5">
-          <div>
-            <p className="text-xs font-bold text-[var(--color-revisit-primary-40)]">{report.statusLabel}</p>
-            <h3 id="report-dialog-title" className="mt-1 text-lg font-bold text-[var(--color-revisit-text-title)] [word-break:keep-all]">{report.periodYear}년 {report.periodMonth}월 {report.typeLabel}</h3>
-            <p id="report-dialog-description" className="mt-1 text-sm text-[var(--color-revisit-text-helper)]">{ADMIN_COPY.aeEditDialogDescription}</p>
+        {/* 편집 중에는 머리글을 줄인다(상태 줄·설명을 접어 약 113px → 한 줄) — 하단 고정 바와 합쳐 화면을 가리지 않게. */}
+        <header className={`sticky top-0 z-10 flex items-start justify-between gap-3 rounded-t-xl border-b border-[var(--color-revisit-coolgrey-20)] bg-white ${editing ? 'px-3 py-2 sm:px-4' : 'p-4 sm:p-5'}`} data-dialog-header-compact={editing ? 'true' : 'false'}>
+          <div className="min-w-0">
+            {!editing && <p className="text-xs font-bold text-[var(--color-revisit-primary-40)]">{report.statusLabel}</p>}
+            <h3 id="report-dialog-title" className={`font-bold text-[var(--color-revisit-text-title)] [word-break:keep-all] ${editing ? 'text-base' : 'mt-1 text-lg'}`}>
+              {report.periodYear}년 {report.periodMonth}월 {report.typeLabel}
+              {versionInfo && <span className={`ml-2 rounded px-1.5 py-0.5 align-middle text-xs ${versionInfo.latest ? 'bg-[var(--color-revisit-primary-40)] text-white' : 'bg-[var(--color-revisit-coolgrey-90)] text-[var(--color-revisit-text-helper)]'}`} data-testid="dialog-version-badge">{reportVersionBadge(versionInfo)}</span>}
+            </h3>
+            <p id="report-dialog-description" className={`mt-1 text-sm text-[var(--color-revisit-text-helper)] ${editing ? 'sr-only' : ''}`}>{ADMIN_COPY.aeEditDialogDescription}</p>
           </div>
-          <button ref={closeRef} type="button" onClick={onClose} aria-label="보고서 닫기" className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg border border-[var(--color-revisit-coolgrey-20)]">
+          <button ref={closeRef} type="button" onClick={requestClose} aria-label="보고서 닫기" className="inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg border border-[var(--color-revisit-coolgrey-20)]">
             <svg aria-hidden="true" viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 6l12 12M18 6L6 18" /></svg>
           </button>
         </header>
@@ -203,7 +237,14 @@ export function ReportDialog({
           {!report.isInitialReport && (
             <section data-report-section="ae-edit" className="rounded-xl border border-[var(--color-revisit-coolgrey-20)] p-4" aria-labelledby="report-ae-edit-heading">
               <h4 id="report-ae-edit-heading" className="text-lg font-bold text-[var(--color-revisit-text-title)]">2. 보고서 고치기 (선택)</h4>
-              <ReportAeEditPanel key={report.id} hospitalId={report.hospitalId} reportId={report.id} onRequested={onAeEditRequested} />
+              {showPanel ? (
+                <ReportAeEditPanel key={report.id} hospitalId={report.hospitalId} reportId={report.id} onRequested={onAeEditRequested} onDirtyChange={setDirty} onOpenChange={setEditing} />
+              ) : (
+                <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center" data-testid="ae-edit-not-latest">
+                  <p className="text-sm leading-6 text-[var(--color-revisit-text-helper)] [word-break:keep-all]">{ADMIN_COPY.aeEditNotLatest}</p>
+                  {versionInfo && onOpenLatest && <button type="button" onClick={() => onOpenLatest(versionInfo.latestId)} className="min-h-11 rounded-lg border border-[var(--color-revisit-coolgrey-20)] px-4 text-sm font-bold text-[var(--color-revisit-text-title)]">{ADMIN_COPY.aeEditOpenLatest}</button>}
+                </div>
+              )}
             </section>
           )}
 
