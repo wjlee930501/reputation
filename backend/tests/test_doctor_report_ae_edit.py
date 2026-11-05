@@ -839,6 +839,8 @@ def test_carry_validates_the_card_names_with_the_carried_labels(monkeypatch):
     assert invalid_carry_paths(merge_with_names, view) == {AE_PATH_CARD_NAMES}
     # 모르는 키워드의 라벨은 버리고, 그 라벨이 없을 때의 n으로 이름 목록을 다시 본다.
     assert invalid_carry_paths({"treatment_label[없는 키워드]": "x", AE_PATH_CARD_NAMES: ["a", "b"]}, shared) == {"treatment_label[없는 키워드]", AE_PATH_CARD_NAMES}
+    # 무효한 라벨(원문에 없는 숫자)이 임시로 n을 1로 합쳐도, 그 라벨을 먼저 빼면 n=2라 이름 2개는 남는다(Codex 5-P2).
+    assert invalid_carry_paths({CHEST_LABEL: "심장초음파 2차", AE_PATH_CARD_NAMES: ["a", "b"]}, view) == {CHEST_LABEL}
     # 일반 재생성 승계: 같은 pristine(n=1)으로 다시 만든 판에 분리 라벨 + 이름 2개가 그대로 이어진다.
     db = SimpleNamespace(get=lambda _model, _id: previous)
     overrides = build_ae_overrides(
@@ -880,6 +882,16 @@ def test_legacy_versions_saved_with_the_old_card_rule_are_corrected_before_compe
     assert inputs.doctor_metric_facts["card.treatments"] == "2개 항목"
     fixed_view, fixed_facts, note = legacy_card_corrected(inputs, restore_doctor_view(inputs.doctor_view), inputs.doctor_metric_facts)
     assert fixed_view == correct and fixed_facts == correct.facts() and note and "2개 항목" in note and "1개 항목" in note
+    # 합침 라벨 + 옛 이름 2개를 저장한 판: 승계가 이름 목록을 버리므로 보정 카드도 그 결과('심장초음파')와 같아야 한다(Codex 5-P1).
+    merged_stored = build_ae_overrides(
+        fields={CHEST_LABEL: "심장초음파", AE_PATH_CARD_NAMES: ["초음파 검사", "가슴 통증"]}, base_view_payload=freeze_doctor_view(view),
+        edited_by="ae@example.invalid", edited_at="2026-11-05T01:00:00+00:00", previous=None, changed_paths=[CHEST_LABEL], report_version=2,
+    )
+    _sov, merged_content = _stored(buggy, {})
+    merged_content["report_snapshot"]["render_inputs"]["ae_overrides"] = merged_stored
+    merged_inputs = report_render_inputs(merged_content)
+    fixed_view, _facts, _note = legacy_card_corrected(merged_inputs, restore_doctor_view(merged_inputs.doctor_view), merged_inputs.doctor_metric_facts)
+    assert fixed_view.summary.cards[3] == correct.summary.cards[3]
     # 사실만 보정하는 호출(운영 postcheck)도 같은 값이다.
     _none, facts_only, note2 = legacy_card_corrected(inputs, None, inputs.doctor_metric_facts)
     assert _none is None and facts_only == correct.facts() and note2

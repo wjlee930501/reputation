@@ -257,6 +257,10 @@ def invalid_carry_paths(
         } & set(remaining)
         if not paths:
             break
+        # 무효한 라벨(다른 경로)을 먼저 빼고 이름 목록은 그 뒤에 다시 본다 — 무효 라벨이 임시로 합친 n 때문에 유효한 목록까지
+        # 함께 버리지 않게(Codex 5-P2). 이름 목록은 다른 문제가 없을 때만 뺀다.
+        others = paths - {AE_PATH_CARD_NAMES}
+        paths = others or paths
         invalid |= paths
         for path in paths:
             remaining.pop(path, None)
@@ -384,7 +388,12 @@ def legacy_card_corrected(
     base = base_view_of(render_inputs) if stored is not None else None
     if stored is None or base is None or len(base.summary.cards) < 4 or (view is not None and len(view.summary.cards) < 4):
         return view, dict(facts), None
-    applied = apply_ae_overrides(base, dict(stored["fields"]))
+    # 승계 경로와 같은 규칙으로 더는 맞지 않는 값(합친 뒤 n을 넘는 옛 이름 목록 등)을 뺀 뒤 얹는다 — 안 그러면 보정한 카드가
+    # 승계가 실제로 찍을 카드와 달라 `COMPETITOR_REFRESH_VIEW` DIFF가 남는다(Codex 5-P1).
+    fields = dict(stored["fields"])
+    for path in invalid_carry_paths(fields, base):
+        fields.pop(path, None)
+    applied = apply_ae_overrides(base, fields)
     expected = applied.summary.cards[3]
     frozen_value = view.summary.cards[3].value if view is not None else facts.get("card.treatments")
     frozen_names = list(view.summary.cards[3].names) if view is not None else None
