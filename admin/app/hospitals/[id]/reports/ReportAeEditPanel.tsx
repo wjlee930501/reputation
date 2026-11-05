@@ -270,7 +270,8 @@ export function ReportAeEditPanel({
             </p>
           )}
 
-          <div className="sticky top-0 z-10 space-y-2 rounded-lg border border-[var(--color-revisit-coolgrey-20)] bg-white p-3">
+          {/* 찾기 상자는 고정하지 않는다 — 다이얼로그 자체의 고정 머리글과 겹쳐 열린 절 제목이 비쳐 보였다(브라우저 검증). 검색이 맞는 절을 펼치므로 위로 올라올 일이 적다. */}
+          <div className="space-y-2 rounded-lg border border-[var(--color-revisit-coolgrey-20)] bg-white p-3">
             <label className="block text-sm font-semibold">{ADMIN_COPY.aeEditSearch}
               <input type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder={ADMIN_COPY.aeEditSearchHint} className={INPUT} data-testid="ae-search" />
             </label>
