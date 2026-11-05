@@ -7,9 +7,12 @@ row proves broker acceptance.
 """
 
 import hashlib
+import json
 import uuid
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query
@@ -17,10 +20,11 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 from sqlalchemy import and_, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.concurrency import run_in_threadpool
 
-from app.api.admin.accounts import require_owner_account
+from app.api.admin.accounts import require_active_account, require_owner_account
 from app.api.admin.domain import verify_domain_for_hospital
-from app.core.database import get_db
+from app.core.database import SyncSessionLocal, get_db
 from app.models.admin_user import AdminUser
 from app.models.audit import AdminAuditLog
 from app.models.content import ContentItem, ContentStatus
@@ -48,6 +52,24 @@ from app.services import cost_guard
 from app.services.audit_log import default_actor, verified_request_actor, write_audit_log
 from app.services.content_visibility import assess_sampled_visibility, visibility_load_only
 from app.services.content_yield import compute_content_yield_async, kst_week_start
+from app.services.doctor_report_ae_edit import (
+    ae_edit_fact_problems,
+    base_view_of,
+    editable_fields,
+    editable_summary,
+    field_changes,
+    merge_ae_fields,
+    normalize_ae_fields,
+    stored_ae_overrides,
+    validate_ae_fields,
+)
+from app.services.doctor_report_v4 import (
+    CaseCandidate,
+    DoctorReportV4,
+    apply_ae_overrides,
+    compare_facts_v4,
+    stored_facts_v4,
+)
 from app.services.hospital_lifecycle import missing_profile_requirement_keys
 from app.services.incident_safety import sanitize_operator_text
 from app.services.legacy_budget_replacement import (
@@ -67,6 +89,8 @@ from app.services.monthly_period import (
     scheduled_report_period,
 )
 from app.services.monthly_remasure_gate import ManualRemasureLocked, authorize_manual_remasure
+from app.services.monthly_report_snapshot import report_render_inputs, restore_doctor_view
+from app.services.operation_run_keys import normalize_operation_key
 from app.services.operation_run_payloads import UnsafeDispatchPayload, parse_stored_dispatch
 from app.services.operation_runs import (
     DispatchTask,
@@ -92,6 +116,7 @@ from app.workers.tasks import (
     build_aeo_site,
     generate_content_image,
     generate_monthly_report_for_hospital,
+    load_ae_case_candidates,
     regenerate_content_item,
     run_sov_for_hospital,
     trigger_v0_report,
@@ -159,6 +184,7 @@ async def _prepare_monthly_rebuild_audit(
     reason: str,
     template_only: bool = False,
     allow_recovery_pending: bool = False,
+    mode_detail: dict[str, JSONValue] | None = None,
 ) -> bool:
     """Lock the hospital and stage a reason audit before durable dispatch.
 
@@ -188,6 +214,9 @@ async def _prepare_monthly_rebuild_audit(
         expected["mode"] = "TEMPLATE_REFRESH"
     if allow_recovery_pending:
         expected["allow_recovery_pending"] = True
+    if mode_detail:
+        # AE 수정 판: 같은 템플릿 갱신 인자라도 수정 값(필드별 전/후)이 다르면 다른 요청이다 — 감사에 그대로 남는다.
+        expected.update(mode_detail)
     if existing is not None:
         if existing.detail != expected:
             raise HTTPException(
@@ -1311,3 +1340,297 @@ def _serialize_audit_log(log: AdminAuditLog) -> dict:
         "detail": log.detail,
         "created_at": log.created_at.isoformat() if log.created_at else None,
     }
+
+
+# ── AE 수정 판(2026-11-05) — 원장용 v4 보고서의 서술 문구·진료 항목 라벨만 고쳐 새 버전 ──────────────────
+
+
+class ReportAeEditRequest(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    reason: str | None = Field(default=None, max_length=200)
+    # 경로 → 값. 값 null은 그 경로의 기존 수정을 지운다(원문으로). 문법은 `doctor_report_v4.parse_ae_path`.
+    fields: dict[str, Any]
+
+
+AE_EDIT_AUDIT_MODE = "AE_EDIT"
+_AE_EDIT_DEFAULT_REASON = "AE 수정 판(문구·라벨만, 숫자 변경 없음)"
+
+
+@dataclass(frozen=True, slots=True)
+class _AeEditContext:
+    hospital: Hospital
+    report: MonthlyReport
+    base: DoctorReportV4
+    render_inputs: Any
+    stored: dict[str, Any] | None
+
+
+async def _load_ae_edit_context(db: AsyncSession, hospital_id: uuid.UUID, report_id: uuid.UUID) -> _AeEditContext:
+    hospital = await _get_hospital_or_404(db, hospital_id)
+    report = await db.get(MonthlyReport, report_id)
+    if report is None or report.hospital_id != hospital_id or report.report_type != "MONTHLY":
+        raise HTTPException(status_code=404, detail="월간 보고서를 찾을 수 없습니다.")
+    latest = await db.scalar(
+        select(MonthlyReport)
+        .where(
+            MonthlyReport.hospital_id == hospital_id,
+            MonthlyReport.period_year == report.period_year,
+            MonthlyReport.period_month == report.period_month,
+            MonthlyReport.report_type == "MONTHLY",
+        )
+        .order_by(MonthlyReport.version.desc())
+        .limit(1)
+    )
+    if latest is None or latest.id != report.id:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "AE_EDIT_NOT_LATEST",
+                "message": "이 달의 최신 버전만 고칠 수 있습니다. 최신 버전을 열어 다시 시도해 주세요.",
+                "latest_report_id": str(latest.id) if latest is not None else None,
+            },
+        )
+    render_inputs = report_render_inputs(report.content_summary)
+    base = base_view_of(render_inputs) if render_inputs is not None else None
+    if base is None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "AE_EDIT_REQUIRES_V4",
+                "message": "새 형식(v4) 보고서만 고칠 수 있습니다. 먼저 '문구·디자인만 다시 만들기'로 새 형식 버전을 만들어 주세요.",
+            },
+        )
+    return _AeEditContext(hospital, report, base, render_inputs, stored_ae_overrides(render_inputs))
+
+
+def _ae_edit_receipt(run: OperationRun, *, report_id: uuid.UUID, changes: list, replayed: bool) -> dict[str, Any]:
+    return {
+        "detail": "AE 수정 판 생성을 요청했습니다. 새 버전이 만들어지면 다시 전달해야 원장님께 반영됩니다.",
+        "hospital_id": str(run.hospital_id),
+        "report_id": str(report_id),
+        "operation_run_id": str(run.id),
+        "operation_state": run.state,
+        "task_id": run.task_id,
+        "idempotent_replay": replayed,
+        "changes": changes,
+        "redelivery_required": True,
+    }
+
+
+async def _find_ae_edit_replay(
+    db: AsyncSession,
+    hospital_id: uuid.UUID,
+    report_id: uuid.UUID,
+    idempotency_key: str,
+    fields: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """같은 요청 키로 이미 접수한 AE 수정 판이 있으면 그 영수증(같은 판·같은 수정 값일 때). 다른 값이면 409."""
+    key = normalize_operation_key(idempotency_key)
+    if key is None:
+        return None
+    run = await db.scalar(
+        select(OperationRun).where(
+            OperationRun.hospital_id == hospital_id,
+            OperationRun.operation_type == "GENERATE_MONTHLY_REPORT",
+            OperationRun.idempotency_key == key,
+        )
+    )
+    if run is None:
+        return None
+    stored = run.request_payload.get("ae_edit") if isinstance(run.request_payload, dict) else None
+    if (
+        not isinstance(stored, dict)
+        or str(stored.get("report_id") or "") != str(report_id)
+        or stored.get("fields") != {path: fields.get(path) for path in fields}
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="같은 요청 키가 다른 판이나 다른 수정 값에 이미 사용됐습니다. 화면을 새로고침한 뒤 다시 시도해 주세요.",
+        )
+    return _ae_edit_receipt(run, report_id=report_id, changes=[], replayed=True)
+
+
+def _load_ae_candidates_sync(hospital_id: uuid.UUID, report_id: uuid.UUID) -> list[CaseCandidate]:
+    with SyncSessionLocal() as session:
+        hospital = session.get(Hospital, hospital_id)
+        report = session.get(MonthlyReport, report_id)
+        if hospital is None or report is None:
+            return []
+        try:
+            return load_ae_case_candidates(session, hospital, report)
+        finally:
+            session.rollback()
+
+
+def _candidate_dict(candidate: CaseCandidate) -> dict[str, Any]:
+    case = candidate.case
+    return {
+        "record_id": candidate.record_id,
+        "keyword": case.keyword,
+        "platform": case.platform,
+        "measured_on": case.measured_on,
+        "excerpt": case.excerpt,
+        "highlight": case.highlight,
+        "insight": case.insight,
+    }
+
+
+def _ae_edit_preview_payload(
+    context: _AeEditContext,
+    *,
+    requested: Mapping[str, Any] | None,
+    candidates: Sequence[CaseCandidate],
+) -> dict[str, Any]:
+    """쓰기 없이 수정 값을 pristine 뷰에 적용한 결과와 거절 사유. 요청 값이 없으면 저장된 수정 값 그대로를 미리본다."""
+    base = context.base
+    stored_fields = dict(context.stored["fields"]) if context.stored is not None else {}
+    merged = merge_ae_fields(stored_fields, requested or {})
+    problems = validate_ae_fields(merged, base, case_candidates=candidates)
+    preview = None
+    fact_problems: list[str] = []
+    if not problems:
+        normalized = normalize_ae_fields(merged, base, case_candidates=candidates)
+        edited = apply_ae_overrides(base, normalized, case_candidates=candidates) if normalized else base
+        fact_problems = ae_edit_fact_problems(base, edited)
+        fact_problems.extend(
+            compare_facts_v4(
+                stored_facts_v4(context.report.sov_summary or {}, context.report.content_summary or {}),
+                edited.facts(),
+            )
+        )
+        preview = editable_summary(edited)
+        merged = normalized
+    current = restore_doctor_view(context.render_inputs.doctor_view)
+    return {
+        "report_id": str(context.report.id),
+        "report_version": context.report.version,
+        "template_version": base.template_version,
+        "editable": editable_summary(base),
+        "original_fields": editable_fields(base),
+        "current": editable_summary(current) if isinstance(current, DoctorReportV4) else None,
+        "overrides": stored_fields,
+        "requested": dict(requested) if requested is not None else None,
+        "merged": merged,
+        "preview": preview,
+        "problems": [problem.as_dict() for problem in problems]
+        + [{"path": "", "code": "NUMBERS_CHANGED", "message": line} for line in fact_problems],
+        "numbers_preserved": not problems and not fact_problems,
+        "candidates": {
+            "found": [_candidate_dict(c) for c in candidates if c.found],
+            "missing": [_candidate_dict(c) for c in candidates if not c.found],
+        },
+        "edited_by": (context.stored or {}).get("edited_by"),
+        "edited_at": (context.stored or {}).get("edited_at"),
+        "history": list((context.stored or {}).get("history") or []),
+        "dropped": getattr(context.render_inputs, "ae_overrides_dropped", None),
+        "redelivery_required": True,
+        "redelivery_note": "새 버전은 다시 전달해야 원장님께 반영됩니다. 기존 전달 기록은 그대로 남습니다.",
+    }
+
+
+@router.get("/{hospital_id}/reports/{report_id}/ae-edit/preview")
+async def preview_report_ae_edit(
+    hospital_id: uuid.UUID,
+    report_id: uuid.UUID,
+    overrides: str | None = Query(default=None, max_length=20000),
+    db: AsyncSession = Depends(get_db),
+):
+    """AE 수정 판 미리보기(쓰기 없음) — 편집 가능 필드의 원문·현재 값·후보 사례와, `overrides`(JSON 경로→값)를
+    적용했을 때의 결과와 거절 사유(금지 표현·내부 표식·새 숫자·화이트리스트 밖·숫자 불일치)를 돌려준다."""
+    requested: dict[str, Any] | None = None
+    if overrides is not None and overrides.strip():
+        try:
+            parsed = json.loads(overrides)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="수정 값(JSON)을 읽을 수 없습니다.") from exc
+        if not isinstance(parsed, dict):
+            raise HTTPException(status_code=400, detail="수정 값은 경로 → 값의 객체여야 합니다.")
+        requested = parsed
+    context = await _load_ae_edit_context(db, hospital_id, report_id)
+    candidates = await run_in_threadpool(_load_ae_candidates_sync, hospital_id, report_id)
+    return _ae_edit_preview_payload(context, requested=requested, candidates=candidates)
+
+
+@router.post("/{hospital_id}/reports/{report_id}/ae-edit")
+async def request_report_ae_edit(
+    hospital_id: uuid.UUID,
+    report_id: uuid.UUID,
+    payload: ReportAeEditRequest,
+    idempotency_key: RequiredIdempotencyKeyHeader,
+    db: AsyncSession = Depends(get_db),
+    actor: AdminUser = Depends(require_active_account),
+):
+    """AE 수정 판 — 검증을 통과한 수정 값으로 템플릿 갱신과 같은 OperationRun(`GENERATE_MONTHLY_REPORT`,
+    `template_only`)을 큐에 넣는다. 워커가 숫자 보존 판정·원장 PDF 검증을 다시 하고 PASS일 때만 새 버전을 만든다.
+    걸리면 422로 거절하고 아무것도 쓰지 않는다. 새 버전은 다시 전달해야 반영된다.
+
+    사람 계정만 받는다(`require_active_account` — 시스템 actor는 403). 같은 요청 키의 기존 실행이 있으면 최신
+    버전 검사보다 먼저 그 실행을 돌려준다 — 응답을 잃은 재요청이 새 버전이 이미 생긴 뒤 409로 떨어지지 않게."""
+    replay = await _find_ae_edit_replay(db, hospital_id, report_id, idempotency_key, payload.fields)
+    if replay is not None:
+        return replay
+    context = await _load_ae_edit_context(db, hospital_id, report_id)
+    candidates = await run_in_threadpool(_load_ae_candidates_sync, hospital_id, report_id)
+    preview = _ae_edit_preview_payload(context, requested=payload.fields, candidates=candidates)
+    if preview["problems"]:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "AE_EDIT_REJECTED", "message": "수정 값을 받을 수 없습니다.", "problems": preview["problems"]},
+        )
+    stored_fields = dict(context.stored["fields"]) if context.stored is not None else {}
+    merged = preview["merged"]
+    changes = field_changes(context.base, stored_fields, merged)
+    if not changes:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "AE_EDIT_NO_CHANGES", "message": "바뀐 내용이 없습니다. 원문과 같은 값은 수정으로 저장하지 않습니다."},
+        )
+    reason = sanitize_operator_text(payload.reason, limit=200) or _AE_EDIT_DEFAULT_REASON
+    if len(reason) < 3:
+        raise HTTPException(status_code=400, detail="새 버전을 만드는 이유를 3자 이상 입력해 주세요.")
+    year, month = context.report.period_year, context.report.period_month
+    requested_at = datetime.now(UTC).isoformat()
+    ae_edit = {
+        "report_id": str(context.report.id),
+        "fields": {path: payload.fields.get(path) for path in payload.fields},
+        "edited_by": actor.email,
+        "requested_at": requested_at,
+    }
+    audit_created = await _prepare_monthly_rebuild_audit(
+        db,
+        hospital_id=context.hospital.id,
+        idempotency_key=idempotency_key,
+        year=year,
+        month=month,
+        reason=reason,
+        template_only=True,
+        mode_detail={"mode": AE_EDIT_AUDIT_MODE, "report_id": str(context.report.id), "changes": changes},
+    )
+    task_args: list[JSONValue] = [str(context.hospital.id), year, month, True, False, True]
+    dispatch = await _enqueue_with_truthful_audit(
+        db,
+        action="generate_monthly_report",
+        hospital_id=context.hospital.id,
+        target_type="hospital",
+        target_id=context.hospital.id,
+        task=generate_monthly_report_for_hospital,
+        args=task_args,
+        queue="reports",
+        idempotency_key=idempotency_key,
+        request_payload_extra={"ae_edit": ae_edit},
+    )
+    if dispatch.replayed:
+        if audit_created:
+            await db.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail="기존 요청에는 수정 사유 기록이 없습니다. 새 요청 키로 다시 시도해 주세요.",
+            )
+        stored_request = dispatch.run.request_payload.get("ae_edit") if isinstance(dispatch.run.request_payload, dict) else None
+        if not isinstance(stored_request, dict) or stored_request.get("fields") != ae_edit["fields"]:
+            raise HTTPException(
+                status_code=409,
+                detail="같은 요청 키가 다른 수정 값에 이미 사용됐습니다. 화면을 새로고침한 뒤 다시 시도해 주세요.",
+            )
+    return _ae_edit_receipt(dispatch.run, report_id=context.report.id, changes=changes, replayed=dispatch.replayed)

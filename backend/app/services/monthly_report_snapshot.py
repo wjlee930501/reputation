@@ -78,6 +78,11 @@ class ReportRenderInputs(BaseModel):
     doctor_metric_facts: dict[str, str]
     ae_report: FrozenAeRenderInput
     measurement: FrozenMeasurementRenderInput
+    # AE 수정 판(2026-11-05): 사람이 고친 서술 문구·라벨과 시스템이 만든 pristine 뷰(`base_view`). 없으면 None.
+    # `doctor_view`는 수정을 적용한 뷰라 다른 독자는 이 키를 몰라도 된다. 상세는 `doctor_report_ae_edit`.
+    ae_overrides: dict[str, JsonValue] | None = None
+    # 일반 재생성이 숫자를 바꿔 잇지 않은 문장 수정 값 — 사람이 확인할 수 있게 남긴다.
+    ae_overrides_dropped: dict[str, JsonValue] | None = None
 
 
 class ReportSnapshot(BaseModel):

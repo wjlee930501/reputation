@@ -17,6 +17,8 @@ export type ReportRunView = {
   readonly primaryAction: 'wait' | 'review' | 'operations' | 'rebuild'
   readonly attentionLabel: string
   readonly isActive: boolean
+  /** 서버 상태가 FAILED인 작업 — 실패한 작업도 그 달의 기존 보고서 버전을 싣기 때문에 결과 판정은 이 값을 먼저 본다. */
+  readonly failed: boolean
   readonly requestedAt: string
   readonly completedAt: string | null
 }
@@ -146,6 +148,7 @@ function parseReportRun(value: unknown): ReportRunView | null {
     reportVersion,
     ...copy,
     isActive: stage === 'QUEUED' || stage === 'RUNNING',
+    failed: stringValue(value.state) === 'FAILED' || stage === 'FAILED',
     versionLabel: reportVersion === null
       ? null
       : supersedes
