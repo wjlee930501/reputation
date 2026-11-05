@@ -840,7 +840,10 @@ def test_carry_validates_the_card_names_with_the_carried_labels(monkeypatch):
     # 모르는 키워드의 라벨은 버리고, 그 라벨이 없을 때의 n으로 이름 목록을 다시 본다.
     assert invalid_carry_paths({"treatment_label[없는 키워드]": "x", AE_PATH_CARD_NAMES: ["a", "b"]}, shared) == {"treatment_label[없는 키워드]", AE_PATH_CARD_NAMES}
     # 무효한 라벨(원문에 없는 숫자)이 임시로 n을 1로 합쳐도, 그 라벨을 먼저 빼면 n=2라 이름 2개는 남는다(Codex 5-P2).
-    assert invalid_carry_paths({CHEST_LABEL: "심장초음파 2차", AE_PATH_CARD_NAMES: ["a", "b"]}, view) == {CHEST_LABEL}
+    # pristine의 심장 라벨이 '심장초음파 2차'라 흉통 라벨을 같은 값으로 바꾸면 합쳐지고(n 2→1), 그 값은 '2'가 원문에 없어 무효다(Codex 6-P3).
+    numbered = apply_ae_overrides(view, {f"treatment_label[{KW_HEART}]": "심장초음파 2차"})
+    assert derived_card_count(numbered, {CHEST_LABEL: "심장초음파 2차"}) == 1
+    assert invalid_carry_paths({CHEST_LABEL: "심장초음파 2차", AE_PATH_CARD_NAMES: ["a", "b"]}, numbered) == {CHEST_LABEL}
     # 일반 재생성 승계: 같은 pristine(n=1)으로 다시 만든 판에 분리 라벨 + 이름 2개가 그대로 이어진다.
     db = SimpleNamespace(get=lambda _model, _id: previous)
     overrides = build_ae_overrides(
