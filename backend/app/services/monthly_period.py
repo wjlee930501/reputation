@@ -46,6 +46,8 @@ class ReportBuildReason(StrEnum):
     LATE_DATA_REBUILD = "LATE_DATA_REBUILD"
     # 저장된 숫자를 그대로 두고 원장·AE PDF의 문구·디자인만 새 버전으로 다시 그린다.
     TEMPLATE_REFRESH = "TEMPLATE_REFRESH"
+    # AE 수정 판 — 템플릿 갱신과 같은 숫자 보존 경로에 사람이 고친 서술 문구·진료 항목 라벨만 얹는다.
+    AE_EDIT = "AE_EDIT"
 
 
 @dataclass(frozen=True, slots=True)
@@ -233,7 +235,7 @@ def plan_report_version(
         case ReportBuildReason.MANUAL_REBUILD:
             if latest_version is None:
                 return ReportVersionPlan(1, None, reason_code, correlation_key, True)
-        case ReportBuildReason.LATE_DATA_REBUILD | ReportBuildReason.TEMPLATE_REFRESH:
+        case ReportBuildReason.LATE_DATA_REBUILD | ReportBuildReason.TEMPLATE_REFRESH | ReportBuildReason.AE_EDIT:
             if latest_version is None:
                 raise MonthlyPeriodError(
                     "새 버전이 대체할 기존 리포트가 없습니다. 먼저 최초 리포트를 만들어 주세요."

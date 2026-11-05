@@ -15,6 +15,7 @@ import {
 import type { ReportView } from '@/lib/report-review'
 import { dialogKeyDecision } from '@/lib/report-component-behavior'
 import { reportOperationsHref } from '@/lib/operations-center'
+import { ReportAeEditPanel } from './ReportAeEditPanel'
 import { ReportEvidence } from './ReportEvidence'
 
 export type DeliveryAction =
@@ -44,6 +45,7 @@ export function ReportDialog({
   onRefresh,
   onAction,
   onCopyDeveloperInfo,
+  onAeEditRequested,
 }: {
   report: ReportView
   issue: DeliveryIssue | null
@@ -56,6 +58,8 @@ export function ReportDialog({
   onRefresh: () => void
   onAction: (action: DeliveryAction) => void
   onCopyDeveloperInfo: () => void
+  /** AE 수정 판(문구·라벨만 고친 새 버전)을 요청한 뒤 — 목록·작업 기록을 다시 읽는다. */
+  onAeEditRequested: () => void
 }) {
   const panelRef = useRef<HTMLDivElement>(null)
   const closeRef = useRef<HTMLButtonElement>(null)
@@ -151,7 +155,7 @@ export function ReportDialog({
           <div>
             <p className="text-xs font-bold text-[var(--color-revisit-primary-40)]">{report.statusLabel}</p>
             <h3 id="report-dialog-title" className="mt-1 text-lg font-bold text-[var(--color-revisit-text-title)] [word-break:keep-all]">{report.periodYear}년 {report.periodMonth}월 {report.typeLabel}</h3>
-            <p id="report-dialog-description" className="mt-1 text-sm text-[var(--color-revisit-text-helper)]">원장 전달용 파일을 열고, 전달 기록을 남기고, 이력을 확인합니다.</p>
+            <p id="report-dialog-description" className="mt-1 text-sm text-[var(--color-revisit-text-helper)]">원장 전달용 파일을 열고, 필요하면 문구·라벨을 고쳐 새 버전을 만들고, 전달 기록과 이력을 남깁니다.</p>
           </div>
           <button ref={closeRef} type="button" onClick={onClose} aria-label="보고서 닫기" className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg border border-[var(--color-revisit-coolgrey-20)]">
             <svg aria-hidden="true" viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 6l12 12M18 6L6 18" /></svg>
@@ -190,8 +194,16 @@ export function ReportDialog({
             </div>
           </section>
 
+          {/* AE 수정 판: 월간 보고서의 서술 문구·진료 항목 라벨만 고쳐 새 버전을 만든다. 숫자는 고칠 수 없고 새 버전은 다시 전달해야 한다. */}
+          {!report.isInitialReport && (
+            <section data-report-section="ae-edit" className="rounded-xl border border-[var(--color-revisit-coolgrey-20)] p-4" aria-labelledby="report-ae-edit-heading">
+              <h4 id="report-ae-edit-heading" className="text-lg font-bold text-[var(--color-revisit-text-title)]">2. 문구·라벨 고치기 (선택)</h4>
+              <ReportAeEditPanel key={report.id} hospitalId={report.hospitalId} reportId={report.id} onRequested={onAeEditRequested} />
+            </section>
+          )}
+
           <section data-report-section="delivery" className="rounded-xl border border-[var(--color-revisit-coolgrey-20)] p-4" aria-labelledby="report-delivery-heading">
-            <h4 id="report-delivery-heading" className="text-lg font-bold text-[var(--color-revisit-text-title)]">2. 전달 기록</h4>
+            <h4 id="report-delivery-heading" className="text-lg font-bold text-[var(--color-revisit-text-title)]">3. 전달 기록</h4>
             {delivered ? (
               <div className="mt-3 rounded-lg border border-[var(--color-revisit-green-50)] p-3 text-sm leading-6">
                 <strong>현재 유효한 전달 기록</strong>
@@ -210,7 +222,7 @@ export function ReportDialog({
           </section>
 
           <section data-report-section="history" className="rounded-xl border border-[var(--color-revisit-coolgrey-20)] p-4" aria-labelledby="report-history-heading">
-            <h4 id="report-history-heading" className="text-lg font-bold text-[var(--color-revisit-text-title)]">3. 전달 이력</h4>
+            <h4 id="report-history-heading" className="text-lg font-bold text-[var(--color-revisit-text-title)]">4. 전달 이력</h4>
             {report.deliveryHistory.length > 0 ? (
               <ol className="mt-3 grid gap-2">
                 {report.deliveryHistory.map((event) => <li key={event.id} className="rounded-lg bg-[var(--color-revisit-coolgrey-90)] p-3 text-sm leading-5"><strong>{deliveryEventLabel(event.type)}</strong> · {format(event.createdAt)}<br />받은 분 {event.recipient} · 전달 방법 {event.channel}{event.reason ? <><br />이유 {event.reason}</> : null}</li>)}

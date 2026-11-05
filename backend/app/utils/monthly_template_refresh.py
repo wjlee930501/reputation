@@ -22,7 +22,7 @@ import argparse
 import sys
 import time
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from io import BytesIO
@@ -39,6 +39,7 @@ from app.models.monthly_control import MonthlyReportArtifact
 from app.models.report import MonthlyReport
 from app.services.doctor_pdf_contracts import DoctorPdfValidationError
 from app.services.doctor_pdf_rendering import render_validated_doctor_pdf
+from app.services.doctor_report_ae_edit import stored_ae_overrides
 from app.services.doctor_report_artifact import build_doctor_pdf_expectation
 from app.services.doctor_report_v4 import _pct as _pct_v4
 from app.services.monthly_period import MonthlyPeriodError, require_closed_period
@@ -195,8 +196,14 @@ def _reference_fact_problems(db, report: MonthlyReport, facts: dict[str, str]) -
     )
 
 
+def _has_ae_overrides(content_summary: Mapping) -> bool:
+    """이 버전이 AE 수정 판을 품었는가(`render_inputs.ae_overrides.fields`가 비어 있지 않다)."""
+    render_inputs = report_render_inputs(content_summary)
+    return render_inputs is not None and stored_ae_overrides(render_inputs) is not None
+
+
 def _without_doctor_view(content_summary: dict) -> dict:
-    """스냅샷의 원장 뷰·뷰 사실·AE 핵심 3줄을 뺀 content_summary(v3→v4 승격 비교용). 나머지는 그대로다."""
+    """스냅샷의 원장 뷰·뷰 사실·AE 핵심 3줄·AE 수정 값을 뺀 content_summary(v3→v4 승격·AE 수정 판 비교용). 나머지는 그대로다."""
     content = dict(content_summary)
     snapshot = content.get("report_snapshot")
     if not isinstance(snapshot, dict):
@@ -205,6 +212,8 @@ def _without_doctor_view(content_summary: dict) -> dict:
     inputs = dict(snapshot.get("render_inputs") or {})
     inputs.pop("doctor_view", None)
     inputs.pop("doctor_metric_facts", None)
+    inputs.pop("ae_overrides", None)
+    inputs.pop("ae_overrides_dropped", None)
     ae_report = inputs.get("ae_report")
     if isinstance(ae_report, dict):
         inputs["ae_report"] = {key: value for key, value in ae_report.items() if key != "talking_points"}
@@ -280,8 +289,14 @@ def postcheck_hospital(db, hospital: Hospital, year: int, month: int) -> Hospita
     # v4 배포 전(v3 스냅샷) 보고서의 갱신은 원장 뷰·뷰 사실·핵심 3줄을 v4로 바꿔 저장한다 — 그 세 칸은
     # 형식이 달라 숫자 칸으로 비교할 수 없고, 승격 뷰의 숫자는 생성 단계가 저장 요약과 대조했다.
     upgraded = stored_doctor_view_is_v4(new_content) and not stored_doctor_view_is_v4(old_content)
+    # AE 수정 판: 원장 뷰의 문장·라벨 묶음(진료 항목 막대)과 수정 기록은 숫자 칸으로 비교할 수 없다 — 숫자 보존은
+    # 생성 단계(AE_EDIT_NUMBERS·AE_EDIT_FACTS)가 pristine 뷰·저장 요약과 대조했고, 아래 PDF 사실 확인이 다시 본다.
+    ae_edited = _has_ae_overrides(new_content) or _has_ae_overrides(old_content)
+    if ae_edited:
+        verdict.add("WARN", "AE_EDIT")
     if upgraded:
         verdict.add("WARN", "V3_TO_V4_UPGRADE")
+    if upgraded or ae_edited:
         old_content = _without_doctor_view(old_content)
         new_content = _without_doctor_view(new_content)
     for prefix, old, new in (
@@ -291,7 +306,8 @@ def postcheck_hospital(db, hospital: Hospital, year: int, month: int) -> Hospita
     ):
         for line in numeric_diff(old, new, prefix=prefix):
             verdict.add("DIFF", "STORED_NUMBER", line)
-    if not upgraded and number_tokens(old_points) != number_tokens(new_points):
+    # AE가 고친 핵심 3줄은 원문에 있던 숫자만 남길 수 있어(검증 규칙) 숫자가 줄 수 있다 — 늘지는 못한다.
+    if not upgraded and not ae_edited and number_tokens(old_points) != number_tokens(new_points):
         verdict.add("DIFF", "TALKING_POINT_NUMBERS")
     # 옛 버전은 검증된 산출물이 있는지만 본다. 새 PDF에는 저장된 숫자 사실이 모두 찍혀 있어야 한다
     # (옛 PDF 본문과 비교하지 않는다 — 문구만 바뀐 달이 막히던 정규식 대조를 없앴다).

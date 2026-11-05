@@ -134,9 +134,10 @@ export type ReportView = {
   effectiveEventType: string | null
 }
 
-/** 보고서 다이얼로그의 유일한 구획 순서. 내부 검수 근거는 맨 아래 접힌 칸에만 있다. */
+/** 보고서 다이얼로그의 유일한 구획 순서. AE 수정 판(문구·라벨만)은 열기 뒤·전달 기록 앞이고, 내부 검수 근거는 맨 아래 접힌 칸에만 있다. */
 export const REPORT_DIALOG_SECTION_ORDER = [
   'open',
+  'ae-edit',
   'delivery',
   'history',
   'internal',
