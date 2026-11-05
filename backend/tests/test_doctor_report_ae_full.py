@@ -357,9 +357,15 @@ def test_duplicate_titles_get_distinct_row_keys(failure_view):
     assert len(paths) == len(set(paths))
     second = f"content.rows[{rows[0].title}#2]"
     assert f"{second}.published_on" in paths
-    edited = _edit(twin, {f"{second}.published_on": "10-31", second + "x" if False else f"content.rows[{rows[0].title}]": AE_DELETE})
+    edited = _edit(twin, {f"{second}.published_on": "10-31", f"content.rows[{rows[0].title}]": AE_DELETE})
     assert edited.content.rows[0].title == rows[0].title and edited.content.rows[0].published_on == "10-31"
     assert len(edited.content.rows) == len(rows) - 1
+    # 실제 제목이 '제목#2'면 만든 접미는 '#3'으로 비킨다(Codex 2-P1-6).
+    triple = _replace(twin, content=_replace(twin.content, rows=(twin.content.rows[0], twin.content.rows[1], _replace(rows[2], title=f"{rows[0].title}#2"), *rows[3:])))
+    keys = [item.context for item in walk_ae_paths(triple) if item.kind == "content.rows.title"]
+    assert keys[:3] == [rows[0].title, f"{rows[0].title}#3", f"{rows[0].title}#2"]
+    moved = _edit(triple, {f"content.rows[{rows[0].title}#3].published_on": "10-30"})
+    assert moved.content.rows[1].published_on == "10-30" and moved.content.rows[2].published_on == rows[2].published_on
 
 
 def test_hidden_elements_are_not_required_and_card_rows_are_not_deletable(failure_view):

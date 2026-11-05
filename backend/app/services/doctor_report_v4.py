@@ -2608,12 +2608,19 @@ def _row_key(spec: AeCollection, row: Any) -> str:
 
 def _row_keys(spec: AeCollection, rows: Sequence[Any]) -> list[str]:
     """행마다 고유한 키 — 같은 키(제목·라벨)가 두 번 나오면 둘째부터 `#2`·`#3`을 붙인다(Codex 1-P1-6: 제목은 유일하지 않다)."""
-    seen: dict[str, int] = {}
+    raw = [_row_key(spec, row) for row in rows]
+    taken = set(raw)
+    used: set[str] = set()
     keys: list[str] = []
-    for row in rows:
-        base = _row_key(spec, row)
-        seen[base] = seen.get(base, 0) + 1
-        keys.append(base if seen[base] == 1 else f"{base}#{seen[base]}")
+    for base in raw:
+        key = base
+        suffix = 1
+        # 실제 제목이 '제목#2'일 수도 있다 — 만든 접미가 실제 키나 앞서 만든 키와 겹치지 않을 때까지 올린다(Codex 2-P1-6).
+        while key in used or (key != base and key in taken):
+            suffix += 1
+            key = f"{base}#{suffix}"
+        used.add(key)
+        keys.append(key)
     return keys
 
 

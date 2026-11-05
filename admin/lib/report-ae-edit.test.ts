@@ -49,6 +49,7 @@ const items = [
   item('content.rows[위내시경 전 준비].title', { section: 'p2', original: '위내시경 전 준비', value: '위내시경 전 준비', row: 'content.rows[위내시경 전 준비]', row_deleted: true, context: '위내시경 전 준비' }),
   item('content.rows[위내시경 전 준비].keyword', { section: 'p2', type: 'label', original: '일반', value: '일반', row: 'content.rows[위내시경 전 준비]', row_deleted: true, context: '위내시경 전 준비' }),
   item(AE_CARD_NAMES_PATH, { type: 'list', original: ['심장초음파', '위내시경'], value: ['심장초음파', '위내시경'], row: 'summary.cards[3]', context: '4', row_deletable: false }),
+  item('plan.rows[가상동 위내시경 가능한 병원].action', { section: 'p6', original: '원래 실행 내용', value: '옛 실행 내용', overridden: true, row: 'plan.rows[가상동 위내시경 가능한 병원]', context: '가상동 위내시경 가능한 병원' }),
 ]
 
 const payload = {
@@ -58,7 +59,7 @@ const payload = {
   editable: summary,
   current: { ...summary, key_lines: ['사람이 고친 첫 줄', '둘째 줄', summary.key_lines[2]] },
   items,
-  overrides: { 'summary.key_lines[0]': '사람이 고친 첫 줄', 'summary.notice': { deleted: true }, 'content.rows[위내시경 전 준비]': { deleted: true } },
+  overrides: { 'summary.key_lines[0]': '사람이 고친 첫 줄', 'summary.notice': { deleted: true }, 'content.rows[위내시경 전 준비]': { deleted: true }, 'plan.action[가상동 위내시경 가능한 병원]': '옛 실행 내용' },
   preview: null,
   problems: [],
   numbers_preserved: true,
@@ -105,6 +106,10 @@ test('the draft starts from the stored state and sends only what the user actual
     rows: { ...draft.rows, 'content.rows[위내시경 전 준비]': false },
   }, preview.overrides)
   assert.deepEqual(reverted, { 'summary.key_lines[0]': null, 'summary.notice': null, 'content.rows[위내시경 전 준비]': null })
+  // 옛 별칭(plan.action[K])으로 저장된 수정을 '원래대로' 돌리면 새 경로로 null을 보낸다(Codex 2-P1-1).
+  assert.equal(preview.overrides['plan.rows[가상동 위내시경 가능한 병원].action'], '옛 실행 내용')
+  const aliasReverted = buildAeEditFields(preview.items, { ...draft, values: { ...draft.values, 'plan.rows[가상동 위내시경 가능한 병원].action': '원래 실행 내용' } }, preview.overrides)
+  assert.deepEqual(aliasReverted, { 'plan.rows[가상동 위내시경 가능한 병원].action': null })
   // 지우기·숫자·목록·행 지우기·사례 교체.
   const edited = buildAeEditFields(preview.items, {
     ...draft,
@@ -153,7 +158,7 @@ test('numbers differ from the measurement only when the value states another num
 test('items group by section and row in report order', () => {
   const preview = parseAeEditPreview(payload)!
   const sections = groupAeEditItems(preview.items)
-  assert.deepEqual(sections.map((section) => section.section), ['p1', 'p3', 'appendix', 'p2', 'p1'])
+  assert.deepEqual(sections.map((section) => section.section), ['p1', 'p3', 'appendix', 'p2', 'p1', 'p6'])
   const p1 = sections[0]
   assert.equal(p1.groups[0].key, 'summary.title')
   assert.equal(p1.groups[1].row, 'summary.key_lines[0]')

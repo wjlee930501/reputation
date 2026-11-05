@@ -1790,7 +1790,8 @@ def _ae_edit_preview_payload(
 ) -> dict[str, Any]:
     """쓰기 없이 수정 값을 pristine 뷰에 적용한 결과와 거절 사유. 요청 값이 없으면 저장된 수정 값 그대로를 미리본다."""
     base = context.base
-    stored_fields = dict(context.stored["fields"]) if context.stored is not None else {}
+    # 저장된 수정 값은 새 경로로 정규화해 돌려준다 — 화면의 '원래대로'가 옛 별칭(`plan.action[K]`)을 못 찾지 않게(Codex 2-P1-1).
+    stored_fields = merge_ae_fields(dict(context.stored["fields"]) if context.stored is not None else {}, {})
     merged = merge_ae_fields(stored_fields, requested or {})
     problems = validate_ae_fields(merged, base, case_candidates=candidates)
     preview = None

@@ -181,6 +181,19 @@ function parseProblems(value: unknown): AeEditProblem[] {
   })
 }
 
+/** 종전 별칭 `plan.action[K]`를 새 경로 `plan.rows[K].action`으로 — 서버 `doctor_report_v4.canonical_ae_path`와 같다. */
+export function canonicalAePath(path: string): string {
+  const match = /^plan\.action\[([\s\S]+)\]$/.exec(path)
+  return match ? `plan.rows[${match[1]}].action` : path
+}
+
+function canonicalOverrides(value: unknown): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  if (!isRecord(value)) return out
+  for (const [path, stored] of Object.entries(value)) out[canonicalAePath(path)] = stored
+  return out
+}
+
 export function parseAeEditPreview(payload: unknown): AeEditPreview | null {
   if (!isRecord(payload)) return null
   const original = parseSummary(payload.editable)
@@ -201,7 +214,7 @@ export function parseAeEditPreview(payload: unknown): AeEditPreview | null {
     original,
     current,
     preview: parseSummary(payload.preview),
-    overrides: isRecord(payload.overrides) ? payload.overrides : {},
+    overrides: canonicalOverrides(payload.overrides),
     problems: parseProblems(payload.problems),
     numbersPreserved: payload.numbers_preserved === true,
     factChanges,
