@@ -4,10 +4,13 @@
 
 main `9f4a95cd`(PR #292 — AE가 원장 v4 보고서의 모든 글자·숫자를 고치거나 지운다, 숫자 보존 게이트 제거·'측정값과 다름' 표시, Admin 패널 UX와 CSP
 `frame-src 'self' blob:`)를 04:48~04:58 KST에 Backend·Admin에 배포했다(그날 첫 릴리스, 마이그레이션 없음). **현재 리비전은 api `00281-5mp`, worker `00271-dt8`,
-beat `00266-2nn`, admin `00118-xss`**, Site `00149-6ck`·DB head 그대로. readiness 성공, release `9f4a95cd`, ERROR 0, Admin 200. 장편한 10월 최신 판의 쓰기 없는
+beat `00266-2nn`, admin `00118-xss`**(아래 2차로 `00119-6ng`), Site `00149-6ck`·DB head 그대로. readiness 성공, release `9f4a95cd`, ERROR 0, Admin 200. 장편한 10월 최신 판의 쓰기 없는
 미리보기에서 부록 B·D 전체·'측정 방식이 바뀌어' 안내·'실패 61회'·범례 '측정 실패' 삭제와 숫자 변경이 문제 0건으로 반영되고 금지 표현·내부 표식은 거절된다.
 POST 미리보기·PDF 미리보기·저장은 사람 계정 서명이 필요해 로그인한 Admin에서 확인할 일로 남았다(AE 실제 저장은 운영 미실행). 롤백 좌표
 `.omo/rollback-aefull/{backend,admin}`. 상세는 [배포 기록](docs/releases/2026-11-06-ae-edit-full-production.md).
+이어 main `54c56301`(PR #294 보고서 고치기 화면 UX — 고친 채 닫기 확인, 한 줄 버튼 줄, 목록 버전 배지·이전 버전 접힘, 위치를 붙인 항목 이름, 찾기·묶음 지우기·첫 문제로 이동)을
+08:12~08:20 KST에 Admin에만 배포했다(두 번째 릴리스, `--override-reason`). **현재 Admin 리비전은 `00119-6ng`**, 롤백 `.omo/rollback-ux2/admin`. 운영 Admin에서
+저장 없이 확인했다(버전 배지·찾기·지우기·검증 통과·Esc/X 닫기 확인).
 
 ## 이전 운영 배포 — 2026-11-05 오후 AE 수정 판·경쟁 병원 반영(3·4차)
 
