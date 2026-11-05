@@ -1,43 +1,53 @@
 'use client'
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ADMIN_COPY } from '@/lib/admin-copy'
 import { ApiError, fetchAPI } from '@/lib/api'
+import { buildAdminCsrfHeaders } from '@/lib/csrf'
 import { getOrCreatePendingActionKey } from '@/lib/pending-action-key'
 import {
-  AE_CARD_NAMES_PATH,
+  AE_DELETE,
   aeEditFingerprint,
-  aeEditRunOutcome,
   aeEditIdempotencyKey,
+  aeEditRunOutcome,
   buildAeEditFields,
-  caseInsightPath,
   caseRecordPath,
-  draftFromSummary,
+  displayValue,
+  draftFromItems,
+  groupAeEditItems,
   hasAeEditChanges,
-  keyLinePath,
+  isDeleteMarker,
+  numbersDiffer,
   parseAeEditPreview,
-  planActionPath,
   problemsByPath,
   problemsFromRejection,
   recountedCard,
-  treatmentLabelPath,
   type AeEditDraft,
+  type AeEditGroup,
+  type AeEditItem,
   type AeEditPreview,
   type AeEditProblem,
   type AeEditSummary,
 } from '@/lib/report-ae-edit'
 import { parseReportRuns } from '@/lib/report-run'
 
-type Validation = { readonly fingerprint: string; readonly problems: readonly AeEditProblem[]; readonly summary: AeEditSummary | null }
+type Validation = { readonly fingerprint: string; readonly problems: readonly AeEditProblem[]; readonly summary: AeEditSummary | null; readonly numbersPreserved: boolean }
 
 const INPUT = 'mt-1 w-full rounded-lg border border-[var(--color-revisit-coolgrey-20)] bg-white p-2 text-sm font-normal'
 const BUTTON = 'min-h-11 rounded-lg px-4 text-sm font-bold disabled:opacity-40'
+const SMALL_BUTTON = 'text-xs font-bold text-[var(--color-revisit-primary-40)] disabled:opacity-40'
+const STATE_OPTIONS = [
+  ['mentioned', ADMIN_COPY.aeEditStateMentioned],
+  ['unmentioned', ADMIN_COPY.aeEditStateUnmentioned],
+  ['failed', ADMIN_COPY.aeEditStateFailed],
+  ['unmeasured', ADMIN_COPY.aeEditStateUnmeasured],
+] as const
 
 /**
- * 보고서 AE 수정 판 — 서술 문구·진료 항목 라벨·대표 사례 선택만 고쳐 새 버전을 만든다.
+ * 보고서 AE 수정 판 — 원장 PDF에 찍히는 모든 글자를 보고서 순서(01~06·부록)대로 고치거나 지우고, 숫자도 바꿔 새 버전을 만든다.
  *
- * 숫자는 입력란이 없다. 검증(금지 표현·내부 표식·새 숫자·숫자 보존)은 서버가 하고, 이 화면은
- * 저장 전에 같은 검증을 미리보기로 받아 칸 옆에 보여 준다. 새 버전은 다시 전달해야 반영된다.
+ * 항목마다 '지우기'와 '원래대로'가 있고, 저장 전에 서버 검증(금지 표현·내부 표식·빈 절)과 실제 PDF 미리보기를 받는다.
+ * 측정값과 다른 숫자는 '측정값과 다름'으로 표시한다. 새 버전은 다시 전달해야 반영된다.
  */
 export function ReportAeEditPanel({
   hospitalId,
@@ -56,6 +66,7 @@ export function ReportAeEditPanel({
   const [reason, setReason] = useState('')
   const [validation, setValidation] = useState<Validation | null>(null)
   const [busy, setBusy] = useState(false)
+  const [pdfBusy, setPdfBusy] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [runId, setRunId] = useState<string | null>(null)
@@ -69,7 +80,7 @@ export function ReportAeEditPanel({
       const parsed = parseAeEditPreview(await fetchAPI<unknown>(`${base}/preview`))
       if (!parsed) throw new Error('preview shape')
       setPreview(parsed)
-      setDraft(draftFromSummary(parsed.current))
+      setDraft(draftFromItems(parsed.items))
       setValidation(null)
     } catch (caught) {
       const detail = caught instanceof ApiError && caught.status === 409 && typeof caught.detail === 'object' && caught.detail && 'message' in caught.detail
@@ -98,6 +109,9 @@ export function ReportAeEditPanel({
     return () => window.clearInterval(timer)
   }, [hospitalId, onRequested, preview?.reportVersion, runId])
 
+  const sections = useMemo(() => (preview ? groupAeEditItems(preview.items) : []), [preview])
+  const knownPaths = useMemo(() => new Set(preview?.items.map((item) => item.path) ?? []), [preview])
+
   if (!open) {
     return (
       <button type="button" onClick={() => setOpen(true)} className={`${BUTTON} w-full border border-[var(--color-revisit-coolgrey-20)] bg-white text-[var(--color-revisit-text-title)] sm:w-auto`}>
@@ -106,16 +120,26 @@ export function ReportAeEditPanel({
     )
   }
 
-  const fields = preview && draft ? buildAeEditFields(preview.original, preview.current, draft, preview.overrides) : {}
+  const fields = preview && draft ? buildAeEditFields(preview.items, draft, preview.overrides) : {}
   const fingerprint = aeEditFingerprint(reportId, fields)
   const validated = validation?.fingerprint === fingerprint ? validation : null
-  const problems = validated ? problemsByPath(validated.problems) : {}
+  const problems = validated ? problemsByPath(validated.problems, knownPaths) : {}
   const changed = hasAeEditChanges(fields)
   const recounted = preview && validated ? recountedCard(preview.current, validated.summary) : null
   const canSubmit = changed && validated !== null && validated.problems.length === 0 && !busy && reason.trim().length >= 3
 
-  function update(patch: Partial<AeEditDraft>) {
-    setDraft((current) => (current ? { ...current, ...patch } : current))
+  function setValue(path: string, value: unknown) {
+    setDraft((current) => (current ? { ...current, values: { ...current.values, [path]: value } } : current))
+    setMessage(null)
+  }
+
+  function setRow(row: string, deleted: boolean) {
+    setDraft((current) => (current ? { ...current, rows: { ...current.rows, [row]: deleted } } : current))
+    setMessage(null)
+  }
+
+  function setCase(slot: 'found' | 'missing', choice: string) {
+    setDraft((current) => (current ? { ...current, caseRecords: { ...current.caseRecords, [slot]: choice } } : current))
     setMessage(null)
   }
 
@@ -124,14 +148,43 @@ export function ReportAeEditPanel({
     setBusy(true)
     setError(null)
     try {
-      const parsed = parseAeEditPreview(await fetchAPI<unknown>(`${base}/preview?overrides=${encodeURIComponent(JSON.stringify(fields))}`))
+      const parsed = parseAeEditPreview(await fetchAPI<unknown>(`${base}/preview`, { method: 'POST', body: JSON.stringify({ fields }) }))
       if (!parsed) throw new Error('preview shape')
-      setValidation({ fingerprint, problems: parsed.problems, summary: parsed.preview })
-      setMessage(parsed.problems.length === 0 ? ADMIN_COPY.aeEditPreviewOk : ADMIN_COPY.aeEditPreviewFailed)
+      setValidation({ fingerprint, problems: parsed.problems, summary: parsed.preview, numbersPreserved: parsed.numbersPreserved })
+      setMessage(parsed.problems.length > 0 ? ADMIN_COPY.aeEditPreviewFailed : parsed.numbersPreserved ? ADMIN_COPY.aeEditPreviewOk : ADMIN_COPY.aeEditPreviewOkNumbers)
     } catch (caught) {
       setError(caught instanceof ApiError && caught.status === 409 ? ADMIN_COPY.aeEditLoadFailed : ADMIN_COPY.aeEditRequestFailed)
     } finally {
       setBusy(false)
+    }
+  }
+
+  async function previewPdf() {
+    if (!preview || pdfBusy) return
+    setPdfBusy(true)
+    setError(null)
+    try {
+      const response = await fetch(`/api${base}/preview-pdf`, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json', ...buildAdminCsrfHeaders('POST') },
+        body: JSON.stringify({ fields }),
+      })
+      if (!response.ok) {
+        let detail: unknown = null
+        try { detail = (await response.json()).detail } catch { detail = null }
+        const rejected = problemsFromRejection(detail)
+        setValidation({ fingerprint, problems: rejected.length > 0 ? rejected : [{ path: '', code: 'PDF_PREVIEW_FAILED', message: ADMIN_COPY.aeEditPreviewPdfFailed }], summary: null, numbersPreserved: true })
+        setMessage(ADMIN_COPY.aeEditPreviewPdfFailed)
+        return
+      }
+      const url = URL.createObjectURL(await response.blob())
+      window.open(url, '_blank', 'noopener')
+      window.setTimeout(() => URL.revokeObjectURL(url), 60_000)
+    } catch {
+      setError(ADMIN_COPY.aeEditRequestFailed)
+    } finally {
+      setPdfBusy(false)
     }
   }
 
@@ -154,7 +207,7 @@ export function ReportAeEditPanel({
     } catch (caught) {
       if (caught instanceof ApiError && caught.status === 422) {
         const rejected = problemsFromRejection(caught.detail)
-        setValidation({ fingerprint, problems: rejected.length > 0 ? rejected : [{ path: '', code: 'REJECTED', message: caught.message }], summary: null })
+        setValidation({ fingerprint, problems: rejected.length > 0 ? rejected : [{ path: '', code: 'REJECTED', message: caught.message }], summary: null, numbersPreserved: true })
         setMessage(rejected.length > 0 ? ADMIN_COPY.aeEditPreviewFailed : caught.message)
       } else setError(ADMIN_COPY.aeEditRequestFailed)
     } finally {
@@ -182,82 +235,59 @@ export function ReportAeEditPanel({
             </p>
           )}
 
-          <fieldset className="space-y-2">
-            <legend className="text-sm font-bold text-[var(--color-revisit-text-title)]">{ADMIN_COPY.aeEditKeyLines}</legend>
-            {draft.keyLines.slice(0, 3).map((line, index) => (
-              <Field key={index} id={`ae-key-line-${index}`} label={['잘된 점', '보완할 점', '다음 달 중점'][index] ?? `${index + 1}번째 줄`} value={line} original={preview.original.keyLines[index] ?? ''} problems={problems[keyLinePath(index)]} onChange={(value) => update({ keyLines: draft.keyLines.map((item, i) => (i === index ? value : item)) })} />
-            ))}
-          </fieldset>
-
-          <fieldset className="space-y-2">
-            <legend className="text-sm font-bold text-[var(--color-revisit-text-title)]">{ADMIN_COPY.aeEditCardNames} <span className="font-normal text-[var(--color-revisit-text-caption)]">· {preview.original.cardValue}{preview.original.cardNamesTail ? ` · ${preview.original.cardNamesTail}` : ''}</span></legend>
-            <Field id="ae-card-names" label="이름 목록(쉼표로 구분)" value={draft.cardNames.join(', ')} original={preview.original.cardNames.join(', ')} problems={problems[AE_CARD_NAMES_PATH]} onChange={(value) => update({ cardNames: value.split(',').map((item) => item.trim()) })} />
-            {recounted && (
-              <p className="text-xs leading-5 text-[var(--color-revisit-text-caption)] [word-break:keep-all]" role="status" data-testid="ae-card-recounted">
-                {ADMIN_COPY.aeEditCardRecounted} · {recounted.value} · {recounted.names.join(', ')}{recounted.tail ? ` · ${recounted.tail}` : ''}
-              </p>
-            )}
-          </fieldset>
-
-          <fieldset className="space-y-3">
-            <legend className="text-sm font-bold text-[var(--color-revisit-text-title)]">{ADMIN_COPY.aeEditCases}</legend>
-            {(['found', 'missing'] as const).map((slot) => {
-              const current = preview.current.cases[slot]
-              const original = preview.original.cases[slot]
-              const candidates = preview.candidates[slot]
-              if (!current && candidates.length === 0) return null
-              return (
-                <div key={slot} className="rounded-lg border border-[var(--color-revisit-coolgrey-20)] p-3">
-                  <p className="text-sm font-semibold">{current?.label ?? (slot === 'found' ? '노출 사례' : '미노출 사례')}</p>
-                  {current && <p className="mt-1 text-xs leading-5 text-[var(--color-revisit-text-helper)] [word-break:keep-all]">{current.keyword} · {current.platform} · {current.measuredOn}<br />{current.excerpt}</p>}
-                  {candidates.length > 0 && (
-                    <label className="mt-2 block text-sm font-semibold">{ADMIN_COPY.aeEditCasePick}
-                      <select value={draft.caseRecords[slot]} onChange={(event) => update({ caseRecords: { ...draft.caseRecords, [slot]: event.target.value } })} className={INPUT}>
-                        <option value="keep">{ADMIN_COPY.aeEditCaseKeep}</option>
-                        {caseRecordPath(slot) in preview.overrides && <option value="revert">{ADMIN_COPY.aeEditCaseRevert}</option>}
-                        {candidates.map((candidate) => <option key={candidate.recordId} value={candidate.recordId}>{candidate.keyword} · {candidate.platform} · {candidate.measuredOn}</option>)}
-                      </select>
-                      {problems[caseRecordPath(slot)]?.map((text) => <span key={text} className="mt-1 block text-xs text-[var(--color-revisit-red-50)]" role="alert">{text}</span>)}
-                    </label>
-                  )}
-                  {original && draft.caseInsights[slot] !== null && (
-                    <Field id={`ae-case-insight-${slot}`} label={ADMIN_COPY.aeEditCaseInsight} value={draft.caseInsights[slot] ?? ''} original={original.insight} problems={problems[caseInsightPath(slot)]} onChange={(value) => update({ caseInsights: { ...draft.caseInsights, [slot]: value } })} />
-                  )}
-                </div>
-              )
-            })}
-          </fieldset>
-
-          {preview.original.planRows.length > 0 && (
-            <fieldset className="space-y-2">
-              <legend className="text-sm font-bold text-[var(--color-revisit-text-title)]">{ADMIN_COPY.aeEditPlanRows}</legend>
-              {preview.original.planRows.map((row) => (
-                <Field key={row.keyword} id={`ae-plan-${row.priority}`} label={`${row.priority}. ${draft.treatmentLabels[row.keyword] ?? row.treatment} · ${row.rateLabel} · ${row.keyword}${row.continued ? ' (부록 이어짐)' : ''}`} value={draft.planActions[row.keyword] ?? row.action} original={row.action} problems={problems[planActionPath(row.keyword)]} onChange={(value) => update({ planActions: { ...draft.planActions, [row.keyword]: value } })} />
-              ))}
-            </fieldset>
-          )}
-
-          {preview.original.keywordLabels.length > 0 && (
-            <fieldset className="space-y-2">
-              <legend className="text-sm font-bold text-[var(--color-revisit-text-title)]">{ADMIN_COPY.aeEditLabels}</legend>
-              <p className="text-xs leading-5 text-[var(--color-revisit-text-helper)] [word-break:keep-all]">{ADMIN_COPY.aeEditLabelHint}</p>
-              {preview.original.keywordLabels.map((row) => (
-                <Field key={row.keyword} id={`ae-label-${encodeURIComponent(row.keyword)}`} label={`${row.keyword} · ${row.total}`} value={draft.treatmentLabels[row.keyword] ?? row.treatment} original={row.treatment} problems={problems[treatmentLabelPath(row.keyword)]} onChange={(value) => update({ treatmentLabels: { ...draft.treatmentLabels, [row.keyword]: value } })} single />
-              ))}
-            </fieldset>
-          )}
+          {sections.map((section) => (
+            <details key={section.section} open={section.section === 'p1'} className="rounded-lg border border-[var(--color-revisit-coolgrey-20)] p-3">
+              <summary className="cursor-pointer text-sm font-bold text-[var(--color-revisit-text-title)]">{ADMIN_COPY.aeEditSections[section.section] ?? section.section}</summary>
+              <div className="mt-2 space-y-3">
+                {section.section === 'p5' && (
+                  <fieldset className="space-y-3">
+                    <legend className="text-sm font-bold text-[var(--color-revisit-text-title)]">{ADMIN_COPY.aeEditCases}</legend>
+                    {(['found', 'missing'] as const).map((slot) => {
+                      const current = preview.current.cases[slot]
+                      const candidates = preview.candidates[slot]
+                      if (!current && candidates.length === 0) return null
+                      return (
+                        <div key={slot} className="rounded-lg border border-[var(--color-revisit-coolgrey-20)] p-3">
+                          <p className="text-sm font-semibold">{current?.label ?? (slot === 'found' ? '노출 사례' : '미노출 사례')}</p>
+                          {current && <p className="mt-1 text-xs leading-5 text-[var(--color-revisit-text-helper)] [word-break:keep-all]">{current.keyword} · {current.platform} · {current.measuredOn}</p>}
+                          {candidates.length > 0 && (
+                            <label className="mt-2 block text-sm font-semibold">{ADMIN_COPY.aeEditCasePick}
+                              <select value={draft.caseRecords[slot]} onChange={(event) => setCase(slot, event.target.value)} className={INPUT}>
+                                <option value="keep">{ADMIN_COPY.aeEditCaseKeep}</option>
+                                {caseRecordPath(slot) in preview.overrides && <option value="revert">{ADMIN_COPY.aeEditCaseRevert}</option>}
+                                {candidates.map((candidate) => <option key={candidate.recordId} value={candidate.recordId}>{candidate.keyword} · {candidate.platform} · {candidate.measuredOn}</option>)}
+                              </select>
+                              {problems[caseRecordPath(slot)]?.map((text) => <span key={text} className="mt-1 block text-xs text-[var(--color-revisit-red-50)]" role="alert">{text}</span>)}
+                            </label>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </fieldset>
+                )}
+                {section.section === 'appendix' && <p className="text-xs leading-5 text-[var(--color-revisit-text-helper)] [word-break:keep-all]">{ADMIN_COPY.aeEditLabelHint}</p>}
+                {section.groups.map((group) => (
+                  <GroupBlock key={group.key} group={group} draft={draft} problems={problems} recounted={recounted} onValue={setValue} onRow={setRow} />
+                ))}
+              </div>
+            </details>
+          ))}
 
           <label className="block text-sm font-semibold">{ADMIN_COPY.aeEditReason}
-            <input value={reason} onChange={(event) => setReason(event.target.value)} maxLength={200} placeholder="예: 진료 항목 라벨 정정" className={INPUT} />
+            <input value={reason} onChange={(event) => setReason(event.target.value)} maxLength={200} placeholder="예: 측정 실패 표시 정리" className={INPUT} />
           </label>
 
           {problems['']?.map((text) => <p key={text} className="text-sm text-[var(--color-revisit-red-50)]" role="alert">{text}</p>)}
+          {validated && validated.problems.filter((problem) => problem.path && !knownPaths.has(problem.path) && !(problem.path in problems)).map((problem) => (
+            <p key={`${problem.path}:${problem.message}`} className="text-sm text-[var(--color-revisit-red-50)]" role="alert">{problem.path}: {problem.message}</p>
+          ))}
           {error && <p className="text-sm text-[var(--color-revisit-red-50)]" role="alert">{error}</p>}
           {message && <p className="text-sm text-[var(--color-revisit-text-helper)]" role="status">{message}</p>}
           {runState === 'done' && <p className="text-sm text-[var(--color-revisit-green-50)]" role="status">{ADMIN_COPY.aeEditRunDone}</p>}
           {runState === 'failed' && <p className="text-sm text-[var(--color-revisit-red-50)]" role="alert">{ADMIN_COPY.aeEditRunFailed}</p>}
           <div className="flex flex-col gap-2 sm:flex-row">
             <button type="button" onClick={() => void validate()} disabled={busy || !changed} className={`${BUTTON} border border-[var(--color-revisit-coolgrey-20)] bg-white text-[var(--color-revisit-text-title)]`}>{changed ? ADMIN_COPY.aeEditPreview : ADMIN_COPY.aeEditNoChanges}</button>
+            <button type="button" onClick={() => void previewPdf()} disabled={pdfBusy || busy} className={`${BUTTON} border border-[var(--color-revisit-coolgrey-20)] bg-white text-[var(--color-revisit-text-title)]`}>{pdfBusy ? ADMIN_COPY.aeEditPreviewPdfBusy : ADMIN_COPY.aeEditPreviewPdf}</button>
             <button type="button" onClick={() => void submit()} disabled={!canSubmit} className={`${BUTTON} bg-[var(--color-revisit-primary-40)] text-white`}>{busy ? ADMIN_COPY.aeEditSubmitting : ADMIN_COPY.aeEditSubmit}</button>
             <button type="button" onClick={() => { setOpen(false); setValidation(null) }} className={`${BUTTON} border border-[var(--color-revisit-coolgrey-20)] bg-white text-[var(--color-revisit-text-helper)]`}>닫기</button>
           </div>
@@ -267,19 +297,76 @@ export function ReportAeEditPanel({
   )
 }
 
-/** 입력란 하나. 라벨은 `htmlFor`로 입력란에만 묶이고 '원문으로' 버튼은 라벨 밖에 둔다(검토 1-P2-6). */
-function Field({ id, label, value, original, problems, onChange, single = false }: { id: string; label: string; value: string; original: string; problems?: readonly string[]; onChange: (value: string) => void; single?: boolean }) {
-  const changed = value.trim() !== original
+/** 행 묶음(표의 한 행·카드 하나·사례 하나·검정 면 하나) 또는 항목 하나. 행이면 '행 지우기 / 행 원래대로'가 있다. */
+function GroupBlock({ group, draft, problems, recounted, onValue, onRow }: {
+  group: AeEditGroup
+  draft: AeEditDraft
+  problems: Readonly<Record<string, string[]>>
+  recounted: { readonly value: string; readonly names: readonly string[]; readonly tail: string | null } | null
+  onValue: (path: string, value: unknown) => void
+  onRow: (row: string, deleted: boolean) => void
+}) {
+  const rowDeleted = group.row !== null && draft.rows[group.row] === true
+  const isRow = group.row !== null && group.items.length > 1
   return (
-    <div className="text-sm font-semibold [word-break:keep-all]">
+    <div className={`rounded-lg border p-2 ${rowDeleted ? 'border-dashed border-[var(--color-revisit-red-50)] opacity-70' : 'border-[var(--color-revisit-coolgrey-20)]'}`} data-ae-group={group.key}>
+      {isRow && (
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <p className="text-xs font-bold text-[var(--color-revisit-text-caption)] [word-break:keep-all]">{group.context}{rowDeleted ? ` · ${ADMIN_COPY.aeEditRowDeleted}` : ''}</p>
+          <button type="button" onClick={() => onRow(group.row as string, !rowDeleted)} className={SMALL_BUTTON}>{rowDeleted ? ADMIN_COPY.aeEditRestoreRow : ADMIN_COPY.aeEditDeleteRow}</button>
+        </div>
+      )}
+      {problems[group.row ?? '']?.map((text) => group.row && <span key={text} className="mt-1 block text-xs text-[var(--color-revisit-red-50)]" role="alert">{text}</span>)}
+      {group.items.map((item) => (
+        <ItemField key={item.path} item={item} value={draft.values[item.path]} problems={problems[item.path]} recounted={item.path === 'summary.cards[3].names' ? recounted : null} onChange={(value) => onValue(item.path, value)} />
+      ))}
+    </div>
+  )
+}
+
+/** 입력란 하나 — 종류에 따라 글자·수·상태·목록. '지우기'는 `AE_DELETE`, '원래대로'는 원문 값으로 되돌린다. */
+function ItemField({ item, value, problems, recounted, onChange }: {
+  item: AeEditItem
+  value: unknown
+  problems?: readonly string[]
+  recounted: { readonly value: string; readonly names: readonly string[]; readonly tail: string | null } | null
+  onChange: (value: unknown) => void
+}) {
+  const deleted = isDeleteMarker(value)
+  const shown = displayValue(item, value)
+  const original = displayValue(item, item.original)
+  const changed = deleted || shown !== original
+  const differs = !deleted && numbersDiffer(item, value)
+  const id = `ae-${encodeURIComponent(item.path)}`
+  const label = ADMIN_COPY.aeEditKinds[item.kind] ?? item.kind
+  const multiline = item.type === 'text'
+  return (
+    <div className="mt-2 text-sm font-semibold [word-break:keep-all]">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <label htmlFor={id}>{label}</label>
-        {changed && <button type="button" onClick={() => onChange(original)} className="text-xs font-bold text-[var(--color-revisit-primary-40)]">{ADMIN_COPY.aeEditRevert}</button>}
+        <label htmlFor={id}>{label}{item.context && !item.row ? <span className="font-normal text-[var(--color-revisit-text-caption)]"> · {item.context}</span> : null}
+          {deleted && <span className="ml-2 rounded bg-[var(--color-revisit-coolgrey-90)] px-1 text-xs">{ADMIN_COPY.aeEditDeleted}</span>}
+          {differs && <span className="ml-2 rounded bg-[var(--color-revisit-red-50)] px-1 text-xs text-white" data-testid="ae-numbers-differ">{ADMIN_COPY.aeEditNumbersDiffer}</span>}
+        </label>
+        <span className="flex gap-3">
+          {item.deletable && !deleted && <button type="button" onClick={() => onChange(AE_DELETE)} className={SMALL_BUTTON}>{ADMIN_COPY.aeEditDelete}</button>}
+          {changed && <button type="button" onClick={() => onChange(item.original)} className={SMALL_BUTTON}>{ADMIN_COPY.aeEditRevert}</button>}
+        </span>
       </div>
-      {single
-        ? <input id={id} value={value} onChange={(event) => onChange(event.target.value)} maxLength={40} className={INPUT} />
-        : <textarea id={id} value={value} onChange={(event) => onChange(event.target.value)} maxLength={200} rows={2} className={INPUT} />}
-      {changed && <span className="mt-1 block text-xs font-normal text-[var(--color-revisit-text-caption)]">원문: {original}</span>}
+      {deleted ? null : item.type === 'state' ? (
+        <select id={id} value={shown} onChange={(event) => onChange(event.target.value)} className={INPUT}>
+          {STATE_OPTIONS.map(([state, text]) => <option key={state} value={state}>{text}</option>)}
+        </select>
+      ) : multiline ? (
+        <textarea id={id} value={shown} onChange={(event) => onChange(event.target.value)} maxLength={400} rows={2} className={INPUT} />
+      ) : (
+        <input id={id} value={shown} onChange={(event) => onChange(event.target.value)} maxLength={item.type === 'label' ? 60 : 200} inputMode={item.type === 'label' || item.type === 'list' ? 'text' : 'decimal'} className={INPUT} />
+      )}
+      {recounted && (
+        <p className="mt-1 text-xs font-normal leading-5 text-[var(--color-revisit-text-caption)]" role="status" data-testid="ae-card-recounted">
+          {ADMIN_COPY.aeEditCardRecounted} · {recounted.value} · {recounted.names.join(', ')}{recounted.tail ? ` · ${recounted.tail}` : ''}
+        </p>
+      )}
+      {changed && <span className="mt-1 block text-xs font-normal text-[var(--color-revisit-text-caption)]">{ADMIN_COPY.aeEditOriginal}: {original || '—'}</span>}
       {problems?.map((text) => <span key={text} className="mt-1 block text-xs font-normal text-[var(--color-revisit-red-50)]" role="alert">{text}</span>)}
     </div>
   )

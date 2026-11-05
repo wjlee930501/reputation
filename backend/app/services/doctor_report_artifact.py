@@ -26,6 +26,14 @@ logger = logging.getLogger(__name__)
 _CAVEAT = "이 결과는 진료의 질을 평가하거나 환자 수 증가를 보장하지 않습니다."
 
 
+def _caveat_line(lines) -> str:
+    """부록 D 둘째 줄('약속하지 않음')을 요구하되, 지워졌으면 남은 첫 줄, 다 지워졌으면 빈 문구."""
+    kept = [line for line in lines if line]
+    if len(lines) > 1 and lines[1]:
+        return lines[1]
+    return kept[0] if kept else ""
+
+
 def build_doctor_pdf_expectation(
     view: DoctorReportView | DoctorReportV4, public_url: str
 ) -> DoctorPdfExpectation:
@@ -33,8 +41,9 @@ def build_doctor_pdf_expectation(
     if isinstance(view, DoctorReportV4):
         return DoctorPdfExpectation(
             hospital_name=view.hospital_name,
-            coverage_text=view.appendix.method_lines[0],
-            caveat_text=view.appendix.caveat_lines[1],
+            # AE가 부록 B·D를 지울 수 있다(2026-11-05) — 남은 줄만 요구하고, 없으면 빈 문구(언제나 통과)다.
+            coverage_text=next((line for line in view.appendix.method_lines if line), ""),
+            caveat_text=_caveat_line(view.appendix.caveat_lines),
             public_url=public_url,
             appendix_expected=True,
             template_version=TEMPLATE_VERSION,

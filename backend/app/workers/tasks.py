@@ -175,14 +175,16 @@ from app.services.content_yield import compute_content_yield
 from app.services.doctor_pdf_contracts import DoctorReportView, DoctorV0Baseline
 from app.services.doctor_report_ae_edit import (
     AE_EDIT_DROP_REASON_NUMBERS_CHANGED,
-    ae_edit_fact_problems,
     base_view_of,
     build_ae_overrides,
     carry_ae_fields,
+    empty_section_problems,
+    fact_changes,
     invalid_carry_paths,
     legacy_card_corrected,
     merge_ae_fields,
     normalize_ae_fields,
+    number_changes,
     numbers_changed_between,
     stored_ae_overrides,
     validate_ae_fields,
@@ -13227,7 +13229,8 @@ def _carry_ae_overrides(
         kept = normalize_ae_fields(kept, doctor_view, case_candidates=candidates)
     if kept:
         edited = apply_ae_overrides(doctor_view, kept, case_candidates=candidates)
-        if ae_edit_fact_problems(doctor_view, edited):
+        # 다 지운 절(빈 쪽)이 생기면 그 버전은 PDF 검증에 막힌다 — 이어진 값 전부를 버리고 pristine으로 간다.
+        if empty_section_problems(edited):
             dropped.update(kept)
             kept = {}
         else:
@@ -13241,6 +13244,7 @@ def _carry_ae_overrides(
             previous=stored,
             changed_paths=[],
             report_version=None,
+            fact_changes=fact_changes(doctor_view, applied),
         )
         if kept
         else None
@@ -13311,11 +13315,10 @@ def _apply_ae_edit_to_plan(
     """템플릿 갱신·AE 수정 판: 저장된 수정 값(있으면)과 이번 요청의 수정 값을 pristine 뷰에 다시 적용한다.
 
     돌려주는 문제는 (종류, 코드, 설명)이고 호출부가 verdict에 넣는다. 수정 값이 하나도 없으면 뷰를 그대로 돌려준다.
-    적용 뒤 숫자 사실은 pristine 뷰와 같아야 하고(`AE_EDIT_NUMBERS`), 저장 요약에서 다시 만든 사실과도
-    같아야 한다(`AE_EDIT_FACTS`). 문제가 있으면 스냅샷을 바꾸지 않는다.
+    숫자는 대표 결정(2026-11-05)으로 자유롭게 바뀐다 — 숫자 보존 게이트(`AE_EDIT_NUMBERS`·`AE_EDIT_FACTS`)는 없고
+    pristine 뷰와 달라진 사실은 WARN `AE_EDIT_NUMBERS_CHANGED`와 `ae_overrides.fact_changes`로 남긴다. 저장되는
+    `doctor_metric_facts`는 고친 뷰 기준이다. 글자를 다 지운 절(빈 쪽)은 BLOCKER `AE_EDIT_INVALID`다.
     """
-    from app.services.doctor_report_v4 import compare_facts_v4, stored_facts_v4
-
     render_inputs = report_render_inputs(content)
     assert render_inputs is not None
     stored = stored_ae_overrides(render_inputs)
@@ -13346,13 +13349,15 @@ def _apply_ae_edit_to_plan(
             return doctor_view, problems
     merged = normalize_ae_fields(merged, base, case_candidates=candidates)
     edited = apply_ae_overrides(base, merged, case_candidates=candidates) if merged else base
-    for problem in ae_edit_fact_problems(base, edited):
-        problems.append(("DIFF", "AE_EDIT_NUMBERS", problem))
-    for problem in compare_facts_v4(stored_facts_v4(latest.sov_summary or {}, content), edited.facts()):
-        problems.append(("DIFF", "AE_EDIT_FACTS", problem))
+    for problem in empty_section_problems(edited):
+        problems.append(("BLOCKER", "AE_EDIT_INVALID", f"{problem.path}: {problem.code}"))
     if problems:
         return doctor_view, problems
+    changed_facts = fact_changes(base, edited)
+    for key, change in changed_facts.items():
+        problems.append(("WARN", "AE_EDIT_NUMBERS_CHANGED", f"{key}: {change['before']} → {change['after']}"))
     requested_at = str((ae_edit or {}).get("requested_at") or datetime.now(timezone.utc).isoformat())
+    edited_by = str((ae_edit or {}).get("edited_by") or (stored or {}).get("edited_by") or "system")
     snapshot = dict(content.get("report_snapshot") or {})
     inputs = dict(snapshot.get("render_inputs") or {})
     inputs["doctor_view"] = freeze_doctor_view(edited)
@@ -13365,18 +13370,22 @@ def _apply_ae_edit_to_plan(
         inputs["ae_overrides"] = build_ae_overrides(
             fields=merged,
             base_view_payload=freeze_doctor_view(base),
-            edited_by=str((ae_edit or {}).get("edited_by") or (stored or {}).get("edited_by") or "system"),
+            edited_by=edited_by,
             edited_at=requested_at,
             previous=stored,
             changed_paths=_ae_changed_paths(stored_fields, merged),
             report_version=latest.version + 1,
+            number_changes=number_changes(
+                base, stored_fields, merged, edited_by=edited_by, edited_at=requested_at, case_candidates=candidates
+            ),
+            fact_changes=changed_facts,
         )
     else:
         inputs.pop("ae_overrides", None)
     snapshot["render_inputs"] = inputs
     content["report_snapshot"] = snapshot
     content["talking_points"] = edited.talking_points
-    return edited, []
+    return edited, problems
 
 
 def _attach_doctor_artifact_and_commit(
@@ -13620,7 +13629,9 @@ def build_monthly_template_refresh_plan(
         if legacy_note:
             verdict.add("WARN", "AE_LEGACY_CARD_RECOUNTED", legacy_note)
         new_facts = final_view.facts()
-        for problem in compare_facts_v4(stored_facts_v4(latest.sov_summary or {}, content), new_facts):
+        # 저장 요약과의 대조는 pristine(다시 만든) 뷰로 한다 — AE가 바꾼 숫자는 저장 요약과 다르기 마련이고, 그 수정은
+        # 얼린(수정 적용) 사실과 이어진 수정(final_view)의 비교가 지킨다.
+        for problem in compare_facts_v4(stored_facts_v4(latest.sov_summary or {}, content), rebuilt_view.facts()):
             verdict.add("DIFF", "COMPETITOR_REFRESH_FACTS", problem)
         for problem in compare_facts_excluding_competitors(frozen_facts, new_facts):
             verdict.add("DIFF", "COMPETITOR_REFRESH_FACTS", problem)
@@ -13684,17 +13695,24 @@ def _competitor_refresh_carry(
         AE_FIELD_CASE_INSIGHT,
         AE_FIELD_KEY_LINE,
         AE_FIELD_PLAN_ACTION,
+        CLASS_SENTENCE,
+        path_class,
     )
 
-    sentence_kinds = (AE_FIELD_KEY_LINE, AE_FIELD_CASE_INSIGHT, AE_FIELD_PLAN_ACTION)
     old_fields = editable_fields(old_base) if old_base is not None else {}
     new_fields = editable_fields(new_base)
     keys = {competitor_key(name) for name in competitor_names if competitor_key(name)}
 
     def mentions_competitor(value: Any) -> bool:
-        text = str(value or "")
+        text = str(value or "") if not isinstance(value, Mapping) else ""
         folded = competitor_key(text)
         return "경쟁" in text or any(key in folded for key in keys)
+
+    def is_sentence(path: str) -> bool:
+        field_ = parse_ae_path(path)
+        return field_ is not None and (
+            field_.kind in (AE_FIELD_KEY_LINE, AE_FIELD_CASE_INSIGHT, AE_FIELD_PLAN_ACTION) or path_class(path) == CLASS_SENTENCE
+        )
 
     kept: dict[str, Any] = {}
     dropped: dict[str, Any] = {}
@@ -13702,7 +13720,10 @@ def _competitor_refresh_carry(
         field_ = parse_ae_path(path)
         if field_ is None:
             dropped[path] = value
-        elif field_.kind in sentence_kinds and (
+        elif path.startswith("competition."):
+            # 경쟁 절은 통째로 다시 계산한다 — 그 절의 수정(행·칸·문구·지우기)은 잇지 않는다(2026-11-05 대표 지시).
+            dropped[path] = value
+        elif is_sentence(path) and (
             path not in new_fields or old_fields.get(path) != new_fields.get(path) or mentions_competitor(value)
         ):
             dropped[path] = value
@@ -13771,7 +13792,7 @@ def _apply_competitor_refresh_overrides(
     applied = rebuilt_view
     if kept:
         edited = apply_ae_overrides(rebuilt_view, kept, case_candidates=candidates)
-        if ae_edit_fact_problems(rebuilt_view, edited):
+        if empty_section_problems(edited):
             dropped.update(kept)
             kept = {}
         else:
@@ -13788,6 +13809,7 @@ def _apply_competitor_refresh_overrides(
             previous=stored,
             changed_paths=[],
             report_version=None,
+            fact_changes=fact_changes(rebuilt_view, applied),
         )
     else:
         inputs.pop("ae_overrides", None)

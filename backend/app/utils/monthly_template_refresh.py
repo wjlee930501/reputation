@@ -159,9 +159,13 @@ def precheck_hospital(
         else:
             facts = doctor_view_facts(view)
             # 뷰와 저장 요약의 대조(계획 단계)는 이미 끝났다. 여기서는 지난달 보고서에서 읽어
-            # 새 뷰가 '지난달(참고)'로 옮겨 적는 값만 그 근거와 맞춰 본다.
-            for problem in _reference_fact_problems(db, latest, facts):
-                verdict.add("DIFF", "DOCTOR_VIEW_NUMBER", problem)
+            # 새 뷰가 '지난달(참고)'로 옮겨 적는 값만 그 근거와 맞춰 본다. AE가 숫자를 고친 판(2026-11-05)은 그 뷰의
+            # 사실이 정본이라 지난달 근거와 맞추지 않고 WARN만 남긴다.
+            if _has_ae_overrides(latest.content_summary or {}):
+                verdict.add("WARN", "AE_EDIT")
+            else:
+                for problem in _reference_fact_problems(db, latest, facts):
+                    verdict.add("DIFF", "DOCTOR_VIEW_NUMBER", problem)
             for problem in pdf_fact_problems(
                 _pdf_text(rendered.pdf_bytes), _secondary_facts(facts, latest.sov_summary)
             ):
@@ -316,7 +320,11 @@ def postcheck_hospital(db, hospital: Hospital, year: int, month: int) -> Hospita
     if new_text is not None:
         stored = stored_doctor_facts(latest.sov_summary or {}, latest.content_summary or {})
         facts = _secondary_facts(stored, latest.sov_summary)
-        if facts_are_v4(stored):
+        if _has_ae_overrides(latest.content_summary or {}):
+            # AE가 숫자를 고친 판(2026-11-05): 저장 요약의 숫자는 더는 PDF에 찍히지 않을 수 있다 — 고친 뷰 자신의 사실
+            # (`doctor_metric_facts`)이 새 PDF에 찍혔는지만 본다.
+            facts = _frozen_view_facts(latest)
+        elif facts_are_v4(stored):
             # 저장 요약 사실 + 얼린 뷰 사실(진료 항목·그룹·경쟁·추이). 같은 키는 저장 요약과 같아야
             # 하고(계획 단계가 이미 대조), 얼린 사실만의 키도 새 PDF에 찍혀 있어야 한다.
             facts = {**facts, **_frozen_view_facts(latest)}

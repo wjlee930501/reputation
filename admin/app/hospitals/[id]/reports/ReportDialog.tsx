@@ -62,7 +62,7 @@ export function ReportDialog({
   onCopyDeveloperInfo: () => void
   /** 경쟁 병원 반영 체인을 요청했거나 끝났을 때 — 작업 기록·목록을 다시 읽게 한다. 월간 보고서에만 쓴다. */
   onCompetitorRefreshRequested?: (newReportId?: string | null) => void
-  /** AE 수정 판(문구·라벨만 고친 새 버전)을 요청한 뒤 — 목록·작업 기록을 다시 읽는다. */
+  /** AE 수정 판(보고서를 고친 새 버전)을 요청한 뒤 — 목록·작업 기록을 다시 읽는다. */
   onAeEditRequested: () => void
 }) {
   const panelRef = useRef<HTMLDivElement>(null)
@@ -198,10 +198,10 @@ export function ReportDialog({
             </div>
           </section>
 
-          {/* AE 수정 판: 월간 보고서의 서술 문구·진료 항목 라벨만 고쳐 새 버전을 만든다. 숫자는 고칠 수 없고 새 버전은 다시 전달해야 한다. */}
+          {/* AE 수정 판: 원장 PDF의 모든 글자를 고치거나 지우고 숫자도 바꿔 새 버전을 만든다. 새 버전은 다시 전달해야 한다. */}
           {!report.isInitialReport && (
             <section data-report-section="ae-edit" className="rounded-xl border border-[var(--color-revisit-coolgrey-20)] p-4" aria-labelledby="report-ae-edit-heading">
-              <h4 id="report-ae-edit-heading" className="text-lg font-bold text-[var(--color-revisit-text-title)]">2. 문구·라벨 고치기 (선택)</h4>
+              <h4 id="report-ae-edit-heading" className="text-lg font-bold text-[var(--color-revisit-text-title)]">2. 보고서 고치기 (선택)</h4>
               <ReportAeEditPanel key={report.id} hospitalId={report.hospitalId} reportId={report.id} onRequested={onAeEditRequested} />
             </section>
           )}

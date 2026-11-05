@@ -44,6 +44,7 @@ from app.services.doctor_report_ae_edit import (
     merge_ae_fields,
     normalize_ae_fields,
     numbers_changed_between,
+    numbers_differ,
     stored_ae_overrides,
     validate_ae_fields,
 )
@@ -188,9 +189,9 @@ def test_text_overrides_replace_sentences_and_keep_every_fact():
 
 def test_apply_ignores_unknown_paths_and_none_and_is_idempotent():
     view = build()
-    fields = {"summary.key_lines[0]": "새 문장입니다.", "summary.cards[1].value": "99%", "summary.key_lines[1]": None}
+    fields = {"summary.key_lines[0]": "새 문장입니다.", "summary.cards[1].value": "99%", "summary.key_lines[1]": None, "bogus.path": "x"}
     edited = apply_ae_overrides(view, fields)
-    assert edited.summary.cards[1].value == view.summary.cards[1].value
+    assert edited.summary.cards[1].value == "99%"  # 숫자도 바뀐다(2026-11-05 대표 결정)
     assert edited.summary.key_lines[1] == view.summary.key_lines[1]
     assert apply_ae_overrides(view, {}) == view
     assert apply_ae_overrides(edited, {"summary.key_lines[0]": "새 문장입니다."}) == edited
@@ -226,15 +227,17 @@ def _codes(problems):
     return sorted(problem.code for problem in problems)
 
 
-def test_whitelist_rejects_numbers_keywords_titles_and_appendix_text():
+def test_grammar_rejects_paths_outside_the_view_and_keys_the_report_does_not_have():
+    """2026-11-05 전면 확장: 숫자·키워드·제목·부록 글자도 고친다. 문법 밖(병원명·기간·링크·마스트헤드)과 없는 키·번호만 거절한다."""
     view = build()
-    for path in (
-        "summary.cards[1].value", "summary.cards[3].value", "appendix.keyword_rows[0].keyword",
-        "content.rows[0].title", "exposure.platform_bars[0].detail", "appendix.caveat_lines[0]",
-        "summary.key_lines[3]", "plan.action[]", "treatment_label[]",
-    ):
+    for path in ("hospital_name", "period_label", "public_url", "summary.subtitle", "plan.action[]", "treatment_label[]", "x.y"):
         assert parse_ae_path(path) is None, path
         assert _codes(validate_ae_fields({path: "x"}, view)) == ["UNKNOWN_FIELD"], path
+    for path in ("summary.key_lines[3]", "appendix.keyword_rows[0].keyword", "content.rows[0].title", "exposure.platform_bars[0].detail"):
+        assert parse_ae_path(path) is not None, path
+        assert _codes(validate_ae_fields({path: "x"}, view)) == ["UNKNOWN_KEY"], path
+    for path in ("summary.cards[1].value", "summary.cards[3].value", "appendix.caveat_lines[0]", f"appendix.keyword_rows[{KW_ENDO}].keyword"):
+        assert validate_ae_fields({path: "x"}, view) == [], path
     assert _codes(validate_ae_fields({"plan.action[없는 키워드]": "문장"}, view)) == ["UNKNOWN_KEYWORD"]
     assert _codes(validate_ae_fields({"treatment_label[없는 키워드]": "라벨"}, view)) == ["UNKNOWN_KEYWORD"]
 
@@ -247,21 +250,24 @@ def test_forbidden_expressions_and_internal_markers_are_rejected():
     assert validate_ae_fields({"summary.key_lines[0]": "심장초음파 키워드에서 노출됐습니다."}, view) == []
 
 
-def test_new_numbers_are_rejected_but_numbers_from_the_original_sentence_may_stay():
+def test_new_numbers_are_accepted_and_flagged_as_different_from_the_measurement():
+    """2026-11-05 전면 확장: 원문에 없는 숫자도 받는다 — 거절 대신 '측정값과 다름'으로 표시·기록한다."""
     view = build()
     original = view.summary.key_lines[1]  # "'…' 등 N개 키워드는 아직 노출되지 않았습니다."
-    tokens = [token for token in original.replace("'", " ").split() if any(ch.isdigit() for ch in token)]
-    assert tokens, original
     assert validate_ae_fields({"summary.key_lines[1]": original.replace("아직", "이번 달에도")}, view) == []
-    assert "NUMBER_NOT_IN_ORIGINAL" in _codes(validate_ae_fields({"summary.key_lines[1]": "노출률이 80%였습니다."}, view))
-    assert "NUMBER_NOT_IN_ORIGINAL" in _codes(validate_ae_fields({"summary.key_lines[0]": "콘텐츠 12편을 더 올립니다."}, view))
+    assert validate_ae_fields({"summary.key_lines[1]": "노출률이 80%였습니다.", "summary.key_lines[0]": "콘텐츠 12편을 더 올립니다."}, view) == []
+    assert numbers_differ(original, "노출률이 80%였습니다.") and not numbers_differ(original, original.replace("아직", "이번 달에도"))
+    changes = field_changes(view, {}, {"summary.key_lines[1]": "노출률이 80%였습니다."})
+    assert changes[0]["numbers_changed"] is True
 
 
 def test_length_emptiness_control_chars_and_shapes_are_rejected():
     view = build()
-    assert _codes(validate_ae_fields({"summary.key_lines[0]": "   "}, view)) == ["EMPTY"]
-    assert "TOO_LONG" in _codes(validate_ae_fields({"summary.key_lines[0]": "가" * 201}, view))
-    assert "TOO_LONG" in _codes(validate_ae_fields({LABEL: "가" * 41}, view))
+    # 빈 글자는 '지움'이다(요소를 그리지 않는다). 라벨만은 비울 수 없다.
+    assert validate_ae_fields({"summary.key_lines[0]": "   "}, view) == []
+    assert _codes(validate_ae_fields({LABEL: "   "}, view)) == ["EMPTY"]
+    assert "TOO_LONG" in _codes(validate_ae_fields({"summary.key_lines[0]": "가" * 401}, view))
+    assert "TOO_LONG" in _codes(validate_ae_fields({LABEL: "가" * 61}, view))
     assert "CONTROL_CHARS" in _codes(validate_ae_fields({"summary.key_lines[0]": "한 줄\n두 줄"}, view))
     assert "CONTROL_CHARS" in _codes(validate_ae_fields({"summary.key_lines[0]": "앞\r뒤"}, view))
     assert _codes(validate_ae_fields({"summary.key_lines[0]": 3}, view)) == ["NOT_TEXT"]
@@ -291,8 +297,8 @@ def test_normalize_drops_values_equal_to_the_original_and_merge_removes_with_non
     assert merged == {LABEL: "라벨", "summary.key_lines[2]": "셋"}
     changes = field_changes(view, {"summary.key_lines[1]": "옛 문장"}, {"summary.key_lines[2]": "셋"})
     assert changes == [
-        {"path": "summary.key_lines[1]", "before": "옛 문장", "after": originals["summary.key_lines[1]"]},
-        {"path": "summary.key_lines[2]", "before": originals["summary.key_lines[2]"], "after": "셋"},
+        {"path": "summary.key_lines[1]", "before": "옛 문장", "after": originals["summary.key_lines[1]"], "numbers_changed": False},
+        {"path": "summary.key_lines[2]", "before": originals["summary.key_lines[2]"], "after": "셋", "numbers_changed": False},
     ]
 
 
@@ -408,7 +414,8 @@ def test_plan_applies_the_edit_to_the_snapshot_and_keeps_facts():
         "edited_by": "ae@example.invalid", "requested_at": "2026-11-05T01:00:00+00:00",
     }
     edited, problems = tasks._apply_ae_edit_to_plan(None, SimpleNamespace(id=uuid.uuid4()), latest, arrow.get("2026-10-31T23:59:00+09:00"), content, view, ae_edit)
-    assert problems == []
+    # 라벨을 바꾸면 진료 항목 묶음 사실이 바뀐다 — 막지 않고 WARN으로만 남긴다.
+    assert {k for k, _c, _d in problems} <= {"WARN"} and all(c == "AE_EDIT_NUMBERS_CHANGED" for _k, c, _d in problems)
     assert edited.summary.key_lines[0] == "고친 첫 줄입니다."
     inputs = report_render_inputs(content)
     assert restore_doctor_view(inputs.doctor_view) == edited
@@ -421,7 +428,7 @@ def test_plan_applies_the_edit_to_the_snapshot_and_keeps_facts():
     # 다음 템플릿 갱신(요청 값 없음)은 저장된 수정 값을 pristine 뷰에 다시 얹어 같은 뷰를 만든다.
     again = copy.deepcopy(content)
     same, problems = tasks._apply_ae_edit_to_plan(None, SimpleNamespace(id=uuid.uuid4()), SimpleNamespace(**{**latest.__dict__, "content_summary": again, "version": 2}), arrow.get("2026-10-31T23:59:00+09:00"), again, edited, None)
-    assert problems == [] and same == edited
+    assert {k for k, _c, _d in problems} <= {"WARN"} and same == edited
     assert report_render_inputs(again).ae_overrides["history"] == inputs.ae_overrides["history"]
     # 수정을 전부 지우면 pristine 뷰로 돌아가고 ae_overrides 키가 사라진다.
     cleared = copy.deepcopy(content)
@@ -444,18 +451,26 @@ def test_plan_blocks_invalid_stale_or_unknown_case_requests_without_touching_the
     assert content == latest.content_summary
 
 
-def test_plan_refuses_when_the_edited_facts_disagree_with_the_stored_summary(monkeypatch):
-    """적용 뒤 뷰 사실과 저장 요약 사실이 다르면 DIFF — 수정이 숫자를 흔들지 않아도 저장값 대조는 그대로 선다."""
-    from app.services import doctor_report_v4
-
+def test_plan_records_changed_numbers_as_warnings_and_stores_them_with_the_edited_facts():
+    """2026-11-05 전면 확장: 숫자 보존 게이트가 없다 — 달라진 사실은 WARN·`fact_changes`·`number_changes`로 남고 저장 사실은 고친 뷰 기준이다."""
     view = build()
     latest = _latest(view)
     content = copy.deepcopy(latest.content_summary)
-    real = doctor_report_v4.stored_facts_v4
-    monkeypatch.setattr(doctor_report_v4, "stored_facts_v4", lambda sov, c: {**real(sov, c), "card.published": "9편"})
-    _same, problems = tasks._apply_ae_edit_to_plan(None, None, latest, arrow.get("2026-10-31T23:59:00+09:00"), content, view, {"report_id": str(latest.id), "fields": {"summary.key_lines[0]": "고친 문장"}})
-    assert [(k, c) for k, c, _d in problems] == [("DIFF", "AE_EDIT_FACTS")]
-    assert content == latest.content_summary
+    fields = {"summary.cards[1].value": "99%", "exposure.platform_bars[ChatGPT].value": 80, "appendix.caveat_lines[1]": {"deleted": True}}
+    edited, problems = tasks._apply_ae_edit_to_plan(None, None, latest, arrow.get("2026-10-31T23:59:00+09:00"), content, view, {"report_id": str(latest.id), "fields": fields, "edited_by": "ae@example.invalid", "requested_at": "2026-11-05T01:00:00+00:00"})
+    assert [(k, c) for k, c, _d in problems] and all((k, c) == ("WARN", "AE_EDIT_NUMBERS_CHANGED") for k, c, _d in problems)
+    assert edited.summary.cards[1].value == "99%" and edited.appendix.caveat_lines[1] == ""
+    inputs = report_render_inputs(content)
+    assert inputs.doctor_metric_facts == edited.facts() and inputs.doctor_metric_facts["card.rate"] == "99%"
+    assert inputs.ae_overrides["fact_changes"]["card.rate"] == {"before": view.summary.cards[1].value, "after": "99%"}
+    assert {c["path"] for c in inputs.ae_overrides["number_changes"]} == {"summary.cards[1].value", "exposure.platform_bars[ChatGPT].value"}
+    assert inputs.ae_overrides["number_changes"][0]["edited_by"] == "ae@example.invalid"
+    # 절을 통째로 비우면 거절하고 스냅샷을 바꾸지 않는다.
+    untouched = copy.deepcopy(latest.content_summary)
+    empty = {"cases.found": {"deleted": True}, "cases.missing": {"deleted": True}, "cases.headline": {"deleted": True}, "cases.empty_text": {"deleted": True}, "cases.empty_figure": {"deleted": True}}
+    _same, problems = tasks._apply_ae_edit_to_plan(None, None, latest, arrow.get("2026-10-31T23:59:00+09:00"), untouched, view, {"report_id": str(latest.id), "fields": empty})
+    assert [(k, c, d) for k, c, d in problems] == [("BLOCKER", "AE_EDIT_INVALID", "p5: SECTION_EMPTY")]
+    assert untouched == latest.content_summary
 
 
 def test_general_rebuild_carries_labels_only_when_numbers_changed_and_everything_otherwise():
@@ -539,8 +554,13 @@ async def test_preview_returns_editable_fields_candidates_and_problems_without_w
     assert payload["numbers_preserved"] is True and payload["redelivery_required"] is True
     assert {c["record_id"] for c in payload["candidates"]["found"]} == {c.record_id for c in api.candidates if c.found}
     assert payload["original_fields"]["summary.key_lines[0]"] == api.view.summary.key_lines[0]
-    bad = await operations.preview_report_ae_edit(api.context.hospital.id, api.context.report.id, overrides='{"summary.key_lines[0]": "최고의 병원", "summary.cards[1].value": "9%"}', db=AsyncMock())
+    bad = await operations.preview_report_ae_edit(api.context.hospital.id, api.context.report.id, overrides='{"summary.key_lines[0]": "최고의 병원", "hospital_name": "x"}', db=AsyncMock())
     assert {p["code"] for p in bad["problems"]} == {"FORBIDDEN_EXPRESSION", "UNKNOWN_FIELD"} and bad["preview"] is None
+    numbers = await operations.preview_report_ae_edit_json(api.context.hospital.id, api.context.report.id, operations.ReportAeEditPreviewRequest(fields={"summary.cards[1].value": "9%"}), db=AsyncMock())
+    assert numbers["problems"] == [] and numbers["numbers_preserved"] is False and numbers["fact_changes"]["card.rate"]["after"] == "9%"
+    assert numbers["number_changes"] == [{"path": "summary.cards[1].value", "before": api.view.summary.cards[1].value, "after": "9%"}]
+    assert [item["path"] for item in numbers["items"]][:2] == ["summary.eyebrow", "summary.title"]
+    assert next(item for item in numbers["items"] if item["path"] == "summary.cards[1].value")["numbers_changed"] is True
     good = await operations.preview_report_ae_edit(api.context.hospital.id, api.context.report.id, overrides='{"summary.key_lines[0]": "고친 첫 줄입니다."}', db=AsyncMock())
     assert good["problems"] == [] and good["preview"]["key_lines"][0] == "고친 첫 줄입니다."
     assert good["merged"] == {"summary.key_lines[0]": "고친 첫 줄입니다."}
@@ -822,7 +842,7 @@ def test_explicit_names_cannot_exceed_the_recounted_count():
     # 이름 목록을 함께 줄이면 통과한다.
     content = copy.deepcopy(latest.content_summary)
     edited, problems = tasks._apply_ae_edit_to_plan(None, None, latest, arrow.get("2026-10-31T23:59:00+09:00"), content, view, {"report_id": str(latest.id), "fields": {CHEST_LABEL: "심장초음파", AE_PATH_CARD_NAMES: ["초음파 검사"]}})
-    assert problems == [] and edited.summary.cards[3].names == ("초음파 검사",) and edited.summary.cards[3].value == "1개 항목"
+    assert {k for k, _c, _d in problems} <= {"WARN"} and edited.summary.cards[3].names == ("초음파 검사",) and edited.summary.cards[3].value == "1개 항목"
 
 
 def test_carry_validates_the_card_names_with_the_carried_labels(monkeypatch):
@@ -839,11 +859,12 @@ def test_carry_validates_the_card_names_with_the_carried_labels(monkeypatch):
     assert invalid_carry_paths(merge_with_names, view) == {AE_PATH_CARD_NAMES}
     # 모르는 키워드의 라벨은 버리고, 그 라벨이 없을 때의 n으로 이름 목록을 다시 본다.
     assert invalid_carry_paths({"treatment_label[없는 키워드]": "x", AE_PATH_CARD_NAMES: ["a", "b"]}, shared) == {"treatment_label[없는 키워드]", AE_PATH_CARD_NAMES}
-    # 무효한 라벨(원문에 없는 숫자)이 임시로 n을 1로 합쳐도, 그 라벨을 먼저 빼면 n=2라 이름 2개는 남는다(Codex 5-P2).
-    # pristine의 심장 라벨이 '심장초음파 2차'라 흉통 라벨을 같은 값으로 바꾸면 합쳐지고(n 2→1), 그 값은 '2'가 원문에 없어 무효다(Codex 6-P3).
-    numbered = apply_ae_overrides(view, {f"treatment_label[{KW_HEART}]": "심장초음파 2차"})
-    assert derived_card_count(numbered, {CHEST_LABEL: "심장초음파 2차"}) == 1
-    assert invalid_carry_paths({CHEST_LABEL: "심장초음파 2차", AE_PATH_CARD_NAMES: ["a", "b"]}, numbered) == {CHEST_LABEL}
+    # 무효한 라벨이 임시로 n을 1로 합쳐도, 그 라벨을 먼저 빼면 n=2라 이름 2개는 남는다(Codex 5-P2). 숫자는 이제 자유라(2026-11-05)
+    # 라벨 길이 상한(60자)으로 무효한 라벨을 쓴다 — pristine의 심장 라벨이 61자라 흉통 라벨을 같은 값으로 바꾸면 합쳐지고(n 2→1) 그 값은 너무 길어 무효다.
+    long_label = "심장초음파" + "가" * 56
+    numbered = apply_ae_overrides(view, {f"treatment_label[{KW_HEART}]": long_label})
+    assert derived_card_count(numbered, {CHEST_LABEL: long_label}) == 1
+    assert invalid_carry_paths({CHEST_LABEL: long_label, AE_PATH_CARD_NAMES: ["a", "b"]}, numbered) == {CHEST_LABEL}
     # 일반 재생성 승계: 같은 pristine(n=1)으로 다시 만든 판에 분리 라벨 + 이름 2개가 그대로 이어진다.
     db = SimpleNamespace(get=lambda _model, _id: previous)
     overrides = build_ae_overrides(
