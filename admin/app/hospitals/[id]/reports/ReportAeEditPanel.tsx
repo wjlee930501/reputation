@@ -53,7 +53,7 @@ const BUTTON = 'min-h-11 rounded-lg px-4 text-sm font-bold disabled:opacity-40'
 const BAR_BUTTON = 'min-h-9 whitespace-nowrap rounded-lg px-3 text-xs font-bold disabled:opacity-40'
 const SMALL_BUTTON = 'text-xs font-bold text-[var(--color-revisit-primary-40)] disabled:opacity-40'
 /** 하단 고정 바 높이만큼 스크롤 여백 — 포커스·오류 줄이 바 뒤에 숨지 않는다. 값은 바를 재어 `--ae-bar-h`로 준다. */
-const SCROLL_MARGIN = '[scroll-margin-bottom:calc(var(--ae-bar-h)+16px)] [scroll-margin-top:140px]'
+const SCROLL_MARGIN = '[scroll-margin-bottom:calc(var(--ae-bar-h)+16px)] [scroll-margin-top:90px]'
 const STATE_OPTIONS = [
   ['mentioned', ADMIN_COPY.aeEditStateMentioned],
   ['unmentioned', ADMIN_COPY.aeEditStateUnmentioned],
@@ -488,7 +488,7 @@ export function ReportAeEditPanel({
                 <a href={pdfUrl} target="_blank" rel="noreferrer" className={SMALL_BUTTON}>{ADMIN_COPY.aeEditOpenInTab}</a>
               </div>
               {/* 높이는 화면에서 고정 바와 머리글을 뺀 만큼 — 70vh는 바 뒤로 들어갔다. */}
-              <iframe title={ADMIN_COPY.aeEditPdfPreviewTitle} src={pdfUrl} className="w-full rounded-lg border border-[var(--color-revisit-coolgrey-20)]" style={{ height: 'max(320px, calc(100vh - var(--ae-bar-h) - 150px))' }} />
+              <iframe title={ADMIN_COPY.aeEditPdfPreviewTitle} src={pdfUrl} className="w-full rounded-lg border border-[var(--color-revisit-coolgrey-20)]" style={{ height: 'max(320px, calc(100vh - var(--ae-bar-h) - 160px))' }} />
             </div>
           )}
 
