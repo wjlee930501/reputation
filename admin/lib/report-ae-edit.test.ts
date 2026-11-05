@@ -35,7 +35,7 @@ const summary = {
 
 const item = (path: string, extra: Record<string, unknown> = {}) => ({
   path, section: 'p1', kind: path.replace(/\[[^\]]*\]/g, ''), type: 'text', value: '값', original: '값', deleted: false,
-  row: null, row_deleted: false, context: '', deletable: true, overridden: false, numbers_changed: false, ...extra,
+  row: null, row_deleted: false, context: '', deletable: true, row_deletable: true, overridden: false, numbers_changed: false, ...extra,
 })
 
 const items = [
@@ -48,7 +48,7 @@ const items = [
   item('appendix.caveat_lines[1]', { section: 'appendix', original: '순위나 환자 수 증가를 약속하지 않습니다.', value: '순위나 환자 수 증가를 약속하지 않습니다.', context: '2' }),
   item('content.rows[위내시경 전 준비].title', { section: 'p2', original: '위내시경 전 준비', value: '위내시경 전 준비', row: 'content.rows[위내시경 전 준비]', row_deleted: true, context: '위내시경 전 준비' }),
   item('content.rows[위내시경 전 준비].keyword', { section: 'p2', type: 'label', original: '일반', value: '일반', row: 'content.rows[위내시경 전 준비]', row_deleted: true, context: '위내시경 전 준비' }),
-  item(AE_CARD_NAMES_PATH, { type: 'list', original: ['심장초음파', '위내시경'], value: ['심장초음파', '위내시경'], row: 'summary.cards[3]', context: '4' }),
+  item(AE_CARD_NAMES_PATH, { type: 'list', original: ['심장초음파', '위내시경'], value: ['심장초음파', '위내시경'], row: 'summary.cards[3]', context: '4', row_deletable: false }),
 ]
 
 const payload = {
@@ -116,7 +116,7 @@ test('the draft starts from the stored state and sends only what the user actual
       'exposure.platform_bars[ChatGPT].detail': ' AI 답변 10건 중 4건 ',
       [AE_CARD_NAMES_PATH]: '심장초음파, 위내시경, ',
     },
-    rows: { ...draft.rows, 'exposure.platform_bars[ChatGPT]': true },
+    rows: { ...draft.rows, 'exposure.platform_bars[ChatGPT]': true, 'summary.cards[3]': true },  // 카드는 행 지우기가 없다 — 보내지 않는다
     caseRecords: { found: 'rec-1', missing: 'keep' },
   }, preview.overrides)
   assert.deepEqual(edited, {
@@ -227,6 +227,9 @@ test('the panel only speaks through ADMIN_COPY and the ae-edit endpoints, offers
   assert.match(dialog, /<ReportAeEditPanel/)
   assert.match(dialog, /data-report-section="ae-edit"/)
   assert.equal(ADMIN_COPY.aeEditTitle, '보고서 고치기')
-  // 화면이 지어낸 한국어 라벨이 없다 — 항목 이름은 ADMIN_COPY.aeEditKinds만 읽는다.
+  // 화면이 지어낸 한국어 문구가 없다 — JSX 텍스트·placeholder·버튼 글자는 ADMIN_COPY만 읽는다.
   assert.doesNotMatch(panel, /label=\{`[^`]*[가-힣]/)
+  assert.doesNotMatch(panel, />[^<{]*[가-힣][^<{]*</)
+  assert.doesNotMatch(panel, /placeholder="[^"]*[가-힣]/)
+  assert.doesNotMatch(panel, /\? '[가-힣][^']*' : '[가-힣]/)
 })

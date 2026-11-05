@@ -95,6 +95,7 @@ _INTENT_TO_GROUP = {
 }
 _NUMBER = re.compile(r"\d+(?:\.\d+)?")
 _CITATION_LINE = re.compile(r"AI 답변 (\d+)건 중 .*?인용 (\d+)건")
+_REFERENCE_NOTE = re.compile(r"지난달 AI 노출률 (\d+(?:\.\d+)?)%")
 # 뷰 사실 중 저장 요약에서 다시 만들 수 있어 근거가 꼭 있어야 하는 키(접두어 포함).
 _STORED_BACKED_KEYS = frozenset({"rate.current", "rate.previous", "card.rate", "card.keywords", "card.published", "citation"})
 _STORED_BACKED_PREFIXES = ("platform.", "kw.")
@@ -413,7 +414,7 @@ class DoctorReportV4:
         p2: list[str] = [c.headline]
         if c.bars:
             p2.append(c.bars_heading)
-            p2.extend(bar.detail for bar in c.bars)
+            p2.extend(bar.detail for bar in c.bars if bar.value is not None)  # 값을 비운 막대는 '—'로 찍힌다
         if c.rows:
             p2.extend((c.rows_heading, c.rows_aside or "", *c.table_headers))
             for row in c.rows:
@@ -436,9 +437,12 @@ class DoctorReportV4:
             p3.append(row.detail)
             if row.rate is not None:
                 p3.append(_pct(row.rate))
-        p3.extend(_pct(point.value) for point in e.trend)
+        if len(e.trend) >= 2:  # 추이 그래프는 두 점부터 그린다(템플릿 `has_trend`)
+            p3.extend(_pct(point.value) for point in e.trend)
         if e.heatmap:
             p3.extend((e.heatmap_keyword_head, *self.platform_labels))
+            for row in e.heatmap:
+                p3.extend((row.keyword, *(cell.detail for cell in row.cells)))
         else:
             p3.append(e.heatmap_empty_text or "")
             p3.extend(_band_texts(e.keyword_figure))
@@ -462,9 +466,9 @@ class DoctorReportV4:
         cases = [case for case in (cs.found, cs.missing) if case is not None]
         for case in cases:
             p5.extend((case.label, case.keyword, case.insight, case.caption or ""))
-        if cases:
+        if any(case.insight for case in cases):  # 시사점 패널은 시사점이 하나라도 있을 때만
             p5.append(cs.insight_label)
-        else:
+        if not cases:
             p5.append(cs.empty_text)
             p5.extend(_band_texts(cs.empty_figure))
         p = self.plan
@@ -520,7 +524,11 @@ class DoctorReportV4:
             if value is None:
                 continue
             # 지난달 참고치는 부록 A의 참고 줄에만 찍힌다 — AE가 그 줄을 지웠거나 고쳤으면(2026-11-05) 사실에서도 뺀다.
-            if key == "rate.reference_previous" and _pct(value) not in (self.appendix.keyword_note or ""):
+            if key == "rate.reference_previous":
+                match = _REFERENCE_NOTE.search(self.appendix.keyword_note or "")
+                if match is None:
+                    continue
+                facts[key] = match.group(1) + "%"
                 continue
             facts[key] = _pct(value)
         for card, key in zip(self.summary.cards, ("published", "rate", "keywords", "treatments"), strict=False):
@@ -546,9 +554,10 @@ class DoctorReportV4:
             if row.rate is not None and row.group:
                 facts[f"group.{row.group}"] = row.detail
                 facts[f"group.{row.group}.rate"] = _pct(row.rate)
-        for point in self.exposure.trend:
-            if point.label:
-                facts[f"trend.{point.label}"] = _pct(point.value)
+        if len(self.exposure.trend) >= 2:
+            for point in self.exposure.trend:
+                if point.label:
+                    facts[f"trend.{point.label}"] = _pct(point.value)
         # 인용 사실은 실제로 찍히는 인용 줄에서 읽는다 — AE가 줄을 지우거나 숫자를 고치면(2026-11-05) 사실도 따라간다.
         for line in self.exposure.citation_lines:
             match = _CITATION_LINE.search(line or "")
@@ -2052,6 +2061,7 @@ def v3_frozen_facts_problems(
 # 값: 글자(""는 지움 — 요소를 그리지 않는다), 숫자(막대 값·비율·건수 — 막대 길이도 따라간다), 목록, 상태,
 #     `{"deleted": true}`(행·사례·검정 면·문구를 지움), None(그 경로의 수정 취소). 행의 키는 라벨·사례를 적용한 뷰의 값이다.
 AE_OVERRIDES_SCHEMA_VERSION = 2
+MAX_AE_PATH_CHARS = 1024
 AE_DELETE: Mapping[str, Any] = {"deleted": True}
 AE_FIELD_KEY_LINE = "key_line"
 AE_FIELD_CARD_NAMES = "card_names"
@@ -2203,9 +2213,9 @@ AE_COLLECTIONS: dict[str, AeCollection] = {
     "appendix.glossary": AeCollection("appendix", ("glossary",), "term", {"term": (T_LABEL, CLASS_STATIC), "definition": (T_TEXT, CLASS_STATIC)}),
 }
 _HEAT_CELL_ATTRS = {"detail": (T_LABEL, CLASS_CELL), "state": (T_STATE, CLASS_CELL)}
-_INDEXED_RE = re.compile(r"^(.+)\[(\d+)\]$")
+_INDEXED_RE = re.compile(r"^(.+)\[(\d{1,6})\]$")
 _FIGURE_RE = re.compile(r"^(.+)\.(label|value|caption)$")
-_CARD_RE = re.compile(r"^summary\.cards\[(\d+)\]\.(label|value|definition|names)$")
+_CARD_RE = re.compile(r"^summary\.cards\[(\d{1,3})\]\.(label|value|definition|names)$")
 _CASE_ANY_RE = re.compile(r"^cases\.(found|missing)(?:\.(\w+))?$")
 _HEAT_CELL_RE = re.compile(r"^exposure\.heatmap\[(.+)\]\.cells\[([^\]]+)\]\.(detail|state)$", re.DOTALL)
 _APPENDIX_CELL_RE = re.compile(r"^appendix\.keyword_rows\[(.+)\]\.cells\[([^\]]+)\]$", re.DOTALL)
@@ -2294,7 +2304,7 @@ def parse_view_path(path: str) -> ViewPath | None:
 
 def parse_ae_path(path: str) -> AeField | None:
     """수정 경로 → 필드. 문법 밖이면 None."""
-    if not isinstance(path, str):
+    if not isinstance(path, str) or len(path) > MAX_AE_PATH_CHARS:
         return None
     if path == AE_PATH_CARD_NAMES:
         return AeField(AE_FIELD_CARD_NAMES)
@@ -2328,6 +2338,13 @@ def ae_path(kind: str, arg: Any = None) -> str:
     if kind == AE_FIELD_TREATMENT_LABEL:
         return f"treatment_label[{arg}]"
     raise ValueError(f"unknown AE field kind: {kind}")
+
+
+def canonical_ae_path(path: str) -> str:
+    """종전 별칭을 새 경로로 — `plan.action[K]` → `plan.rows[K].action`. 같은 칸에 override가 둘 남지 않게(Codex 1-P1-1)."""
+    if isinstance(path, str) and (match := _AE_PLAN_ACTION_RE.match(path)) is not None:
+        return f"plan.rows[{match.group(1)}].action"
+    return path
 
 
 def path_class(path: str) -> str | None:
@@ -2474,14 +2491,15 @@ def parse_ae_number(value: Any) -> float | None:
     """'40'·'40%'·40·40.5 → 40.0. 비움(''·None)·읽을 수 없는 값·무한은 None."""
     if value is None or isinstance(value, bool):
         return None
-    if isinstance(value, (int, float)):
-        return float(value) if isfinite(float(value)) else None
-    text = str(value).strip().rstrip("%").strip()
-    if not text:
-        return None
     try:
-        number = float(text)
-    except ValueError:
+        if isinstance(value, (int, float)):
+            number = float(value)
+        else:
+            text = str(value).strip().rstrip("%").strip()
+            if not text or len(text) > 40:
+                return None
+            number = float(text)
+    except (ValueError, OverflowError):
         return None
     return number if isfinite(number) else None
 
@@ -2588,6 +2606,17 @@ def _row_key(spec: AeCollection, row: Any) -> str:
     return str(getattr(row, spec.key))
 
 
+def _row_keys(spec: AeCollection, rows: Sequence[Any]) -> list[str]:
+    """행마다 고유한 키 — 같은 키(제목·라벨)가 두 번 나오면 둘째부터 `#2`·`#3`을 붙인다(Codex 1-P1-6: 제목은 유일하지 않다)."""
+    seen: dict[str, int] = {}
+    keys: list[str] = []
+    for row in rows:
+        base = _row_key(spec, row)
+        seen[base] = seen.get(base, 0) + 1
+        keys.append(base if seen[base] == 1 else f"{base}#{seen[base]}")
+    return keys
+
+
 def _write_collection_rows(view: DoctorReportV4, spec: AeCollection, rows: list[Any]) -> DoctorReportV4:
     section = getattr(view, spec.section)
     if len(spec.attrs) == 1:
@@ -2636,7 +2665,9 @@ def apply_ae_overrides(
                 key_lines[field_.arg] = "" if is_delete_marker(value) else str(value).strip()
             continue
         if field_.kind == AE_FIELD_CARD_NAMES:
-            if isinstance(value, (list, tuple)):
+            if is_delete_marker(value):
+                card_names = ()
+            elif isinstance(value, (list, tuple)):
                 card_names = tuple(value)
             continue
         if field_.kind == AE_FIELD_CASE_INSIGHT:
@@ -2779,10 +2810,8 @@ def _apply_view_path(
 def _find_row(derived: DoctorReportV4, spec: AeCollection, key: str | None) -> int | None:
     if key is None:
         return None
-    for index, row in enumerate(_collection_rows(derived, spec)):
-        if _row_key(spec, row) == key:
-            return index
-    return None
+    keys = _row_keys(spec, _collection_rows(derived, spec))
+    return keys.index(key) if key in keys else None
 
 
 def resolve_view_path(derived: DoctorReportV4, vp: ViewPath) -> bool:
@@ -2816,6 +2845,7 @@ class AePathItem:
     row: str | None = None
     context: str = ""
     deletable: bool = True
+    row_deletable: bool = True  # 카드는 행 단위로 지울 수 없다(칸만 지운다)
 
 
 def walk_ae_paths(view: DoctorReportV4) -> list[AePathItem]:
@@ -2842,8 +2872,8 @@ def walk_ae_paths(view: DoctorReportV4) -> list[AePathItem]:
 
     def rows(prefix: str, section: str, *, label_from: str | None = None) -> None:
         spec = AE_COLLECTIONS[prefix]
-        for row in _collection_rows(view, spec):
-            key = _row_key(spec, row)
+        collection = _collection_rows(view, spec)
+        for key, row in zip(_row_keys(spec, collection), collection, strict=True):
             row_path = f"{prefix}[{key}]"
             for column, (value_type, _klass) in spec.columns.items():
                 if prefix == "appendix.keyword_rows" and column == "treatment":
@@ -2867,11 +2897,11 @@ def walk_ae_paths(view: DoctorReportV4) -> list[AePathItem]:
             if name == "names":
                 if index == 3:
                     names, _tail = split_card_names(card.names)
-                    items.append(AePathItem(AE_PATH_CARD_NAMES, "p1", "summary.cards.names", T_LIST, list(names), row=f"summary.cards[{index}]", context=str(index + 1)))
+                    items.append(AePathItem(AE_PATH_CARD_NAMES, "p1", "summary.cards.names", T_LIST, list(names), row=f"summary.cards[{index}]", context=str(index + 1), row_deletable=False))
                 elif card.names:
-                    items.append(AePathItem(f"summary.cards[{index}].names", "p1", "summary.cards.names", T_LIST, list(card.names), row=f"summary.cards[{index}]", context=str(index + 1)))
+                    items.append(AePathItem(f"summary.cards[{index}].names", "p1", "summary.cards.names", T_LIST, list(card.names), row=f"summary.cards[{index}]", context=str(index + 1), row_deletable=False))
                 continue
-            items.append(AePathItem(f"summary.cards[{index}].{name}", "p1", f"summary.cards.{name}", value_type, getattr(card, name), row=f"summary.cards[{index}]", context=str(index + 1)))
+            items.append(AePathItem(f"summary.cards[{index}].{name}", "p1", f"summary.cards.{name}", value_type, getattr(card, name), row=f"summary.cards[{index}]", context=str(index + 1), row_deletable=False))
     for index, (label, line) in enumerate(zip(view.summary.key_labels, view.summary.key_lines, strict=False)):
         items.append(AePathItem(f"summary.key_labels[{index}]", "p1", "summary.key_labels", T_LABEL, label, row=f"summary.key_lines[{index}]", context=str(index + 1)))
         items.append(AePathItem(f"summary.key_lines[{index}]", "p1", "summary.key_lines", T_TEXT, line, row=f"summary.key_lines[{index}]", context=str(index + 1)))
@@ -3009,7 +3039,7 @@ __all__ = [
     "usable_case_records", "card_names_with_tail", "treatment_card_count", "treatment_card_from_appendix",
     "AE_DELETE", "AE_COLLECTIONS", "AE_FIGURES", "AE_INDEXED", "AE_SCALARS", "AePathItem", "FigureBand", "ViewPath",
     "apply_structural_overrides", "coerce_ae_value", "derived_defaults", "is_delete_marker", "is_structural_path",
-    "parse_ae_number", "parse_view_path", "path_class", "resolve_view_path", "section_texts", "walk_ae_paths",
+    "parse_ae_number", "parse_view_path", "path_class", "canonical_ae_path", "MAX_AE_PATH_CHARS", "resolve_view_path", "section_texts", "walk_ae_paths",
     "with_derived_defaults", "CLASS_CELL", "CLASS_LABEL", "CLASS_SENTENCE", "CLASS_STATIC", "CLASS_STRUCTURE",
     "T_COUNT", "T_INT", "T_LABEL", "T_LIST", "T_PCT", "T_PCT_OPT", "T_STATE", "T_TEXT", "HEAT_STATES",
 ]

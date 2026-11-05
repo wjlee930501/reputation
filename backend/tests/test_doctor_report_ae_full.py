@@ -331,3 +331,64 @@ def test_editor_items_follow_report_order_and_flag_numbers_and_deletions(failure
     assert not by_path["summary.key_lines[0]"]["numbers_changed"]  # 숫자를 뺀 문장은 '다름'이 아니다
     assert by_path["treatment_label[" + failure_view.appendix.keyword_rows[0].keyword + "]"]["deletable"] is False
     assert all(item["kind"] and item["type"] for item in items)
+
+
+# ── Codex 1차 반영 ─────────────────────────────────────────────────────────────
+
+
+def test_legacy_plan_action_alias_and_new_path_never_leave_two_overrides_on_one_cell(failure_view):
+    from app.services.doctor_report_ae_edit import merge_ae_fields
+
+    keyword = failure_view.plan.rows[0].keyword
+    merged = merge_ae_fields({f"plan.action[{keyword}]": "오전 수정"}, {f"plan.rows[{keyword}].action": "오후 수정"})
+    assert merged == {f"plan.rows[{keyword}].action": "오후 수정"}
+    edited = apply_ae_overrides(failure_view, normalize_ae_fields(merged, failure_view))
+    assert edited.plan.rows[0].action == "오후 수정"
+    items = {item["path"]: item for item in editor_items(failure_view, {f"plan.action[{keyword}]": "오전 수정"})}
+    assert items[f"plan.rows[{keyword}].action"]["value"] == "오전 수정" and items[f"plan.rows[{keyword}].action"]["overridden"]
+
+
+def test_duplicate_titles_get_distinct_row_keys(failure_view):
+    from dataclasses import replace as _replace
+
+    rows = failure_view.content.rows
+    twin = _replace(failure_view, content=_replace(failure_view.content, rows=(rows[0], _replace(rows[1], title=rows[0].title), *rows[2:])))
+    paths = [item.path for item in walk_ae_paths(twin)]
+    assert len(paths) == len(set(paths))
+    second = f"content.rows[{rows[0].title}#2]"
+    assert f"{second}.published_on" in paths
+    edited = _edit(twin, {f"{second}.published_on": "10-31", second + "x" if False else f"content.rows[{rows[0].title}]": AE_DELETE})
+    assert edited.content.rows[0].title == rows[0].title and edited.content.rows[0].published_on == "10-31"
+    assert len(edited.content.rows) == len(rows) - 1
+
+
+def test_hidden_elements_are_not_required_and_card_rows_are_not_deletable(failure_view):
+    # 시사점을 다 지우면 패널·소제목이 사라지고 필수 문구에서도 빠진다.
+    edited = _edit(failure_view, {"cases.found.insight": AE_DELETE, "cases.missing.insight": AE_DELETE})
+    assert edited.cases.insight_label not in edited.required_texts()[4]
+    _render(edited)
+    # 추이를 한 점만 남기면 그래프가 사라지고 남은 값은 요구하지 않는다(사실에서도 빠진다).
+    gone = _edit(failure_view, {f"exposure.trend[{failure_view.exposure.trend[0].label}]": AE_DELETE, f"exposure.trend[{failure_view.exposure.trend[1].label}]": AE_DELETE})
+    assert len(gone.exposure.trend) == 1 and not any(k.startswith("trend.") for k in gone.facts())
+    _render(gone)
+    # 막대 값을 비우면 '—'가 찍히고 옛 글자는 요구하지 않는다.
+    bar = failure_view.content.bars[0]
+    blank = _edit(failure_view, {f"content.bars[{bar.label}].value": AE_DELETE})
+    assert blank.content.bars[0].value is None
+    assert 'class="bar-value muted">—' in render_v4_html(blank, period_label=blank.period_ym, public_url=PUBLIC_URL, density="comfortable", breaks=PageBreaks())
+    _render(blank)
+    # 히트맵 칸 글자는 필수 문구이고, 지난달 참고치는 참고 줄의 숫자를 따른다.
+    row = failure_view.exposure.heatmap[0]
+    cell = _edit(failure_view, {f"exposure.heatmap[{row.keyword}].cells[{failure_view.platforms[0]}].detail": "9/9"})
+    assert "9/9" in cell.required_texts()[2]
+    _render(cell)
+    reference = _view("method-changed")
+    renoted = _edit(reference, {"appendix.keyword_note": reference.appendix.keyword_note.replace("31%", "77%")})
+    assert renoted.facts()["rate.reference_previous"] == "77%"
+    # 카드는 행 단위로 지울 수 없고(칸만), 셀 수 없는 긴 경로·거대한 수는 예외 없이 거절한다.
+    card_items = [item for item in walk_ae_paths(failure_view) if item.row == "summary.cards[0]"]
+    assert card_items and not any(item.row_deletable for item in card_items)
+    problems = {p.code for p in validate_ae_fields({"summary.cards[0]": AE_DELETE, "summary.cards[" + "9" * 5000 + "].label": "x", f"plan.rows[{failure_view.plan.rows[0].keyword}].priority": 10**400, "summary.cards[0].names": ["a"] * 60}, failure_view)}
+    assert problems == {"UNKNOWN_FIELD", "NOT_A_NUMBER", "TOO_MANY_ITEMS"}
+    # 카드 값을 '9개 항목'으로 고치면 이름 6개도 받는다.
+    assert validate_ae_fields({"summary.cards[3].value": "9개 항목", "summary.cards[3].names": [f"항목{i}" for i in range(6)]}, failure_view) == []

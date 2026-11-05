@@ -202,6 +202,7 @@ from app.services.doctor_report_v4 import (
     case_candidates_for_view,
     compare_facts_excluding_competitors,
     competitor_fact_changes,
+    is_competitor_fact,
     parse_ae_path,
 )
 from app.services.domain_health_control import (
@@ -13628,6 +13629,21 @@ def build_monthly_template_refresh_plan(
         )
         if legacy_note:
             verdict.add("WARN", "AE_LEGACY_CARD_RECOUNTED", legacy_note)
+        # 경쟁 때문에 정상적으로 버린 수정(경쟁을 말하는 카드 설명 등)은 얼린 뷰에는 있고 새 뷰에는 없다 — 비교 기대값도
+        # 옛 pristine 뷰에 **이어진 값만** 얹은 뷰로 둔다(Codex 1-P1-3). 수정이 없던 판은 얼린 뷰 그대로다.
+        stored_overrides = stored_ae_overrides(render_inputs)
+        old_base = base_view_of(render_inputs) if stored_overrides is not None else None
+        if stored_overrides is not None and old_base is not None and frozen_view is not None:
+            kept_fields = {
+                path: value for path, value in dict(stored_overrides["fields"]).items()
+                if path not in (dropped_overrides or {})
+            }
+            old_candidates = case_candidates_for_view(
+                old_base, list(rebuilt.records), registered_names=list(rebuilt.registered_competitors)
+            ) if any((f := parse_ae_path(path)) is not None and f.kind == AE_FIELD_CASE_RECORD for path in kept_fields) else []
+            frozen_view = apply_ae_overrides(old_base, kept_fields, case_candidates=old_candidates)
+            frozen_facts = {**frozen_facts, **{k: v for k, v in frozen_view.facts().items() if not is_competitor_fact(k)}}
+            frozen_facts = {k: v for k, v in frozen_facts.items() if is_competitor_fact(k) or k in frozen_view.facts()}
         new_facts = final_view.facts()
         # 저장 요약과의 대조는 pristine(다시 만든) 뷰로 한다 — AE가 바꾼 숫자는 저장 요약과 다르기 마련이고, 그 수정은
         # 얼린(수정 적용) 사실과 이어진 수정(final_view)의 비교가 지킨다.

@@ -47,6 +47,7 @@ from app.services.doctor_report_v4 import (
     ae_path,
     apply_ae_overrides,
     apply_structural_overrides,
+    canonical_ae_path,
     coerce_ae_value,
     is_delete_marker,
     is_structural_path,
@@ -68,6 +69,7 @@ from app.utils.medical_filter import check_forbidden
 MAX_SENTENCE_CHARS = 400
 MAX_LABEL_CHARS = 60
 MAX_CARD_NAMES = 8
+MAX_LIST_ITEMS = 50
 MAX_FIELDS = 1200
 # 승계·사람 기록 상한 — 한 보고서가 수십 번 고쳐져도 스냅샷이 무한히 자라지 않게.
 MAX_HISTORY = 20
@@ -76,6 +78,8 @@ AE_EDIT_DROP_REASON_NUMBERS_CHANGED = "NUMBERS_CHANGED"
 _NUMBER = re.compile(r"\d+(?:\.\d+)?")
 _CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 SECTION_NAMES = ("p1", "p2", "p3", "p4", "p5", "p6", "appendix")
+# 원장 PDF 검증의 빈 쪽 하한(`report_artifact_validation._MIN_PAGE_CHARS`)과 같다 — 절마다 공백을 뺀 글자가 이만큼은 남아야 한다.
+MIN_SECTION_CHARS = 8
 
 
 @dataclass(frozen=True, slots=True)
@@ -163,11 +167,15 @@ def editor_items(
     """
     structural = {path: value for path, value in stored_fields.items() if is_structural_path(path) and value is not None}
     derived = apply_structural_overrides(base, structural, case_candidates=case_candidates) if structural else base
+    pristine_labels = {row.keyword: row.treatment for row in base.appendix.keyword_rows}
+    canonical_stored = {canonical_ae_path(path): value for path, value in stored_fields.items()}
     items: list[dict[str, Any]] = []
     for item in walk_ae_paths(derived):
         original = _json_value(item.value)
-        stored = stored_fields.get(item.path)
-        row_deleted = item.row is not None and is_delete_marker(stored_fields.get(item.row))
+        if item.kind == "treatment_label":
+            original = pristine_labels.get(item.context, original)  # 라벨의 원문은 pristine 뷰의 라벨(Codex 1-P2-2)
+        stored = canonical_stored.get(item.path)
+        row_deleted = item.row is not None and is_delete_marker(canonical_stored.get(item.row))
         deleted = is_delete_marker(stored)
         value = original if deleted or stored is None else _json_value(stored)
         items.append(
@@ -183,6 +191,7 @@ def editor_items(
                 "row_deleted": row_deleted,
                 "context": item.context,
                 "deletable": item.deletable,
+                "row_deletable": item.row_deletable,
                 "overridden": stored is not None,
                 "numbers_changed": stored is not None and not deleted and numbers_differ(original, stored),
             }
@@ -237,6 +246,8 @@ def _value_problems(path: str, value_type: str, value: Any) -> list[AeEditProble
     if value_type == T_LIST:
         if not isinstance(value, (list, tuple)) or not all(isinstance(item, str) for item in value):
             return [AeEditProblem(path, "NOT_LIST", "항목 이름은 글자 목록으로 보내야 합니다.")]
+        if len(value) > MAX_LIST_ITEMS:
+            return [AeEditProblem(path, "TOO_MANY_ITEMS", f"목록은 {MAX_LIST_ITEMS}개까지입니다.")]
         problems: list[AeEditProblem] = []
         for index, item in enumerate(value):
             problems.extend(_text_problems(f"{path}[{index}]", item, limit=MAX_LABEL_CHARS))
@@ -276,6 +287,12 @@ def validate_ae_fields(
     derived = apply_structural_overrides(view, structural, case_candidates=case_candidates or ()) if structural else view
     # 카드 4 이름 목록은 **라벨을 적용한 뒤 다시 센 n**을 넘을 수 없다 — 라벨을 합쳐 n이 줄면 옛 목록이 카드 값보다 길어진다.
     derived_count = derived_card_count(view, fields)
+    explicit_value = fields.get("summary.cards[3].value")
+    if isinstance(explicit_value, str):
+        # 사람이 카드 값을 고쳤으면(숫자 자유) 그 값의 n이 상한이고, 셀 수 없는 값이면 상한이 없다(Codex 1-P2-3).
+        from app.services.doctor_report_v4 import Card
+
+        derived_count = treatment_card_count(Card("", explicit_value.strip(), ""))
     problems: list[AeEditProblem] = []
     for path, value in fields.items():
         field_ = parse_ae_path(path)
@@ -338,8 +355,8 @@ def validate_ae_fields(
                 problems.append(AeEditProblem(path, "UNKNOWN_KEY", "이 보고서에 없는 행이나 칸입니다."))
                 continue
             if is_delete_marker(value):
-                if vp.value_type in (T_PCT, T_INT):
-                    problems.append(AeEditProblem(path, "NOT_DELETABLE", "이 숫자는 비울 수 없습니다. 값을 바꾸거나 행을 지워 주세요."))
+                if vp.value_type in (T_PCT, T_INT, T_STATE):
+                    problems.append(AeEditProblem(path, "NOT_DELETABLE", "이 값은 비울 수 없습니다. 값을 바꾸거나 행을 지워 주세요."))
                 continue
             if vp.attr is None and vp.family in ("row", "case", "figure"):
                 problems.append(AeEditProblem(path, "NOT_TEXT", "행·사례·검정 면 자체는 지우기만 할 수 있습니다."))
@@ -351,9 +368,9 @@ def validate_ae_fields(
 def empty_section_problems(edited: DoctorReportV4) -> list[AeEditProblem]:
     """본문 6절과 부록은 저마다 한 글자는 남아야 한다 — 다 지우면 빈 쪽이 생겨 원장 PDF 검증(`DOCTOR_PDF_PAGE_EMPTY`)이 막는다."""
     return [
-        AeEditProblem(name, "SECTION_EMPTY", "이 절의 글자를 모두 지울 수는 없습니다. 한 항목은 남겨 주세요.")
+        AeEditProblem(name, "SECTION_EMPTY", "이 절의 글자를 거의 다 지울 수는 없습니다. 한 항목(8자 이상)은 남겨 주세요.")
         for name, texts in section_texts(edited).items()
-        if not texts
+        if len("".join("".join(text.split()) for text in texts)) < MIN_SECTION_CHARS
     ]
 
 
@@ -430,8 +447,9 @@ def normalize_ae_fields(
     내용을 사람이 원문으로 되돌린 값은 원문과 같아도 명시 수정으로 남아야 한다. 지우기 표식은 그대로 남긴다.
     """
     cleaned: dict[str, Any] = {}
-    for path in sorted(fields):
-        value = fields[path]
+    for raw_path in sorted(fields):
+        value = fields[raw_path]
+        path = canonical_ae_path(raw_path)
         field_ = parse_ae_path(path)
         if value is None or field_ is None:
             continue
@@ -509,7 +527,7 @@ def number_changes(
     for path in changed_paths(before_fields, after_fields):
         value = after_fields.get(path)
         original = originals.get(path)
-        if value is None or is_delete_marker(value) or original is None or not numbers_differ(original, value):
+        if value is None or is_delete_marker(value) or path not in originals or not numbers_differ(original, value):
             continue
         out.append({"path": path, "before": _json_value(original), "after": _json_value(value), "edited_by": edited_by, "edited_at": edited_at})
     return out
@@ -590,8 +608,9 @@ def base_view_of(render_inputs: Any) -> DoctorReportV4 | None:
 
 def merge_ae_fields(stored: Mapping[str, Any] | None, incoming: Mapping[str, Any]) -> dict[str, Any]:
     """이전 수정 값 위에 새 요청을 덮는다. 새 요청의 None은 그 경로의 수정을 지운다."""
-    merged = dict(stored or {})
+    merged = {canonical_ae_path(path): value for path, value in (stored or {}).items()}
     for path, value in incoming.items():
+        path = canonical_ae_path(path)
         if value is None:
             merged.pop(path, None)
         else:

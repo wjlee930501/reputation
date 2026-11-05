@@ -287,7 +287,7 @@ def test_normalize_drops_values_equal_to_the_original_and_merge_removes_with_non
     top = _plan_keyword(view)
     original_action = originals[f"plan.action[{top}]"]
     kept = normalize_ae_fields({f"treatment_label[{top}]": "새 항목", f"plan.action[{top}]": original_action}, view)
-    assert kept == {f"treatment_label[{top}]": "새 항목", f"plan.action[{top}]": original_action}
+    assert kept == {f"treatment_label[{top}]": "새 항목", f"plan.rows[{top}].action": original_action}  # 별칭은 새 경로로 정규화된다
     applied = apply_ae_overrides(view, kept)
     assert (*applied.plan.rows, *applied.plan.continued)[0].action == original_action
     # 라벨에서 파생된 문장을 그대로 보내면 군더더기라 뺀다.

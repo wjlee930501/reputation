@@ -26,6 +26,8 @@ export type AeEditItem = {
   /** 행의 키(키워드 문장·제목·라벨) 또는 번호 */
   readonly context: string
   readonly deletable: boolean
+  /** 행 단위로 지울 수 있는가(카드는 칸만 지운다) */
+  readonly rowDeletable: boolean
   readonly overridden: boolean
   readonly numbersChanged: boolean
 }
@@ -151,6 +153,7 @@ function parseItem(raw: unknown): AeEditItem | null {
     rowDeleted: raw.row_deleted === true,
     context: text(raw.context),
     deletable: raw.deletable !== false,
+    rowDeletable: raw.row_deletable !== false,
     overridden: raw.overridden === true,
     numbersChanged: raw.numbers_changed === true,
   }
@@ -312,7 +315,7 @@ export function buildAeEditFields(
   const fields: Record<string, unknown> = {}
   const seenRows = new Set<string>()
   for (const item of items) {
-    if (item.row && !seenRows.has(item.row)) {
+    if (item.row && item.rowDeletable && !seenRows.has(item.row)) {
       seenRows.add(item.row)
       const wasDeleted = isDeleteMarker(overrides[item.row])
       const nowDeleted = draft.rows[item.row] === true
@@ -344,6 +347,7 @@ export type AeEditGroup = {
   /** 행 경로(행 묶음) 또는 첫 항목의 경로 */
   readonly key: string
   readonly row: string | null
+  readonly rowDeletable: boolean
   readonly context: string
   readonly items: readonly AeEditItem[]
 }
@@ -354,7 +358,7 @@ export type AeEditSectionGroup = { readonly section: string; readonly groups: re
 export function groupAeEditItems(items: readonly AeEditItem[]): AeEditSectionGroup[] {
   const sections: AeEditSectionGroup[] = []
   let current: { section: string; groups: AeEditGroup[] } | null = null
-  let lastGroup: { key: string; row: string | null; context: string; items: AeEditItem[] } | null = null
+  let lastGroup: { key: string; row: string | null; rowDeletable: boolean; context: string; items: AeEditItem[] } | null = null
   for (const item of items) {
     if (!current || current.section !== item.section) {
       current = { section: item.section, groups: [] }
@@ -365,7 +369,7 @@ export function groupAeEditItems(items: readonly AeEditItem[]): AeEditSectionGro
       lastGroup.items.push(item)
       continue
     }
-    lastGroup = { key: item.row ?? item.path, row: item.row, context: item.context, items: [item] }
+    lastGroup = { key: item.row ?? item.path, row: item.row, rowDeletable: item.row !== null && item.rowDeletable, context: item.context, items: [item] }
     current.groups.push(lastGroup)
   }
   return sections

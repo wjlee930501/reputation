@@ -222,7 +222,7 @@ export function ReportAeEditPanel({
       {loadError && (
         <div className="rounded-lg border border-[var(--color-revisit-red-50)] p-3 text-sm text-[var(--color-revisit-red-50)]" role="alert">
           <p>{loadError}</p>
-          <button type="button" onClick={() => void load()} className={`${BUTTON} mt-2 border border-[var(--color-revisit-coolgrey-20)] bg-white text-[var(--color-revisit-text-title)]`}>다시 불러오기</button>
+          <button type="button" onClick={() => void load()} className={`${BUTTON} mt-2 border border-[var(--color-revisit-coolgrey-20)] bg-white text-[var(--color-revisit-text-title)]`}>{ADMIN_COPY.aeEditReload}</button>
         </div>
       )}
       {!preview && !loadError && <p className="text-sm" role="status">{ADMIN_COPY.aeEditLoading}</p>}
@@ -248,7 +248,7 @@ export function ReportAeEditPanel({
                       if (!current && candidates.length === 0) return null
                       return (
                         <div key={slot} className="rounded-lg border border-[var(--color-revisit-coolgrey-20)] p-3">
-                          <p className="text-sm font-semibold">{current?.label ?? (slot === 'found' ? '노출 사례' : '미노출 사례')}</p>
+                          <p className="text-sm font-semibold">{current?.label ?? (slot === 'found' ? ADMIN_COPY.aeEditCaseFound : ADMIN_COPY.aeEditCaseMissing)}</p>
                           {current && <p className="mt-1 text-xs leading-5 text-[var(--color-revisit-text-helper)] [word-break:keep-all]">{current.keyword} · {current.platform} · {current.measuredOn}</p>}
                           {candidates.length > 0 && (
                             <label className="mt-2 block text-sm font-semibold">{ADMIN_COPY.aeEditCasePick}
@@ -274,11 +274,11 @@ export function ReportAeEditPanel({
           ))}
 
           <label className="block text-sm font-semibold">{ADMIN_COPY.aeEditReason}
-            <input value={reason} onChange={(event) => setReason(event.target.value)} maxLength={200} placeholder="예: 측정 실패 표시 정리" className={INPUT} />
+            <input value={reason} onChange={(event) => setReason(event.target.value)} maxLength={200} placeholder={ADMIN_COPY.aeEditReasonPlaceholder} className={INPUT} />
           </label>
 
           {problems['']?.map((text) => <p key={text} className="text-sm text-[var(--color-revisit-red-50)]" role="alert">{text}</p>)}
-          {validated && validated.problems.filter((problem) => problem.path && !knownPaths.has(problem.path) && !(problem.path in problems)).map((problem) => (
+          {validated && validated.problems.filter((problem) => problem.path && !knownPaths.has(problem.path) && !problem.path.startsWith('summary.cards[3].names[')).map((problem) => (
             <p key={`${problem.path}:${problem.message}`} className="text-sm text-[var(--color-revisit-red-50)]" role="alert">{problem.path}: {problem.message}</p>
           ))}
           {error && <p className="text-sm text-[var(--color-revisit-red-50)]" role="alert">{error}</p>}
@@ -289,7 +289,7 @@ export function ReportAeEditPanel({
             <button type="button" onClick={() => void validate()} disabled={busy || !changed} className={`${BUTTON} border border-[var(--color-revisit-coolgrey-20)] bg-white text-[var(--color-revisit-text-title)]`}>{changed ? ADMIN_COPY.aeEditPreview : ADMIN_COPY.aeEditNoChanges}</button>
             <button type="button" onClick={() => void previewPdf()} disabled={pdfBusy || busy} className={`${BUTTON} border border-[var(--color-revisit-coolgrey-20)] bg-white text-[var(--color-revisit-text-title)]`}>{pdfBusy ? ADMIN_COPY.aeEditPreviewPdfBusy : ADMIN_COPY.aeEditPreviewPdf}</button>
             <button type="button" onClick={() => void submit()} disabled={!canSubmit} className={`${BUTTON} bg-[var(--color-revisit-primary-40)] text-white`}>{busy ? ADMIN_COPY.aeEditSubmitting : ADMIN_COPY.aeEditSubmit}</button>
-            <button type="button" onClick={() => { setOpen(false); setValidation(null) }} className={`${BUTTON} border border-[var(--color-revisit-coolgrey-20)] bg-white text-[var(--color-revisit-text-helper)]`}>닫기</button>
+            <button type="button" onClick={() => { setOpen(false); setValidation(null) }} className={`${BUTTON} border border-[var(--color-revisit-coolgrey-20)] bg-white text-[var(--color-revisit-text-helper)]`}>{ADMIN_COPY.aeEditClose}</button>
           </div>
         </>
       )}
@@ -313,7 +313,7 @@ function GroupBlock({ group, draft, problems, recounted, onValue, onRow }: {
       {isRow && (
         <div className="flex flex-wrap items-center justify-between gap-2">
           <p className="text-xs font-bold text-[var(--color-revisit-text-caption)] [word-break:keep-all]">{group.context}{rowDeleted ? ` · ${ADMIN_COPY.aeEditRowDeleted}` : ''}</p>
-          <button type="button" onClick={() => onRow(group.row as string, !rowDeleted)} className={SMALL_BUTTON}>{rowDeleted ? ADMIN_COPY.aeEditRestoreRow : ADMIN_COPY.aeEditDeleteRow}</button>
+          {group.rowDeletable && <button type="button" onClick={() => onRow(group.row as string, !rowDeleted)} className={SMALL_BUTTON}>{rowDeleted ? ADMIN_COPY.aeEditRestoreRow : ADMIN_COPY.aeEditDeleteRow}</button>}
         </div>
       )}
       {problems[group.row ?? '']?.map((text) => group.row && <span key={text} className="mt-1 block text-xs text-[var(--color-revisit-red-50)]" role="alert">{text}</span>)}
