@@ -1,11 +1,14 @@
 'use client'
 
+import { useState } from 'react'
+import { ADMIN_COPY } from '@/lib/admin-copy'
 import {
   reportStatusLabel,
   reportSummaryCounts,
   shouldShowDeliveryProblem,
 } from '@/lib/report-delivery'
 import type { ReportView } from '@/lib/report-review'
+import { annotateReportVersions, groupReportVersions, reportVersionBadge, reportVersionGroupKey, type ReportVersionInfo } from '@/lib/report-versions'
 import { ReportRebuildButton } from './ReportRebuildButton'
 
 function formatDate(value: string | null): string {
@@ -27,6 +30,9 @@ export function ReportList({
   onRebuild: (report: ReportView, reason: string) => void
 }) {
   const { delivered, ready, blocked } = reportSummaryCounts(reports)
+  const versions = annotateReportVersions(reports)
+  const rows = groupReportVersions(reports)
+  const [expanded, setExpanded] = useState<Readonly<Record<string, boolean>>>({})
   return (
     <section data-current-task aria-labelledby="report-list-heading">
       <div className="mb-4 grid grid-cols-3 gap-2 sm:gap-3">
@@ -54,60 +60,97 @@ export function ReportList({
               </tr>
             </thead>
             <tbody className="divide-y divide-[var(--color-revisit-coolgrey-20)]">
-              {/* 초기 진단(V0)과 월간이 한 줄씩. 행동은 ‘열기’와, 월간에 한해 ‘다시 만들기’다 —
-                  작업 카드는 최근 3건만 보여 주므로 과거 월은 이 행에서만 다시 만들 수 있다. */}
-              {reports.map((report) => (
-                <tr key={report.id} className="align-top">
-                  <td className="px-5 py-4 font-bold text-[var(--color-revisit-text-title)]" data-primary="true">
-                    {report.periodYear}년 {report.periodMonth}월
-                    <span className="mt-1 block text-xs font-normal text-[var(--color-revisit-text-caption)]">{report.typeLabel}</span>
-                  </td>
-                  <td className="px-5 py-4" data-label="현재 상태">
-                    <div data-report-state-copy className="min-w-0 flex-1 text-left">
-                    <span className="block font-semibold text-[var(--color-revisit-text-title)]">
-                      {reportStatusLabel(report)}
-                    </span>
-                    {shouldShowDeliveryProblem(report) && (
-                      <p className="mt-1 max-w-sm text-xs leading-5 text-[var(--color-revisit-red-50)] [word-break:keep-all]">
-                        문제: {report.deliveryBlockers[0] ?? '최신 전달 가능 상태를 확인할 수 없습니다.'}<br />
-                        고객 영향: {report.deliveryTracked
-                          ? '최신 월간 보고 자료를 원장에게 전달할 수 없습니다.'
-                          : '초기 진단 결과를 원장에게 보고할 자료가 없습니다.'}<br />
-                        지금 할 일: ‘열기’에서 해결 방법을 확인하세요.
-                      </p>
-                    )}
-                    {!report.deliveryTracked && report.deliveryReady && (
-                      <p className="mt-1 max-w-sm text-xs leading-5 text-[var(--color-revisit-text-helper)] [word-break:keep-all]">
-                        초기 진단은 전달 기록을 남기지 않습니다. ‘열기’에서 근거를 확인한 뒤 원장에게 직접 보고해 주세요.
-                      </p>
-                    )}
-                    {report.deliveryWarnings.length > 0 && (
-                      <p className="mt-1 max-w-sm text-xs leading-5 text-[var(--color-revisit-text-helper)] [word-break:keep-all]">
-                        주의: {report.deliveryWarnings[0]}
-                      </p>
-                    )}
-                    </div>
-                  </td>
-                  <td className="px-5 py-4 text-[var(--color-revisit-text-helper)]" data-label="생성일">
-                    {formatDate(report.createdAt)}
-                  </td>
-                  <td className="px-5 py-4 text-right" data-label="다음 행동">
-                    <button type="button" onClick={() => onOpen(report)} disabled={loadingId === report.id} className="min-h-11 rounded-lg bg-[var(--color-revisit-primary-40)] px-4 text-xs font-bold text-white disabled:opacity-50">
-                      {loadingId === report.id ? '여는 중' : '열기'}
-                    </button>
-                    <ReportRebuildButton
-                      report={report}
-                      disabled={rebuildBusy || loadingId === report.id}
-                      onRebuild={(reason) => onRebuild(report, reason)}
-                    />
-                  </td>
-                </tr>
-              ))}
+              {/* 같은 달·종류는 최신 한 줄만 보이고 이전 버전은 접혀 있다 — 옛 버전은 '보고서 고치기'가 막히므로 어느 것이 최신인지 먼저 보여야 한다.
+                  행동은 ‘열기’와, 월간에 한해 ‘다시 만들기’다 — 작업 카드는 최근 3건만 보여 주므로 과거 월은 이 행에서만 다시 만들 수 있다. */}
+              {rows.map((row) => {
+                const key = reportVersionGroupKey(row.latest)
+                const open = expanded[key] === true
+                return [
+                  <ReportRow key={row.latest.id} report={row.latest} info={versions.get(row.latest.id)} loadingId={loadingId} rebuildBusy={rebuildBusy} onOpen={onOpen} onRebuild={onRebuild}
+                    toggle={row.older.length > 0 ? { open, count: row.older.length, onToggle: () => setExpanded((current) => ({ ...current, [key]: !open })) } : null} />,
+                  ...(open ? row.older.map((report) => (
+                    <ReportRow key={report.id} report={report} info={versions.get(report.id)} loadingId={loadingId} rebuildBusy={rebuildBusy} onOpen={onOpen} onRebuild={onRebuild} toggle={null} older />
+                  )) : []),
+                ]
+              })}
             </tbody>
           </table>
         </div>
       )}
     </section>
+  )
+}
+
+function ReportRow({ report, info, loadingId, rebuildBusy, onOpen, onRebuild, toggle, older = false }: {
+  report: ReportView
+  info: ReportVersionInfo | undefined
+  loadingId: string | null
+  rebuildBusy: boolean
+  onOpen: (report: ReportView) => void
+  onRebuild: (report: ReportView, reason: string) => void
+  toggle: { open: boolean; count: number; onToggle: () => void } | null
+  older?: boolean
+}) {
+  return (
+    <tr className={`align-top ${older ? 'bg-[var(--color-revisit-coolgrey-90)] text-[var(--color-revisit-text-helper)]' : ''}`} data-report-version={info?.version ?? ''} data-report-latest={info?.latest ? 'true' : 'false'}>
+      <td className="px-5 py-4 font-bold text-[var(--color-revisit-text-title)]" data-primary="true">
+        <span className={older ? 'pl-4 font-semibold text-[var(--color-revisit-text-helper)]' : ''}>{report.periodYear}년 {report.periodMonth}월</span>
+        <span className="mt-1 block text-xs font-normal text-[var(--color-revisit-text-caption)]">
+          {report.typeLabel}
+          {info && (
+            <span className={`ml-2 rounded px-1.5 py-0.5 text-xs font-bold ${info.latest ? 'bg-[var(--color-revisit-primary-40)] text-white' : 'bg-[var(--color-revisit-coolgrey-90)] text-[var(--color-revisit-text-helper)]'}`} data-testid="report-version-badge">
+              {reportVersionBadge(info)}
+            </span>
+          )}
+        </span>
+        {toggle && (
+          <button type="button" onClick={toggle.onToggle} aria-expanded={toggle.open} className="mt-2 block text-xs font-bold text-[var(--color-revisit-primary-40)]" data-testid="report-older-toggle">
+            {toggle.open ? ADMIN_COPY.reportOlderVersionsHide : `${ADMIN_COPY.reportOlderVersionsShow} ${toggle.count}${ADMIN_COPY.reportOlderVersionsShowSuffix}`}
+          </button>
+        )}
+      </td>
+      <td className="px-5 py-4" data-label="현재 상태">
+        <div data-report-state-copy className="min-w-0 flex-1 text-left">
+        <span className="block font-semibold text-[var(--color-revisit-text-title)]">
+          {reportStatusLabel(report)}
+        </span>
+        {shouldShowDeliveryProblem(report) && (
+          <p className="mt-1 max-w-sm text-xs leading-5 text-[var(--color-revisit-red-50)] [word-break:keep-all]">
+            문제: {report.deliveryBlockers[0] ?? '최신 전달 가능 상태를 확인할 수 없습니다.'}<br />
+            고객 영향: {report.deliveryTracked
+              ? '최신 월간 보고 자료를 원장에게 전달할 수 없습니다.'
+              : '초기 진단 결과를 원장에게 보고할 자료가 없습니다.'}<br />
+            지금 할 일: ‘열기’에서 해결 방법을 확인하세요.
+          </p>
+        )}
+        {!report.deliveryTracked && report.deliveryReady && (
+          <p className="mt-1 max-w-sm text-xs leading-5 text-[var(--color-revisit-text-helper)] [word-break:keep-all]">
+            초기 진단은 전달 기록을 남기지 않습니다. ‘열기’에서 근거를 확인한 뒤 원장에게 직접 보고해 주세요.
+          </p>
+        )}
+        {report.deliveryWarnings.length > 0 && (
+          <p className="mt-1 max-w-sm text-xs leading-5 text-[var(--color-revisit-text-helper)] [word-break:keep-all]">
+            주의: {report.deliveryWarnings[0]}
+          </p>
+        )}
+        </div>
+      </td>
+      <td className="px-5 py-4 text-[var(--color-revisit-text-helper)]" data-label="생성일">
+        {formatDate(report.createdAt)}
+      </td>
+      <td className="px-5 py-4 text-right" data-label="다음 행동">
+        <button type="button" onClick={() => onOpen(report)} disabled={loadingId === report.id} className="min-h-11 rounded-lg bg-[var(--color-revisit-primary-40)] px-4 text-xs font-bold text-white disabled:opacity-50">
+          {loadingId === report.id ? '여는 중' : '열기'}
+        </button>
+        {!older && (
+          <ReportRebuildButton
+            report={report}
+            disabled={rebuildBusy || loadingId === report.id}
+            onRebuild={(reason) => onRebuild(report, reason)}
+          />
+        )}
+      </td>
+    </tr>
   )
 }
 

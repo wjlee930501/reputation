@@ -74,6 +74,8 @@ export type ReportView = {
   internalDownloadUrl: string | null
   createdAt: string
   sentAt: string | null
+  /** 서버가 목록·상세에 버전을 실으면 그 값(없으면 null — 화면은 같은 달 안의 만든 시각 순서로 센다, `report-versions.ts`). */
+  version: number | null
   /**
    * 검증본 sha256에 묶인 전달 기록 파이프라인의 대상인지(월간만 true).
    *
@@ -318,6 +320,7 @@ export function parseReport(value: unknown): ReportView | null {
     internalDownloadUrl: text(root.download_url) || null,
     createdAt: text(root.created_at),
     sentAt: text(root.sent_at) || null,
+    version: nullableNumber(root.version ?? evidence?.version),
     // 값을 못 읽으면 월간(전달 추적 대상)으로 본다 — 전달 서사를 잘못 감추는 쪽보다
     // 잘못 보여주는 쪽이 안전하다(전달 실행은 sha256 검사로 따로 막힌다).
     deliveryTracked: root.delivery_tracked !== false,
