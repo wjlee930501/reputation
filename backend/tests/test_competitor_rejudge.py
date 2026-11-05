@@ -532,3 +532,43 @@ def test_ordinary_strategy_summary_uses_the_same_registration_projection():
         next_month="2026-11",
     )
     assert len(legacy["query_targets"][0]["competitor_outcomes"]) == 3
+
+
+# ── 머지 검토 반영: 사례 후보·승계 이름 집합도 등록 투영을 쓴다 ─────────────────────
+
+
+def test_case_candidates_follow_the_registration_scope():
+    from test_doctor_report_v4 import _hospital, build
+    from test_doctor_report_v4 import _record as v4_record
+
+    from app.services.doctor_report_v4 import case_candidates_for_view
+
+    records = [
+        v4_record("가상동 위내시경 가능한 병원", mentioned=False, competitors=[{"name": "가나의원", "is_mentioned": False}, {"name": "옛경쟁의원", "is_mentioned": True}]),
+    ]
+    records[0].id = uuid.uuid4()
+    view = build(hospital=_hospital(competitors=["가나의원", "다라의원"]), records=records)
+    unscoped = case_candidates_for_view(view, records)
+    assert "옛경쟁의원이 대신 언급됐습니다" in unscoped[0].case.insight
+    scoped = case_candidates_for_view(view, records, registered_names=["가나의원", "다라의원"])
+    insight = scoped[0].case.insight
+    # 등록에서 뺀 병원을 되살리지 않고, 다라의원 판정이 없으니 '경쟁 병원도 언급되지 않았다'고도 하지 않는다.
+    assert "옛경쟁의원" not in insight and "경쟁 병원도 언급되지 않았습니다" not in insight
+
+
+def test_carry_name_set_includes_observed_but_unregistered_competitors():
+    from test_doctor_report_v4 import _hospital, build
+    from test_doctor_report_v4 import _record as v4_record
+
+    from app.workers.tasks import _competitor_names_for_carry, _competitor_refresh_carry
+
+    records = [v4_record("가상동 위내시경 가능한 병원", mentioned=False, competitors=[{"name": "관측만된의원", "is_mentioned": True}])]
+    view = build(hospital=_hospital(competitors=["가나의원"]), records=records)
+    rebuilt = tasks._RebuiltViewInputs(records=tuple(records), query_targets=(), registered_competitors=("가나의원",), frozen_view=view)
+    names = _competitor_names_for_carry(rebuilt, view, view)
+    assert "관측만된의원" in names and "가나의원" in names
+    kept, dropped = _competitor_refresh_carry(
+        {"summary.key_lines[0]": "관측만된의원보다 먼저 노출되도록 콘텐츠를 발행합니다", "summary.key_lines[1]": view.summary.key_lines[1]},
+        view, view, names,
+    )
+    assert set(dropped) == {"summary.key_lines[0]"} and set(kept) == {"summary.key_lines[1]"}

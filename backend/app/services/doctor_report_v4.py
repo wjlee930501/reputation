@@ -1971,14 +1971,21 @@ def apply_ae_overrides(
 
 
 def case_candidates_for_view(
-    view: DoctorReportV4, records: Sequence[Any], *, registered: bool | None = None
+    view: DoctorReportV4,
+    records: Sequence[Any],
+    *,
+    registered: bool | None = None,
+    registered_names: Sequence[str] = (),
 ) -> list[CaseCandidate]:
-    """그 달 관측 기록으로 P5 사례 후보를 만든다 — 진료 항목·인용 제목·경쟁 등록 여부는 (pristine) 뷰에서 읽는다."""
+    """그 달 관측 기록으로 P5 사례 후보를 만든다 — 진료 항목·인용 제목·경쟁 등록 여부는 (pristine) 뷰에서 읽는다.
+
+    `registered_names`(지금 등록된 경쟁사)를 주면 빌더와 같은 투영으로 기록의 경쟁 판정을 거른다 — 사례 교체가 등록에서
+    뺀 병원을 "대신 언급됐다"고 되살리지 않고, '경쟁 병원도 언급되지 않았다'도 같은 엄격한 규칙을 쓴다."""
     treatments = _treatment_by_keyword(view)
     urls_to_title = urls_to_titles(view.content.rows)
     is_registered = bool(view.competition.rows or view.competition.basis) if registered is None else registered
     candidates: list[CaseCandidate] = []
-    for record in usable_case_records(records):
+    for record in usable_case_records(scope_competitor_records(records, registered_names)):
         record_id = str(getattr(record, "id", "") or "")
         if not record_id:
             continue
@@ -1991,6 +1998,7 @@ def case_candidates_for_view(
             treatment=treatments.get(keyword, UNKNOWN_TREATMENT),
             urls_to_title=urls_to_title,
             registered=is_registered,
+            registered_names=registered_names,
         )
         candidates.append(CaseCandidate(record_id, found, case))
     return candidates

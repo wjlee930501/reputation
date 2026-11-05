@@ -13028,7 +13028,7 @@ def _build_monthly_report_for_hospital(
     # AE 수정 판 승계(2026-11-05): 대체하는 버전의 수정 값을 새 pristine 뷰에 다시 얹는다 — 숫자·키워드 집합이
     # 바뀐 재생성은 진료 항목 라벨만 잇고 문장은 버린다(`ae_overrides_dropped`에 남긴다).
     doctor_view, ae_overrides, ae_overrides_dropped = _carry_ae_overrides(
-        db, version_plan.supersedes_report_id, doctor_view, evidence_records, actual_now
+        db, version_plan.supersedes_report_id, doctor_view, evidence_records, actual_now, hospital=h
     )
     talking_points = list(doctor_view.talking_points)
 
@@ -13188,6 +13188,8 @@ def _carry_ae_overrides(
     doctor_view: DoctorReportV4,
     records: Sequence[Any],
     now: datetime,
+    *,
+    hospital: Hospital | None = None,
 ) -> tuple[DoctorReportV4, dict | None, dict | None]:
     """일반 재생성이 대체하는 버전의 AE 수정 값을 새 뷰에 잇는다 → (적용한 뷰, ae_overrides, ae_overrides_dropped).
 
@@ -13211,7 +13213,9 @@ def _carry_ae_overrides(
     applied = doctor_view
     if kept:
         candidates = (
-            case_candidates_for_view(doctor_view, records)
+            case_candidates_for_view(
+                doctor_view, records, registered_names=_registered_competitors_of(hospital)
+            )
             if any((f := parse_ae_path(path)) is not None and f.kind == AE_FIELD_CASE_RECORD for path in kept)
             else []
         )
@@ -13290,7 +13294,9 @@ def load_ae_case_candidates(db, h: Hospital, report: MonthlyReport) -> list[Case
         return []
     period = reporting_period(report.period_year, report.period_month)
     now = arrow.get(period.ends_at).shift(microseconds=-1)
-    return case_candidates_for_view(base, _frozen_scored_records(db, h, report, render_inputs, now))
+    return case_candidates_for_view(
+        base, _frozen_scored_records(db, h, report, render_inputs, now), registered_names=_registered_competitors_of(h)
+    )
 
 
 def _apply_ae_edit_to_plan(
@@ -13331,7 +13337,9 @@ def _apply_ae_edit_to_plan(
         return doctor_view, problems
     candidates: list[CaseCandidate] = []
     if any((f := parse_ae_path(path)) is not None and f.kind == AE_FIELD_CASE_RECORD for path in merged):
-        candidates = case_candidates_for_view(base, _frozen_scored_records(db, h, latest, render_inputs, now))
+        candidates = case_candidates_for_view(
+            base, _frozen_scored_records(db, h, latest, render_inputs, now), registered_names=_registered_competitors_of(h)
+        )
         for problem in validate_ae_fields(merged, base, case_candidates=candidates):
             problems.append(("BLOCKER", "AE_EDIT_INVALID", f"{problem.path}: {problem.code}"))
         if problems:
@@ -13698,6 +13706,27 @@ def _competitor_refresh_carry(
     return kept, dropped
 
 
+def _registered_competitors_of(hospital: Hospital | None) -> list[str]:
+    from app.services.competitor_scope import registered_competitor_names
+
+    return registered_competitor_names(hospital) if hospital is not None else []
+
+
+def _competitor_names_for_carry(
+    rebuilt: "_RebuiltViewInputs", rebuilt_view: DoctorReportV4, old_base: DoctorReportV4 | None
+) -> list[str]:
+    """수정 문장이 '경쟁 병원을 말하는지' 볼 이름 집합 — 지금 등록된 이름, 옛·새 경쟁 현황 행, 그리고 얼린 기록에
+    **관측된 모든 이름**(등록에서 뺐거나 한 번도 등록하지 않은 이름 포함)."""
+    names: list[str] = [*rebuilt.registered_competitors, *(row.name for row in rebuilt_view.competition.rows)]
+    if old_base is not None:
+        names.extend(row.name for row in old_base.competition.rows)
+    for record in rebuilt.records:
+        for item in getattr(record, "competitor_mentions", None) or []:
+            if isinstance(item, Mapping) and str(item.get("name") or "").strip():
+                names.append(str(item["name"]).strip())
+    return names
+
+
 def _apply_competitor_refresh_overrides(
     db,
     h: Hospital,
@@ -13719,18 +13748,17 @@ def _apply_competitor_refresh_overrides(
     if stored is None:
         return rebuilt_view, None
     old_base = base_view_of(render_inputs)
-    competitor_names = [
-        *rebuilt.registered_competitors,
-        *(row.name for row in rebuilt_view.competition.rows),
-        *((row.name for row in old_base.competition.rows) if old_base is not None else ()),
-    ]
-    kept, dropped = _competitor_refresh_carry(dict(stored["fields"]), old_base, rebuilt_view, competitor_names)
+    kept, dropped = _competitor_refresh_carry(
+        dict(stored["fields"]), old_base, rebuilt_view, _competitor_names_for_carry(rebuilt, rebuilt_view, old_base)
+    )
     for path in list(kept):
         if validate_ae_fields({path: kept[path]}, rebuilt_view):
             dropped[path] = kept.pop(path)
     candidates: list[CaseCandidate] = []
     if kept and any((f := parse_ae_path(path)) is not None and f.kind == AE_FIELD_CASE_RECORD for path in kept):
-        candidates = case_candidates_for_view(rebuilt_view, list(rebuilt.records))
+        candidates = case_candidates_for_view(
+            rebuilt_view, list(rebuilt.records), registered_names=list(rebuilt.registered_competitors)
+        )
         for path in list(kept):
             if validate_ae_fields({path: kept[path]}, rebuilt_view, case_candidates=candidates):
                 dropped[path] = kept.pop(path)
