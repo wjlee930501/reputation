@@ -1,6 +1,19 @@
 # Re:putation — 현재 프로젝트 개발 안내
 
-## 최신 운영 배포 — 2026-11-03 월간 보고서 1일 오전 마감
+## 최신 운영 배포 — 2026-11-05 원장용 월간 보고서 v4 (두 번 배포·10월분 재갱신)
+
+main `27710adb`(PR #282·#283, 보고서 v4)를 02:03~02:10 KST에, 이어 main `547c743b`(PR #284, 쪽 넘김 고아·과부 정리와 진료 항목 폴백 조각 제거)를
+08:46~08:51 KST에 Backend에 배포했다(둘 다 배치 시간대 밖, 2차는 같은 날 두 번째 릴리스라 `--override-reason`). **현재 리비전은 api `00278-bmk`,
+worker `00268-pwp`, beat `00263-nm4`**, Admin `00115-rwt`·Site `00149-6ck`·DB head `0093` 그대로(마이그레이션 없음). 원장용 월간 PDF는 v4
+(뷰 모델 `services/doctor_report_v4.py` 하나, 템플릿 `doctor_report_v4.html/.css`, 검증 판 `doctor-pdf-v4`, 용어 'AI 노출률·노출 키워드·측정 키워드·
+콘텐츠·AI 인용')이고 렌더러는 레이아웃 상자를 읽어 3행 미만 조각·박스만 남은 쪽을 강제 넘김으로 정리한 뒤 변형마다 이진 검증까지 통과한 것만 채택한다
+(`services/doctor_pdf_pagination.py`). 10월분 12곳은 `TEMPLATE_REFRESH`로 v3 스냅샷에서 v4 뷰로 올렸고(`tasks._upgrade_stored_report_to_v4`, 저장
+숫자 그대로 — `stored_facts_v4` 대조), 2차 배포 뒤 다시 갱신해 전부 PASS·VALID·전달 게이트 통과다(08:53~10:01). **아직 원장에게 전달하지 않았다** —
+새 버전은 다시 전달해야 한다. **롤백 주의**: Worker를 `00266` 이하(v4 이전)로 되돌리면 v4 스냅샷 보고서를 다시 찍을 수 없다(코드 롤백은 앞으로만).
+롤백 좌표는 `.omo/rollback-v4/backend`·`.omo/rollback-v4b/backend`. 상세는 [배포 기록](docs/releases/2026-11-05-doctor-report-v4-production.md),
+설계는 [v4 설계안](docs/plans/2026-11-04-doctor-report-v4-design.md).
+
+## 이전 운영 배포 — 2026-11-03 월간 보고서 1일 오전 마감
 
 코드 `76e09e55`를 main에 반영하고 API `00274-v8l`·Worker `00264-r86`·Beat `00259-9sl`·Admin `00115-rwt`에 배포했다(각 100% 트래픽).
 Site `00149-6ck`와 DB head `0093_add_hospital_search_verification`은 그대로다. RedBeat `2026-11-03.1`:
@@ -265,7 +278,7 @@ BaseEssence의 일반 자료 추가 drift는 재합성하지 않는다. 명시�
 Site/Admin IAM 분리는 단계적으로 적용한다. 구 revision 종료 전 legacy grants를 회수하지 않는다.
 
 
-문서 버전: **2.31** · 갱신일: **2026-10-15 (Asia/Seoul)**
+문서 버전: **2.32** · 갱신일: **2026-11-05 (Asia/Seoul)**
 소스 기준선: **`4db1b69` 이후 커밋 이력 정합성 보완**
 구현 상태: **체크포인트 2(`a774851`) 운영 배포 완료. 그 뒤 main의 stable-base Essence(`8c59141`) 등 31개 커밋과 콘텐츠 수율 버전업 v2.7(`claude/system-performance-review-x6vtn4`, [계획](docs/plans/2026-09-12-content-yield-versionup-plan.md))은 미배포**
 
