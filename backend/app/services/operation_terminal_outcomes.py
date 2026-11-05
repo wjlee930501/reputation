@@ -23,6 +23,7 @@ _SIGNALLED_DOMAIN_OPERATIONS: Final = frozenset(
         "RECOVER_LEAD_REPORT",
         "REGENERATE_CONTENT",
         "REGENERATE_CONTENT_IMAGE",
+        "REJUDGE_COMPETITORS",
         "RUN_SOV",
         "SCHEDULED_MONTHLY_REPORT",
         "TRIGGER_V0_REPORT",
@@ -36,6 +37,7 @@ _DOMAIN_OUTCOME_NAMES: Final = {
     "RECERTIFY_PUBLISHED_IMAGE": "CONTENT_IMAGE_CERTIFICATION",
     "GENERATE_MONTHLY_REPORT": "MONTHLY_REPORT",
     "SCHEDULED_MONTHLY_REPORT": "MONTHLY_REPORT",
+    "REJUDGE_COMPETITORS": "COMPETITOR_REJUDGE",
     "MONTHLY_SOV_PERIOD": "MONTHLY_SOV_FLEET",
     "RUN_SOV": "SOV_MEASUREMENT",
     "RECOVER_LEAD_MEASUREMENT": "LEAD_MEASUREMENT_RECOVERY",
@@ -137,7 +139,7 @@ def _operation_period(
         if len(values) >= 4 and values[1] == "monthly":
             if isinstance(values[2], int) and isinstance(values[3], int):
                 return f"{values[2]:04d}-{values[3]:02d}"
-        if run.operation_type == "GENERATE_MONTHLY_REPORT" and len(values) >= 3:
+        if run.operation_type in ("GENERATE_MONTHLY_REPORT", "REJUDGE_COMPETITORS") and len(values) >= 3:
             if isinstance(values[1], int) and isinstance(values[2], int):
                 return f"{values[1]:04d}-{values[2]:02d}"
     for candidate in (payload.get("source_id"), run.idempotency_key):

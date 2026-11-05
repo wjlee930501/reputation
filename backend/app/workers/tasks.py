@@ -16,6 +16,7 @@ import copy
 import hashlib
 import json
 import logging
+import re
 import threading
 import uuid
 from collections import Counter
@@ -195,6 +196,8 @@ from app.services.doctor_report_v4 import (
     apply_ae_overrides,
     build_doctor_report_v4,
     case_candidates_for_view,
+    compare_facts_excluding_competitors,
+    competitor_fact_changes,
     parse_ae_path,
 )
 from app.services.domain_health_control import (
@@ -13025,7 +13028,7 @@ def _build_monthly_report_for_hospital(
     # AE 수정 판 승계(2026-11-05): 대체하는 버전의 수정 값을 새 pristine 뷰에 다시 얹는다 — 숫자·키워드 집합이
     # 바뀐 재생성은 진료 항목 라벨만 잇고 문장은 버린다(`ae_overrides_dropped`에 남긴다).
     doctor_view, ae_overrides, ae_overrides_dropped = _carry_ae_overrides(
-        db, version_plan.supersedes_report_id, doctor_view, evidence_records, actual_now
+        db, version_plan.supersedes_report_id, doctor_view, evidence_records, actual_now, hospital=h
     )
     talking_points = list(doctor_view.talking_points)
 
@@ -13185,6 +13188,8 @@ def _carry_ae_overrides(
     doctor_view: DoctorReportV4,
     records: Sequence[Any],
     now: datetime,
+    *,
+    hospital: Hospital | None = None,
 ) -> tuple[DoctorReportV4, dict | None, dict | None]:
     """일반 재생성이 대체하는 버전의 AE 수정 값을 새 뷰에 잇는다 → (적용한 뷰, ae_overrides, ae_overrides_dropped).
 
@@ -13208,7 +13213,9 @@ def _carry_ae_overrides(
     applied = doctor_view
     if kept:
         candidates = (
-            case_candidates_for_view(doctor_view, records)
+            case_candidates_for_view(
+                doctor_view, records, registered_names=_registered_competitors_of(hospital)
+            )
             if any((f := parse_ae_path(path)) is not None and f.kind == AE_FIELD_CASE_RECORD for path in kept)
             else []
         )
@@ -13287,7 +13294,9 @@ def load_ae_case_candidates(db, h: Hospital, report: MonthlyReport) -> list[Case
         return []
     period = reporting_period(report.period_year, report.period_month)
     now = arrow.get(period.ends_at).shift(microseconds=-1)
-    return case_candidates_for_view(base, _frozen_scored_records(db, h, report, render_inputs, now))
+    return case_candidates_for_view(
+        base, _frozen_scored_records(db, h, report, render_inputs, now), registered_names=_registered_competitors_of(h)
+    )
 
 
 def _apply_ae_edit_to_plan(
@@ -13328,7 +13337,9 @@ def _apply_ae_edit_to_plan(
         return doctor_view, problems
     candidates: list[CaseCandidate] = []
     if any((f := parse_ae_path(path)) is not None and f.kind == AE_FIELD_CASE_RECORD for path in merged):
-        candidates = case_candidates_for_view(base, _frozen_scored_records(db, h, latest, render_inputs, now))
+        candidates = case_candidates_for_view(
+            base, _frozen_scored_records(db, h, latest, render_inputs, now), registered_names=_registered_competitors_of(h)
+        )
         for problem in validate_ae_fields(merged, base, case_candidates=candidates):
             problems.append(("BLOCKER", "AE_EDIT_INVALID", f"{problem.path}: {problem.code}"))
         if problems:
@@ -13485,21 +13496,53 @@ def _template_refresh_blockers(
                 "RECOVERY_PENDING",
                 "측정이 덜 끝나 1일 새벽(00:15~07:00) 자동 복구 대상 — 측정 마감 뒤 실행",
             )
-    in_flight = db.execute(
-        select(OperationRun.id, OperationRun.operation_type).where(
-            OperationRun.hospital_id == h.id,
-            OperationRun.operation_type.in_(IN_FLIGHT_OPERATION_TYPES),
-            OperationRun.state.in_(IN_FLIGHT_STATES),
-        )
-    ).all()
+    in_flight = [
+        (run.id, run.operation_type)
+        for run in db.execute(
+            select(OperationRun).where(
+                OperationRun.hospital_id == h.id,
+                OperationRun.operation_type.in_(IN_FLIGHT_OPERATION_TYPES),
+                OperationRun.state.in_(IN_FLIGHT_STATES),
+            )
+        ).scalars()
+        # 병원 단위 월간 보고서 실행(재생성·갱신·경쟁 병원 반영의 자식)과 경쟁사 재판정은 **그 달**의 저장값·경쟁 현황만
+        # 바꾼다 — 다른 달의 실행(락이 바빠 미뤄진 재판정, 다른 달 체인의 자식 포함)은 이 달의 갱신을 막지 않는다.
+        # 달을 모르는 기록은 종전처럼 막는다(fail closed). 측정(RUN_SOV)·월간 배치는 종전처럼 병원 단위로 막는다.
+        if run.operation_type not in ("REJUDGE_COMPETITORS", "GENERATE_MONTHLY_REPORT")
+        or _operation_run_period(run) in (None, (now.year, now.month))
+    ]
+    excluded = {exclude_run_id} if exclude_run_id is not None else set()
+    if exclude_run_id is not None:
+        # 경쟁 병원 반영의 자식 갱신은 자기 부모(재판정 실행)를 기다리지 않는다 — 부모는 자식을 큐에 넣기 전에 끝나지만,
+        # 종결 기록이 늦게 보이는 창에서도 자기 체인 때문에 영영 거절되지 않게 한다.
+        parent_id = db.execute(
+            select(OperationRun.parent_run_id).where(OperationRun.id == exclude_run_id)
+        ).scalar_one_or_none()
+        if parent_id is not None:
+            excluded.add(parent_id)
     for run_id, operation_type in in_flight:
-        if run_id != exclude_run_id:
+        if run_id not in excluded:
             verdict.add("BLOCKER", "OPERATION_IN_FLIGHT", f"{operation_type} {run_id}")
     if latest is None:
         verdict.add("BLOCKER", "NO_REPORT")
         return
     for path in missing_stored_paths(latest.content_summary, latest.sov_summary):
         verdict.add("BLOCKER", path)
+
+
+def _operation_run_period(run: OperationRun) -> tuple[int, int] | None:
+    """실행이 가리키는 연월 — 결과 요약, 없으면 저장된 디스패치 인자(병원, 연, 월 …). 모르면 None."""
+    summary = run.result_summary if isinstance(run.result_summary, dict) else {}
+    year, month = summary.get("period_year"), summary.get("period_month")
+    if isinstance(year, int) and isinstance(month, int):
+        return year, month
+    try:
+        dispatch = operation_run_payloads.parse_stored_dispatch((run.request_payload or {}).get("_dispatch"))
+    except (AttributeError, operation_run_payloads.UnsafeDispatchPayload):
+        return None
+    if len(dispatch.task_args) >= 3 and isinstance(dispatch.task_args[1], int) and isinstance(dispatch.task_args[2], int):
+        return int(dispatch.task_args[1]), int(dispatch.task_args[2])
+    return None
 
 
 def build_monthly_template_refresh_plan(
@@ -13510,6 +13553,7 @@ def build_monthly_template_refresh_plan(
     observed_now: datetime,
     exclude_run_id: uuid.UUID | None = None,
     allow_recovery_pending: bool = False,
+    competitor_refresh: bool = False,
     ae_edit: Mapping[str, Any] | None = None,
 ) -> MonthlyTemplateRefreshPlan:
     """저장된 최신 버전에서 새 원장 뷰를 만들고 숫자가 그대로인지 판정한다. 쓰기·저장소·공급자 호출 없음.
@@ -13520,6 +13564,11 @@ def build_monthly_template_refresh_plan(
     마감 시각은 지금이 아니라 대체할 버전에 저장된 `contract_timing.observed_at`이다.
     측정 요약·콘텐츠 운영·귀속·인용·전략·Essence는 저장된 값을 그대로 쓰고, 현재 행에서는
     원장에게 보여 줄 공개 글 제목·답변 발췌·초기 측정 참고선·누적 발행 편수만 읽는다.
+
+    `competitor_refresh=True`(경쟁 병원 반영): v4 스냅샷이라도 얼린 뷰를 그대로 쓰지 않고 저장 숫자로 뷰를 다시
+    만들어(`_rebuild_v4_view_from_stored`) 경쟁 현황이 지금 `competitor_mentions`·등록 경쟁사를 반영하게 한다.
+    경쟁 사실(`competitor.*`)을 **뺀** 모든 사실이 얼린 사실과 같아야 PASS이고, 경쟁 사실의 변화는 WARN
+    `COMPETITOR_FACTS_RECOMPUTED`로만 남는다. 저장 전략 요약의 측정 키워드별 `competitor_outcomes`도 같은 기록으로 다시 센다.
     """
     verdict = RefreshVerdict()
     latest = _latest_monthly_report(db, h.id, now.year, now.month)
@@ -13542,22 +13591,46 @@ def build_monthly_template_refresh_plan(
     if verdict.status != "BLOCKED" and not isinstance(doctor_view, DoctorReportV4):
         # v4 배포 전 보고서: 저장된 숫자로 v4 뷰를 새로 만들고 스냅샷도 v4로 바꾼다. 사전 점검과 실행이 같은
         # 결과를 본다(검토 3-16) — 숫자가 하나라도 어긋나면 DIFF라 실행이 아무것도 쓰지 않는다.
-        doctor_view, problems, warnings = _upgrade_stored_report_to_v4(db, h, latest, now, content)
+        doctor_view, problems, warnings, rebuilt = _upgrade_stored_report_to_v4(db, h, latest, now, content)
         for problem in problems:
             verdict.add("DIFF", "V4_UPGRADE_FACTS", problem)
         for warning in warnings:
             verdict.add("WARN", "V4_PLATFORM_RATE_RECOMPUTED", warning)
-        snapshot = dict(content.get("report_snapshot") or {})
-        inputs = dict(snapshot.get("render_inputs") or {})
-        inputs["doctor_view"] = freeze_doctor_view(doctor_view)
-        inputs["doctor_metric_facts"] = doctor_view_facts(doctor_view)
-        ae_inputs = dict(inputs.get("ae_report") or {})
-        ae_inputs["talking_points"] = doctor_view.talking_points
-        inputs["ae_report"] = ae_inputs
-        snapshot["render_inputs"] = inputs
-        content["report_snapshot"] = snapshot
-        content["talking_points"] = doctor_view.talking_points
-    if verdict.status != "BLOCKED" and isinstance(doctor_view, DoctorReportV4):
+        _apply_rebuilt_view_to_content(content, doctor_view)
+        if competitor_refresh:
+            # 승격 뷰는 이미 현재 경쟁사 판정으로 만들어진다 — 전략 요약의 경쟁 집계만 맞추고 변화를 기록한다.
+            _refresh_stored_competitor_summaries(content, rebuilt)
+            for change in competitor_fact_changes(render_inputs.doctor_metric_facts, doctor_view.facts()):
+                verdict.add("WARN", "COMPETITOR_FACTS_RECOMPUTED", change)
+    elif verdict.status != "BLOCKED" and competitor_refresh:
+        # 승격 경로와 같은 저장 사실 대조 — 모듈 속성으로 부른다(검토·테스트가 저장 사실 쪽을 바꿔 거절 경로를 확인한다).
+        from app.services.doctor_report_v4 import compare_facts_v4, stored_facts_v4
+
+        rebuilt_view, rebuilt = _rebuild_v4_view_from_stored(db, h, latest, now, content)
+        # 저장된 AE 수정 값을 **새 pristine 뷰** 위에 다시 얹는다 — 라벨·사례 선택과 경쟁과 무관한 문장은 잇고, 경쟁 내용을
+        # 담았거나 원문이 바뀐 문장은 버린다(`ae_overrides_dropped`). 숫자·면 대조는 그 결과(실제로 찍을 뷰)로 한다 — 라벨
+        # 수정이 진료 항목 사실·부록 라벨을 바꾸므로 pristine끼리 비교하면 사람이 고친 라벨이 DIFF로 읽힌다.
+        final_view, dropped_overrides = _apply_competitor_refresh_overrides(
+            db, h, latest, now, content, rebuilt_view, rebuilt
+        )
+        frozen_facts = dict(render_inputs.doctor_metric_facts or {})
+        new_facts = final_view.facts()
+        for problem in compare_facts_v4(stored_facts_v4(latest.sov_summary or {}, content), new_facts):
+            verdict.add("DIFF", "COMPETITOR_REFRESH_FACTS", problem)
+        for problem in compare_facts_excluding_competitors(frozen_facts, new_facts):
+            verdict.add("DIFF", "COMPETITOR_REFRESH_FACTS", problem)
+        for problem in _competitor_refresh_view_problems(rebuilt.frozen_view, final_view):
+            verdict.add("DIFF", "COMPETITOR_REFRESH_VIEW", problem)
+        for change in competitor_fact_changes(frozen_facts, new_facts):
+            verdict.add("WARN", "COMPETITOR_FACTS_RECOMPUTED", change)
+        for path in sorted(dropped_overrides or {}):
+            verdict.add("WARN", "AE_OVERRIDES_DROPPED", path)
+        doctor_view = final_view
+        _apply_rebuilt_view_to_content(content, doctor_view)
+        _refresh_stored_competitor_summaries(content, rebuilt)
+    if verdict.status != "BLOCKED" and competitor_refresh:
+        pass  # 경쟁 병원 반영은 위에서 저장된 수정 값을 새 pristine 뷰에 이미 이었다(`_apply_competitor_refresh_overrides`).
+    elif verdict.status != "BLOCKED" and isinstance(doctor_view, DoctorReportV4):
         doctor_view, ae_problems = _apply_ae_edit_to_plan(db, h, latest, now, content, doctor_view, ae_edit)
         for kind, code, detail in ae_problems:
             verdict.add(kind, code, detail)
@@ -13566,22 +13639,225 @@ def build_monthly_template_refresh_plan(
     return MonthlyTemplateRefreshPlan(latest, doctor_view, content, verdict)
 
 
-def _upgrade_stored_report_to_v4(db, h: Hospital, old: MonthlyReport, now: arrow.Arrow, content: dict):
-    """옛 v3 스냅샷의 보고서를 템플릿 갱신할 때 v4 뷰를 **저장된 숫자**로 다시 만든다.
+def _competitor_refresh_view_problems(frozen: DoctorReportV4 | None, rebuilt: DoctorReportV4) -> list[str]:
+    """경쟁과 무관한 면(1면 카드·콘텐츠·노출·부록)은 얼린 v4 뷰와 **그대로** 같아야 한다 — 사실 키에 없는 문장(부록
+    참고 줄 등)까지 지킨다. 경쟁 현황·실행 계획(경쟁 유무가 순서를 바꾼다)·대표 사례·핵심 3줄(계획 첫 행을 읽는다)은 뺀다."""
+    if frozen is None:
+        return []
+    from dataclasses import asdict
 
-    측정·귀속·인용·발행 편수는 대체할 버전의 저장 요약을 그대로 쓰고, 현재 행에서는 v3 갱신과 같은 것만
-    읽는다 — 공개 글 제목(저장된 마감 시각 기준)·답변 발췌(그 달 매니페스트)·타깃의 진료 항목·누적 편수·
-    지난달 참고치·초기 측정 참고선. 저장 요약에서 다시 만든 사실(`stored_facts_v4`)과 새 뷰의 사실이 키 단위로
-    같지 않으면 `RefreshVerdict` DIFF로 돌려 아무것도 쓰지 않는다. 2026-10월분처럼 v4 배포 전에 만든
-    보고서를 새 형식으로 다시 전달하는 길이다.
+    problems: list[str] = []
+    for section in ("content", "exposure", "appendix"):
+        if asdict(getattr(frozen, section)) != asdict(getattr(rebuilt, section)):
+            problems.append(f"{section}: 얼린 뷰와 다름")
+    for field_name in ("title", "subtitle", "cards", "notice"):
+        if getattr(frozen.summary, field_name) != getattr(rebuilt.summary, field_name):
+            problems.append(f"summary.{field_name}: 얼린 뷰와 다름")
+    return problems
+
+
+AE_EDIT_DROP_REASON_COMPETITION_CHANGED = "COMPETITION_CHANGED"
+
+
+def _competitor_refresh_carry(
+    stored_fields: Mapping[str, Any],
+    old_base: DoctorReportV4 | None,
+    new_base: DoctorReportV4,
+    competitor_names: Sequence[str],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """경쟁 병원 반영이 이전 버전의 AE 수정 값을 잇는 규칙 → (잇는 값, 버리는 값).
+
+    경쟁 재생성은 숫자·키워드 집합을 바꾸지 않으므로(템플릿 갱신과 같다) 기본은 **전부 잇는다**. 다만 문장 수정(핵심 3줄·
+    P5 시사점·P6 실행 내용)은 경쟁 내용을 담을 수 있어 두 경우만 버린다 — (1) 그 자리의 pristine 문장이 옛 뷰와 새 뷰에서
+    다르다(경쟁 변화가 원문을 바꿨다: 'X이 대신 언급됐습니다', 계획 순서 변경 등 — 사람이 고친 문장이 더는 그 원문의
+    수정이 아니다), (2) 수정 문장 자체가 등록·관측된 경쟁 병원 이름이나 '경쟁'을 말한다. 라벨·카드 이름·사례 선택은 잇는다
+    (맞지 않는 경로는 호출자의 검증이 버린다).
     """
+    from app.services.competitor_scope import competitor_key
+    from app.services.doctor_report_ae_edit import editable_fields
     from app.services.doctor_report_v4 import (
-        compare_facts_v4,
-        info_query_texts,
-        stored_facts_v4,
-        v3_frozen_facts_problems,
-        v3_platform_rate_changes,
+        AE_FIELD_CASE_INSIGHT,
+        AE_FIELD_KEY_LINE,
+        AE_FIELD_PLAN_ACTION,
     )
+
+    sentence_kinds = (AE_FIELD_KEY_LINE, AE_FIELD_CASE_INSIGHT, AE_FIELD_PLAN_ACTION)
+    old_fields = editable_fields(old_base) if old_base is not None else {}
+    new_fields = editable_fields(new_base)
+    keys = {competitor_key(name) for name in competitor_names if competitor_key(name)}
+
+    def mentions_competitor(value: Any) -> bool:
+        text = str(value or "")
+        folded = competitor_key(text)
+        return "경쟁" in text or any(key in folded for key in keys)
+
+    kept: dict[str, Any] = {}
+    dropped: dict[str, Any] = {}
+    for path, value in stored_fields.items():
+        field_ = parse_ae_path(path)
+        if field_ is None:
+            dropped[path] = value
+        elif field_.kind in sentence_kinds and (
+            path not in new_fields or old_fields.get(path) != new_fields.get(path) or mentions_competitor(value)
+        ):
+            dropped[path] = value
+        else:
+            kept[path] = value
+    return kept, dropped
+
+
+def _registered_competitors_of(hospital: Hospital | None) -> list[str]:
+    from app.services.competitor_scope import registered_competitor_names
+
+    return registered_competitor_names(hospital) if hospital is not None else []
+
+
+def _competitor_names_for_carry(
+    rebuilt: "_RebuiltViewInputs", rebuilt_view: DoctorReportV4, old_base: DoctorReportV4 | None
+) -> list[str]:
+    """수정 문장이 '경쟁 병원을 말하는지' 볼 이름 집합 — 지금 등록된 이름, 옛·새 경쟁 현황 행, 그리고 얼린 기록에
+    **관측된 모든 이름**(등록에서 뺐거나 한 번도 등록하지 않은 이름 포함)."""
+    names: list[str] = [*rebuilt.registered_competitors, *(row.name for row in rebuilt_view.competition.rows)]
+    if old_base is not None:
+        names.extend(row.name for row in old_base.competition.rows)
+    for record in rebuilt.records:
+        for item in getattr(record, "competitor_mentions", None) or []:
+            if isinstance(item, Mapping) and str(item.get("name") or "").strip():
+                names.append(str(item["name"]).strip())
+    return names
+
+
+def _apply_competitor_refresh_overrides(
+    db,
+    h: Hospital,
+    latest: MonthlyReport,
+    now: arrow.Arrow,
+    content: dict,
+    rebuilt_view: DoctorReportV4,
+    rebuilt: "_RebuiltViewInputs",
+) -> tuple[DoctorReportV4, dict[str, Any] | None]:
+    """경쟁 병원 반영: 이전 버전의 AE 수정 값을 새 pristine 뷰(경쟁 현황이 바뀐 뷰)에 다시 얹는다 → (찍을 뷰, 버린 값).
+
+    `ae_overrides.base_view`는 **새** pristine 뷰로 바뀐다 — 그래야 다음 AE 수정 판·템플릿 갱신이 다시 계산된 경쟁 현황을
+    그대로 들고 간다(AE 수정이 경쟁 결과를 옛 값으로 되돌리지 않는다). 버린 값은 `ae_overrides_dropped`
+    (`reason=COMPETITION_CHANGED`)로 남겨 화면이 다시 입력하게 한다. 수정 값이 없으면 뷰를 그대로 돌려준다.
+    """
+    render_inputs = report_render_inputs(content)
+    assert render_inputs is not None
+    stored = stored_ae_overrides(render_inputs)
+    if stored is None:
+        return rebuilt_view, None
+    old_base = base_view_of(render_inputs)
+    kept, dropped = _competitor_refresh_carry(
+        dict(stored["fields"]), old_base, rebuilt_view, _competitor_names_for_carry(rebuilt, rebuilt_view, old_base)
+    )
+    for path in list(kept):
+        if validate_ae_fields({path: kept[path]}, rebuilt_view):
+            dropped[path] = kept.pop(path)
+    candidates: list[CaseCandidate] = []
+    if kept and any((f := parse_ae_path(path)) is not None and f.kind == AE_FIELD_CASE_RECORD for path in kept):
+        candidates = case_candidates_for_view(
+            rebuilt_view, list(rebuilt.records), registered_names=list(rebuilt.registered_competitors)
+        )
+        for path in list(kept):
+            if validate_ae_fields({path: kept[path]}, rebuilt_view, case_candidates=candidates):
+                dropped[path] = kept.pop(path)
+    if kept:
+        kept = normalize_ae_fields(kept, rebuilt_view, case_candidates=candidates)
+    applied = rebuilt_view
+    if kept:
+        edited = apply_ae_overrides(rebuilt_view, kept, case_candidates=candidates)
+        if ae_edit_fact_problems(rebuilt_view, edited):
+            dropped.update(kept)
+            kept = {}
+        else:
+            applied = edited
+    snapshot = dict(content.get("report_snapshot") or {})
+    inputs = dict(snapshot.get("render_inputs") or {})
+    inputs.pop("ae_overrides_dropped", None)
+    if kept:
+        inputs["ae_overrides"] = build_ae_overrides(
+            fields=kept,
+            base_view_payload=freeze_doctor_view(rebuilt_view),
+            edited_by=str(stored.get("edited_by") or ""),
+            edited_at=str(stored.get("edited_at") or ""),
+            previous=stored,
+            changed_paths=[],
+            report_version=None,
+        )
+    else:
+        inputs.pop("ae_overrides", None)
+    if dropped:
+        inputs["ae_overrides_dropped"] = {
+            "fields": dropped,
+            "reason": AE_EDIT_DROP_REASON_COMPETITION_CHANGED,
+            "from_report_id": str(latest.id),
+            "dropped_at": datetime.now(timezone.utc).isoformat(),
+        }
+    snapshot["render_inputs"] = inputs
+    content["report_snapshot"] = snapshot
+    return applied, (dropped or None)
+
+
+def _apply_rebuilt_view_to_content(content: dict, doctor_view: DoctorReportV4) -> None:
+    """다시 만든 v4 뷰를 스냅샷(얼린 뷰·뷰 사실·AE 핵심 3줄)에 쓴다. 다른 저장값은 그대로다."""
+    snapshot = dict(content.get("report_snapshot") or {})
+    inputs = dict(snapshot.get("render_inputs") or {})
+    inputs["doctor_view"] = freeze_doctor_view(doctor_view)
+    inputs["doctor_metric_facts"] = doctor_view_facts(doctor_view)
+    ae_inputs = dict(inputs.get("ae_report") or {})
+    ae_inputs["talking_points"] = doctor_view.talking_points
+    inputs["ae_report"] = ae_inputs
+    snapshot["render_inputs"] = inputs
+    content["report_snapshot"] = snapshot
+    content["talking_points"] = doctor_view.talking_points
+
+
+@dataclass(frozen=True, slots=True)
+class _RebuiltViewInputs:
+    """저장 숫자로 뷰를 다시 만들 때 현재 행에서 읽은 것 — 경쟁 집계를 같은 기록으로 다시 세는 데 쓴다."""
+
+    records: tuple
+    query_targets: tuple
+    registered_competitors: tuple = ()
+    # 얼린 v4 뷰(있으면) — 경쟁 병원 반영이 경쟁과 무관한 면을 그대로 지켰는지 뷰 단위로 대조한다.
+    frozen_view: DoctorReportV4 | None = None
+
+
+def _refresh_stored_competitor_summaries(content: dict, rebuilt: _RebuiltViewInputs) -> None:
+    """저장 전략 요약(`strategy.query_targets[*].competitor_outcomes`, AE PDF의 경쟁 열)을 지금 판정으로 다시 센다 — 본문 요약과 AE 스냅샷 둘 다.
+
+    보고서 조립과 같은 규칙으로 등록 경쟁사만 센다(등록에서 뺀 이름은 기록에 남아도 싣지 않는다)."""
+    from app.services.competitor_rejudge import refresh_competitor_outcomes
+
+    refreshed = refresh_competitor_outcomes(
+        content.get("strategy"), list(rebuilt.records), list(rebuilt.query_targets),
+        registered_names=list(rebuilt.registered_competitors),
+    )
+    if refreshed is None:
+        return
+    content["strategy"] = refreshed
+    snapshot = dict(content.get("report_snapshot") or {})
+    inputs = dict(snapshot.get("render_inputs") or {})
+    ae_inputs = dict(inputs.get("ae_report") or {})
+    if "strategy" in ae_inputs:
+        ae_inputs["strategy"] = copy.deepcopy(refreshed)
+        inputs["ae_report"] = ae_inputs
+        snapshot["render_inputs"] = inputs
+        content["report_snapshot"] = snapshot
+
+
+def _rebuild_v4_view_from_stored(
+    db, h: Hospital, old: MonthlyReport, now: arrow.Arrow, content: dict
+) -> tuple[DoctorReportV4, _RebuiltViewInputs]:
+    """대체할 버전의 **저장된 숫자**로 v4 뷰를 다시 만든다(v3→v4 승격과 경쟁 병원 반영이 공유).
+
+    측정·귀속·인용·발행 편수는 저장 요약을 그대로 쓰고, 현재 행에서는 공개 글 제목(저장된 마감 시각 기준)·
+    답변 발췌와 경쟁 판정(그 달 매니페스트의 얼린 관측)·타깃의 진료 항목·누적 편수·지난달 참고치·초기 측정
+    참고선·등록 경쟁사만 읽는다. 숫자 대조는 호출자가 한다.
+    """
+    from app.services.monthly_template_refresh import stored_observed_at
+
     render_inputs = report_render_inputs(content)
     assert render_inputs is not None
     sov = old.sov_summary or {}
@@ -13613,7 +13889,10 @@ def _upgrade_stored_report_to_v4(db, h: Hospital, old: MonthlyReport, now: arrow
         competitors=list(getattr(h, "competitors", None) or []),
     )
     comparison = sov.get("comparison") or {}
-    # 지난달 참고치·초기 측정 참고선은 다시 읽지 않고 그 달에 얼린 v3 사실을 그대로 쓴다(검토 4-25).
+    # 지난달 참고치·초기 측정 참고선은 다시 읽지 않고 그 달에 얼린 사실을 그대로 쓴다(검토 4-25). v3 스냅샷은 v3 사실 키로,
+    # v4 스냅샷은 얼린 v4 뷰(부록 참고 줄)에서 읽는다 — v4 사실에는 초기 측정 키가 없어 v3 키만 보면 그 줄이 사라진다.
+    frozen_doctor_view = restore_doctor_view(render_inputs.doctor_view)
+    frozen_v4 = frozen_doctor_view if isinstance(frozen_doctor_view, DoctorReportV4) else None
     v3_facts = dict(render_inputs.doctor_metric_facts or {})
     reference_text = v3_facts.get("rate.reference_previous")
     reference_prev = float(reference_text[:-1]) if isinstance(reference_text, str) and reference_text.endswith("%") else None
@@ -13624,6 +13903,11 @@ def _upgrade_stored_report_to_v4(db, h: Hospital, old: MonthlyReport, now: arrow
             "current_of_hundred": int(float(v3_facts["v0.current_of_hundred"].rstrip("%"))),
             "sentence": "",
         }
+    elif frozen_v4 is not None:
+        match = re.search(r"처음 측정 (\d+(?:\.\d+)?)%", frozen_v4.appendix.keyword_note or "")
+        if match:
+            v0_value = int(round(float(match.group(1))))
+            v0_baseline = {"of_hundred": v0_value, "current_of_hundred": v0_value, "sentence": ""}
     first_publication_at = func.coalesce(ContentItem.first_published_at, ContentItem.published_at)
     cumulative_published_count = db.execute(
         select(func.count())
@@ -13654,6 +13938,36 @@ def _upgrade_stored_report_to_v4(db, h: Hospital, old: MonthlyReport, now: arrow
         trend_points=_comparable_trend_points(db, h.id, now, sov),
         platforms=list(render_inputs.measurement.platforms or []),
     )
+    return view, _RebuiltViewInputs(
+        records=tuple(records),
+        query_targets=tuple(query_targets),
+        registered_competitors=tuple(frozen_identity.competitors),
+        frozen_view=frozen_v4,
+    )
+
+
+def _upgrade_stored_report_to_v4(db, h: Hospital, old: MonthlyReport, now: arrow.Arrow, content: dict):
+    """옛 v3 스냅샷의 보고서를 템플릿 갱신할 때 v4 뷰를 **저장된 숫자**로 다시 만든다.
+
+    측정·귀속·인용·발행 편수는 대체할 버전의 저장 요약을 그대로 쓰고, 현재 행에서는 v3 갱신과 같은 것만
+    읽는다 — 공개 글 제목(저장된 마감 시각 기준)·답변 발췌(그 달 매니페스트)·타깃의 진료 항목·누적 편수·
+    지난달 참고치·초기 측정 참고선. 저장 요약에서 다시 만든 사실(`stored_facts_v4`)과 새 뷰의 사실이 키 단위로
+    같지 않으면 `RefreshVerdict` DIFF로 돌려 아무것도 쓰지 않는다. 2026-10월분처럼 v4 배포 전에 만든
+    보고서를 새 형식으로 다시 전달하는 길이다.
+    """
+    from app.services.doctor_report_v4 import (
+        compare_facts_v4,
+        info_query_texts,
+        stored_facts_v4,
+        v3_frozen_facts_problems,
+        v3_platform_rate_changes,
+    )
+
+    render_inputs = report_render_inputs(content)
+    assert render_inputs is not None
+    sov = old.sov_summary or {}
+    view, rebuilt = _rebuild_v4_view_from_stored(db, h, old, now, content)
+    v3_facts = dict(render_inputs.doctor_metric_facts or {})
     problems = compare_facts_v4(stored_facts_v4(sov, content), view.facts())
     # 원장이 실제로 받았던 v3 판의 숫자(스냅샷의 doctor_metric_facts·얼린 뷰)와도 맞춘다 — 저장 요약만 보는
     # 대조는 v4 빌더와 같은 입력을 읽어 동어반복이 될 수 있다.
@@ -13676,7 +13990,7 @@ def _upgrade_stored_report_to_v4(db, h: Hospital, old: MonthlyReport, now: arrow
             problems.append(f"highlight.{name}: v3 {frozen} ≠ 저장 귀속 재계산 {value}")
     # AI 서비스별 비율은 v3 셀 평균 → v4 답변 k/n으로 계산식이 바뀐다(2026-11 §7, 의도된 변경) — 막지 않고 알린다.
     warnings = v3_platform_rate_changes(v3_facts, view)
-    return view, problems, warnings
+    return view, problems, warnings, rebuilt
 
 
 def _build_monthly_template_refresh(
@@ -13687,6 +14001,7 @@ def _build_monthly_template_refresh(
     correlation_key: str,
     operation_run_id: uuid.UUID | None = None,
     allow_recovery_pending: bool = False,
+    competitor_refresh: bool = False,
     ae_edit: Mapping[str, Any] | None = None,
 ) -> str:
     """대체할 버전의 숫자를 그대로 옮기고 원장·AE PDF만 새 템플릿으로 다시 그린다.
@@ -13696,18 +14011,26 @@ def _build_monthly_template_refresh(
 
     노출 행동 연결·Essence 재집계·매니페스트 마감 같은 부수효과가 없다. 숫자 판정이
     하나라도 어긋나면 아무것도 쓰지 않고 `TemplateRefreshRefused`를 올린다.
+    `competitor_refresh`는 같은 보존 위에서 경쟁 현황만 현재 경쟁사 판정으로 다시 계산하는 변형이다
+    (사유 `COMPETITOR_REFRESH`, 경쟁 사실의 변화는 WARN으로만 남는다).
     """
     period = reporting_period(now.year, now.month)
     version_plan = lock_report_version_plan(
         db,
         hospital_id=h.id,
         period=period,
-        reason_code=ReportBuildReason.AE_EDIT if ae_edit is not None else ReportBuildReason.TEMPLATE_REFRESH,
+        reason_code=(
+            ReportBuildReason.COMPETITOR_REFRESH
+            if competitor_refresh
+            else ReportBuildReason.AE_EDIT
+            if ae_edit is not None
+            else ReportBuildReason.TEMPLATE_REFRESH
+        ),
         correlation_key=correlation_key,
     )
     plan = build_monthly_template_refresh_plan(
         db, h, now, observed_now=datetime.now(timezone.utc), exclude_run_id=operation_run_id,
-        allow_recovery_pending=allow_recovery_pending, ae_edit=ae_edit,
+        allow_recovery_pending=allow_recovery_pending, competitor_refresh=competitor_refresh, ae_edit=ae_edit,
     )
     if not plan.verdict.passed:
         raise TemplateRefreshRefused(plan.verdict)
@@ -13982,8 +14305,12 @@ def generate_monthly_report_for_hospital(
     automatic_recovery: bool = False,
     template_only: bool = False,
     allow_recovery_pending: bool = False,
+    competitor_refresh: bool = False,
 ):
     """병원 1곳의 월간 리포트를 수동으로 만든다 (Admin '월간 리포트 생성').
+
+    `competitor_refresh=True`(템플릿 갱신 전용, 경쟁사 재판정 체인의 자식 실행)는 측정·귀속·인용·발행 숫자를
+    그대로 두고 경쟁 현황만 현재 `competitor_mentions`에서 다시 계산한다(`COMPETITOR_REFRESH`).
 
     `template_only=True`는 저장된 숫자를 그대로 두고 PDF 문구·디자인만 새 버전으로 다시
     그리는 템플릿 갱신이다(`_build_monthly_template_refresh`). 숫자 판정이 어긋나면 만들지 않는다.
@@ -14014,6 +14341,7 @@ def generate_monthly_report_for_hospital(
         logger.error("Monthly report period is not closed: %s", exc)
         return {"status": "period_not_closed"}
     anchor = arrow.get(period.ends_at).shift(microseconds=-1)
+    competitor_refresh = competitor_refresh is True
 
     run_id = _monthly_operation_run_id(self)
     with SyncSessionLocal() as db:
@@ -14021,6 +14349,11 @@ def generate_monthly_report_for_hospital(
         if hospital is None:
             logger.error(f"Monthly report requested for unknown hospital {hospital_id}")
             return {"status": "hospital_not_found"}
+        if competitor_refresh and not template_only:
+            # 경쟁 병원 반영은 템플릿 갱신의 변형이다 — 일반 재생성에 섞어 숫자를 다시 세지 않는다. 재시도해도 같다.
+            logger.error("Competitor refresh requested without template_only: hospital=%s", hospital_id)
+            _fail_monthly_operation_run(db, run_id, hospital.id, anchor.year, anchor.month)
+            return {"status": "invalid_mode"}
         recovery_pending_allowed = template_only and allow_recovery_pending is True
         if not recovery_pending_allowed and _hospital_requires_monthly_sov_success(
             db, hospital, period
@@ -14057,6 +14390,7 @@ def generate_monthly_report_for_hospital(
                     correlation_key=correlation_key,
                     operation_run_id=run_id,
                     allow_recovery_pending=recovery_pending_allowed,
+                    competitor_refresh=competitor_refresh,
                     ae_edit=_ae_edit_request_of(db, run_id),
                 )
             except TemplateRefreshRefused as refused:

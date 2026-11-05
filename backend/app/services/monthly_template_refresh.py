@@ -33,7 +33,13 @@ from app.services.monthly_report_snapshot import (
     report_render_inputs,
 )
 
-IN_FLIGHT_OPERATION_TYPES = ("GENERATE_MONTHLY_REPORT", "SCHEDULED_MONTHLY_REPORT", "RUN_SOV")
+# 경쟁사 재판정(REJUDGE_COMPETITORS)이 도는 동안은 그 결과를 실을 갱신을 기다린다.
+IN_FLIGHT_OPERATION_TYPES = (
+    "GENERATE_MONTHLY_REPORT",
+    "SCHEDULED_MONTHLY_REPORT",
+    "RUN_SOV",
+    "REJUDGE_COMPETITORS",
+)
 IN_FLIGHT_STATES = ("REQUESTED", "QUEUED", "RUNNING")
 
 _MISSING = object()

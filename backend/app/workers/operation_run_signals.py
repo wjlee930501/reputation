@@ -103,6 +103,12 @@ def _claim_safely(
         return None
 
 
+# 같은 task id로 다시 배달된 사본이 **살아 있는** RUNNING lease를 다시 claim하지 않는 종류 — 경쟁사 재판정은 세션 락으로
+# 직렬화돼 뒤에 온 사본이 물러나는데, 그 사본이 판을 올려 버리면 일을 끝내 가는 주인 사본의 Celery 재시도(RETRY 신호)가
+# 판 울타리에 걸려 실행을 QUEUED로 되돌리지 못한다. 이 종류는 QUEUED·만료 lease 가지만 claim한다(죽은 주인은 lease 만료 뒤 회수).
+LIVE_RECLAIM_EXCLUDED_TYPES: frozenset[str] = frozenset({"REJUDGE_COMPETITORS"})
+
+
 def _claim(
     run_id: UUID,
     worker_id: str,
@@ -134,6 +140,7 @@ def _claim(
                     redelivered,
                     OperationRun.state == OperationRunState.RUNNING,
                     OperationRun.lease_owner == worker_id,
+                    OperationRun.operation_type.notin_(tuple(LIVE_RECLAIM_EXCLUDED_TYPES)),
                 ),
                 and_(
                     OperationRun.state == OperationRunState.RUNNING,

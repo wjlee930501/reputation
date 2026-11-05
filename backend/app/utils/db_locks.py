@@ -61,7 +61,34 @@ def acquire_hospital_advisory_session_lock_sync(db, hospital_id: uuid.UUID) -> N
     db.execute(select(func.pg_advisory_lock(hospital_lock_key(hospital_id))))
 
 
-def release_hospital_advisory_session_lock_sync(db, hospital_id: uuid.UUID) -> bool | None:
+def hospital_scoped_lock_key(hospital_id: uuid.UUID, namespace: str) -> int:
+    """병원 키와 **다른 공간**의 advisory 키 — 프로필 저장·V0가 쓰는 병원 락과 서로 기다리지 않아야 하는 직렬화에 쓴다.
+
+    Postgres advisory 락은 xact/세션 구분 없이 같은 키 공간을 쓰므로, 같은 `hospital_lock_key`를 쓰면 짧은 프로필
+    PATCH(xact 락)도 긴 작업의 try-lock을 실패시킨다. 이름공간을 섞은 64비트 키로 분리한다."""
+    import hashlib
+
+    salt = int.from_bytes(hashlib.sha256(namespace.encode("utf-8")).digest()[:8], "big")
+    lock_key = (hospital_lock_key(hospital_id) ^ salt) & 0xFFFFFFFFFFFFFFFF
+    if lock_key >= 2**63:
+        lock_key -= 2**64
+    return lock_key
+
+
+def try_acquire_hospital_advisory_session_lock_sync(
+    db, hospital_id: uuid.UUID, *, namespace: str | None = None
+) -> bool:
+    """pg_try_advisory_lock — 기다리지 않는다. 다른 커넥션이 들고 있으면 False(문장 시간 제한에 걸리지 않는다).
+    `namespace`를 주면 병원 공용 키가 아니라 그 이름공간의 키를 잡는다."""
+    if not _is_postgres_bind(db):
+        return True
+    key = hospital_scoped_lock_key(hospital_id, namespace) if namespace else hospital_lock_key(hospital_id)
+    return bool(db.execute(select(func.pg_try_advisory_lock(key))).scalar())
+
+
+def release_hospital_advisory_session_lock_sync(
+    db, hospital_id: uuid.UUID, *, namespace: str | None = None
+) -> bool | None:
     """pg_advisory_unlock — 같은 커넥션에서만 해제된다.
 
     Postgres는 그 커넥션이 락을 들고 있지 않으면 예외 없이 false를 돌려준다. 호출자가
@@ -70,4 +97,5 @@ def release_hospital_advisory_session_lock_sync(db, hospital_id: uuid.UUID) -> b
     """
     if not _is_postgres_bind(db):
         return None
-    return db.execute(select(func.pg_advisory_unlock(hospital_lock_key(hospital_id)))).scalar()
+    key = hospital_scoped_lock_key(hospital_id, namespace) if namespace else hospital_lock_key(hospital_id)
+    return db.execute(select(func.pg_advisory_unlock(key))).scalar()

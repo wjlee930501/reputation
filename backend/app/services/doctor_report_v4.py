@@ -22,6 +22,7 @@ from typing import Any, Literal
 
 import arrow
 
+from app.services.competitor_scope import registered_competitor_names, scope_competitor_records
 from app.services.content_citations import normalize_cited_url
 from app.services.query_target_structure import (
     INTENT_AVAILABILITY,
@@ -718,22 +719,23 @@ def build_doctor_report_v4(
 
     by_text, by_id = _keyword_index(query_targets, regions)
     keywords = [] if setup else _keywords(coverage, attribution, by_text, regions)
-    registered_names = [
-        str(name).strip() for name in (getattr(hospital, "competitors", None) or []) if str(name).strip()
-    ]
+    registered_names = registered_competitor_names(hospital)
     measured = [k for k in keywords if k.attempts > 0]
     exposed = [k for k in measured if k.exposed]
     unexposed = [k for k in measured if not k.exposed]
-    competitors_by_keyword = _competitors_by_keyword(records)
+    # 경쟁 현황은 **지금 등록된** 경쟁 병원만 등록 표기로 센다 — 등록에서 뺀 이름의 판정은 기록에 남아 있어도 보고서에
+    # 싣지 않는다(경쟁 병원 반영이 기록을 지우지 않는 대신 여기서 거른다). 등록 목록이 비어 있으면 종전처럼 기록 그대로다.
+    competitor_records = scope_competitor_records(records, registered_names)
+    competitors_by_keyword = _competitors_by_keyword(competitor_records)
     registered = len(
         {
             str(c.get("name") or "").strip()
-            for r in records
+            for r in competitor_records
             for c in (getattr(r, "competitor_mentions", None) or [])
             if isinstance(c, dict) and str(c.get("name") or "").strip()
         }
     )
-    outcomes = _competitor_outcomes(records)
+    outcomes = _competitor_outcomes(competitor_records)
     works = published_work_evidence(hospital, list(published_contents), citations)
     content_rows = _content_rows(published_contents, works, by_id)
     fulfilled = published_count if fulfilled_count is None else fulfilled_count
@@ -767,8 +769,8 @@ def build_doctor_report_v4(
         setup=setup, registered=registered, measured=measured, registered_names=registered_names,
     )
     cases = _cases_page(
-        records=records, hospital_name=hospital_name, setup=setup, by_text=by_text,
-        regions=regions, works=works, registered=registered,
+        records=competitor_records, hospital_name=hospital_name, setup=setup, by_text=by_text,
+        regions=regions, works=works, registered=registered, registered_names=registered_names,
     )
     appendix = _appendix(
         keywords=keywords, platform_ids=platform_ids, comparable=comparable,
@@ -1186,8 +1188,12 @@ def case_from_record(
     treatment: str,
     urls_to_title: Mapping[str, str],
     registered: bool,
+    registered_names: Sequence[str] = (),
 ) -> Case:
-    """관측 기록 하나를 P5 사례로 만든다 — 빌더(`_cases_page`)와 AE 수정 판의 사례 교체가 같은 규칙을 쓴다."""
+    """관측 기록 하나를 P5 사례로 만든다 — 빌더(`_cases_page`)와 AE 수정 판의 사례 교체가 같은 규칙을 쓴다.
+
+    '등록한 경쟁 병원도 언급되지 않았다'는 이 답변의 등록 경쟁사(`registered_names`, 없으면 기록에 든 이름) **전부**가
+    확정 미언급(False)일 때만 말한다 — 하나라도 미확정(null)이거나 판정이 없으면 모르는 것이지 미언급이 아니다."""
     keyword = _record_query_text(record)
     body = _normalize_answer(record.raw_response or "")
     needle = ""
@@ -1211,9 +1217,15 @@ def case_from_record(
         label = "노출 사례"
     else:
         names = _record_competitors(record)
+        mentions = [item for item in (getattr(record, "competitor_mentions", None) or []) if isinstance(item, dict)]
+        judged_false = {str(item.get("name") or "").strip() for item in mentions if item.get("is_mentioned") is False}
+        expected = set(registered_names) if registered_names else {str(item.get("name") or "").strip() for item in mentions}
+        confirmed_absent = bool(expected) and expected <= judged_false and all(
+            item.get("is_mentioned") is False for item in mentions
+        )
         if names:
             insight = f"{names[0]}이 대신 언급됐습니다 → '{treatment}' 콘텐츠 고도화"
-        elif registered:
+        elif registered and confirmed_absent:
             insight = f"등록한 경쟁 병원도 언급되지 않았습니다 → '{treatment}' 콘텐츠 1편 발행"
         else:
             insight = f"병원명이 나오지 않았습니다 → '{treatment}' 콘텐츠 1편 발행"
@@ -1221,7 +1233,7 @@ def case_from_record(
     return Case(label, keyword, excerpt, highlight, platform, measured_on, insight)
 
 
-def _cases_page(*, records, hospital_name, setup, by_text, regions, works, registered) -> CasesPage:
+def _cases_page(*, records, hospital_name, setup, by_text, regions, works, registered, registered_names=()) -> CasesPage:
     headline = "대표 답변 사례"
     if setup:
         return CasesPage(headline, None, None, "AI 답변 사례는 다음 달 첫 측정부터 보여 드립니다.")
@@ -1242,6 +1254,7 @@ def _cases_page(*, records, hospital_name, setup, by_text, regions, works, regis
             treatment=_info_for(keyword, by_text, regions).treatment,
             urls_to_title=urls_to_title,
             registered=bool(registered),
+            registered_names=registered_names,
         )
 
     found = _case(found_record, found=True)
@@ -1508,6 +1521,43 @@ def stored_facts_v4(sov_summary: Mapping[str, Any], content_summary: Mapping[str
             if comparable and keyword.prior_comparable:
                 facts[f"kw.{keyword.text}.previous"] = f"{keyword.prior_mentioned}/{keyword.prior_attempts}"
     return facts
+
+
+COMPETITOR_FACT_PREFIX = "competitor."
+
+
+def is_competitor_fact(key: str) -> bool:
+    """04절 경쟁 현황 행의 사실(`competitor.{이름}`·`.rate`) — 경쟁 병원 반영이 바꿔도 되는 유일한 사실."""
+    return key.startswith(COMPETITOR_FACT_PREFIX)
+
+
+def compare_facts_excluding_competitors(frozen: Mapping[str, str], view: Mapping[str, str]) -> list[str]:
+    """얼린 뷰 사실과 다시 만든 뷰 사실을 경쟁 사실만 빼고 **모든 키**로 대조한다(경쟁 병원 반영의 숫자 보존 판정).
+
+    v3→v4 승격과 달리 두 뷰가 같은 템플릿이라 진료 항목·그룹·추이·누적까지 전부 같아야 한다 — 하나라도 다르면
+    현재 행(진료 항목 라벨·누적 편수 등)이 바뀐 것이고, 그때는 경쟁 현황만 바꾸는 갱신이 아니다.
+    """
+    problems = [
+        (f"원장 뷰에 없음: {key}={frozen[key]}" if key not in view else f"{key}: 얼린 {frozen[key]} ≠ 뷰 {view[key]}")
+        for key in sorted(frozen)
+        if not is_competitor_fact(key) and view.get(key) != frozen[key]
+    ]
+    problems.extend(
+        f"얼린 사실 없음: {key}={view[key]}"
+        for key in sorted(set(view) - set(frozen))
+        if not is_competitor_fact(key)
+    )
+    return problems
+
+
+def competitor_fact_changes(frozen: Mapping[str, str], view: Mapping[str, str]) -> list[str]:
+    """경쟁 사실의 변화(새 행·바뀐 값·사라진 행) — 막지 않고 기록한다."""
+    changes: list[str] = []
+    for key in sorted(set(frozen) | set(view)):
+        if not is_competitor_fact(key) or frozen.get(key) == view.get(key):
+            continue
+        changes.append(f"{key}: {frozen.get(key, '없음')} → {view.get(key, '없음')}")
+    return changes
 
 
 def compare_facts_v4(stored: Mapping[str, str], view: Mapping[str, str]) -> list[str]:
@@ -1921,14 +1971,21 @@ def apply_ae_overrides(
 
 
 def case_candidates_for_view(
-    view: DoctorReportV4, records: Sequence[Any], *, registered: bool | None = None
+    view: DoctorReportV4,
+    records: Sequence[Any],
+    *,
+    registered: bool | None = None,
+    registered_names: Sequence[str] = (),
 ) -> list[CaseCandidate]:
-    """그 달 관측 기록으로 P5 사례 후보를 만든다 — 진료 항목·인용 제목·경쟁 등록 여부는 (pristine) 뷰에서 읽는다."""
+    """그 달 관측 기록으로 P5 사례 후보를 만든다 — 진료 항목·인용 제목·경쟁 등록 여부는 (pristine) 뷰에서 읽는다.
+
+    `registered_names`(지금 등록된 경쟁사)를 주면 빌더와 같은 투영으로 기록의 경쟁 판정을 거른다 — 사례 교체가 등록에서
+    뺀 병원을 "대신 언급됐다"고 되살리지 않고, '경쟁 병원도 언급되지 않았다'도 같은 엄격한 규칙을 쓴다."""
     treatments = _treatment_by_keyword(view)
     urls_to_title = urls_to_titles(view.content.rows)
     is_registered = bool(view.competition.rows or view.competition.basis) if registered is None else registered
     candidates: list[CaseCandidate] = []
-    for record in usable_case_records(records):
+    for record in usable_case_records(scope_competitor_records(records, registered_names)):
         record_id = str(getattr(record, "id", "") or "")
         if not record_id:
             continue
@@ -1941,6 +1998,7 @@ def case_candidates_for_view(
             treatment=treatments.get(keyword, UNKNOWN_TREATMENT),
             urls_to_title=urls_to_title,
             registered=is_registered,
+            registered_names=registered_names,
         )
         candidates.append(CaseCandidate(record_id, found, case))
     return candidates

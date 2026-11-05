@@ -49,7 +49,14 @@ from app.schemas.operations import (
     LegacyBudgetReplacementRequest,
 )
 from app.services import cost_guard
+from app.services import operation_run_keys as run_keys
 from app.services.audit_log import default_actor, verified_request_actor, write_audit_log
+from app.services.competitor_rejudge import (
+    REJUDGE_OPERATION_TYPE,
+    REJUDGE_QUEUE,
+    build_rejudge_plan,
+    registered_competitor_names,
+)
 from app.services.content_visibility import assess_sampled_visibility, visibility_load_only
 from app.services.content_yield import compute_content_yield_async, kst_week_start
 from app.services.doctor_report_ae_edit import (
@@ -104,6 +111,7 @@ from app.services.post_publish_review_policy import (
     publicly_operational_hospital_predicate,
 )
 from app.services.v0_claim import latest_active_v0_run, v0_claim_is_alive
+from app.workers.competitor_refresh import rejudge_month_competitors
 from app.workers.generation_attempt_state import (
     GenerationBudgetExceeded,
     GenerationBudgetUnknown,
@@ -184,6 +192,7 @@ async def _prepare_monthly_rebuild_audit(
     reason: str,
     template_only: bool = False,
     allow_recovery_pending: bool = False,
+    mode: str | None = None,
     mode_detail: dict[str, JSONValue] | None = None,
 ) -> bool:
     """Lock the hospital and stage a reason audit before durable dispatch.
@@ -212,6 +221,8 @@ async def _prepare_monthly_rebuild_audit(
     if template_only:
         # 템플릿 갱신은 같은 사유라도 일반 재생성과 다른 요청이다. 키를 섞어 쓰면 409.
         expected["mode"] = "TEMPLATE_REFRESH"
+    if mode is not None:
+        expected["mode"] = mode
     if allow_recovery_pending:
         expected["allow_recovery_pending"] = True
     if mode_detail:
@@ -978,6 +989,292 @@ async def generate_monthly_report_operation(
         "operation_state": dispatch.run.state,
         "task_id": dispatch.run.task_id,
         "idempotent_replay": dispatch.replayed,
+    }
+
+
+# ── 경쟁 병원 반영: 경쟁사 재판정 → 경쟁 현황 부분 재생성 ─────────────────────────
+
+
+class CompetitorRefreshRequest(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    reason: str | None = Field(default=None, max_length=200)
+
+
+COMPETITOR_REFRESH_MODE = "COMPETITOR_REFRESH"
+COMPETITOR_REFRESH_DEFAULT_REASON = "경쟁 병원 등록 반영(측정 숫자 변경 없음)"
+_COMPETITOR_REFRESH_ACTIVE_STATES = (
+    OperationRunState.REQUESTED,
+    OperationRunState.QUEUED,
+    OperationRunState.RUNNING,
+)
+
+
+def _stored_run_period(run: OperationRun) -> tuple[int, int] | None:
+    """실행이 가리키는 연월 — 결과 요약, 없으면 저장된 디스패치 인자. 모르면 None(지난달로 짐작하지 않는다)."""
+    summary = run.result_summary if isinstance(run.result_summary, dict) else {}
+    year, month = summary.get("period_year"), summary.get("period_month")
+    if isinstance(year, int) and isinstance(month, int):
+        return year, month
+    try:
+        dispatch = parse_stored_dispatch(run.request_payload.get("_dispatch"))
+    except UnsafeDispatchPayload:
+        return None
+    if dispatch is not None and len(dispatch.task_args) >= 3:
+        year, month = dispatch.task_args[1:3]
+        if isinstance(year, int) and isinstance(month, int):
+            return year, month
+    return None
+
+
+def _competitor_report_run_view(run: OperationRun | None) -> dict[str, JSONValue] | None:
+    if run is None:
+        return None
+    summary = run.result_summary if isinstance(run.result_summary, dict) else {}
+    version = summary.get("report_version")
+    report_id = _monthly_run_uuid(summary, "report_id")
+    return {
+        "run_id": str(run.id),
+        "state": str(run.state),
+        "stage": _monthly_run_stage(run).value,
+        "report_id": str(report_id) if report_id is not None else None,
+        "report_version": version if isinstance(version, int) else None,
+        "safe_error_code": run.safe_error_code,
+        "requested_at": run.requested_at.isoformat() if run.requested_at else None,
+        "completed_at": run.completed_at.isoformat() if run.completed_at else None,
+    }
+
+
+async def _competitor_refresh_run_view(db: AsyncSession, run: OperationRun | None) -> dict[str, JSONValue] | None:
+    if run is None:
+        return None
+    summary = run.result_summary if isinstance(run.result_summary, dict) else {}
+    rejudge = summary.get("rejudge") if isinstance(summary.get("rejudge"), dict) else {}
+    report_run = (
+        await db.execute(
+            select(OperationRun)
+            .where(
+                OperationRun.parent_run_id == run.id,
+                OperationRun.operation_type == "GENERATE_MONTHLY_REPORT",
+            )
+            .order_by(OperationRun.requested_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    return {
+        "run_id": str(run.id),
+        "state": str(run.state),
+        "stage": summary.get("stage") if isinstance(summary.get("stage"), str) else None,
+        "safe_error_code": run.safe_error_code,
+        "failure_code": summary.get("failure_code") if isinstance(summary.get("failure_code"), str) else None,
+        "requested_at": run.requested_at.isoformat() if run.requested_at else None,
+        "completed_at": run.completed_at.isoformat() if run.completed_at else None,
+        "records_total": rejudge.get("records_total"),
+        "pending_records": rejudge.get("pending_records"),
+        "judged_records": rejudge.get("judged_records"),
+        "unresolved_records": rejudge.get("unresolved_records"),
+        "judged_names": rejudge.get("judged_names"),
+        "unresolved_names": rejudge.get("unresolved_names"),
+        "cost_blocked": rejudge.get("cost_blocked"),
+        "report_run": _competitor_report_run_view(report_run),
+    }
+
+
+async def _competitor_chain_active(db: AsyncSession, run: OperationRun) -> bool:
+    """재판정 실행이 열려 있거나, 끝났는데 그 자식 보고서 실행이 아직 열려 있으면 체인이 진행 중이다."""
+    if run.state in _COMPETITOR_REFRESH_ACTIVE_STATES:
+        return True
+    if run.state != OperationRunState.SUCCEEDED:
+        return False
+    child_state = (
+        await db.execute(
+            select(OperationRun.state)
+            .where(
+                OperationRun.parent_run_id == run.id,
+                OperationRun.operation_type == "GENERATE_MONTHLY_REPORT",
+            )
+            .order_by(OperationRun.requested_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    return child_state in _COMPETITOR_REFRESH_ACTIVE_STATES
+
+
+async def _competitor_refresh_runs(
+    db: AsyncSession, hospital_id: uuid.UUID, year: int, month: int
+) -> list[OperationRun]:
+    runs = (
+        await db.execute(
+            select(OperationRun)
+            .where(
+                OperationRun.hospital_id == hospital_id,
+                OperationRun.operation_type == REJUDGE_OPERATION_TYPE,
+            )
+            .order_by(OperationRun.requested_at.desc())
+            .limit(50)
+        )
+    ).scalars()
+    return [run for run in runs if _stored_run_period(run) == (year, month)]
+
+
+@router.get("/{hospital_id}/reports/competitors/refresh")
+async def competitor_refresh_status(
+    hospital_id: uuid.UUID,
+    year: int = Query(ge=2000, le=2200),
+    month: int = Query(ge=1, le=12),
+    db: AsyncSession = Depends(get_db),
+):
+    """경쟁 병원 반영의 현재 상태 — 등록 경쟁사, 그 달 보고서가 쓴 답변 수와 아직 판정 없는 답변 수, 최근 실행.
+
+    읽기 전용이다(공급자 호출·쓰기 없음). Admin 보고서 탭이 버튼을 그리기 전과 실행 중 진행을 볼 때 부른다.
+    """
+    hospital = await _get_hospital_or_404(db, hospital_id)
+    plan = await db.run_sync(lambda session: build_rejudge_plan(session, hospital, year, month))
+    runs = await _competitor_refresh_runs(db, hospital.id, year, month)
+    return {
+        "hospital_id": str(hospital.id),
+        "period_year": year,
+        "period_month": month,
+        **plan.summary(),
+        "latest_run": await _competitor_refresh_run_view(db, runs[0] if runs else None),
+        "redeliver_required": True,
+    }
+
+
+@router.post("/{hospital_id}/reports/competitors/refresh")
+async def request_competitor_refresh(
+    hospital_id: uuid.UUID,
+    year: int = Query(ge=2000, le=2200),
+    month: int = Query(ge=1, le=12),
+    payload: CompetitorRefreshRequest | None = Body(default=None),
+    db: AsyncSession = Depends(get_db),
+    idempotency_key: IdempotencyKeyHeader = None,
+):
+    """경쟁 병원을 뒤늦게 등록한 뒤 지난달 보고서의 경쟁 현황만 다시 만든다.
+
+    한 번의 요청이 체인 하나를 큐에 넣는다 — (1) 그 달 보고서가 쓴 저장 답변마다 아직 판정이 없는 등록 경쟁사만
+    측정과 같은 판정으로 다시 묻고(`REJUDGE_COMPETITORS`, 답변을 새로 사지 않으므로 마감 뒤에도 된다),
+    (2) 끝나면 같은 체인의 자식 실행이 숫자는 그대로 두고 경쟁 현황만 다시 계산한 새 버전을 만든다
+    (`COMPETITOR_REFRESH` 템플릿 갱신). 새 버전은 이전 버전·전달 기록을 보존하며 **다시 전달해야 원장에게
+    닿는다**. 등록 경쟁사는 병원 정보 탭에서 고친다(이 요청은 입력을 받지 않는다).
+    """
+    now_kst = datetime.now(ZoneInfo("Asia/Seoul"))
+    try:
+        period = require_closed_period(year, month, now=now_kst)
+    except MonthlyPeriodError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if idempotency_key is None:
+        raise HTTPException(
+            status_code=400,
+            detail="중복 요청을 막는 요청 키가 없습니다. 화면을 새로고침한 뒤 다시 시도해 주세요.",
+        )
+    hospital = await _get_hospital_or_404(db, hospital_id)
+    registered = registered_competitor_names(hospital)
+    if not registered:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "NO_REGISTERED_COMPETITORS",
+                "message": "등록된 경쟁 병원이 없습니다. 병원 정보 탭에서 경쟁 병원을 먼저 등록해 주세요.",
+            },
+        )
+    plan = await db.run_sync(
+        lambda session: build_rejudge_plan(session, hospital, period.year, period.month)
+    )
+    if plan.report_id is None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "NO_REPORT",
+                "message": "이 달의 보고서가 아직 없습니다. 먼저 보고서를 만든 뒤 경쟁 병원을 반영해 주세요.",
+            },
+        )
+    if plan.records_total == 0:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "NO_FROZEN_RECORDS",
+                "message": "이 보고서가 점수에 쓴 저장 답변이 없어 경쟁 병원을 반영할 수 없습니다.",
+            },
+        )
+    reason = sanitize_operator_text(payload.reason if payload is not None else None, limit=200)
+    if reason is None or len(reason) < 3:
+        reason = COMPETITOR_REFRESH_DEFAULT_REASON
+    # 병원 행 잠금(사유 감사 준비) **안에서** 진행 중인 체인을 본다 — 키가 다른 두 요청이 같은 달에 유료 판정 체인을
+    # 겹쳐 시작하지 않게. 먼저 커밋한 요청의 실행 행을 나중 요청이 잠금을 받은 뒤 보게 된다.
+    audit_created = await _prepare_monthly_rebuild_audit(
+        db,
+        hospital_id=hospital.id,
+        idempotency_key=idempotency_key,
+        year=period.year,
+        month=period.month,
+        reason=reason,
+        mode=COMPETITOR_REFRESH_MODE,
+    )
+    normalized_key = run_keys.normalize_operation_key(idempotency_key)
+    for run in await _competitor_refresh_runs(db, hospital.id, period.year, period.month):
+        if run.idempotency_key == normalized_key or not await _competitor_chain_active(db, run):
+            continue
+        active_run_id = str(run.id)  # rollback이 ORM 속성을 만료시키므로 먼저 읽는다
+        await db.rollback()  # 준비해 둔 사유 감사도 함께 버린다
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "COMPETITOR_REFRESH_IN_FLIGHT",
+                "message": "이 달의 경쟁 병원 반영이 이미 진행 중입니다. 끝난 뒤 다시 확인해 주세요.",
+                "operation_run_id": active_run_id,
+            },
+        )
+    task_args: list[JSONValue] = [str(hospital.id), period.year, period.month]
+    dispatch = await _enqueue_with_truthful_audit(
+        db,
+        action="rejudge_competitors",
+        hospital_id=hospital.id,
+        target_type="hospital",
+        target_id=hospital.id,
+        task=rejudge_month_competitors,
+        args=task_args,
+        queue=REJUDGE_QUEUE,
+        idempotency_key=idempotency_key,
+        request_payload_extra={
+            "period_year": period.year,
+            "period_month": period.month,
+            "registered_competitors": list(registered),
+            "records_total": plan.records_total,
+            "pending_records": plan.pending_records,
+        },
+    )
+    if dispatch.replayed:
+        if audit_created:
+            await db.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail="기존 요청에는 사유 기록이 없습니다. 새 요청 키로 다시 시도해 주세요.",
+            )
+        try:
+            stored = parse_stored_dispatch(dispatch.run.request_payload.get("_dispatch"))
+        except UnsafeDispatchPayload as exc:
+            raise HTTPException(
+                status_code=409,
+                detail="기존 요청 내용을 확인할 수 없습니다. 개발팀에 작업 ID를 알려 주세요.",
+            ) from exc
+        if stored.task_args != tuple(task_args):
+            raise HTTPException(
+                status_code=409,
+                detail="같은 요청 키가 다른 월에 이미 사용됐습니다. 화면을 새로고침한 뒤 다시 시도해 주세요.",
+            )
+    return {
+        "detail": (
+            "경쟁 병원 반영을 요청했습니다. 저장된 답변에 등록 경쟁사 판정을 보충한 뒤 경쟁 현황만 다시 계산한 "
+            "새 버전이 만들어집니다. 새 버전은 다시 전달해야 원장님께 반영됩니다."
+        ),
+        "hospital_id": str(hospital.id),
+        "operation_run_id": str(dispatch.run.id),
+        "operation_state": dispatch.run.state,
+        "task_id": dispatch.run.task_id,
+        "idempotent_replay": dispatch.replayed,
+        **plan.summary(),
+        "redeliver_required": True,
     }
 
 
