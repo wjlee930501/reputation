@@ -724,16 +724,19 @@ def build_doctor_report_v4(
     measured = [k for k in keywords if k.attempts > 0]
     exposed = [k for k in measured if k.exposed]
     unexposed = [k for k in measured if not k.exposed]
-    competitors_by_keyword = _competitors_by_keyword(records)
+    # 경쟁 현황은 **지금 등록된** 경쟁 병원만 센다 — 등록에서 뺀 이름의 판정은 기록에 남아 있어도 보고서에 싣지 않는다
+    # (경쟁 병원 반영이 기록을 지우지 않는 대신 여기서 거른다). 등록 목록이 비어 있으면 종전처럼 기록의 이름을 그대로 쓴다.
+    competitor_records = [_scope_competitors(record, registered_names) for record in records] if registered_names else list(records)
+    competitors_by_keyword = _competitors_by_keyword(competitor_records)
     registered = len(
         {
             str(c.get("name") or "").strip()
-            for r in records
+            for r in competitor_records
             for c in (getattr(r, "competitor_mentions", None) or [])
             if isinstance(c, dict) and str(c.get("name") or "").strip()
         }
     )
-    outcomes = _competitor_outcomes(records)
+    outcomes = _competitor_outcomes(competitor_records)
     works = published_work_evidence(hospital, list(published_contents), citations)
     content_rows = _content_rows(published_contents, works, by_id)
     fulfilled = published_count if fulfilled_count is None else fulfilled_count
@@ -767,7 +770,7 @@ def build_doctor_report_v4(
         setup=setup, registered=registered, measured=measured, registered_names=registered_names,
     )
     cases = _cases_page(
-        records=records, hospital_name=hospital_name, setup=setup, by_text=by_text,
+        records=competitor_records, hospital_name=hospital_name, setup=setup, by_text=by_text,
         regions=regions, works=works, registered=registered,
     )
     appendix = _appendix(
@@ -1054,6 +1057,34 @@ def _month_label(label: str) -> str:
 # ── P4 ──────────────────────────────────────────────────────────────────────
 
 
+def _competitor_key(name: str) -> str:
+    """등록 표기와 판정 표기의 띄어쓰기·기호 차이를 접는다(`sov_engine._normalize_for_prefilter`와 같은 규칙)."""
+    return re.sub(r"[\s\W]+", "", str(name or ""), flags=re.UNICODE)
+
+
+class _ScopedRecord:
+    """기록의 다른 값은 그대로 두고 `competitor_mentions`만 등록 경쟁사로 거른 읽기 전용 뷰."""
+
+    __slots__ = ("_record", "competitor_mentions")
+
+    def __init__(self, record: Any, mentions: list[Any]) -> None:
+        self._record = record
+        self.competitor_mentions = mentions
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._record, name)
+
+
+def _scope_competitors(record: Any, registered_names: Sequence[str]) -> Any:
+    keys = {_competitor_key(name) for name in registered_names}
+    mentions = [
+        item
+        for item in (getattr(record, "competitor_mentions", None) or [])
+        if isinstance(item, dict) and _competitor_key(str(item.get("name") or "")) in keys
+    ]
+    return _ScopedRecord(record, mentions)
+
+
 def _competitor_outcomes(records: Sequence[Any]) -> list[CompetitorRow]:
     counts: dict[str, list[int]] = {}
     for record in records:
@@ -1203,9 +1234,15 @@ def _cases_page(*, records, hospital_name, setup, by_text, regions, works, regis
             label = "노출 사례"
         else:
             names = _record_competitors(record)
+            # '경쟁 병원도 언급되지 않았다'는 이 답변에 **확정 미언급(False)** 판정이 있을 때만 말한다 — 미확정(null)만
+            # 남은 답변은 모르는 것이지 미언급이 아니다.
+            confirmed_absent = any(
+                isinstance(item, dict) and item.get("is_mentioned") is False
+                for item in (getattr(record, "competitor_mentions", None) or [])
+            )
             if names:
                 insight = f"{names[0]}이 대신 언급됐습니다 → '{info.treatment}' 콘텐츠 고도화"
-            elif registered:
+            elif registered and confirmed_absent:
                 insight = f"등록한 경쟁 병원도 언급되지 않았습니다 → '{info.treatment}' 콘텐츠 1편 발행"
             else:
                 insight = f"병원명이 나오지 않았습니다 → '{info.treatment}' 콘텐츠 1편 발행"
@@ -1476,6 +1513,43 @@ def stored_facts_v4(sov_summary: Mapping[str, Any], content_summary: Mapping[str
             if comparable and keyword.prior_comparable:
                 facts[f"kw.{keyword.text}.previous"] = f"{keyword.prior_mentioned}/{keyword.prior_attempts}"
     return facts
+
+
+COMPETITOR_FACT_PREFIX = "competitor."
+
+
+def is_competitor_fact(key: str) -> bool:
+    """04절 경쟁 현황 행의 사실(`competitor.{이름}`·`.rate`) — 경쟁 병원 반영이 바꿔도 되는 유일한 사실."""
+    return key.startswith(COMPETITOR_FACT_PREFIX)
+
+
+def compare_facts_excluding_competitors(frozen: Mapping[str, str], view: Mapping[str, str]) -> list[str]:
+    """얼린 뷰 사실과 다시 만든 뷰 사실을 경쟁 사실만 빼고 **모든 키**로 대조한다(경쟁 병원 반영의 숫자 보존 판정).
+
+    v3→v4 승격과 달리 두 뷰가 같은 템플릿이라 진료 항목·그룹·추이·누적까지 전부 같아야 한다 — 하나라도 다르면
+    현재 행(진료 항목 라벨·누적 편수 등)이 바뀐 것이고, 그때는 경쟁 현황만 바꾸는 갱신이 아니다.
+    """
+    problems = [
+        (f"원장 뷰에 없음: {key}={frozen[key]}" if key not in view else f"{key}: 얼린 {frozen[key]} ≠ 뷰 {view[key]}")
+        for key in sorted(frozen)
+        if not is_competitor_fact(key) and view.get(key) != frozen[key]
+    ]
+    problems.extend(
+        f"얼린 사실 없음: {key}={view[key]}"
+        for key in sorted(set(view) - set(frozen))
+        if not is_competitor_fact(key)
+    )
+    return problems
+
+
+def competitor_fact_changes(frozen: Mapping[str, str], view: Mapping[str, str]) -> list[str]:
+    """경쟁 사실의 변화(새 행·바뀐 값·사라진 행) — 막지 않고 기록한다."""
+    changes: list[str] = []
+    for key in sorted(set(frozen) | set(view)):
+        if not is_competitor_fact(key) or frozen.get(key) == view.get(key):
+            continue
+        changes.append(f"{key}: {frozen.get(key, '없음')} → {view.get(key, '없음')}")
+    return changes
 
 
 def compare_facts_v4(stored: Mapping[str, str], view: Mapping[str, str]) -> list[str]:

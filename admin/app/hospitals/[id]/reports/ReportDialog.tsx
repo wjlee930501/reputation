@@ -15,6 +15,7 @@ import {
 import type { ReportView } from '@/lib/report-review'
 import { dialogKeyDecision } from '@/lib/report-component-behavior'
 import { reportOperationsHref } from '@/lib/operations-center'
+import { CompetitorRefreshPanel } from './CompetitorRefreshPanel'
 import { ReportEvidence } from './ReportEvidence'
 
 export type DeliveryAction =
@@ -44,6 +45,7 @@ export function ReportDialog({
   onRefresh,
   onAction,
   onCopyDeveloperInfo,
+  onCompetitorRefreshRequested,
 }: {
   report: ReportView
   issue: DeliveryIssue | null
@@ -56,6 +58,8 @@ export function ReportDialog({
   onRefresh: () => void
   onAction: (action: DeliveryAction) => void
   onCopyDeveloperInfo: () => void
+  /** 경쟁 병원 반영 체인을 요청했거나 끝났을 때 — 작업 기록·목록을 다시 읽게 한다. 월간 보고서에만 쓴다. */
+  onCompetitorRefreshRequested?: () => void
 }) {
   const panelRef = useRef<HTMLDivElement>(null)
   const closeRef = useRef<HTMLButtonElement>(null)
@@ -250,6 +254,11 @@ export function ReportDialog({
               </div>
             )}
           </section>
+
+          {/* 경쟁 병원 뒤늦은 등록 — 월간 보고서만. 초기 진단(V0)은 월간 생성 경로로 다시 만들지 않는다. */}
+          {!report.isInitialReport && (
+            <CompetitorRefreshPanel hospitalId={report.hospitalId} report={report} onChanged={onCompetitorRefreshRequested} />
+          )}
 
           {/* 내부 검수 근거는 원장 대면 절차가 아니다. 필요한 사람만 펼쳐 본다. */}
           <details data-report-section="internal" className="rounded-xl border border-[var(--color-revisit-coolgrey-20)] p-4">

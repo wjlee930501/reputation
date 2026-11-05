@@ -153,6 +153,12 @@ _OPERATION_TASK_POLICIES = {
         "hospital",
         "reports",
     ),
+    # 저장 답변에 대한 경쟁사 재판정(경쟁 병원 반영 체인의 부모). 실행 기록 없이는 배달하지 않는다.
+    "app.workers.competitor_refresh.rejudge_month_competitors": (
+        "REJUDGE_COMPETITORS",
+        "hospital",
+        "sov",
+    ),
     "app.workers.lead_diagnosis_tasks.recover_lead_diagnosis_measurement": (
         "RECOVER_LEAD_MEASUREMENT",
         "lead_diagnosis",
@@ -170,6 +176,7 @@ _OPERATION_RUN_REQUIRED_TASKS = frozenset(
         "app.workers.tasks.generate_content_image",
         "app.workers.tasks.recertify_published_content_image",
         "app.workers.tasks.generate_monthly_report_for_hospital",
+        "app.workers.competitor_refresh.rejudge_month_competitors",
         "app.workers.lead_diagnosis_tasks.recover_lead_diagnosis_measurement",
         "app.workers.lead_diagnosis_tasks.recover_lead_diagnosis_report",
     }

@@ -77,6 +77,7 @@ TASK_PURPOSES = {
         "refresh-reused-content-images"
     ),
     "app.workers.post_publish_ai_review.review_post_publish_samples": "post-publish-ai-review",
+    "app.workers.competitor_refresh.rejudge_month_competitors": "rejudge-month-competitors",
     "app.workers.domain_certificate_tasks.provision_domain_certificate": (
         "provision-domain-certificate"
     ),
@@ -107,6 +108,7 @@ FIRST_ARG_TARGET_TASKS = frozenset(
         "app.workers.tasks.recertify_published_content_image",
         "app.workers.tasks.run_sov_for_hospital",
         "app.workers.tasks.generate_monthly_report_for_hospital",
+        "app.workers.competitor_refresh.rejudge_month_competitors",
         "app.workers.tasks.retry_site_revalidation",
         "app.workers.domain_certificate_tasks.provision_domain_certificate",
         "app.workers.profile_autofill_tasks.autofill_registered_hospital_profile",

@@ -156,6 +156,7 @@ celery_app = Celery(
         "app.workers.provider_usage_recovery",
         "app.workers.published_image_refresh",
         "app.workers.post_publish_ai_review",
+        "app.workers.competitor_refresh",
     ],
 )
 
@@ -261,6 +262,8 @@ celery_app.conf.update(
         "app.workers.tasks.run_sov_for_hospital": {"queue": "sov"},
         "app.workers.tasks.run_weekly_monitoring": {"queue": "sov"},
         "app.workers.tasks.run_monthly_sov_measurement": {"queue": "sov"},
+        # 저장된 답변 원문에 대한 경쟁사 재판정 — 유료 판정 호출이라 측정 큐·sov 예산을 쓴다.
+        "app.workers.competitor_refresh.rejudge_month_competitors": {"queue": "sov"},
         "app.workers.tasks.run_monthly_reports": {"queue": "reports"},
         "app.workers.tasks.summarize_monthly_report_gaps": {"queue": "reports"},
         "app.workers.tasks.generate_monthly_report_for_hospital": {"queue": "reports"},

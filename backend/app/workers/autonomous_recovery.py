@@ -137,7 +137,16 @@ _OPERATION_REDISPATCH_POLICIES: Final[dict[str, _RedispatchPolicy]] = {
             (_INTEGER_ARG, _INTEGER_ARG, True, False, True),
             # 운영자 지정으로 측정 미완료 병원도 템플릿 갱신(allow_recovery_pending).
             (_INTEGER_ARG, _INTEGER_ARG, True, False, True, True),
+            # 경쟁 병원 반영(competitor_refresh) — 재판정 체인의 자식 템플릿 갱신.
+            (_INTEGER_ARG, _INTEGER_ARG, True, False, True, False, True),
         ),
+    ),
+    # 저장 답변에 대한 경쟁사 재판정. 기록 단위로 합쳐 저장하므로 다시 돌아도 이미 판정한 이름을 다시 사지 않는다.
+    "REJUDGE_COMPETITORS": _RedispatchPolicy(
+        "app.workers.competitor_refresh.rejudge_month_competitors",
+        "sov",
+        "hospital",
+        ((_INTEGER_ARG, _INTEGER_ARG),),
     ),
     "REGENERATE_CONTENT": _RedispatchPolicy(
         "app.workers.tasks.regenerate_content_item", "content", "content_item"
@@ -170,6 +179,7 @@ _LEASE_TAKEOVER_TYPES: Final = frozenset(
         "GENERATE_MONTHLY_REPORT",  # rebuild=False만 — 아래 `_lease_takeover_refused`
         "REGENERATE_CONTENT",  # 글 단위 생성 lease + 일일 예산
         "REGENERATE_CONTENT_IMAGE",  # 같은 생성 lease + 이미지 일일 예산
+        "REJUDGE_COMPETITORS",  # 판정 없는 이름만 묻고 기록 단위로 커밋 — 다시 돌아도 같은 이름을 두 번 사지 않는다
         # 저장된 claim token이 바뀌었으면 공급자 호출 없이 CANCELLED로 끝난다.
         generation_run_control.GENERATE_CONTENT_ITEM_OPERATION,
     }
@@ -1165,7 +1175,11 @@ def _stored_monthly_report_flags(run: OperationRun) -> tuple[object, ...]:
     # 템플릿 갱신(숫자 그대로)을 일반 재생성으로 다시 보내면 지금 행으로 숫자를 다시 센다.
     # 저장된 인자 꼴 그대로(rebuild, False, template_only[, allow_recovery_pending]) 되살린다.
     if rebuild and len(raw_args) >= 6 and raw_args[4] is False and raw_args[5] is True:
-        if len(raw_args) >= 7 and raw_args[6] is True:
+        allow_recovery_pending = len(raw_args) >= 7 and raw_args[6] is True
+        # 경쟁 병원 반영(competitor_refresh)은 일반 템플릿 갱신으로 되살리면 경쟁 현황이 다시 계산되지 않는다.
+        if len(raw_args) >= 8 and raw_args[7] is True:
+            return True, False, True, allow_recovery_pending, True
+        if allow_recovery_pending:
             return True, False, True, True
         return True, False, True
     return (True,) if rebuild else ()
