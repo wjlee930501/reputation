@@ -179,6 +179,7 @@ from app.services.doctor_report_ae_edit import (
     base_view_of,
     build_ae_overrides,
     carry_ae_fields,
+    legacy_card_corrected,
     merge_ae_fields,
     normalize_ae_fields,
     numbers_changed_between,
@@ -13613,13 +13614,18 @@ def build_monthly_template_refresh_plan(
         final_view, dropped_overrides = _apply_competitor_refresh_overrides(
             db, h, latest, now, content, rebuilt_view, rebuilt
         )
-        frozen_facts = dict(render_inputs.doctor_metric_facts or {})
+        # 옛 코드로 저장된 AE 판의 카드 4(라벨 합치기·분리 뒤 n이 그대로였던 판)는 지금 규칙으로 다시 센 카드로 바꿔 비교한다.
+        frozen_view, frozen_facts, legacy_note = legacy_card_corrected(
+            render_inputs, rebuilt.frozen_view, dict(render_inputs.doctor_metric_facts or {})
+        )
+        if legacy_note:
+            verdict.add("WARN", "AE_LEGACY_CARD_RECOUNTED", legacy_note)
         new_facts = final_view.facts()
         for problem in compare_facts_v4(stored_facts_v4(latest.sov_summary or {}, content), new_facts):
             verdict.add("DIFF", "COMPETITOR_REFRESH_FACTS", problem)
         for problem in compare_facts_excluding_competitors(frozen_facts, new_facts):
             verdict.add("DIFF", "COMPETITOR_REFRESH_FACTS", problem)
-        for problem in _competitor_refresh_view_problems(rebuilt.frozen_view, final_view):
+        for problem in _competitor_refresh_view_problems(frozen_view, final_view):
             verdict.add("DIFF", "COMPETITOR_REFRESH_VIEW", problem)
         for change in competitor_fact_changes(frozen_facts, new_facts):
             verdict.add("WARN", "COMPETITOR_FACTS_RECOMPUTED", change)

@@ -1875,13 +1875,15 @@ def treatment_card_from_appendix(
 def card_names_with_tail(card: Card, names: Sequence[str]) -> tuple[str, ...]:
     """사람이 고른 카드 4 이름 목록에 n(카드 값)에서 센 '외 N개' 꼬리를 붙인다 — n은 그대로이고 꼬리만 목록 길이에 맞춘다.
 
-    n을 셀 수 없는 카드(측정 전 등)는 종전 꼬리를 그대로 둔다.
+    목록이 n보다 길면 n개까지만 싣는다(검증이 먼저 거절하지만, 라벨을 합쳐 n이 줄어든 뒤 이어진 옛 목록이 카드 값보다
+    길게 찍히는 일은 적용 단계에서도 막는다 — Codex 3-P1-1). n을 셀 수 없는 카드(측정 전 등)는 종전 꼬리를 그대로 둔다.
     """
     renamed = _dedupe(str(name).strip() for name in names if str(name).strip())
     count = treatment_card_count(card)
     if count is None:
         _, tail = split_card_names(card.names)
         return (*renamed, *([tail] if tail else ()))
+    renamed = renamed[:count]
     rest = count - len(renamed)
     return (*renamed, *([f"외 {rest}개"] if rest > 0 else ()))
 

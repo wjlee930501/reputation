@@ -239,7 +239,8 @@ PDF를 만든다. 템플릿 갱신과 **같은 경로**(`generate_monthly_report
 - **검증**: 경로 화이트리스트 밖·빈 값·200자(라벨 40자) 초과·줄바꿈·의료광고 금지 표현(`medical_filter.check_forbidden`)·
   내부 표식(`INTERNAL_ONLY_MARKERS`)·**원문에 없는 숫자**는 422로 거절하고 아무것도 쓰지 않는다. 워커는 적용 뒤
   뷰 사실이 pristine 뷰와 같은지(`AE_EDIT_NUMBERS`, 진료 항목 묶음 사실 `treatment.*`와 카드 4의 n `card.treatments`만 예외 —
-  `doctor_report_ae_edit.is_treatment_grouping_fact`; 둘 다 같은 노출 행의 라벨 묶음에서 나온다)와 저장 요약에서 다시 만든
+  `doctor_report_ae_edit.is_treatment_grouping_fact`; 둘 다 같은 노출 행의 라벨 묶음에서 나온다. 카드 4 이름 목록은 라벨을 적용해
+  다시 센 n을 넘을 수 없다 — `TOO_MANY_NAMES`, 이어진 옛 목록도 같은 검사를 받는다)와 저장 요약에서 다시 만든
   사실과 같은지(`AE_EDIT_FACTS`, `stored_facts_v4`)를 다시 보고, 원장 PDF는 종전과 같은 이진 검증
   (`doctor-pdf-v4`)을 통과해야만 새 버전을 커밋한다(`refuse_without_artifact`).
 - **저장**: `content_summary.report_snapshot.render_inputs.ae_overrides = {schema_version, edited_by, edited_at,
@@ -247,8 +248,12 @@ PDF를 만든다. 템플릿 갱신과 **같은 경로**(`generate_monthly_report
   않고, `base_view`는 시스템이 만든 pristine 뷰라 다음 버전이 같은 수정을 다시 얹고 화면이 원문을 보여 준다.
 - **승계**: 다음 템플릿 갱신·AE 수정 판은 저장된 수정 값을 전부 잇는다. 일반 재생성(`_build_monthly_report_for_hospital`)은
   pristine 뷰의 숫자·키워드 집합이 같으면 전부, 바뀌었으면 **라벨만** 잇고 문장·사례 교체는 버려
+  (pristine끼리의 비교라 카드 4의 n 변화도 '바뀐 숫자'다 — 그 수를 담은 문장을 잇지 않기 위해; 막대 `treatment.*`만 보지 않는다)
   `render_inputs.ae_overrides_dropped = {fields, reason: NUMBERS_CHANGED, from_report_id}`로 남긴다. 사라진 키워드의
   라벨도 버린다(`NO_LONGER_APPLIES`).
+- **옛 판 보정**: #286 코드로 저장된 AE 판은 라벨을 합치거나 갈라도 카드 4의 n·'외 N개'가 그대로였다. 그런 판은 다음 AE 수정 판·
+  템플릿 갱신이 pristine 뷰에서 다시 세어 바로잡고, 경쟁 병원 반영의 얼린 뷰·사실 대조와 그 postcheck는 저장된 수정 값을 지금
+  규칙으로 다시 얹은 카드로 바꿔 비교한다(`doctor_report_ae_edit.legacy_card_corrected`, WARN `AE_LEGACY_CARD_RECOUNTED`).
 - **API**: `GET /admin/hospitals/{id}/reports/{report_id}/ae-edit/preview[?overrides=<JSON>]`는 쓰기 없이 원문·현재 값·
   사례 후보와 적용 결과·거절 사유를 돌려준다. `POST …/ae-edit`(본문 `{reason?, fields}`, `Idempotency-Key` 필수, 사람 계정만 — `require_active_account`라
   시스템 actor는 403)는 같은 요청 키의 기존 실행이 있으면 먼저 그 영수증을 돌려주고(수정 값이 다르면 409), 그 뒤 최신 버전·v4 스냅샷일 때만 받고(아니면 409 `AE_EDIT_NOT_LATEST`·`AE_EDIT_REQUIRES_V4`), 감사
