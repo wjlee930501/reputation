@@ -1,6 +1,15 @@
 # Re:putation — 현재 프로젝트 개발 안내
 
-## 최신 운영 배포 — 2026-11-05 오후 AE 수정 판·경쟁 병원 반영(3·4차)
+## 최신 운영 배포 — 2026-11-06 AE 수정 판 전면 확장
+
+main `9f4a95cd`(PR #292 — AE가 원장 v4 보고서의 모든 글자·숫자를 고치거나 지운다, 숫자 보존 게이트 제거·'측정값과 다름' 표시, Admin 패널 UX와 CSP
+`frame-src 'self' blob:`)를 04:48~04:58 KST에 Backend·Admin에 배포했다(그날 첫 릴리스, 마이그레이션 없음). **현재 리비전은 api `00281-5mp`, worker `00271-dt8`,
+beat `00266-2nn`, admin `00118-xss`**, Site `00149-6ck`·DB head 그대로. readiness 성공, release `9f4a95cd`, ERROR 0, Admin 200. 장편한 10월 최신 판의 쓰기 없는
+미리보기에서 부록 B·D 전체·'측정 방식이 바뀌어' 안내·'실패 61회'·범례 '측정 실패' 삭제와 숫자 변경이 문제 0건으로 반영되고 금지 표현·내부 표식은 거절된다.
+POST 미리보기·PDF 미리보기·저장은 사람 계정 서명이 필요해 로그인한 Admin에서 확인할 일로 남았다(AE 실제 저장은 운영 미실행). 롤백 좌표
+`.omo/rollback-aefull/{backend,admin}`. 상세는 [배포 기록](docs/releases/2026-11-06-ae-edit-full-production.md).
+
+## 이전 운영 배포 — 2026-11-05 오후 AE 수정 판·경쟁 병원 반영(3·4차)
 
 main `4fa3e61f`(PR #286 AE 수정 판 + PR #287 경쟁 병원 반영)를 14:13~14:22 KST에 Backend·Admin에 배포했다(같은 날 세 번째 릴리스, `--override-reason`).
 리비전은 api `00279-bvp`, worker `00269-rz2`, beat `00264-n8w`, admin `00116-8g2`, Site `00149-6ck`·DB head 그대로(마이그레이션 없음).
@@ -291,7 +300,7 @@ BaseEssence의 일반 자료 추가 drift는 재합성하지 않는다. 명시�
 Site/Admin IAM 분리는 단계적으로 적용한다. 구 revision 종료 전 legacy grants를 회수하지 않는다.
 
 
-문서 버전: **2.32** · 갱신일: **2026-11-05 (Asia/Seoul)**
+문서 버전: **2.33** · 갱신일: **2026-11-06 (Asia/Seoul)**
 소스 기준선: **`4db1b69` 이후 커밋 이력 정합성 보완**
 구현 상태: **체크포인트 2(`a774851`) 운영 배포 완료. 그 뒤 main의 stable-base Essence(`8c59141`) 등 31개 커밋과 콘텐츠 수율 버전업 v2.7(`claude/system-performance-review-x6vtn4`, [계획](docs/plans/2026-09-12-content-yield-versionup-plan.md))은 미배포**
 
