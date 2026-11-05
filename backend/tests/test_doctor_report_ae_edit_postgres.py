@@ -36,6 +36,9 @@ KEYWORD = "가상동 위내시경 잘하는 병원"
 # 두 번째 키워드는 타깃에 진료 항목이 없어 폴백 분류기가 라벨을 잡는다 — AE가 바로잡을 자리.
 KEYWORD_2 = "가상동 허리디스크 치료하는 병원"
 LABEL_PATH = f"treatment_label[{KEYWORD_2}]"
+# 카드 4 재계산 회귀(2026-11-05): KEYWORD와 같은 진료 항목 라벨('위내시경')로 노출되는 세 번째 키워드 — 첫 판은 '1개 항목'이다.
+KEYWORD_3 = "가상동 위 내시경 검사 예약 가능한 병원"
+LABEL_PATH_3 = f"treatment_label[{KEYWORD_3}]"
 
 
 @pytest.fixture
@@ -65,8 +68,11 @@ def _pdf_text(data: bytes) -> str:
     return "\n".join(page.extract_text() or "" for page in PdfReader(BytesIO(data)).pages)
 
 
-def _v4_first_version(session: Session, monkeypatch, texts: dict):
-    """실제 매니페스트·셀·답변 기록으로 v4 첫 버전을 만든다(`_v3_snapshot_version`의 앞부분과 같다)."""
+def _v4_first_version(session: Session, monkeypatch, texts: dict, *, shared_label_keyword: bool = False):
+    """실제 매니페스트·셀·답변 기록으로 v4 첫 버전을 만든다(`_v3_snapshot_version`의 앞부분과 같다).
+
+    `shared_label_keyword`면 KEYWORD와 같은 라벨('위내시경')로 노출되는 KEYWORD_3를 더해 카드 4가 두 키워드를 한 항목으로 센다.
+    """
     from app.models.sov import AIQueryTarget, QueryMatrix, SovRecord
     from app.services.doctor_pdf_rendering import render_validated_doctor_pdf
     from app.services.doctor_report_artifact import build_doctor_pdf_expectation
@@ -116,7 +122,14 @@ def _v4_first_version(session: Session, monkeypatch, texts: dict):
     target2 = AIQueryTarget(hospital_id=hospital.id, name=KEYWORD_2, target_intent="증상 탐색", platforms=["chatgpt", "gemini"], treatment=None)
     query = QueryMatrix(hospital_id=hospital.id, query_text=KEYWORD, query_intent="LOCAL")
     query2 = QueryMatrix(hospital_id=hospital.id, query_text=KEYWORD_2, query_intent="LOCAL")
-    session.add_all((target, target2, query, query2))
+    pairs = [(query, target), (query2, target2)]
+    outcomes = [(query, target, "chatgpt", True), (query, target, "gemini", False), (query2, target2, "chatgpt", False), (query2, target2, "gemini", False)]
+    if shared_label_keyword:
+        target3 = AIQueryTarget(hospital_id=hospital.id, name=KEYWORD_3, target_intent="추천 탐색", platforms=["chatgpt", "gemini"], treatment="위내시경")
+        query3 = QueryMatrix(hospital_id=hospital.id, query_text=KEYWORD_3, query_intent="LOCAL")
+        pairs.append((query3, target3))
+        outcomes.extend(((query3, target3, "chatgpt", True), (query3, target3, "gemini", True)))
+    session.add_all([*(q for q, _t in pairs), *(t for _q, t in pairs)])
     session.flush()
     manifest = freeze_monthly_manifest(
         session, hospital.id, 2026, 7,
@@ -125,7 +138,7 @@ def _v4_first_version(session: Session, monkeypatch, texts: dict):
                 query_key=f"query:{q.id}", query_text=q.query_text, platform=platform,
                 query_matrix_id=q.id, query_target_id=t.id, query_variant_id=None, query_intent="LOCAL",
             )
-            for q, t in ((query, target), (query2, target2))
+            for q, t in pairs
             for platform in ("chatgpt", "gemini")
         ],
         gemini_configured=True,
@@ -139,15 +152,12 @@ def _v4_first_version(session: Session, monkeypatch, texts: dict):
                 if mentioned else f"가상동에는 여러 의원이 있어 가까운 곳에서 상담해 보세요. ({q.query_text} · {platform})"
             ),
         )
-        for q, t, platform, mentioned in (
-            (query, target, "chatgpt", True), (query, target, "gemini", False),
-            (query2, target2, "chatgpt", False), (query2, target2, "gemini", False),
-        )
+        for q, t, platform, mentioned in outcomes
     ]
     session.add_all(records)
     session.flush()
     cells = {(cell.query_text, cell.platform): cell for cell in manifest.cells}
-    texts_by_query_id = {query.id: KEYWORD, query2.id: KEYWORD_2}
+    texts_by_query_id = {q.id: q.query_text for q, _t in pairs}
     session.add_all(link_attempt(cells[(texts_by_query_id[r.query_id], r.ai_platform)], r) for r in records)
     session.commit()
 
@@ -328,3 +338,51 @@ class _NoCloseSession:
 
     def __exit__(self, *_exc):
         return False
+
+
+def test_label_split_and_merge_recount_card_4_through_the_full_version_path(pg_session, monkeypatch):
+    """라벨 수정으로 노출 진료 항목 묶음이 갈라지면(1→2) 카드 4의 n·이름이 새 판·PDF에 다시 찍히고, 합치면(2→1) 되돌아온다.
+
+    숫자 보존 판정(`AE_EDIT_NUMBERS`·`AE_EDIT_FACTS`)과 운영 postcheck가 이 변화를 묶음 사실로 받아들인다(2026-11-05 운영 미리보기 버그).
+    """
+    texts: dict = {}
+    hospital, _items, _records, first = _v4_first_version(pg_session, monkeypatch, texts, shared_label_keyword=True)
+    base = base_view_of(report_render_inputs(first.content_summary))
+    assert base.summary.cards[3].value == "1개 항목" and base.summary.cards[3].names == ("위내시경",)
+    assert {r.keyword: r.treatment for r in base.appendix.keyword_rows if r.total != "—" and int(r.total.split("/")[0]) > 0} == {KEYWORD: "위내시경", KEYWORD_3: "위내시경"}
+    first_facts = report_render_inputs(first.content_summary).doctor_metric_facts
+    assert first_facts["card.treatments"] == "1개 항목"
+
+    # 분리: KEYWORD_3만 '위내시경 예약'으로 — 2개 항목.
+    outcome = tasks._build_monthly_template_refresh(
+        pg_session, hospital, ANCHOR, correlation_key=f"test:ae-split:{hospital.id}", ae_edit=_ae_edit(first, {LABEL_PATH_3: "위내시경 예약"}),
+    )
+    assert outcome == "created"
+    second = _latest(pg_session, hospital)
+    inputs = report_render_inputs(second.content_summary)
+    view = restore_doctor_view(inputs.doctor_view)
+    # 갈라진 두 이름은 옛 '위내시경'의 자리에 부록 순서(노출 수 내림차순 — KEYWORD_3 2/2, KEYWORD 1/2)로 선다.
+    assert second.version == 2 and view.summary.cards[3].value == "2개 항목" and view.summary.cards[3].names == ("위내시경 예약", "위내시경")
+    assert inputs.doctor_metric_facts["card.treatments"] == "2개 항목"
+    assert {b.label: b.detail for b in view.exposure.treatment_bars} == {
+        "위내시경": "AI 답변 2건 중 1건", "위내시경 예약": "AI 답변 2건 중 2건", **{b.label: b.detail for b in base.exposure.treatment_bars if b.label not in ("위내시경",)},
+    }
+    compact = "".join(texts[second.id].split())
+    assert "2개항목" in compact and "위내시경예약" in compact and "1개항목" not in compact
+    # 그 밖의 숫자 사실은 첫 판과 같다.
+    other = lambda facts: {k: v for k, v in facts.items() if not k.startswith("treatment.") and k != "card.treatments"}  # noqa: E731
+    assert other(inputs.doctor_metric_facts) == other(first_facts)
+    monkeypatch.setattr(cli, "_stored_doctor_text", lambda _db, report, _verdict: texts.get(report.id, "옛 PDF 본문"))
+    after = cli.postcheck_hospital(pg_session, hospital, 2026, 7)
+    assert after.verdict.status == "PASS", after.verdict.summary()
+
+    # 합치기: 다시 '위내시경'으로(수정 취소) — 1개 항목으로 돌아오고 pristine 뷰와 같다.
+    assert tasks._build_monthly_template_refresh(
+        pg_session, hospital, ANCHOR, correlation_key=f"test:ae-merge:{hospital.id}", ae_edit=_ae_edit(second, {LABEL_PATH_3: None}),
+    ) == "created"
+    third = _latest(pg_session, hospital)
+    third_inputs = report_render_inputs(third.content_summary)
+    third_view = restore_doctor_view(third_inputs.doctor_view)
+    assert third.version == 3 and third_view == base and third_inputs.ae_overrides is None
+    assert "1개항목" in "".join(texts[third.id].split())
+    assert cli.postcheck_hospital(pg_session, hospital, 2026, 7).verdict.status == "PASS"

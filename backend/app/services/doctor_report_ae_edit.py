@@ -35,6 +35,7 @@ from app.services.doctor_report_v4 import (
     parse_ae_path,
     restore_v4,
     split_card_names,
+    treatment_card_count,
 )
 from app.services.report_artifact_validation import INTERNAL_ONLY_MARKERS
 from app.utils.medical_filter import check_forbidden
@@ -178,6 +179,9 @@ def validate_ae_fields(
     originals = editable_fields(view)
     plan_keywords = {row.keyword for row in (*view.plan.rows, *view.plan.continued)}
     label_keywords = {row.keyword for row in view.appendix.keyword_rows}
+    # 카드 4 이름 목록은 **라벨을 적용한 뒤 다시 센 n**을 넘을 수 없다 — 라벨을 합쳐 n이 줄면 옛 목록(이어진 수정 포함)이
+    # 카드 값보다 길어진다(Codex 3-P1-1). 라벨 수정이 없으면 원문 카드의 n이다.
+    derived_count = derived_card_count(view, fields)
     problems: list[AeEditProblem] = []
     for path, value in fields.items():
         field_ = parse_ae_path(path)
@@ -194,6 +198,13 @@ def validate_ae_fields(
                 continue
             if len(value) > MAX_CARD_NAMES:
                 problems.append(AeEditProblem(path, "TOO_MANY_NAMES", f"항목 이름은 {MAX_CARD_NAMES}개까지입니다."))
+            elif derived_count is not None and len(_distinct_names(value)) > derived_count:
+                problems.append(
+                    AeEditProblem(
+                        path, "TOO_MANY_NAMES",
+                        f"라벨을 적용한 노출 진료 항목은 {derived_count}개라 이름을 {derived_count}개까지만 적을 수 있습니다.",
+                    )
+                )
             original_names = " ".join(originals.get(path) or [])
             for index, name in enumerate(value):
                 problems.extend(_text_problems(f"{path}[{index}]", name, original_names, limit=MAX_LABEL_CHARS))
@@ -221,6 +232,63 @@ def validate_ae_fields(
                 continue
             problems.extend(_text_problems(path, value, originals.get(path), limit=MAX_LABEL_CHARS))
     return problems
+
+
+def invalid_carry_paths(
+    fields: Mapping[str, Any],
+    view: DoctorReportV4,
+    *,
+    case_candidates: Sequence[CaseCandidate] | None = None,
+) -> set[str]:
+    """이어진(저장된) 수정 값 중 새 pristine 뷰에서 더는 맞지 않는 경로 — **전체 fields 문맥**으로 검증한다.
+
+    카드 4 이름 목록은 라벨을 적용해 다시 센 n을 기준으로 보므로 경로 하나씩 따로 검사하면 라벨 문맥을 잃는다(분리 뒤
+    유효한 목록을 버리거나 합친 뒤 무효한 옛 목록을 남긴다 — Codex 4-P1). 경로를 뺄 때마다 n이 달라질 수 있어 문제가
+    없을 때까지 되풀이한다. 전체 모양 문제(경로 '')는 어느 경로도 지목하지 않으므로 무시한다.
+    """
+    remaining = dict(fields)
+    invalid: set[str] = set()
+    for _ in range(len(remaining) + 1):
+        problems = validate_ae_fields(remaining, view, case_candidates=case_candidates)
+        paths = {
+            AE_PATH_CARD_NAMES if problem.path.startswith(f"{AE_PATH_CARD_NAMES}[") else problem.path
+            for problem in problems
+            if problem.path
+        } & set(remaining)
+        if not paths:
+            break
+        # 무효한 라벨(다른 경로)을 먼저 빼고 이름 목록은 그 뒤에 다시 본다 — 무효 라벨이 임시로 합친 n 때문에 유효한 목록까지
+        # 함께 버리지 않게(Codex 5-P2). 이름 목록은 다른 문제가 없을 때만 뺀다.
+        others = paths - {AE_PATH_CARD_NAMES}
+        paths = others or paths
+        invalid |= paths
+        for path in paths:
+            remaining.pop(path, None)
+    return invalid
+
+
+def _distinct_names(value: Sequence[Any]) -> list[str]:
+    seen: list[str] = []
+    for item in value:
+        text = str(item).strip()
+        if text and text not in seen:
+            seen.append(text)
+    return seen
+
+
+def derived_card_count(view: DoctorReportV4, fields: Mapping[str, Any]) -> int | None:
+    """`fields`의 진료 항목 라벨만 적용했을 때 카드 4의 n — 라벨이 없으면 원문 카드의 n. 셀 수 없는 카드면 None."""
+    from app.services.doctor_report_v4 import apply_ae_overrides
+
+    if len(view.summary.cards) < 4:
+        return None
+    labels = {
+        path: value
+        for path, value in fields.items()
+        if value is not None and (f := parse_ae_path(path)) is not None and f.kind == AE_FIELD_TREATMENT_LABEL
+    }
+    derived = apply_ae_overrides(view, labels) if labels else view
+    return treatment_card_count(derived.summary.cards[3])
 
 
 def normalize_ae_fields(
@@ -263,12 +331,22 @@ def normalize_ae_fields(
 # ── 숫자 보존 판정 ──────────────────────────────────────────────────────────────
 
 
+# 진료 항목 **묶음** 사실 — 라벨을 고치면 묶음이 갈라지거나 합쳐져 값이 바뀌는 키. 막대(`treatment.*`)와 카드 4의 n
+# (`card.treatments`, '{n}개 항목')이 같은 노출 행에서 나오므로 함께 예외다. 그 밖의 숫자는 라벨로 바뀌지 않는다.
+TREATMENT_GROUPING_FACT_KEYS = frozenset({"card.treatments"})
+TREATMENT_GROUPING_FACT_PREFIX = "treatment."
+
+
+def is_treatment_grouping_fact(key: str) -> bool:
+    return key in TREATMENT_GROUPING_FACT_KEYS or key.startswith(TREATMENT_GROUPING_FACT_PREFIX)
+
+
 def _facts_without_treatments(facts: Mapping[str, str]) -> dict[str, str]:
-    return {key: value for key, value in facts.items() if not key.startswith("treatment.")}
+    return {key: value for key, value in facts.items() if not is_treatment_grouping_fact(key)}
 
 
 def ae_edit_fact_problems(base: DoctorReportV4, edited: DoctorReportV4) -> list[str]:
-    """수정을 적용한 뷰의 숫자 사실이 pristine 뷰와 같은가. 진료 항목 묶음(`treatment.*`)만 라벨에 따라 달라질 수 있다."""
+    """수정을 적용한 뷰의 숫자 사실이 pristine 뷰와 같은가. 진료 항목 묶음(`treatment.*`·카드 4의 n)만 라벨에 따라 달라질 수 있다."""
     before = _facts_without_treatments(base.facts())
     after = _facts_without_treatments(edited.facts())
     problems = [
@@ -280,9 +358,57 @@ def ae_edit_fact_problems(base: DoctorReportV4, edited: DoctorReportV4) -> list[
     return problems
 
 
+def _facts_without_treatment_bars(facts: Mapping[str, str]) -> dict[str, str]:
+    return {key: value for key, value in facts.items() if not key.startswith(TREATMENT_GROUPING_FACT_PREFIX)}
+
+
 def numbers_changed_between(previous_base_facts: Mapping[str, str], new_facts: Mapping[str, str]) -> bool:
-    """일반 재생성이 숫자·키워드 집합을 바꿨는가 — 바뀌었으면 사람이 쓴 문장을 잇지 않는다."""
-    return _facts_without_treatments(previous_base_facts) != _facts_without_treatments(new_facts)
+    """일반 재생성이 숫자·키워드 집합을 바꿨는가 — 바뀌었으면 사람이 쓴 문장을 잇지 않는다.
+
+    pristine 뷰끼리의 비교라 카드 4의 n(`card.treatments`)도 **본다** — 여기서 n의 변화는 라벨 수정이 아니라 원본(측정·분류)의
+    변화이고, 사람이 쓴 문장이 그 수를 담고 있을 수 있다(Codex 3-P1-2). 막대(`treatment.*`)는 라벨 이름이 키라 비교하지 않는다.
+    """
+    return _facts_without_treatment_bars(previous_base_facts) != _facts_without_treatment_bars(new_facts)
+
+
+def legacy_card_corrected(
+    render_inputs: Any, view: DoctorReportV4 | None, facts: Mapping[str, str],
+) -> tuple[DoctorReportV4 | None, dict[str, str], str | None]:
+    """옛 코드(#286)로 저장된 AE 판의 카드 4를 지금 규칙으로 다시 센 값으로 바꾼 (뷰, 사실, 바뀐 설명).
+
+    옛 코드는 라벨을 합치거나 갈라도 카드 4의 n·'외 N개'를 그대로 뒀다. 그런 판을 경쟁 병원 반영의 얼린 뷰·사실로 쓰면 지금
+    규칙으로 다시 얹은 뷰와 카드만 달라 DIFF로 거절된다(Codex 3-P1-3). 저장된 수정 값을 pristine 뷰에 지금 코드로 다시 얹은
+    카드가 얼린 카드와 다를 때만 카드 하나를 바꾸고, 그 밖의 면·사실은 건드리지 않는다. 수정 값이 없거나 같으면 그대로다.
+    """
+    from dataclasses import replace
+
+    from app.services.doctor_report_v4 import apply_ae_overrides
+
+    stored = stored_ae_overrides(render_inputs)
+    base = base_view_of(render_inputs) if stored is not None else None
+    if stored is None or base is None or len(base.summary.cards) < 4 or (view is not None and len(view.summary.cards) < 4):
+        return view, dict(facts), None
+    # 승계 경로와 같은 규칙으로 더는 맞지 않는 값(합친 뒤 n을 넘는 옛 이름 목록 등)을 뺀 뒤 얹는다 — 안 그러면 보정한 카드가
+    # 승계가 실제로 찍을 카드와 달라 `COMPETITOR_REFRESH_VIEW` DIFF가 남는다(Codex 5-P1).
+    fields = dict(stored["fields"])
+    for path in invalid_carry_paths(fields, base):
+        fields.pop(path, None)
+    applied = apply_ae_overrides(base, fields)
+    expected = applied.summary.cards[3]
+    frozen_value = view.summary.cards[3].value if view is not None else facts.get("card.treatments")
+    frozen_names = list(view.summary.cards[3].names) if view is not None else None
+    expected_value = applied.facts().get("card.treatments")
+    if (view.summary.cards[3] == expected) if view is not None else (facts.get("card.treatments") == expected_value):
+        return view, dict(facts), None
+    corrected = view
+    if view is not None:
+        cards = (*view.summary.cards[:3], expected, *view.summary.cards[4:])
+        corrected = replace(view, summary=replace(view.summary, cards=cards))
+    corrected_facts = {key: value for key, value in facts.items() if key != "card.treatments"}
+    if expected_value is not None:
+        corrected_facts["card.treatments"] = expected_value
+    note = f"card 4: 얼린 {frozen_value} {frozen_names if frozen_names is not None else ''} → 다시 센 {expected.value} {list(expected.names)}"
+    return corrected, corrected_facts, note.strip()
 
 
 # ── 저장 모양·승계 ─────────────────────────────────────────────────────────────

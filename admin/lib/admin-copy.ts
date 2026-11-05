@@ -75,6 +75,7 @@ export const ADMIN_COPY = {
   aeEditLoadFailed: '고칠 수 있는 칸을 불러오지 못했습니다. 새 형식(v4) 최신 버전만 고칠 수 있습니다.',
   aeEditKeyLines: '핵심 3줄',
   aeEditCardNames: '노출 진료 항목 이름',
+  aeEditCardRecounted: '라벨을 바꿔 다시 센 카드',
   aeEditCases: '대표 답변 사례',
   aeEditCaseInsight: '시사점',
   aeEditCasePick: '다른 답변으로 바꾸기',

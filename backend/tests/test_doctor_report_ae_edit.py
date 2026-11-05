@@ -34,9 +34,13 @@ from app.services.doctor_report_ae_edit import (
     base_view_of,
     build_ae_overrides,
     carry_ae_fields,
+    derived_card_count,
     editable_fields,
     editable_summary,
     field_changes,
+    invalid_carry_paths,
+    is_treatment_grouping_fact,
+    legacy_card_corrected,
     merge_ae_fields,
     normalize_ae_fields,
     numbers_changed_between,
@@ -46,13 +50,19 @@ from app.services.doctor_report_ae_edit import (
 from app.services.doctor_report_artifact import build_doctor_pdf_expectation
 from app.services.doctor_report_v4 import (
     AE_PATH_CARD_NAMES,
+    UNKNOWN_TREATMENT,
+    AppendixKeywordRow,
+    Card,
     DoctorReportV4,
     apply_ae_overrides,
+    card_names_with_tail,
     case_candidates_for_view,
     parse_ae_path,
     relabel_quoted,
     split_card_names,
     treatment_bars_from_appendix,
+    treatment_card_count,
+    treatment_card_from_appendix,
 )
 from app.services.monthly_period import ReportBuildReason, plan_report_version
 from app.services.monthly_report_snapshot import (
@@ -670,3 +680,255 @@ def test_ae_edit_request_requires_a_human_account():
     actor = signature.parameters["actor"].default
     assert getattr(actor, "dependency", None) is require_active_account
     assert signature.parameters["idempotency_key"].default is inspect.Parameter.empty
+
+
+# ── 카드 4 재계산 — 라벨 수정으로 노출 진료 항목 묶음이 갈라지거나 합쳐지면 n·이름·'외 N개'를 다시 센다 ──
+# 2026-11-05 운영 미리보기(노원탑365 10월): '골절·상처 봉합' 분리 뒤 n이 '4개 항목'으로 남아 노출된 '상처봉합'이 빠졌다.
+
+KW_CHEST = "가슴이 답답할 때 가상동 병원"
+CHEST_LABEL = f"treatment_label[{KW_CHEST}]"
+
+
+def _other_facts(view: DoctorReportV4) -> dict[str, str]:
+    return {k: v for k, v in view.facts().items() if not is_treatment_grouping_fact(k)}
+
+
+@pytest.mark.parametrize("name", sorted(SCENARIOS))
+def test_treatment_card_rebuilt_from_appendix_rows_equals_the_builders_card(name):
+    """라벨 재적용이 카드 4를 다시 세는 근거 — 바꾸지 않으면 빌더의 카드(n·이름·꼬리)와 정확히 같다."""
+    view = build(**SCENARIOS[name])
+    card = view.summary.cards[3]
+    if treatment_card_count(card) is None:
+        assert view.appendix.keyword_rows == () and card.names == ()  # 측정 전·미완료 카드는 셀 수 없다
+    else:
+        assert treatment_card_from_appendix(view.appendix.keyword_rows, pristine_rows=view.appendix.keyword_rows, pristine_card=card) == card
+        # 힌트가 없으면 이름 순서만 부록 순서다(n·꼬리·이름 집합은 같다).
+        bare = treatment_card_from_appendix(view.appendix.keyword_rows)
+        assert bare.value == card.value and sorted(bare.names) == sorted(card.names)
+
+
+def test_merging_two_exposed_labels_recounts_card_4_as_a_grouping_fact():
+    view = build()
+    assert view.summary.cards[3].value == "2개 항목" and view.summary.cards[3].names == ("심장초음파", "흉통")
+    merged = apply_ae_overrides(view, {CHEST_LABEL: "심장초음파"})
+    assert merged.summary.cards[3].value == "1개 항목" and merged.summary.cards[3].names == ("심장초음파",)
+    assert merged.facts()["card.treatments"] == "1개 항목"
+    assert {b.label: b.detail for b in merged.exposure.treatment_bars}["심장초음파"] == "AI 답변 12건 중 6건"
+    # 카드 4의 n은 진료 항목 묶음 사실이라 숫자 보존 판정의 예외다 — 그 밖의 숫자는 하나도 바뀌지 않는다.
+    assert ae_edit_fact_problems(view, merged) == []
+    assert _other_facts(merged) == _other_facts(view)
+    assert "card.treatments" not in _other_facts(view)
+    assert validate_ae_fields({CHEST_LABEL: "심장초음파"}, view) == []
+    assert normalize_ae_fields({CHEST_LABEL: "심장초음파"}, view) == {CHEST_LABEL: "심장초음파"}
+
+
+def test_splitting_a_shared_label_recounts_card_4_and_round_trips_to_the_builders_view():
+    view = build()
+    shared = apply_ae_overrides(view, {CHEST_LABEL: "심장초음파"})  # 두 노출 키워드가 한 라벨을 쓰는 pristine 판
+    split = apply_ae_overrides(shared, {CHEST_LABEL: "흉통"})
+    assert split.summary.cards[3] == view.summary.cards[3]
+    assert split.summary.cards[3].value == "2개 항목"
+    assert ae_edit_fact_problems(shared, split) == []
+    assert split == view  # 분리는 합치기의 역이라 빌더의 뷰로 정확히 돌아온다(막대·부록·실행 계획·사례 포함)
+    rendered = render_validated_doctor_pdf(
+        view=split, period_label=split.period_ym, public_url=PUBLIC_URL,
+        expectation=build_doctor_pdf_expectation(split, PUBLIC_URL),
+    )
+    assert rendered.metadata.validation_version == "doctor-pdf-v4"
+    assert doctor_view_facts(split) == split.facts()
+
+
+def test_renaming_an_exposed_label_keeps_the_count_and_relabelling_an_unexposed_one_keeps_the_card():
+    view = build()
+    renamed = apply_ae_overrides(view, {CHEST_LABEL: "가슴 답답함"})
+    assert renamed.summary.cards[3].value == "2개 항목" and renamed.summary.cards[3].names == ("심장초음파", "가슴 답답함")
+    assert ae_edit_fact_problems(view, renamed) == []
+    # 미노출 키워드에 노출 라벨을 붙여도 카드는 그대로(노출 행만 센다).
+    same = apply_ae_overrides(view, {LABEL: "흉통"})
+    assert same.summary.cards[3] == view.summary.cards[3]
+    # 노출 키워드를 미노출 키워드의 라벨로 바꾸면 이름은 바뀌고 n은 그대로다.
+    moved = apply_ae_overrides(view, {CHEST_LABEL: "위내시경"})
+    assert moved.summary.cards[3].value == "2개 항목" and moved.summary.cards[3].names == ("심장초음파", "위내시경")
+
+
+def test_card_4_tail_follows_the_recounted_n_and_explicit_names():
+    rows = tuple(
+        AppendixKeywordRow(keyword=f"가상동 항목{i} 병원", group="B", treatment=f"항목{i}", cells=("1/3", "0/3"), total="1/6", previous="")
+        for i in range(6)
+    )
+    six = treatment_card_from_appendix(rows)
+    assert six.value == "6개 항목" and six.names == ("항목0", "항목1", "항목2", "항목3", "외 2개")
+    five = treatment_card_from_appendix((*rows[:5], replace(rows[5], treatment="항목0")))
+    assert five.value == "5개 항목" and five.names == ("항목0", "항목1", "항목2", "항목3", "외 1개")
+    four = treatment_card_from_appendix(rows[:4])
+    assert four.value == "4개 항목" and four.names == ("항목0", "항목1", "항목2", "항목3")
+    # 분류되지 않은 항목만 노출됐으면 '분류 전' 값, 노출 행이 없으면 0개.
+    assert treatment_card_from_appendix((replace(rows[0], treatment=UNKNOWN_TREATMENT),)).value == UNKNOWN_TREATMENT
+    assert treatment_card_from_appendix((replace(rows[0], total="0/6"),)).value == "0개 항목"
+    # 사람이 고른 이름 목록: n은 그대로, '외 N개'는 n − 목록 길이.
+    assert card_names_with_tail(five, ["검사", "시술", "검사 "]) == ("검사", "시술", "외 3개")
+    assert card_names_with_tail(four, ["a", "b", "c", "d"]) == ("a", "b", "c", "d")
+    assert card_names_with_tail(Card("노출 진료 항목", "다음 달부터 측정", "", names=()), ["a"]) == ("a",)
+    # 이름 자리: 옛 라벨이 카드에 섰던 자리를 지킨다 — 이름만 바꾸면 그대로, 갈라지면 옛 자리에 부록 순서로 나란히.
+    old_rows = (*rows[:4], replace(rows[4], treatment="항목0"))
+    hint = treatment_card_from_appendix(old_rows)  # 항목0(2행)·항목1·항목2·항목3
+    renamed_rows = (replace(rows[0], treatment="새0"), *rows[1:4], replace(rows[4], treatment="새0"))
+    assert treatment_card_from_appendix(renamed_rows, pristine_rows=old_rows, pristine_card=hint).names == ("새0", "항목1", "항목2", "항목3")
+    split_rows = (*rows[:4], replace(rows[4], treatment="항목0-분리"))
+    assert treatment_card_from_appendix(split_rows, pristine_rows=old_rows, pristine_card=hint).names == ("항목0", "항목0-분리", "항목1", "항목2", "외 1개")
+    # 적용 순서: 라벨로 n을 다시 센 뒤 명시한 이름 목록을 얹는다.
+    view = build()
+    both = apply_ae_overrides(view, {CHEST_LABEL: "심장초음파", AE_PATH_CARD_NAMES: ["심장 검사"]})
+    assert both.summary.cards[3].value == "1개 항목" and both.summary.cards[3].names == ("심장 검사",)
+
+
+def test_the_carry_rule_still_sees_a_pristine_change_of_the_card_4_count():
+    """일반 재생성의 승계 판정은 pristine 뷰끼리 비교한다 — 거기서 n의 변화는 원본 변화라 문장을 잇지 않는다(Codex 3-P1-2)."""
+    view = build()
+    merged = apply_ae_overrides(view, {CHEST_LABEL: "심장초음파"})
+    assert view.facts()["card.treatments"] != merged.facts()["card.treatments"]
+    assert numbers_changed_between(view.facts(), merged.facts()) is True
+    # 막대(`treatment.*`)는 라벨 이름이 키라 비교하지 않는다.
+    renamed = apply_ae_overrides(view, {CHEST_LABEL: "가슴 답답함"})
+    assert numbers_changed_between(view.facts(), renamed.facts()) is False
+    assert numbers_changed_between(view.facts(), {**view.facts(), "card.published": "9편"}) is True
+    assert is_treatment_grouping_fact("card.treatments") and is_treatment_grouping_fact("treatment.흉통.rate")
+    assert not is_treatment_grouping_fact("card.keywords") and not is_treatment_grouping_fact("kw.x.total")
+
+
+def test_explicit_names_cannot_exceed_the_recounted_count():
+    """라벨을 합쳐 n이 줄면 이름 목록(이번 요청이든 이어진 옛 수정이든)이 n을 넘을 수 없다(Codex 3-P1-1)."""
+    view = build()
+    merge_and_two = {CHEST_LABEL: "심장초음파", AE_PATH_CARD_NAMES: ["초음파 검사", "가슴 통증"]}
+    assert [(p.path, p.code) for p in validate_ae_fields(merge_and_two, view)] == [(AE_PATH_CARD_NAMES, "TOO_MANY_NAMES")]
+    assert validate_ae_fields({AE_PATH_CARD_NAMES: ["초음파 검사", "가슴 통증"]}, view) == []
+    assert validate_ae_fields({CHEST_LABEL: "심장초음파", AE_PATH_CARD_NAMES: ["초음파 검사", "초음파 검사"]}, view) == []
+    assert derived_card_count(view, {}) == 2 and derived_card_count(view, {CHEST_LABEL: "심장초음파"}) == 1
+    assert derived_card_count(build(**SCENARIOS["setup"]), {}) is None
+    # 적용 단계도 n개까지만 싣는다(검증이 먼저 막지만 안전망).
+    clamped = apply_ae_overrides(view, merge_and_two)
+    assert clamped.summary.cards[3].value == "1개 항목" and clamped.summary.cards[3].names == ("초음파 검사",)
+    # 이어진 옛 이름 목록 + 이번 라벨 합치기: 계획 단계가 BLOCKER로 거절하고 스냅샷을 바꾸지 않는다.
+    latest = _latest(view)
+    latest.content_summary["report_snapshot"]["render_inputs"]["ae_overrides"] = build_ae_overrides(
+        fields={AE_PATH_CARD_NAMES: ["초음파 검사", "가슴 통증"]}, base_view_payload=freeze_doctor_view(view),
+        edited_by="ae@example.invalid", edited_at="2026-11-05T01:00:00+00:00", previous=None,
+        changed_paths=[AE_PATH_CARD_NAMES], report_version=1,
+    )
+    content = copy.deepcopy(latest.content_summary)
+    _same, problems = tasks._apply_ae_edit_to_plan(None, None, latest, arrow.get("2026-10-31T23:59:00+09:00"), content, view, {"report_id": str(latest.id), "fields": {CHEST_LABEL: "심장초음파"}})
+    assert [(k, c) for k, c, _d in problems] == [("BLOCKER", "AE_EDIT_INVALID")] and "TOO_MANY_NAMES" in problems[0][2]
+    assert content == latest.content_summary
+    # 이름 목록을 함께 줄이면 통과한다.
+    content = copy.deepcopy(latest.content_summary)
+    edited, problems = tasks._apply_ae_edit_to_plan(None, None, latest, arrow.get("2026-10-31T23:59:00+09:00"), content, view, {"report_id": str(latest.id), "fields": {CHEST_LABEL: "심장초음파", AE_PATH_CARD_NAMES: ["초음파 검사"]}})
+    assert problems == [] and edited.summary.cards[3].names == ("초음파 검사",) and edited.summary.cards[3].value == "1개 항목"
+
+
+def test_carry_validates_the_card_names_with_the_carried_labels(monkeypatch):
+    """승계 경로(일반 재생성·경쟁 병원 반영)는 경로 하나씩이 아니라 이어진 라벨을 포함한 전체 문맥으로 검증한다(Codex 4-P1).
+
+    분리 라벨 + 이름 2개는 유효하니 잇고, 합친 라벨 + 옛 이름 2개는 이름 목록만 버린다.
+    """
+    view = build()
+    shared = apply_ae_overrides(view, {CHEST_LABEL: "심장초음파"})  # pristine n=1
+    split_with_names = {CHEST_LABEL: "흉통", AE_PATH_CARD_NAMES: ["초음파 검사", "가슴 통증"]}
+    assert invalid_carry_paths(split_with_names, shared) == set()
+    assert invalid_carry_paths({AE_PATH_CARD_NAMES: ["초음파 검사", "가슴 통증"]}, shared) == {AE_PATH_CARD_NAMES}
+    merge_with_names = {CHEST_LABEL: "심장초음파", AE_PATH_CARD_NAMES: ["초음파 검사", "가슴 통증"]}
+    assert invalid_carry_paths(merge_with_names, view) == {AE_PATH_CARD_NAMES}
+    # 모르는 키워드의 라벨은 버리고, 그 라벨이 없을 때의 n으로 이름 목록을 다시 본다.
+    assert invalid_carry_paths({"treatment_label[없는 키워드]": "x", AE_PATH_CARD_NAMES: ["a", "b"]}, shared) == {"treatment_label[없는 키워드]", AE_PATH_CARD_NAMES}
+    # 무효한 라벨(원문에 없는 숫자)이 임시로 n을 1로 합쳐도, 그 라벨을 먼저 빼면 n=2라 이름 2개는 남는다(Codex 5-P2).
+    # pristine의 심장 라벨이 '심장초음파 2차'라 흉통 라벨을 같은 값으로 바꾸면 합쳐지고(n 2→1), 그 값은 '2'가 원문에 없어 무효다(Codex 6-P3).
+    numbered = apply_ae_overrides(view, {f"treatment_label[{KW_HEART}]": "심장초음파 2차"})
+    assert derived_card_count(numbered, {CHEST_LABEL: "심장초음파 2차"}) == 1
+    assert invalid_carry_paths({CHEST_LABEL: "심장초음파 2차", AE_PATH_CARD_NAMES: ["a", "b"]}, numbered) == {CHEST_LABEL}
+    # 일반 재생성 승계: 같은 pristine(n=1)으로 다시 만든 판에 분리 라벨 + 이름 2개가 그대로 이어진다.
+    db = SimpleNamespace(get=lambda _model, _id: previous)
+    overrides = build_ae_overrides(
+        fields=split_with_names, base_view_payload=freeze_doctor_view(shared), edited_by="ae@example.invalid",
+        edited_at="2026-11-05T01:00:00+00:00", previous=None, changed_paths=sorted(split_with_names), report_version=2,
+    )
+    _sov, content = _stored(apply_ae_overrides(shared, split_with_names), {})
+    content["report_snapshot"]["render_inputs"]["ae_overrides"] = overrides
+    previous = SimpleNamespace(id=uuid.uuid4(), content_summary=content)
+    applied, carried, dropped = tasks._carry_ae_overrides(db, previous.id, shared, _records_with_ids(), arrow.get("2026-11-05T01:00:00+00:00"))
+    assert carried["fields"] == split_with_names and dropped is None
+    assert applied.summary.cards[3].value == "2개 항목" and applied.summary.cards[3].names == ("초음파 검사", "가슴 통증")
+    # 옛 판(합친 라벨 + 이름 2개)을 이으면 이름 목록만 버리고 라벨은 잇는다.
+    legacy = build_ae_overrides(
+        fields=merge_with_names, base_view_payload=freeze_doctor_view(view), edited_by="ae@example.invalid",
+        edited_at="2026-11-05T01:00:00+00:00", previous=None, changed_paths=sorted(merge_with_names), report_version=2,
+    )
+    _sov, legacy_content = _stored(apply_ae_overrides(view, merge_with_names), {})
+    legacy_content["report_snapshot"]["render_inputs"]["ae_overrides"] = legacy
+    previous = SimpleNamespace(id=uuid.uuid4(), content_summary=legacy_content)
+    applied, carried, dropped = tasks._carry_ae_overrides(db, previous.id, view, _records_with_ids(), arrow.get("2026-11-05T01:00:00+00:00"))
+    assert carried["fields"] == {CHEST_LABEL: "심장초음파"} and dropped["fields"] == {AE_PATH_CARD_NAMES: ["초음파 검사", "가슴 통증"]}
+    assert dropped["reason"] == "NO_LONGER_APPLIES" and applied.summary.cards[3].names == ("심장초음파",)
+
+
+def test_legacy_versions_saved_with_the_old_card_rule_are_corrected_before_competitor_comparisons():
+    """옛 코드(#286)는 라벨을 합쳐도 카드 4의 n을 그대로 뒀다 — 그 판의 얼린 카드·사실을 지금 규칙으로 바꿔 비교한다(Codex 3-P1-3)."""
+    view = build()
+    stored = build_ae_overrides(
+        fields={CHEST_LABEL: "심장초음파"}, base_view_payload=freeze_doctor_view(view),
+        edited_by="ae@example.invalid", edited_at="2026-11-05T01:00:00+00:00", previous=None,
+        changed_paths=[CHEST_LABEL], report_version=2,
+    )
+    correct = apply_ae_overrides(view, stored["fields"])
+    buggy = replace(correct, summary=replace(correct.summary, cards=(*correct.summary.cards[:3], replace(correct.summary.cards[3], value="2개 항목"))))
+    _sov, content = _stored(buggy, {})
+    content["report_snapshot"]["render_inputs"]["ae_overrides"] = stored
+    inputs = report_render_inputs(content)
+    assert inputs.doctor_metric_facts["card.treatments"] == "2개 항목"
+    fixed_view, fixed_facts, note = legacy_card_corrected(inputs, restore_doctor_view(inputs.doctor_view), inputs.doctor_metric_facts)
+    assert fixed_view == correct and fixed_facts == correct.facts() and note and "2개 항목" in note and "1개 항목" in note
+    # 합침 라벨 + 옛 이름 2개를 저장한 판: 승계가 이름 목록을 버리므로 보정 카드도 그 결과('심장초음파')와 같아야 한다(Codex 5-P1).
+    merged_stored = build_ae_overrides(
+        fields={CHEST_LABEL: "심장초음파", AE_PATH_CARD_NAMES: ["초음파 검사", "가슴 통증"]}, base_view_payload=freeze_doctor_view(view),
+        edited_by="ae@example.invalid", edited_at="2026-11-05T01:00:00+00:00", previous=None, changed_paths=[CHEST_LABEL], report_version=2,
+    )
+    _sov, merged_content = _stored(buggy, {})
+    merged_content["report_snapshot"]["render_inputs"]["ae_overrides"] = merged_stored
+    merged_inputs = report_render_inputs(merged_content)
+    fixed_view, _facts, _note = legacy_card_corrected(merged_inputs, restore_doctor_view(merged_inputs.doctor_view), merged_inputs.doctor_metric_facts)
+    assert fixed_view.summary.cards[3] == correct.summary.cards[3]
+    # 사실만 보정하는 호출(운영 postcheck)도 같은 값이다.
+    _none, facts_only, note2 = legacy_card_corrected(inputs, None, inputs.doctor_metric_facts)
+    assert _none is None and facts_only == correct.facts() and note2
+    # 지금 규칙으로 저장된 판·수정 값이 없는 판은 그대로다.
+    _sov, fine = _stored(correct, {})
+    fine["report_snapshot"]["render_inputs"]["ae_overrides"] = stored
+    fine_inputs = report_render_inputs(fine)
+    assert legacy_card_corrected(fine_inputs, correct, fine_inputs.doctor_metric_facts) == (correct, correct.facts(), None)
+    plain = report_render_inputs(_stored(view, {})[1])
+    assert legacy_card_corrected(plain, view, plain.doctor_metric_facts) == (view, view.facts(), None)
+
+
+def test_plan_accepts_a_label_merge_that_changes_the_card_4_count():
+    view = build()
+    latest = _latest(view)
+    content = copy.deepcopy(latest.content_summary)
+    ae_edit = {"report_id": str(latest.id), "fields": {CHEST_LABEL: "심장초음파"}, "edited_by": "ae@example.invalid", "requested_at": "2026-11-05T01:00:00+00:00"}
+    edited, problems = tasks._apply_ae_edit_to_plan(None, SimpleNamespace(id=uuid.uuid4()), latest, arrow.get("2026-10-31T23:59:00+09:00"), content, view, ae_edit)
+    assert problems == []
+    assert edited.summary.cards[3].value == "1개 항목"
+    inputs = report_render_inputs(content)
+    assert restore_doctor_view(inputs.doctor_view) == edited
+    assert inputs.doctor_metric_facts["card.treatments"] == "1개 항목"
+    assert base_view_of(inputs).summary.cards[3].value == "2개 항목"
+    # 화면 미리보기(API)도 같은 판정 — 숫자 보존 True, 미리보기 카드가 다시 센 값.
+    summary = editable_summary(edited)
+    assert summary["card_value"] == "1개 항목" and summary["card_names"] == ["심장초음파"] and summary["card_names_tail"] is None
+
+
+@pytest.mark.asyncio
+async def test_preview_reports_the_recounted_card_as_numbers_preserved(api):
+    payload = await operations.preview_report_ae_edit(
+        api.context.hospital.id, api.context.report.id, overrides=f'{{"{CHEST_LABEL}": "심장초음파"}}', db=AsyncMock(),
+    )
+    assert payload["problems"] == [] and payload["numbers_preserved"] is True
+    assert payload["current"]["card_value"] == "2개 항목" and payload["preview"]["card_value"] == "1개 항목"
+    assert payload["preview"]["card_names"] == ["심장초음파"]

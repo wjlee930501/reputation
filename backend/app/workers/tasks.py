@@ -179,6 +179,8 @@ from app.services.doctor_report_ae_edit import (
     base_view_of,
     build_ae_overrides,
     carry_ae_fields,
+    invalid_carry_paths,
+    legacy_card_corrected,
     merge_ae_fields,
     normalize_ae_fields,
     numbers_changed_between,
@@ -13207,9 +13209,9 @@ def _carry_ae_overrides(
     numbers_changed = previous_base is None or numbers_changed_between(previous_base.facts(), doctor_view.facts())
     kept, dropped = carry_ae_fields(stored["fields"], numbers_changed=numbers_changed)
     reason = AE_EDIT_DROP_REASON_NUMBERS_CHANGED if numbers_changed else "NO_LONGER_APPLIES"
-    for path in list(kept):
-        if validate_ae_fields({path: kept[path]}, doctor_view):
-            dropped[path] = kept.pop(path)
+    # 전체 fields 문맥으로 검증한다 — 카드 4 이름 목록은 이어진 라벨을 적용해 다시 센 n을 기준으로 본다(Codex 4-P1).
+    for path in invalid_carry_paths(kept, doctor_view):
+        dropped[path] = kept.pop(path)
     applied = doctor_view
     if kept:
         candidates = (
@@ -13219,11 +13221,9 @@ def _carry_ae_overrides(
             if any((f := parse_ae_path(path)) is not None and f.kind == AE_FIELD_CASE_RECORD for path in kept)
             else []
         )
-        if validate_ae_fields(kept, doctor_view, case_candidates=candidates):
-            # 사례 후보가 사라졌으면 그 경로만 버린다.
-            for path in list(kept):
-                if validate_ae_fields({path: kept[path]}, doctor_view, case_candidates=candidates):
-                    dropped[path] = kept.pop(path)
+        # 사례 후보가 사라졌으면 그 경로만 버린다.
+        for path in invalid_carry_paths(kept, doctor_view, case_candidates=candidates):
+            dropped[path] = kept.pop(path)
         kept = normalize_ae_fields(kept, doctor_view, case_candidates=candidates)
     if kept:
         edited = apply_ae_overrides(doctor_view, kept, case_candidates=candidates)
@@ -13613,13 +13613,18 @@ def build_monthly_template_refresh_plan(
         final_view, dropped_overrides = _apply_competitor_refresh_overrides(
             db, h, latest, now, content, rebuilt_view, rebuilt
         )
-        frozen_facts = dict(render_inputs.doctor_metric_facts or {})
+        # 옛 코드로 저장된 AE 판의 카드 4(라벨 합치기·분리 뒤 n이 그대로였던 판)는 지금 규칙으로 다시 센 카드로 바꿔 비교한다.
+        frozen_view, frozen_facts, legacy_note = legacy_card_corrected(
+            render_inputs, rebuilt.frozen_view, dict(render_inputs.doctor_metric_facts or {})
+        )
+        if legacy_note:
+            verdict.add("WARN", "AE_LEGACY_CARD_RECOUNTED", legacy_note)
         new_facts = final_view.facts()
         for problem in compare_facts_v4(stored_facts_v4(latest.sov_summary or {}, content), new_facts):
             verdict.add("DIFF", "COMPETITOR_REFRESH_FACTS", problem)
         for problem in compare_facts_excluding_competitors(frozen_facts, new_facts):
             verdict.add("DIFF", "COMPETITOR_REFRESH_FACTS", problem)
-        for problem in _competitor_refresh_view_problems(rebuilt.frozen_view, final_view):
+        for problem in _competitor_refresh_view_problems(frozen_view, final_view):
             verdict.add("DIFF", "COMPETITOR_REFRESH_VIEW", problem)
         for change in competitor_fact_changes(frozen_facts, new_facts):
             verdict.add("WARN", "COMPETITOR_FACTS_RECOMPUTED", change)
@@ -13751,17 +13756,16 @@ def _apply_competitor_refresh_overrides(
     kept, dropped = _competitor_refresh_carry(
         dict(stored["fields"]), old_base, rebuilt_view, _competitor_names_for_carry(rebuilt, rebuilt_view, old_base)
     )
-    for path in list(kept):
-        if validate_ae_fields({path: kept[path]}, rebuilt_view):
-            dropped[path] = kept.pop(path)
+    # 전체 fields 문맥으로 검증한다 — 카드 4 이름 목록은 이어진 라벨을 적용해 다시 센 n을 기준으로 본다(Codex 4-P1).
+    for path in invalid_carry_paths(kept, rebuilt_view):
+        dropped[path] = kept.pop(path)
     candidates: list[CaseCandidate] = []
     if kept and any((f := parse_ae_path(path)) is not None and f.kind == AE_FIELD_CASE_RECORD for path in kept):
         candidates = case_candidates_for_view(
             rebuilt_view, list(rebuilt.records), registered_names=list(rebuilt.registered_competitors)
         )
-        for path in list(kept):
-            if validate_ae_fields({path: kept[path]}, rebuilt_view, case_candidates=candidates):
-                dropped[path] = kept.pop(path)
+        for path in invalid_carry_paths(kept, rebuilt_view, case_candidates=candidates):
+            dropped[path] = kept.pop(path)
     if kept:
         kept = normalize_ae_fields(kept, rebuilt_view, case_candidates=candidates)
     applied = rebuilt_view
