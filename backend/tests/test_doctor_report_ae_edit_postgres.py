@@ -284,7 +284,8 @@ def test_ae_edit_with_a_forbidden_sentence_or_a_stale_report_writes_nothing(pg_s
     hospital, _items, _records, first = _v4_first_version(pg_session, monkeypatch, texts)
     for ae_edit, code in (
         (_ae_edit(first, {"summary.key_lines[0]": "최고의 위내시경 병원입니다."}), "AE_EDIT_INVALID"),
-        (_ae_edit(first, {"summary.cards[1].value": "99%"}), "AE_EDIT_INVALID"),
+        # 숫자는 이제 자유다(2026-11-05 전면 확장) — 절을 통째로 비우는 요청만 거절한다.
+        (_ae_edit(first, {"cases.found": {"deleted": True}, "cases.missing": {"deleted": True}, "cases.headline": {"deleted": True}, "cases.empty_text": {"deleted": True}, "cases.empty_figure": {"deleted": True}}), "AE_EDIT_INVALID"),
         ({**_ae_edit(first, {"summary.key_lines[0]": "문장"}), "report_id": str(uuid.uuid4())}, "AE_EDIT_STALE_REPORT"),
     ):
         with pytest.raises(TemplateRefreshRefused) as caught:

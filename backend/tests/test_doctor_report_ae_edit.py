@@ -934,7 +934,7 @@ def test_plan_accepts_a_label_merge_that_changes_the_card_4_count():
     content = copy.deepcopy(latest.content_summary)
     ae_edit = {"report_id": str(latest.id), "fields": {CHEST_LABEL: "심장초음파"}, "edited_by": "ae@example.invalid", "requested_at": "2026-11-05T01:00:00+00:00"}
     edited, problems = tasks._apply_ae_edit_to_plan(None, SimpleNamespace(id=uuid.uuid4()), latest, arrow.get("2026-10-31T23:59:00+09:00"), content, view, ae_edit)
-    assert problems == []
+    assert {k for k, _c, _d in problems} <= {"WARN"}  # 묶음 사실의 변화는 WARN으로만
     assert edited.summary.cards[3].value == "1개 항목"
     inputs = report_render_inputs(content)
     assert restore_doctor_view(inputs.doctor_view) == edited
