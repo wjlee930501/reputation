@@ -333,6 +333,22 @@ def test_editor_items_follow_report_order_and_flag_numbers_and_deletions(failure
     assert all(item["kind"] and item["type"] for item in items)
 
 
+def test_parent_deletion_beats_stored_child_edits_and_blank_glossary_hides_its_heading(failure_view):
+    edited = _edit(failure_view, {"plan.figure.value": "99개", "plan.figure": AE_DELETE, "cases.found.insight": "x", "cases.found": AE_DELETE})
+    assert edited.plan.figure == FigureBand("", "") and edited.cases.found is None
+    blank = _edit(failure_view, {f"appendix.glossary[{term}].{col}": AE_DELETE for term, _d in failure_view.appendix.glossary for col in ("term", "definition")})
+    html = render_v4_html(blank, period_label=blank.period_ym, public_url=PUBLIC_URL, density="comfortable", breaks=PageBreaks())
+    assert "C. 용어 정의" not in html and blank.appendix.glossary_heading not in blank.required_texts()[6]
+    _render(blank)
+    # 발췌만 남긴 P5는 빈 절이 아니다(Codex 3-P2-2).
+    only_excerpt = {"cases.missing": AE_DELETE, "cases.headline": AE_DELETE, "cases.insight_label": AE_DELETE}
+    only_excerpt.update({f"cases.found.{attr}": AE_DELETE for attr in ("label", "keyword", "caption", "insight")})
+    kept = _edit(failure_view, only_excerpt)
+    assert kept.cases.found.excerpt and empty_section_problems(kept) == []
+    # 값을 지운 카드 4에는 이름 상한이 없다(Codex 3-P2-5).
+    assert validate_ae_fields({"summary.cards[3].value": AE_DELETE, "summary.cards[3].names": [f"항목{i}" for i in range(6)]}, failure_view) == []
+
+
 # ── Codex 1차 반영 ─────────────────────────────────────────────────────────────
 
 
@@ -355,17 +371,20 @@ def test_duplicate_titles_get_distinct_row_keys(failure_view):
     twin = _replace(failure_view, content=_replace(failure_view.content, rows=(rows[0], _replace(rows[1], title=rows[0].title), *rows[2:])))
     paths = [item.path for item in walk_ae_paths(twin)]
     assert len(paths) == len(set(paths))
-    second = f"content.rows[{rows[0].title}#2]"
-    assert f"{second}.published_on" in paths
-    edited = _edit(twin, {f"{second}.published_on": "10-31", f"content.rows[{rows[0].title}]": AE_DELETE})
+    # 같은 제목은 콘텐츠 URL의 글 id로 가른다 — 다음 버전에서 순서가 바뀌어도 같은 글을 가리킨다(Codex 3-P1-A).
+    ident = lambda row: row.url.rstrip("/").rsplit("/", 1)[-1][-8:]  # noqa: E731
+    first, second = f"content.rows[{rows[0].title}#{ident(rows[0])}]", f"content.rows[{rows[0].title}#{ident(rows[1])}]"
+    assert f"{first}.published_on" in paths and f"{second}.published_on" in paths
+    edited = _edit(twin, {f"{second}.published_on": "10-31", first: AE_DELETE})
     assert edited.content.rows[0].title == rows[0].title and edited.content.rows[0].published_on == "10-31"
     assert len(edited.content.rows) == len(rows) - 1
-    # 실제 제목이 '제목#2'면 만든 접미는 '#3'으로 비킨다(Codex 2-P1-6).
-    triple = _replace(twin, content=_replace(twin.content, rows=(twin.content.rows[0], twin.content.rows[1], _replace(rows[2], title=f"{rows[0].title}#2"), *rows[3:])))
+    swapped = _replace(twin, content=_replace(twin.content, rows=(twin.content.rows[1], twin.content.rows[0], *rows[2:])))
+    again = _edit(swapped, {f"{second}.published_on": "10-31", first: AE_DELETE})
+    assert [r.url for r in again.content.rows][: 1] == [rows[1].url] and again.content.rows[0].published_on == "10-31"
+    # 실제 제목이 만든 키와 같으면 접미를 더 붙여 비킨다(Codex 2-P1-6).
+    triple = _replace(twin, content=_replace(twin.content, rows=(twin.content.rows[0], twin.content.rows[1], _replace(rows[2], title=f"{rows[0].title}#{ident(rows[1])}"), *rows[3:])))
     keys = [item.context for item in walk_ae_paths(triple) if item.kind == "content.rows.title"]
-    assert keys[:3] == [rows[0].title, f"{rows[0].title}#3", f"{rows[0].title}#2"]
-    moved = _edit(triple, {f"content.rows[{rows[0].title}#3].published_on": "10-30"})
-    assert moved.content.rows[1].published_on == "10-30" and moved.content.rows[2].published_on == rows[2].published_on
+    assert len(keys) == len(set(keys)) and keys[2] == f"{rows[0].title}#{ident(rows[1])}" and keys[1] != keys[2]
 
 
 def test_hidden_elements_are_not_required_and_card_rows_are_not_deletable(failure_view):

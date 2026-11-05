@@ -186,8 +186,8 @@
 {% endif %}<div class="appendix-lines">{% for line in method_lines %}<p>{{ line }}</p>
 {% endfor %}</div>
 {% endif %}
-{% if a.glossary %}{% if a.glossary_heading %}<h2>{{ a.glossary_heading }}</h2>
-{% endif %}<div class="glossary">{% for term, definition in a.glossary %}<div class="glossary-row"><p class="term">{{ term }}</p><p class="definition">{{ definition }}</p></div>
+{% set glossary = a.glossary|rejectattr(0, 'equalto', '')|list + (a.glossary|selectattr(0, 'equalto', '')|rejectattr(1, 'equalto', '')|list) %}{% if glossary %}{% if a.glossary_heading %}<h2>{{ a.glossary_heading }}</h2>
+{% endif %}<div class="glossary">{% for term, definition in a.glossary if term or definition %}<div class="glossary-row"><p class="term">{{ term }}</p><p class="definition">{{ definition }}</p></div>
 {% endfor %}</div>
 {% endif %}
 {% set caveat_lines = a.caveat_lines|select|list %}{% if caveat_lines %}{% if a.caveat_heading %}<h2>{{ a.caveat_heading }}</h2>

@@ -179,6 +179,9 @@ export function ReportAeEditPanel({
         return
       }
       const url = URL.createObjectURL(await response.blob())
+      // 서버가 같은 수정 값을 검증하고 PDF까지 만들었다 — 앞서 남은 미리보기 실패 상태를 지운다(Codex 3-P3-2).
+      setValidation({ fingerprint, problems: [], summary: null, numbersPreserved: true })
+      setMessage(null)
       window.open(url, '_blank', 'noopener')
       window.setTimeout(() => URL.revokeObjectURL(url), 60_000)
     } catch {

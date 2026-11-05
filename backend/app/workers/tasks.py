@@ -13936,6 +13936,13 @@ def _rebuild_v4_view_from_stored(
     frozen_doctor_view = restore_doctor_view(render_inputs.doctor_view)
     frozen_v4 = frozen_doctor_view if isinstance(frozen_doctor_view, DoctorReportV4) else None
     v3_facts = dict(render_inputs.doctor_metric_facts or {})
+    # AE가 참고 줄·숫자를 고친 판(2026-11-05)은 얼린 뷰·사실이 수정값이다 — 다시 만드는 pristine 뷰는 pristine(`base_view`)의 참고치·
+    # 초기 측정선에서 읽고, 그 위에 수정값을 다시 얹는다(Codex 3-P1-B). 수정이 없는 판은 종전과 같다.
+    pristine_v4 = base_view_of(render_inputs) if stored_ae_overrides(render_inputs) is not None else None
+    reference_v4 = pristine_v4 if pristine_v4 is not None else frozen_v4  # 얼린(수정 적용) 뷰는 그대로 `frozen_view`로 넘긴다
+    if pristine_v4 is not None:
+        v3_facts.pop("rate.reference_previous", None)
+        v3_facts.update({k: v for k, v in pristine_v4.facts().items() if k == "rate.reference_previous"})
     reference_text = v3_facts.get("rate.reference_previous")
     reference_prev = float(reference_text[:-1]) if isinstance(reference_text, str) and reference_text.endswith("%") else None
     v0_baseline = None
@@ -13945,8 +13952,8 @@ def _rebuild_v4_view_from_stored(
             "current_of_hundred": int(float(v3_facts["v0.current_of_hundred"].rstrip("%"))),
             "sentence": "",
         }
-    elif frozen_v4 is not None:
-        match = re.search(r"처음 측정 (\d+(?:\.\d+)?)%", frozen_v4.appendix.keyword_note or "")
+    elif reference_v4 is not None:
+        match = re.search(r"처음 측정 (\d+(?:\.\d+)?)%", reference_v4.appendix.keyword_note or "")
         if match:
             v0_value = int(round(float(match.group(1))))
             v0_baseline = {"of_hundred": v0_value, "current_of_hundred": v0_value, "sentence": ""}

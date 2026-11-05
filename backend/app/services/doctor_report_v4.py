@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import re
+from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from math import isfinite
@@ -501,7 +502,7 @@ class DoctorReportV4:
                 appendix.extend((row.keyword, row.action))
         if any(a.method_lines):
             appendix.extend((a.method_heading, *a.method_lines))
-        if a.glossary:
+        if any(term or definition for term, definition in a.glossary):
             appendix.append(a.glossary_heading)
             for term, definition in a.glossary:
                 appendix.extend((term, definition))
@@ -2175,12 +2176,13 @@ class AeCollection:
     attrs: tuple[str, ...]
     key: str
     columns: Mapping[str, tuple[str, str]]  # 칸 → (값 종류, 분류)
+    identity: str | None = None  # 키가 겹칠 때 행을 가르는 불변 칸(콘텐츠의 URL = 글 id) — 순서가 바뀌어도 같은 행을 가리킨다
 
 
 AE_COLLECTIONS: dict[str, AeCollection] = {
     "content.rows": AeCollection("content", ("rows",), "title", {
         "published_on": (T_LABEL, CLASS_CELL), "title": (T_TEXT, CLASS_CELL), "treatment": (T_LABEL, CLASS_CELL), "keyword": (T_LABEL, CLASS_CELL),
-    }),
+    }, identity="url"),
     "content.bars": AeCollection("content", ("bars",), "label", {
         "label": (T_LABEL, CLASS_CELL), "value": (T_COUNT, CLASS_CELL), "detail": (T_LABEL, CLASS_CELL),
     }),
@@ -2609,19 +2611,31 @@ def _row_key(spec: AeCollection, row: Any) -> str:
 def _row_keys(spec: AeCollection, rows: Sequence[Any]) -> list[str]:
     """행마다 고유한 키 — 같은 키(제목·라벨)가 두 번 나오면 둘째부터 `#2`·`#3`을 붙인다(Codex 1-P1-6: 제목은 유일하지 않다)."""
     raw = [_row_key(spec, row) for row in rows]
+    counts = Counter(raw)
     taken = set(raw)
     used: set[str] = set()
     keys: list[str] = []
-    for base in raw:
+    for base, row in zip(raw, rows, strict=True):
         key = base
+        if counts[base] > 1:
+            # 같은 제목이 둘 이상: 불변 칸(콘텐츠 URL의 글 id)으로 가른다 — 다음 버전에서 순서가 바뀌어도 같은 행이다(Codex 3-P1-A).
+            ident = _row_identity(spec, row)
+            key = f"{base}#{ident}" if ident else base
         suffix = 1
         # 실제 제목이 '제목#2'일 수도 있다 — 만든 접미가 실제 키나 앞서 만든 키와 겹치지 않을 때까지 올린다(Codex 2-P1-6).
         while key in used or (key != base and key in taken):
             suffix += 1
-            key = f"{base}#{suffix}"
+            key = f"{base}#{ident}#{suffix}" if counts[base] > 1 and _row_identity(spec, row) else f"{base}#{suffix}"
         used.add(key)
         keys.append(key)
     return keys
+
+
+def _row_identity(spec: AeCollection, row: Any) -> str:
+    if spec.identity is None or isinstance(row, tuple):
+        return ""
+    value = str(getattr(row, spec.identity, "") or "").rstrip("/")
+    return value.rsplit("/", 1)[-1][-8:] if value else ""  # UUID는 앞이 같을 수 있어 끝 8자
 
 
 def _write_collection_rows(view: DoctorReportV4, spec: AeCollection, rows: list[Any]) -> DoctorReportV4:
@@ -2662,9 +2676,13 @@ def apply_ae_overrides(
     card_names: tuple[str, ...] | None = None
     key_lines = list(out.summary.key_lines)
     plan_actions: dict[str, Any] = {}
+    # 부모(행·사례·검정 면)를 지우면 그 아래 칸의 수정은 보지 않는다 — 저장된 하위 값이 지운 부모를 다시 채우지 않게(Codex 3-P2-1).
+    deleted_parents = [path for path, value in fields.items() if is_delete_marker(value) and _is_parent_path(path)]
     for path, value in fields.items():
         field_ = parse_ae_path(path)
         if field_ is None or value is None or field_.kind in (AE_FIELD_TREATMENT_LABEL, AE_FIELD_CASE_RECORD):
+            continue
+        if any(path.startswith(parent + ".") for parent in deleted_parents):
             continue
         explicit.add(path)
         if field_.kind == AE_FIELD_KEY_LINE:
@@ -2708,7 +2726,16 @@ def apply_ae_overrides(
         cards = list(out.summary.cards)
         cards[3] = replace(cards[3], names=card_names_with_tail(cards[3], card_names))
         out = replace(out, summary=replace(out.summary, cards=tuple(cards)))
-    return _reset_untouched_derived(out, view, explicit)
+    # 파생 문구는 구조(라벨·사례 교체)를 적용한 뷰를 기준으로 '손대지 않음'을 판정한다 — 교체한 사례의 캡션이 명시 수정으로 남지 않게(Codex 3-P2-3).
+    return _reset_untouched_derived(out, derived_view, explicit)
+
+
+def _is_parent_path(path: str) -> bool:
+    field_ = parse_ae_path(path)
+    if field_ is None or field_.kind != AE_FIELD_VIEW:
+        return False
+    vp = field_.arg
+    return vp.attr is None and vp.family in ("row", "case", "figure")
 
 
 def _apply_view_path(
@@ -2994,7 +3021,10 @@ def section_texts(view: DoctorReportV4) -> dict[str, list[str]]:
     """절(p1..p6·appendix)마다 실제로 찍히는 글자 — 절이 통째로 비었는지(빈 쪽) 판정하는 데 쓴다."""
     texts = view.required_texts()
     names = ("p1", "p2", "p3", "p4", "p5", "p6", "appendix")
-    return {name: [t for t in group if t] for name, group in zip(names, texts, strict=True)}
+    out = {name: [t for t in group if t] for name, group in zip(names, texts, strict=True)}
+    # 발췌는 강조 표시로 나뉘어 찍혀 필수 문구는 아니지만 실제로 보이는 글자다(Codex 3-P2-2).
+    out["p5"].extend(case.excerpt for case in (view.cases.found, view.cases.missing) if case is not None and case.excerpt)
+    return out
 
 
 def case_candidates_for_view(

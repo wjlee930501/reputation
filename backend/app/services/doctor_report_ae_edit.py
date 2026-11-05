@@ -288,7 +288,9 @@ def validate_ae_fields(
     # 카드 4 이름 목록은 **라벨을 적용한 뒤 다시 센 n**을 넘을 수 없다 — 라벨을 합쳐 n이 줄면 옛 목록이 카드 값보다 길어진다.
     derived_count = derived_card_count(view, fields)
     explicit_value = fields.get("summary.cards[3].value")
-    if isinstance(explicit_value, str):
+    if is_delete_marker(explicit_value):
+        derived_count = None  # 값을 지운 카드는 셀 수 없다 — 이름 상한도 없다(Codex 3-P2-5)
+    elif isinstance(explicit_value, str):
         # 사람이 카드 값을 고쳤으면(숫자 자유) 그 값의 n이 상한이고, 셀 수 없는 값이면 상한이 없다(Codex 1-P2-3).
         from app.services.doctor_report_v4 import Card
 
@@ -695,7 +697,7 @@ def field_changes(base: DoctorReportV4, before_fields: Mapping[str, Any] | None,
                 "path": path,
                 "before": _json_value(before.get(path, original)),
                 "after": _json_value(after),
-                "numbers_changed": bool(original is not None and after is not None and not is_delete_marker(after) and numbers_differ(original, after)),
+                "numbers_changed": bool(path in originals and after is not None and not is_delete_marker(after) and numbers_differ(original, after)),
             }
         )
     return changes

@@ -336,7 +336,9 @@ export function buildAeEditFields(
       else if (!nowDeleted && wasDeleted) fields[item.row] = null
     }
     if (!(item.path in draft.values)) continue
-    const next = normalizeValue(item, draft.values[item.path])
+    let next = normalizeValue(item, draft.values[item.path])
+    // 비울 수 있는 수(막대 값·그룹 노출률)의 입력란을 비우면 '지움'이지 원문 복귀가 아니다(Codex 3-P2-4).
+    if (next === null && (item.type === 'count' || item.type === 'pct_opt')) next = AE_DELETE
     const stored = item.path in overrides ? (isDeleteMarker(overrides[item.path]) ? AE_DELETE : normalizeValue(item, overrides[item.path])) : undefined
     const original = normalizeValue(item, item.original)
     const storedState = stored === undefined ? original : stored
