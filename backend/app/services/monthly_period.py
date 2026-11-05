@@ -48,6 +48,8 @@ class ReportBuildReason(StrEnum):
     TEMPLATE_REFRESH = "TEMPLATE_REFRESH"
     # 템플릿 갱신의 변형 — 측정·귀속·인용·발행 숫자는 그대로 두고, 경쟁 현황만 현재 경쟁사 판정으로 다시 계산한다.
     COMPETITOR_REFRESH = "COMPETITOR_REFRESH"
+    # AE 수정 판 — 템플릿 갱신과 같은 숫자 보존 경로에 사람이 고친 서술 문구·진료 항목 라벨만 얹는다.
+    AE_EDIT = "AE_EDIT"
 
 
 @dataclass(frozen=True, slots=True)
@@ -239,6 +241,7 @@ def plan_report_version(
             ReportBuildReason.LATE_DATA_REBUILD
             | ReportBuildReason.TEMPLATE_REFRESH
             | ReportBuildReason.COMPETITOR_REFRESH
+            | ReportBuildReason.AE_EDIT
         ):
             if latest_version is None:
                 raise MonthlyPeriodError(

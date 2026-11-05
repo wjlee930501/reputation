@@ -59,8 +59,8 @@ test('strict report boundary preserves frozen cells, version lineage, and honest
   assert.doesNotMatch(JSON.stringify(report), /SLA|CUSTOMER_READY|raw_response/)
 })
 
-test('the one dialog runs open, then delivery, then history, with internal state last', () => {
-  assert.deepEqual([...REPORT_DIALOG_SECTION_ORDER], ['open', 'delivery', 'history', 'internal'])
+test('the one dialog runs open, then ae-edit, then delivery, then history, with internal state last', () => {
+  assert.deepEqual([...REPORT_DIALOG_SECTION_ORDER], ['open', 'ae-edit', 'delivery', 'history', 'internal'])
 })
 
 test('the screen name of a report never keeps the pre-unification server label', () => {

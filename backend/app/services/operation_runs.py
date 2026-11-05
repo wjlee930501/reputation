@@ -211,9 +211,10 @@ async def retry_operation_run(
     if retry_key is None:
         raise transitions.OperationTransitionRejected(previous.id, "MISSING_RETRY_KEY")
     # 재시도 실행도 원 실행과 같은 대상으로 세어야 예산이 재시도로 새지 않는다.
+    # AE 수정 판(`ae_edit`)은 같은 템플릿 갱신 인자를 쓰므로 payload를 잇지 않으면 재시도가 수정 없는 갱신이 된다.
     carried = {
         key: value
-        for key in ("subject_hash", "title", "revision")
+        for key in ("subject_hash", "title", "revision", "ae_edit")
         if (value := previous.request_payload.get(key)) is not None
     }
     command = OperationCommand(

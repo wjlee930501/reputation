@@ -240,9 +240,20 @@ async def test_retry_policy_allows_monthly_rebuild_true_payload_only() -> None:
         await retry_policy(db, run_with_args([str(hospital_id), 2026, 7, True]))
     ).queue == "reports"
 
+    # 템플릿 갱신·AE 수정 판의 저장 인자 꼴(rebuild, automatic_recovery=False, template_only[, allow_recovery_pending]).
+    assert (
+        await retry_policy(db, run_with_args([str(hospital_id), 2026, 7, True, False, True]))
+    ).queue == "reports"
+    assert (
+        await retry_policy(db, run_with_args([str(hospital_id), 2026, 7, True, False, True, True]))
+    ).queue == "reports"
+
     for invalid_args in (
         [str(hospital_id), 2026, 7, False],
         [str(hospital_id), 2026, 7, True, 1],
+        [str(hospital_id), 2026, 7, True, True, True],
+        [str(hospital_id), 2026, 7, True, False, False],
+        [str(hospital_id), 2026, 7, True, False, True, False],
     ):
         with pytest.raises(HTTPException) as blocked:
             await retry_policy(db, run_with_args(invalid_args))

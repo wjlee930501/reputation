@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from math import isfinite
 from typing import Any, Literal
 
@@ -1164,63 +1164,98 @@ def _record_cites(record: Any, urls_to_title: Mapping[str, str]) -> str:
     return ""
 
 
+def usable_case_records(records: Sequence[Any]) -> list[Any]:
+    """대표 사례 후보 — 판정이 끝났고 답변 본문이 있는 관측만. 빌더와 AE 수정 판의 후보 목록이 같은 집합을 본다."""
+    return [r for r in records if _successful(r) and (getattr(r, "raw_response", None) or "").strip()]
+
+
+def urls_to_titles(works: Iterable[Any]) -> dict[str, str]:
+    """발행 콘텐츠 URL(host+path) → 제목. `works`는 `PublishedWork`나 `ContentRow`처럼 `url`·`title`을 가진 것."""
+    urls_to_title: dict[str, str] = {}
+    for work in works:
+        url = getattr(work, "url", None)
+        normalized = normalize_cited_url(url) if url else None
+        if normalized is not None:
+            urls_to_title[f"{normalized.host}{normalized.path}"] = str(getattr(work, "title", "") or "")
+    return urls_to_title
+
+
+def case_from_record(
+    record: Any,
+    *,
+    found: bool,
+    hospital_name: str,
+    treatment: str,
+    urls_to_title: Mapping[str, str],
+    registered: bool,
+    registered_names: Sequence[str] = (),
+) -> Case:
+    """관측 기록 하나를 P5 사례로 만든다 — 빌더(`_cases_page`)와 AE 수정 판의 사례 교체가 같은 규칙을 쓴다.
+
+    '등록한 경쟁 병원도 언급되지 않았다'는 이 답변의 등록 경쟁사(`registered_names`, 없으면 기록에 든 이름) **전부**가
+    확정 미언급(False)일 때만 말한다 — 하나라도 미확정(null)이거나 판정이 없으면 모르는 것이지 미언급이 아니다."""
+    keyword = _record_query_text(record)
+    body = _normalize_answer(record.raw_response or "")
+    needle = ""
+    if found:
+        for candidate in (str(getattr(record, "matched_text", None) or ""), hospital_name):
+            candidate = " ".join(candidate.split())
+            if candidate and candidate in body:
+                needle = candidate
+                break
+    excerpt = _excerpt_around(record.raw_response or "", needle, width=EXCERPT_CHARS)
+    highlight = needle if needle and needle in excerpt else ""
+    measured_at = getattr(record, "measured_at", None)
+    measured_on = arrow.get(measured_at).to("Asia/Seoul").format("YYYY-MM-DD") if measured_at else ""
+    platform = platform_name(getattr(record, "ai_platform", ""))
+    if found:
+        cited_title = _record_cites(record, urls_to_title)
+        if cited_title:
+            insight = f"'{cited_title}' 콘텐츠가 출처로 쓰였습니다 → 같은 형식으로 다른 항목도 발행"
+        else:
+            insight = f"'{treatment}' 키워드에서 노출됐습니다 → 인접 항목으로 키워드 확장"
+        label = "노출 사례"
+    else:
+        names = _record_competitors(record)
+        mentions = [item for item in (getattr(record, "competitor_mentions", None) or []) if isinstance(item, dict)]
+        judged_false = {str(item.get("name") or "").strip() for item in mentions if item.get("is_mentioned") is False}
+        expected = set(registered_names) if registered_names else {str(item.get("name") or "").strip() for item in mentions}
+        confirmed_absent = bool(expected) and expected <= judged_false and all(
+            item.get("is_mentioned") is False for item in mentions
+        )
+        if names:
+            insight = f"{names[0]}이 대신 언급됐습니다 → '{treatment}' 콘텐츠 고도화"
+        elif registered and confirmed_absent:
+            insight = f"등록한 경쟁 병원도 언급되지 않았습니다 → '{treatment}' 콘텐츠 1편 발행"
+        else:
+            insight = f"병원명이 나오지 않았습니다 → '{treatment}' 콘텐츠 1편 발행"
+        label = "미노출 사례"
+    return Case(label, keyword, excerpt, highlight, platform, measured_on, insight)
+
+
 def _cases_page(*, records, hospital_name, setup, by_text, regions, works, registered, registered_names=()) -> CasesPage:
     headline = "대표 답변 사례"
     if setup:
         return CasesPage(headline, None, None, "AI 답변 사례는 다음 달 첫 측정부터 보여 드립니다.")
-    usable = [r for r in records if _successful(r) and (getattr(r, "raw_response", None) or "").strip()]
+    usable = usable_case_records(records)
     found_record = next((r for r in usable if r.is_mentioned), None)
     missing_record = next((r for r in usable if not r.is_mentioned), None)
     # 인용 주장은 고른 답변 자신의 출처 URL이 발행 콘텐츠 URL과 맞을 때만 한다.
-    urls_to_title: dict[str, str] = {}
-    for work in works:
-        normalized = normalize_cited_url(work.url) if work.url else None
-        if normalized is not None:
-            urls_to_title[f"{normalized.host}{normalized.path}"] = work.title
+    urls_to_title = urls_to_titles(works)
 
     def _case(record: Any, *, found: bool) -> Case | None:
         if record is None:
             return None
         keyword = _record_query_text(record)
-        info = _info_for(keyword, by_text, regions)
-        body = _normalize_answer(record.raw_response or "")
-        needle = ""
-        if found:
-            for candidate in (str(getattr(record, "matched_text", None) or ""), hospital_name):
-                candidate = " ".join(candidate.split())
-                if candidate and candidate in body:
-                    needle = candidate
-                    break
-        excerpt = _excerpt_around(record.raw_response or "", needle, width=EXCERPT_CHARS)
-        highlight = needle if needle and needle in excerpt else ""
-        measured_at = getattr(record, "measured_at", None)
-        measured_on = arrow.get(measured_at).to("Asia/Seoul").format("YYYY-MM-DD") if measured_at else ""
-        platform = platform_name(getattr(record, "ai_platform", ""))
-        if found:
-            cited_title = _record_cites(record, urls_to_title)
-            if cited_title:
-                insight = f"'{cited_title}' 콘텐츠가 출처로 쓰였습니다 → 같은 형식으로 다른 항목도 발행"
-            else:
-                insight = f"'{info.treatment}' 키워드에서 노출됐습니다 → 인접 항목으로 키워드 확장"
-            label = "노출 사례"
-        else:
-            names = _record_competitors(record)
-            # '경쟁 병원도 언급되지 않았다'는 이 답변의 등록 경쟁사 **전부**가 확정 미언급(False)일 때만 말한다 — 하나라도
-            # 미확정(null)이거나 판정이 없으면 모르는 것이지 미언급이 아니다.
-            mentions = [item for item in (getattr(record, "competitor_mentions", None) or []) if isinstance(item, dict)]
-            judged_false = {str(item.get("name") or "").strip() for item in mentions if item.get("is_mentioned") is False}
-            expected = set(registered_names) if registered_names else {str(item.get("name") or "").strip() for item in mentions}
-            confirmed_absent = bool(expected) and expected <= judged_false and all(
-                item.get("is_mentioned") is False for item in mentions
-            )
-            if names:
-                insight = f"{names[0]}이 대신 언급됐습니다 → '{info.treatment}' 콘텐츠 고도화"
-            elif registered and confirmed_absent:
-                insight = f"등록한 경쟁 병원도 언급되지 않았습니다 → '{info.treatment}' 콘텐츠 1편 발행"
-            else:
-                insight = f"병원명이 나오지 않았습니다 → '{info.treatment}' 콘텐츠 1편 발행"
-            label = "미노출 사례"
-        return Case(label, keyword, excerpt, highlight, platform, measured_on, insight)
+        return case_from_record(
+            record,
+            found=found,
+            hospital_name=hospital_name,
+            treatment=_info_for(keyword, by_text, regions).treatment,
+            urls_to_title=urls_to_title,
+            registered=bool(registered),
+            registered_names=registered_names,
+        )
 
     found = _case(found_record, found=True)
     missing = _case(missing_record, found=False)
@@ -1679,6 +1714,288 @@ def v3_frozen_facts_problems(
     return problems
 
 
+# ── AE 수정 판 — 서술 문구·진료 항목 라벨만 덮어쓰기 ────────────────────────────
+# 저장된 숫자는 건드리지 않는다. 수정 값은 `render_inputs.ae_overrides.fields`(필드 경로 → 값)에 있고,
+# 뷰 조립 뒤 이 함수 하나가 pristine 뷰(시스템이 만든 판)에 적용한다. 템플릿은 바뀌지 않는다.
+# 경로 문법(화이트리스트 — 여기 없는 경로는 거절한다):
+#   summary.key_lines[0|1|2]        P1 핵심 3줄
+#   summary.cards[3].names          카드 4 '{n}개 항목'의 이름 목록(숫자 n은 그대로, '외 N개' 꼬리는 시스템이 붙인다)
+#   cases.found.insight / cases.missing.insight    P5 시사점 문장
+#   cases.found.record_id / cases.missing.record_id 대표 사례 교체(그 달 매니페스트의 관측 기록 중에서만)
+#   plan.action[<측정 키워드>]        P6 '실행 내용' 문구(본문 행·부록 이어짐 행)
+#   treatment_label[<측정 키워드>]    측정 키워드의 진료 항목 라벨 — 부록 A·P6·막대·카드 4·콘텐츠 표에 일관 적용
+AE_OVERRIDES_SCHEMA_VERSION = 1
+AE_FIELD_KEY_LINE = "key_line"
+AE_FIELD_CARD_NAMES = "card_names"
+AE_FIELD_CASE_INSIGHT = "case_insight"
+AE_FIELD_CASE_RECORD = "case_record"
+AE_FIELD_PLAN_ACTION = "plan_action"
+AE_FIELD_TREATMENT_LABEL = "treatment_label"
+AE_PATH_CARD_NAMES = "summary.cards[3].names"
+_AE_KEY_LINE_RE = re.compile(r"^summary\.key_lines\[([0-2])\]$")
+_AE_CASE_RE = re.compile(r"^cases\.(found|missing)\.(insight|record_id)$")
+_AE_PLAN_ACTION_RE = re.compile(r"^plan\.action\[(.+)\]$", re.DOTALL)
+_AE_TREATMENT_LABEL_RE = re.compile(r"^treatment_label\[(.+)\]$", re.DOTALL)
+_AE_CARD_TAIL_RE = re.compile(r"^외 \d+개$")
+_QUOTED = re.compile(r"'([^']*)'")
+
+
+@dataclass(frozen=True, slots=True)
+class AeField:
+    """해석된 수정 경로. `arg`는 핵심 줄 번호(int)·사례 자리('found'/'missing')·측정 키워드(str)다."""
+
+    kind: str
+    arg: Any = None
+
+
+@dataclass(frozen=True, slots=True)
+class CaseCandidate:
+    """대표 사례로 고를 수 있는 관측 기록 하나 — `record_id`는 SovRecord id, `case`는 그 기록으로 만든 P5 사례."""
+
+    record_id: str
+    found: bool
+    case: Case
+
+
+def parse_ae_path(path: str) -> AeField | None:
+    """수정 경로 → 필드. 화이트리스트 밖이면 None."""
+    if not isinstance(path, str):
+        return None
+    if path == AE_PATH_CARD_NAMES:
+        return AeField(AE_FIELD_CARD_NAMES)
+    if (match := _AE_KEY_LINE_RE.match(path)) is not None:
+        return AeField(AE_FIELD_KEY_LINE, int(match.group(1)))
+    if (match := _AE_CASE_RE.match(path)) is not None:
+        kind = AE_FIELD_CASE_INSIGHT if match.group(2) == "insight" else AE_FIELD_CASE_RECORD
+        return AeField(kind, match.group(1))
+    if (match := _AE_PLAN_ACTION_RE.match(path)) is not None:
+        return AeField(AE_FIELD_PLAN_ACTION, match.group(1))
+    if (match := _AE_TREATMENT_LABEL_RE.match(path)) is not None:
+        return AeField(AE_FIELD_TREATMENT_LABEL, match.group(1))
+    return None
+
+
+def ae_path(kind: str, arg: Any = None) -> str:
+    """`parse_ae_path`의 역함수 — 화면·응답이 쓰는 경로 문자열."""
+    if kind == AE_FIELD_CARD_NAMES:
+        return AE_PATH_CARD_NAMES
+    if kind == AE_FIELD_KEY_LINE:
+        return f"summary.key_lines[{int(arg)}]"
+    if kind == AE_FIELD_CASE_INSIGHT:
+        return f"cases.{arg}.insight"
+    if kind == AE_FIELD_CASE_RECORD:
+        return f"cases.{arg}.record_id"
+    if kind == AE_FIELD_PLAN_ACTION:
+        return f"plan.action[{arg}]"
+    if kind == AE_FIELD_TREATMENT_LABEL:
+        return f"treatment_label[{arg}]"
+    raise ValueError(f"unknown AE field kind: {kind}")
+
+
+def split_card_names(names: Sequence[str]) -> tuple[list[str], str | None]:
+    """카드 4 이름 목록을 (이름들, '외 N개' 꼬리)로 가른다 — 꼬리는 숫자라 사람이 고치지 않는다."""
+    items = list(names)
+    if items and _AE_CARD_TAIL_RE.match(items[-1]):
+        return items[:-1], items[-1]
+    return items, None
+
+
+def relabel_quoted(text: str, old: str, new: str) -> str:
+    """규칙 문장 안의 작은따옴표 구간(`'치료하'`·`'서울 치료하'`)만 새 라벨로 바꾼다. 나머지 글자는 그대로다."""
+    if not old or old == new:
+        return text
+
+    def swap(match: re.Match[str]) -> str:
+        inner = match.group(1)
+        if inner == old:
+            return f"'{new}'"
+        if inner.endswith(" " + old):
+            return f"'{inner[: -len(old)]}{new}'"
+        return match.group(0)
+
+    return _QUOTED.sub(swap, text)
+
+
+def treatment_bars_from_appendix(rows: Iterable[AppendixKeywordRow]) -> tuple[BarItem, ...]:
+    """부록 A 행(키워드별 `m/a`)에서 진료 항목별 노출률 막대를 다시 만든다 — 빌더(`_exposure_page`)와 같은 합산·정렬.
+
+    라벨을 바꾸면 묶음이 바뀌므로 막대는 라벨을 적용한 행에서 다시 센다. 숫자는 행의 분수 그대로다.
+    """
+    by_treatment: dict[str, list[int]] = {}
+    for row in rows:
+        if row.total == "—":
+            continue
+        mentioned, attempts = (int(part) for part in row.total.split("/", 1))
+        bucket = by_treatment.setdefault(row.treatment, [0, 0])
+        bucket[0] += mentioned
+        bucket[1] += attempts
+    return tuple(
+        BarItem(name, _rate(m, a), f"AI 답변 {a}건 중 {m}건")
+        for name, (m, a) in sorted(
+            by_treatment.items(), key=lambda pair: (-(pair[1][0] / pair[1][1]) if pair[1][1] else 0, pair[0])
+        )
+    )
+
+
+def _treatment_by_keyword(view: DoctorReportV4) -> dict[str, str]:
+    return {row.keyword: row.treatment for row in view.appendix.keyword_rows}
+
+
+def _top_plan_row(plan: PlanPage) -> PlanRow | None:
+    rows = [*plan.rows, *plan.continued]
+    return rows[0] if rows else None
+
+
+def _relabel_case(case: Case | None, labels: Mapping[str, str], old_labels: Mapping[str, str]) -> Case | None:
+    if case is None or case.keyword not in labels:
+        return case
+    old = old_labels.get(case.keyword, "")
+    return replace(case, insight=relabel_quoted(case.insight, old, labels[case.keyword]))
+
+
+def apply_ae_overrides(
+    view: DoctorReportV4,
+    fields: Mapping[str, Any],
+    *,
+    case_candidates: Sequence[CaseCandidate] = (),
+) -> DoctorReportV4:
+    """pristine v4 뷰에 AE 수정 값을 적용한 새 뷰. 숫자 사실(`facts`)은 진료 항목 라벨 묶음 말고는 바뀌지 않는다.
+
+    순서: 라벨(묶음·막대·카드 이름·규칙 문장의 따옴표 구간) → 사례 교체 → 명시한 문장. 명시한 문장이 유도된
+    값을 이긴다. 경로가 화이트리스트 밖이거나 값이 None(= 수정 취소)이면 건너뛴다 — 거절은 호출부의 검증이 한다.
+    """
+    parsed: list[tuple[AeField, Any]] = []
+    for path, value in fields.items():
+        field_ = parse_ae_path(path)
+        if field_ is not None and value is not None:
+            parsed.append((field_, value))
+    old_labels = _treatment_by_keyword(view)
+    labels = {
+        f.arg: str(v).strip()
+        for f, v in parsed
+        if f.kind == AE_FIELD_TREATMENT_LABEL and f.arg in old_labels and str(v).strip()
+    }
+    summary, content, exposure, cases, plan, appendix = (
+        view.summary, view.content, view.exposure, view.cases, view.plan, view.appendix,
+    )
+    if labels:
+        appendix = replace(
+            appendix,
+            keyword_rows=tuple(
+                replace(row, treatment=labels[row.keyword]) if row.keyword in labels else row
+                for row in appendix.keyword_rows
+            ),
+        )
+
+        def relabel_plan(row: PlanRow) -> PlanRow:
+            if row.keyword not in labels:
+                return row
+            new = labels[row.keyword]
+            return replace(row, treatment=new, action=relabel_quoted(row.action, row.treatment, new))
+
+        plan = replace(
+            plan,
+            rows=tuple(relabel_plan(row) for row in plan.rows),
+            continued=tuple(relabel_plan(row) for row in plan.continued),
+        )
+        content_rows = tuple(
+            replace(row, treatment=labels[row.keyword]) if row.keyword in labels else row
+            for row in content.rows
+        )
+        content = replace(content, rows=content_rows, bars=_treatment_publish_bars(content_rows))
+        exposure = replace(exposure, treatment_bars=treatment_bars_from_appendix(appendix.keyword_rows))
+        cards = list(summary.cards)
+        # 카드 4 이름은 **노출된** 키워드의 진료 항목이다 — 미노출 키워드의 라벨을 고쳐도 카드는 바뀌지 않고(검토 1-P2-2),
+        # 노출 키워드의 라벨을 고치면 노출 행(부록 A의 m>0)에서 이름을 다시 모은다. 숫자 n과 '외 N개' 꼬리는 그대로다.
+        exposed_relabelled = any(
+            row.keyword in labels and row.total != "—" and int(row.total.split("/", 1)[0]) > 0
+            for row in view.appendix.keyword_rows
+        )
+        if len(cards) >= 4 and cards[3].names and exposed_relabelled:
+            _names, tail = split_card_names(cards[3].names)
+            renamed = _dedupe(
+                row.treatment
+                for row in appendix.keyword_rows
+                if row.total != "—" and int(row.total.split("/", 1)[0]) > 0 and row.treatment != UNKNOWN_TREATMENT
+            )[:TREATMENT_NAMES_ON_CARD]
+            cards[3] = replace(cards[3], names=(*renamed, *([tail] if tail else ())))
+        key_lines = list(summary.key_lines)
+        top = _top_plan_row(view.plan)
+        if top is not None and top.keyword in labels and len(key_lines) == 3:
+            key_lines[2] = relabel_quoted(key_lines[2], top.treatment, labels[top.keyword])
+        summary = replace(summary, cards=tuple(cards), key_lines=tuple(key_lines))
+        cases = replace(
+            cases,
+            found=_relabel_case(cases.found, labels, old_labels),
+            missing=_relabel_case(cases.missing, labels, old_labels),
+        )
+    candidates = {(c.found, c.record_id): c for c in case_candidates}
+    for field_, value in parsed:
+        if field_.kind != AE_FIELD_CASE_RECORD:
+            continue
+        candidate = candidates.get((field_.arg == "found", str(value)))
+        if candidate is None:
+            continue
+        chosen = candidate.case
+        if labels:
+            chosen = _relabel_case(chosen, labels, old_labels) or chosen
+        cases = replace(cases, **{field_.arg: chosen}, empty_text="")
+    key_lines = list(summary.key_lines)
+    cards = list(summary.cards)
+    plan_actions: dict[str, str] = {}
+    for field_, value in parsed:
+        if field_.kind == AE_FIELD_KEY_LINE and 0 <= field_.arg < len(key_lines):
+            key_lines[field_.arg] = str(value).strip()
+        elif field_.kind == AE_FIELD_CARD_NAMES and len(cards) >= 4 and isinstance(value, (list, tuple)):
+            _, tail = split_card_names(cards[3].names)
+            renamed = _dedupe(str(name).strip() for name in value)
+            cards[3] = replace(cards[3], names=(*renamed, *([tail] if tail else ())))
+        elif field_.kind == AE_FIELD_CASE_INSIGHT:
+            current = getattr(cases, field_.arg)
+            if current is not None:
+                cases = replace(cases, **{field_.arg: replace(current, insight=str(value).strip())})
+        elif field_.kind == AE_FIELD_PLAN_ACTION:
+            plan_actions[field_.arg] = str(value).strip()
+    if plan_actions:
+        plan = replace(
+            plan,
+            rows=tuple(replace(r, action=plan_actions[r.keyword]) if r.keyword in plan_actions else r for r in plan.rows),
+            continued=tuple(
+                replace(r, action=plan_actions[r.keyword]) if r.keyword in plan_actions else r for r in plan.continued
+            ),
+        )
+    summary = replace(summary, cards=tuple(cards), key_lines=tuple(key_lines))
+    return replace(
+        view, summary=summary, content=content, exposure=exposure, cases=cases, plan=plan, appendix=appendix
+    )
+
+
+def case_candidates_for_view(
+    view: DoctorReportV4, records: Sequence[Any], *, registered: bool | None = None
+) -> list[CaseCandidate]:
+    """그 달 관측 기록으로 P5 사례 후보를 만든다 — 진료 항목·인용 제목·경쟁 등록 여부는 (pristine) 뷰에서 읽는다."""
+    treatments = _treatment_by_keyword(view)
+    urls_to_title = urls_to_titles(view.content.rows)
+    is_registered = bool(view.competition.rows or view.competition.basis) if registered is None else registered
+    candidates: list[CaseCandidate] = []
+    for record in usable_case_records(records):
+        record_id = str(getattr(record, "id", "") or "")
+        if not record_id:
+            continue
+        keyword = _record_query_text(record)
+        found = bool(record.is_mentioned)
+        case = case_from_record(
+            record,
+            found=found,
+            hospital_name=view.hospital_name,
+            treatment=treatments.get(keyword, UNKNOWN_TREATMENT),
+            urls_to_title=urls_to_title,
+            registered=is_registered,
+        )
+        candidates.append(CaseCandidate(record_id, found, case))
+    return candidates
+
+
 __all__ = [
     "Appendix", "AppendixKeywordRow", "BarItem", "CAVEAT_LINES", "Card", "Case", "CasesPage",
     "CompetitionPage", "CompetitorRow", "ContentPage", "ContentRow", "DoctorReportV4",
@@ -1688,4 +2005,8 @@ __all__ = [
     "SummaryPage", "TEMPLATE_VERSION", "TrendPoint", "build_doctor_report_v4", "compare_facts_v4",
     "freeze_v4", "is_v4_payload", "pdf_tokens_v4", "platform_name", "restore_v4", "stored_facts_v4",
     "v3_frozen_facts_problems", "v3_platform_rate_changes", "info_query_texts",
+    "AE_OVERRIDES_SCHEMA_VERSION", "AE_PATH_CARD_NAMES", "AeField", "CaseCandidate", "ae_path",
+    "apply_ae_overrides", "case_candidates_for_view", "case_from_record", "parse_ae_path",
+    "relabel_quoted", "split_card_names", "treatment_bars_from_appendix", "urls_to_titles",
+    "usable_case_records",
 ]

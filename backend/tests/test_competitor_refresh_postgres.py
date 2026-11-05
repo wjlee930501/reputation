@@ -32,7 +32,7 @@ from app.services import competitor_rejudge as cr
 from app.services import cost_guard, sov_engine
 from app.services.doctor_report_v4 import is_competitor_fact
 from app.services.monthly_period import ReportBuildReason
-from app.services.monthly_report_snapshot import report_render_inputs
+from app.services.monthly_report_snapshot import report_render_inputs, restore_doctor_view
 from app.services.monthly_template_refresh import TemplateRefreshRefused
 from app.workers import competitor_refresh, tasks
 
@@ -656,3 +656,73 @@ def test_redelivered_copy_does_not_reclaim_a_live_rejudge_lease(pg_session, quie
     rejudge.lease_expires_at = now - timedelta(minutes=1)
     pg_session.commit()
     assert operation_run_signals._claim(rejudge.id, rejudge.task_id, now, redelivered=False) == 3
+
+
+def test_competitor_refresh_and_ae_edit_carry_each_other_through_the_version_chain(pg_session, quiet_renders, budget):  # noqa: F811 - pytest fixture
+    """경쟁 반영 → AE 수정 → 경쟁 반영 순서의 버전 체인: 숫자는 그대로, 수정 값은 규칙대로 이어지고, 경쟁 사실은 최신 판정이다."""
+    from app.services.doctor_report_ae_edit import base_view_of, stored_ae_overrides
+
+    hospital, _records, first = _first_version(pg_session)
+    keyword = "가상동 위내시경 잘하는 병원"
+
+    # v2: 경쟁 병원 반영(경쟁사 1곳)
+    _register(pg_session, hospital, [RIVAL])
+    cr.execute_rejudge(pg_session, hospital, 2026, 7, run_id=uuid.uuid4(), judge=_async_judge)
+    assert tasks._build_monthly_template_refresh(
+        pg_session, hospital, ANCHOR, correlation_key=f"test:chain-c1:{hospital.id}", competitor_refresh=True
+    ) == "created"
+    v2 = cr.latest_monthly_report(pg_session, hospital.id, 2026, 7)
+    v2_facts = report_render_inputs(v2.content_summary).doctor_metric_facts
+    assert f"competitor.{RIVAL}" in v2_facts
+
+    # v3: AE 수정 판 — 경쟁과 무관한 핵심 줄·라벨, 경쟁 병원을 말하는 P5 시사점
+    fields = {
+        "summary.key_lines[0]": "이번 달 위내시경 문의가 꾸준했습니다",
+        f"treatment_label[{keyword}]": "위 내시경",
+        "cases.missing.insight": f"{RIVAL}보다 먼저 노출되도록 콘텐츠 1편 발행",
+    }
+    assert tasks._build_monthly_template_refresh(
+        pg_session, hospital, ANCHOR, correlation_key=f"test:chain-ae:{hospital.id}",
+        ae_edit={"report_id": str(v2.id), "fields": fields, "edited_by": "ae@example.invalid", "requested_at": "2026-11-05T01:00:00+00:00"},
+    ) == "created"
+    v3 = cr.latest_monthly_report(pg_session, hospital.id, 2026, 7)
+    v3_inputs = report_render_inputs(v3.content_summary)
+    v3_view = restore_doctor_view(v3_inputs.doctor_view)
+    assert v3.supersedes_report_id == v2.id and v3_view.summary.key_lines[0] == fields["summary.key_lines[0]"]
+    assert [row.name for row in v3_view.competition.rows] == [RIVAL]  # AE 수정이 경쟁 결과를 되돌리지 않는다
+    assert [row.name for row in base_view_of(v3_inputs).competition.rows] == [RIVAL]
+    assert {k: v for k, v in v3_inputs.doctor_metric_facts.items() if k.startswith("competitor.")} == {
+        k: v for k, v in v2_facts.items() if k.startswith("competitor.")
+    }
+
+    # v4: 경쟁사 하나 더 등록 → 경쟁 병원 반영. 라벨·경쟁 무관 문장은 잇고, 경쟁 병원을 말하는 문장은 버린다.
+    _register(pg_session, hospital, [RIVAL, SECOND])
+    cr.execute_rejudge(pg_session, hospital, 2026, 7, run_id=uuid.uuid4(), judge=_async_judge)
+    plan = tasks.build_monthly_template_refresh_plan(
+        pg_session, hospital, ANCHOR, observed_now=datetime.now(timezone.utc), competitor_refresh=True
+    )
+    assert plan.verdict.passed, plan.verdict.summary()
+    codes = {f.code for f in plan.verdict.findings}
+    assert codes == {"COMPETITOR_FACTS_RECOMPUTED", "AE_OVERRIDES_DROPPED"}
+    pg_session.rollback()
+    assert tasks._build_monthly_template_refresh(
+        pg_session, hospital, ANCHOR, correlation_key=f"test:chain-c2:{hospital.id}", competitor_refresh=True
+    ) == "created"
+    v4 = cr.latest_monthly_report(pg_session, hospital.id, 2026, 7)
+    v4_inputs = report_render_inputs(v4.content_summary)
+    v4_view = restore_doctor_view(v4_inputs.doctor_view)
+    assert v4.supersedes_report_id == v3.id
+    assert v4.sov_summary == first.sov_summary
+    assert {k: v for k, v in v3_inputs.doctor_metric_facts.items() if not k.startswith("competitor.")} == {
+        k: v for k, v in v4_inputs.doctor_metric_facts.items() if not k.startswith("competitor.")
+    }
+    assert {row.name for row in v4_view.competition.rows} == {RIVAL, SECOND}
+    assert v4_view.summary.key_lines[0] == fields["summary.key_lines[0]"]
+    assert all(row.treatment == "위 내시경" for row in v4_view.appendix.keyword_rows if row.keyword == keyword)
+    carried = stored_ae_overrides(v4_inputs)
+    assert set(carried["fields"]) == {"summary.key_lines[0]", f"treatment_label[{keyword}]"}
+    assert {row.name for row in base_view_of(v4_inputs).competition.rows} == {RIVAL, SECOND}
+    dropped = v4_inputs.model_dump().get("ae_overrides_dropped") if hasattr(v4_inputs, "model_dump") else None
+    dropped = dropped or (v4.content_summary["report_snapshot"]["render_inputs"].get("ae_overrides_dropped"))
+    assert dropped["reason"] == "COMPETITION_CHANGED" and set(dropped["fields"]) == {"cases.missing.insight"}
+    assert v4_view.cases.missing is not None and f"{RIVAL}보다" not in v4_view.cases.missing.insight

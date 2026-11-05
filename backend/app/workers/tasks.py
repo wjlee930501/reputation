@@ -173,12 +173,32 @@ from app.services.content_review_feedback import (
 from app.services.content_target_planner import prepare_automatic_content_brief_sync
 from app.services.content_yield import compute_content_yield
 from app.services.doctor_pdf_contracts import DoctorReportView, DoctorV0Baseline
+from app.services.doctor_report_ae_edit import (
+    AE_EDIT_DROP_REASON_NUMBERS_CHANGED,
+    ae_edit_fact_problems,
+    base_view_of,
+    build_ae_overrides,
+    carry_ae_fields,
+    merge_ae_fields,
+    normalize_ae_fields,
+    numbers_changed_between,
+    stored_ae_overrides,
+    validate_ae_fields,
+)
+from app.services.doctor_report_ae_edit import (
+    changed_paths as _ae_changed_paths,
+)
 from app.services.doctor_report_artifact import generate_doctor_pdf_report
 from app.services.doctor_report_v4 import (
+    AE_FIELD_CASE_RECORD,
+    CaseCandidate,
     DoctorReportV4,
+    apply_ae_overrides,
     build_doctor_report_v4,
+    case_candidates_for_view,
     compare_facts_excluding_competitors,
     competitor_fact_changes,
+    parse_ae_path,
 )
 from app.services.domain_health_control import (
     PUBLIC_SITE_OUTAGE_MIN_HOSPITALS,
@@ -391,6 +411,7 @@ from app.services.monthly_template_refresh import (
     TemplateRefreshRefused,
     doctor_view_facts,
     missing_stored_paths,
+    stored_observed_at,
 )
 from app.services.must_use_verbatim import required_must_use_messages
 from app.services.notification_copy import (
@@ -11896,6 +11917,16 @@ def _mark_weekly_sov_operation_queued(db, run_id: uuid.UUID, observed_at: dateti
 # ══════════════════════════════════════════════════════════════════
 # 월간 리포트 (다음 달 1일 00:15 첫 마감, 07:15~08:45 최종화 틱)
 # ══════════════════════════════════════════════════════════════════
+def _ae_edit_request_of(db, run_id: uuid.UUID | None) -> dict | None:
+    """AE 수정 판 요청(`request_payload.ae_edit`) — 같은 작업 인자를 쓰는 템플릿 갱신과는 이 키로만 갈린다."""
+    if run_id is None:
+        return None
+    run = db.get(OperationRun, run_id)
+    payload = getattr(run, "request_payload", None)
+    raw = payload.get("ae_edit") if isinstance(payload, Mapping) else None
+    return dict(raw) if isinstance(raw, Mapping) and isinstance(raw.get("fields"), Mapping) else None
+
+
 def _monthly_operation_run_id(task) -> uuid.UUID | None:
     headers = getattr(getattr(task, "request", None), "headers", None)
     if not isinstance(headers, Mapping):
@@ -12994,6 +13025,11 @@ def _build_monthly_report_for_hospital(
         trend_points=_comparable_trend_points(db, h.id, now, monthly_sov_payload),
         platforms=report_platforms,
     )
+    # AE 수정 판 승계(2026-11-05): 대체하는 버전의 수정 값을 새 pristine 뷰에 다시 얹는다 — 숫자·키워드 집합이
+    # 바뀐 재생성은 진료 항목 라벨만 잇고 문장은 버린다(`ae_overrides_dropped`에 남긴다).
+    doctor_view, ae_overrides, ae_overrides_dropped = _carry_ae_overrides(
+        db, version_plan.supersedes_report_id, doctor_view, evidence_records, actual_now
+    )
     talking_points = list(doctor_view.talking_points)
 
     snapshot_cells = [
@@ -13068,6 +13104,8 @@ def _build_monthly_report_for_hospital(
                 availability=monthly_sov_payload.get("observation_adequacy"),
                 comparison=monthly_sov_payload["comparison"],
             ),
+            ae_overrides=ae_overrides,
+            ae_overrides_dropped=ae_overrides_dropped,
         ),
     ).model_dump(mode="json")
 
@@ -13142,6 +13180,195 @@ def _build_monthly_report_for_hospital(
     return _attach_doctor_artifact_and_commit(
         db, h, report, period_start, doctor_view, now, operation_run_id
     )
+
+
+def _carry_ae_overrides(
+    db,
+    supersedes_report_id: uuid.UUID | None,
+    doctor_view: DoctorReportV4,
+    records: Sequence[Any],
+    now: datetime,
+) -> tuple[DoctorReportV4, dict | None, dict | None]:
+    """일반 재생성이 대체하는 버전의 AE 수정 값을 새 뷰에 잇는다 → (적용한 뷰, ae_overrides, ae_overrides_dropped).
+
+    숫자·키워드 집합이 그대로면(pristine 뷰의 사실이 같으면) 전부, 바뀌었으면 진료 항목 라벨만 잇는다. 더는 맞지
+    않는 경로(사라진 키워드·사례)와 적용 뒤 숫자가 어긋나는 값도 버린다. 잇지 않은 값은 사유와 함께 남긴다.
+    """
+    if supersedes_report_id is None:
+        return doctor_view, None, None
+    previous = db.get(MonthlyReport, supersedes_report_id)
+    render_inputs = report_render_inputs(previous.content_summary) if previous is not None else None
+    stored = stored_ae_overrides(render_inputs) if render_inputs is not None else None
+    if stored is None:
+        return doctor_view, None, None
+    previous_base = base_view_of(render_inputs)
+    numbers_changed = previous_base is None or numbers_changed_between(previous_base.facts(), doctor_view.facts())
+    kept, dropped = carry_ae_fields(stored["fields"], numbers_changed=numbers_changed)
+    reason = AE_EDIT_DROP_REASON_NUMBERS_CHANGED if numbers_changed else "NO_LONGER_APPLIES"
+    for path in list(kept):
+        if validate_ae_fields({path: kept[path]}, doctor_view):
+            dropped[path] = kept.pop(path)
+    applied = doctor_view
+    if kept:
+        candidates = (
+            case_candidates_for_view(doctor_view, records)
+            if any((f := parse_ae_path(path)) is not None and f.kind == AE_FIELD_CASE_RECORD for path in kept)
+            else []
+        )
+        if validate_ae_fields(kept, doctor_view, case_candidates=candidates):
+            # 사례 후보가 사라졌으면 그 경로만 버린다.
+            for path in list(kept):
+                if validate_ae_fields({path: kept[path]}, doctor_view, case_candidates=candidates):
+                    dropped[path] = kept.pop(path)
+        kept = normalize_ae_fields(kept, doctor_view, case_candidates=candidates)
+    if kept:
+        edited = apply_ae_overrides(doctor_view, kept, case_candidates=candidates)
+        if ae_edit_fact_problems(doctor_view, edited):
+            dropped.update(kept)
+            kept = {}
+        else:
+            applied = edited
+    overrides = (
+        build_ae_overrides(
+            fields=kept,
+            base_view_payload=freeze_doctor_view(doctor_view),
+            edited_by=str(stored.get("edited_by") or ""),
+            edited_at=str(stored.get("edited_at") or ""),
+            previous=stored,
+            changed_paths=[],
+            report_version=None,
+        )
+        if kept
+        else None
+    )
+    dropped_record = (
+        {
+            "fields": dropped,
+            "reason": reason,
+            "from_report_id": str(previous.id),
+            "dropped_at": now.isoformat(),
+        }
+        if dropped
+        else None
+    )
+    return applied, overrides, dropped_record
+
+
+def _frozen_scored_records(db, h: Hospital, old: MonthlyReport, render_inputs, now: arrow.Arrow) -> list:
+    """원래 보고서가 점수에 쓴 관측(스냅샷의 attempt record_id)만 — 그 달 매니페스트에서 다시 읽는다(검토 3-17)."""
+    manifest = (
+        db.execute(
+            select(MonthlyMeasurementManifest).where(MonthlyMeasurementManifest.id == old.manifest_id)
+        ).scalar_one_or_none()
+        if old.manifest_id is not None
+        else None
+    )
+    if manifest is None:
+        return []
+    observed_at = stored_observed_at(old.content_summary or {})
+    loaded = load_monthly_sov_manifest(
+        db,
+        manifest,
+        legacy_final=_legacy_manifest_is_final(
+            manifest, deadline_reached=_monthly_sov_deadline_reached(observed_at, now.year, now.month)
+        ),
+    )
+    frozen_record_ids = {
+        str(attempt.get("record_id"))
+        for cell in (render_inputs.measurement.cells or [])
+        for attempt in (cell.get("attempts") or [])
+        if isinstance(attempt, dict) and attempt.get("record_id")
+    }
+    return [record for record in loaded.scored_records if str(getattr(record, "id", "")) in frozen_record_ids]
+
+
+def load_ae_case_candidates(db, h: Hospital, report: MonthlyReport) -> list[CaseCandidate]:
+    """AE 수정 판의 대표 사례 후보 — 그 달 매니페스트의 관측 기록을 pristine 뷰 기준으로 사례로 만든다(읽기 전용)."""
+    render_inputs = report_render_inputs(report.content_summary)
+    base = base_view_of(render_inputs) if render_inputs is not None else None
+    if base is None:
+        return []
+    period = reporting_period(report.period_year, report.period_month)
+    now = arrow.get(period.ends_at).shift(microseconds=-1)
+    return case_candidates_for_view(base, _frozen_scored_records(db, h, report, render_inputs, now))
+
+
+def _apply_ae_edit_to_plan(
+    db,
+    h: Hospital,
+    latest: MonthlyReport,
+    now: arrow.Arrow,
+    content: dict,
+    doctor_view: DoctorReportV4,
+    ae_edit: Mapping[str, Any] | None,
+) -> tuple[DoctorReportV4, list[tuple[str, str, str]]]:
+    """템플릿 갱신·AE 수정 판: 저장된 수정 값(있으면)과 이번 요청의 수정 값을 pristine 뷰에 다시 적용한다.
+
+    돌려주는 문제는 (종류, 코드, 설명)이고 호출부가 verdict에 넣는다. 수정 값이 하나도 없으면 뷰를 그대로 돌려준다.
+    적용 뒤 숫자 사실은 pristine 뷰와 같아야 하고(`AE_EDIT_NUMBERS`), 저장 요약에서 다시 만든 사실과도
+    같아야 한다(`AE_EDIT_FACTS`). 문제가 있으면 스냅샷을 바꾸지 않는다.
+    """
+    from app.services.doctor_report_v4 import compare_facts_v4, stored_facts_v4
+
+    render_inputs = report_render_inputs(content)
+    assert render_inputs is not None
+    stored = stored_ae_overrides(render_inputs)
+    stored_fields = dict(stored["fields"]) if stored is not None else {}
+    incoming = dict((ae_edit or {}).get("fields") or {})
+    if not stored_fields and not incoming:
+        return doctor_view, []
+    problems: list[tuple[str, str, str]] = []
+    if ae_edit is not None and str(ae_edit.get("report_id") or "") not in ("", str(latest.id)):
+        problems.append(("BLOCKER", "AE_EDIT_STALE_REPORT", f"요청한 판 {ae_edit.get('report_id')} ≠ 최신 판 {latest.id}"))
+        return doctor_view, problems
+    base = base_view_of(render_inputs) if stored is not None else doctor_view
+    if base is None:
+        return doctor_view, [("BLOCKER", "AE_EDIT_BASE_VIEW_MISSING", "")]
+    merged = merge_ae_fields(stored_fields, incoming)
+    for problem in validate_ae_fields(merged, base):
+        problems.append(("BLOCKER", "AE_EDIT_INVALID", f"{problem.path}: {problem.code}"))
+    if problems:
+        return doctor_view, problems
+    candidates: list[CaseCandidate] = []
+    if any((f := parse_ae_path(path)) is not None and f.kind == AE_FIELD_CASE_RECORD for path in merged):
+        candidates = case_candidates_for_view(base, _frozen_scored_records(db, h, latest, render_inputs, now))
+        for problem in validate_ae_fields(merged, base, case_candidates=candidates):
+            problems.append(("BLOCKER", "AE_EDIT_INVALID", f"{problem.path}: {problem.code}"))
+        if problems:
+            return doctor_view, problems
+    merged = normalize_ae_fields(merged, base, case_candidates=candidates)
+    edited = apply_ae_overrides(base, merged, case_candidates=candidates) if merged else base
+    for problem in ae_edit_fact_problems(base, edited):
+        problems.append(("DIFF", "AE_EDIT_NUMBERS", problem))
+    for problem in compare_facts_v4(stored_facts_v4(latest.sov_summary or {}, content), edited.facts()):
+        problems.append(("DIFF", "AE_EDIT_FACTS", problem))
+    if problems:
+        return doctor_view, problems
+    requested_at = str((ae_edit or {}).get("requested_at") or datetime.now(timezone.utc).isoformat())
+    snapshot = dict(content.get("report_snapshot") or {})
+    inputs = dict(snapshot.get("render_inputs") or {})
+    inputs["doctor_view"] = freeze_doctor_view(edited)
+    inputs["doctor_metric_facts"] = doctor_view_facts(edited)
+    ae_inputs = dict(inputs.get("ae_report") or {})
+    ae_inputs["talking_points"] = edited.talking_points
+    inputs["ae_report"] = ae_inputs
+    inputs.pop("ae_overrides_dropped", None)
+    if merged:
+        inputs["ae_overrides"] = build_ae_overrides(
+            fields=merged,
+            base_view_payload=freeze_doctor_view(base),
+            edited_by=str((ae_edit or {}).get("edited_by") or (stored or {}).get("edited_by") or "system"),
+            edited_at=requested_at,
+            previous=stored,
+            changed_paths=_ae_changed_paths(stored_fields, merged),
+            report_version=latest.version + 1,
+        )
+    else:
+        inputs.pop("ae_overrides", None)
+    snapshot["render_inputs"] = inputs
+    content["report_snapshot"] = snapshot
+    content["talking_points"] = edited.talking_points
+    return edited, []
 
 
 def _attach_doctor_artifact_and_commit(
@@ -13319,8 +13546,12 @@ def build_monthly_template_refresh_plan(
     exclude_run_id: uuid.UUID | None = None,
     allow_recovery_pending: bool = False,
     competitor_refresh: bool = False,
+    ae_edit: Mapping[str, Any] | None = None,
 ) -> MonthlyTemplateRefreshPlan:
     """저장된 최신 버전에서 새 원장 뷰를 만들고 숫자가 그대로인지 판정한다. 쓰기·저장소·공급자 호출 없음.
+
+    `ae_edit`(AE 수정 판)는 `{report_id, fields, edited_by, requested_at}`이다 — 저장된 수정 값과 합쳐 pristine
+    뷰에 적용하고 숫자 보존을 다시 판정한다. 없어도 저장된 수정 값은 다음 버전으로 그대로 이어진다.
 
     마감 시각은 지금이 아니라 대체할 버전에 저장된 `contract_timing.observed_at`이다.
     측정 요약·콘텐츠 운영·귀속·인용·전략·Essence는 저장된 값을 그대로 쓰고, 현재 행에서는
@@ -13368,19 +13599,35 @@ def build_monthly_template_refresh_plan(
         from app.services.doctor_report_v4 import compare_facts_v4, stored_facts_v4
 
         rebuilt_view, rebuilt = _rebuild_v4_view_from_stored(db, h, latest, now, content)
+        # 저장된 AE 수정 값을 **새 pristine 뷰** 위에 다시 얹는다 — 라벨·사례 선택과 경쟁과 무관한 문장은 잇고, 경쟁 내용을
+        # 담았거나 원문이 바뀐 문장은 버린다(`ae_overrides_dropped`). 숫자·면 대조는 그 결과(실제로 찍을 뷰)로 한다 — 라벨
+        # 수정이 진료 항목 사실·부록 라벨을 바꾸므로 pristine끼리 비교하면 사람이 고친 라벨이 DIFF로 읽힌다.
+        final_view, dropped_overrides = _apply_competitor_refresh_overrides(
+            db, h, latest, now, content, rebuilt_view, rebuilt
+        )
         frozen_facts = dict(render_inputs.doctor_metric_facts or {})
-        new_facts = rebuilt_view.facts()
+        new_facts = final_view.facts()
         for problem in compare_facts_v4(stored_facts_v4(latest.sov_summary or {}, content), new_facts):
             verdict.add("DIFF", "COMPETITOR_REFRESH_FACTS", problem)
         for problem in compare_facts_excluding_competitors(frozen_facts, new_facts):
             verdict.add("DIFF", "COMPETITOR_REFRESH_FACTS", problem)
-        for problem in _competitor_refresh_view_problems(rebuilt.frozen_view, rebuilt_view):
+        for problem in _competitor_refresh_view_problems(rebuilt.frozen_view, final_view):
             verdict.add("DIFF", "COMPETITOR_REFRESH_VIEW", problem)
         for change in competitor_fact_changes(frozen_facts, new_facts):
             verdict.add("WARN", "COMPETITOR_FACTS_RECOMPUTED", change)
-        doctor_view = rebuilt_view
+        for path in sorted(dropped_overrides or {}):
+            verdict.add("WARN", "AE_OVERRIDES_DROPPED", path)
+        doctor_view = final_view
         _apply_rebuilt_view_to_content(content, doctor_view)
         _refresh_stored_competitor_summaries(content, rebuilt)
+    if verdict.status != "BLOCKED" and competitor_refresh:
+        pass  # 경쟁 병원 반영은 위에서 저장된 수정 값을 새 pristine 뷰에 이미 이었다(`_apply_competitor_refresh_overrides`).
+    elif verdict.status != "BLOCKED" and isinstance(doctor_view, DoctorReportV4):
+        doctor_view, ae_problems = _apply_ae_edit_to_plan(db, h, latest, now, content, doctor_view, ae_edit)
+        for kind, code, detail in ae_problems:
+            verdict.add(kind, code, detail)
+    elif ae_edit is not None:
+        verdict.add("BLOCKER", "AE_EDIT_REQUIRES_V4", "")
     return MonthlyTemplateRefreshPlan(latest, doctor_view, content, verdict)
 
 
@@ -13399,6 +13646,129 @@ def _competitor_refresh_view_problems(frozen: DoctorReportV4 | None, rebuilt: Do
         if getattr(frozen.summary, field_name) != getattr(rebuilt.summary, field_name):
             problems.append(f"summary.{field_name}: 얼린 뷰와 다름")
     return problems
+
+
+AE_EDIT_DROP_REASON_COMPETITION_CHANGED = "COMPETITION_CHANGED"
+
+
+def _competitor_refresh_carry(
+    stored_fields: Mapping[str, Any],
+    old_base: DoctorReportV4 | None,
+    new_base: DoctorReportV4,
+    competitor_names: Sequence[str],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """경쟁 병원 반영이 이전 버전의 AE 수정 값을 잇는 규칙 → (잇는 값, 버리는 값).
+
+    경쟁 재생성은 숫자·키워드 집합을 바꾸지 않으므로(템플릿 갱신과 같다) 기본은 **전부 잇는다**. 다만 문장 수정(핵심 3줄·
+    P5 시사점·P6 실행 내용)은 경쟁 내용을 담을 수 있어 두 경우만 버린다 — (1) 그 자리의 pristine 문장이 옛 뷰와 새 뷰에서
+    다르다(경쟁 변화가 원문을 바꿨다: 'X이 대신 언급됐습니다', 계획 순서 변경 등 — 사람이 고친 문장이 더는 그 원문의
+    수정이 아니다), (2) 수정 문장 자체가 등록·관측된 경쟁 병원 이름이나 '경쟁'을 말한다. 라벨·카드 이름·사례 선택은 잇는다
+    (맞지 않는 경로는 호출자의 검증이 버린다).
+    """
+    from app.services.competitor_scope import competitor_key
+    from app.services.doctor_report_ae_edit import editable_fields
+    from app.services.doctor_report_v4 import (
+        AE_FIELD_CASE_INSIGHT,
+        AE_FIELD_KEY_LINE,
+        AE_FIELD_PLAN_ACTION,
+    )
+
+    sentence_kinds = (AE_FIELD_KEY_LINE, AE_FIELD_CASE_INSIGHT, AE_FIELD_PLAN_ACTION)
+    old_fields = editable_fields(old_base) if old_base is not None else {}
+    new_fields = editable_fields(new_base)
+    keys = {competitor_key(name) for name in competitor_names if competitor_key(name)}
+
+    def mentions_competitor(value: Any) -> bool:
+        text = str(value or "")
+        folded = competitor_key(text)
+        return "경쟁" in text or any(key in folded for key in keys)
+
+    kept: dict[str, Any] = {}
+    dropped: dict[str, Any] = {}
+    for path, value in stored_fields.items():
+        field_ = parse_ae_path(path)
+        if field_ is None:
+            dropped[path] = value
+        elif field_.kind in sentence_kinds and (
+            path not in new_fields or old_fields.get(path) != new_fields.get(path) or mentions_competitor(value)
+        ):
+            dropped[path] = value
+        else:
+            kept[path] = value
+    return kept, dropped
+
+
+def _apply_competitor_refresh_overrides(
+    db,
+    h: Hospital,
+    latest: MonthlyReport,
+    now: arrow.Arrow,
+    content: dict,
+    rebuilt_view: DoctorReportV4,
+    rebuilt: "_RebuiltViewInputs",
+) -> tuple[DoctorReportV4, dict[str, Any] | None]:
+    """경쟁 병원 반영: 이전 버전의 AE 수정 값을 새 pristine 뷰(경쟁 현황이 바뀐 뷰)에 다시 얹는다 → (찍을 뷰, 버린 값).
+
+    `ae_overrides.base_view`는 **새** pristine 뷰로 바뀐다 — 그래야 다음 AE 수정 판·템플릿 갱신이 다시 계산된 경쟁 현황을
+    그대로 들고 간다(AE 수정이 경쟁 결과를 옛 값으로 되돌리지 않는다). 버린 값은 `ae_overrides_dropped`
+    (`reason=COMPETITION_CHANGED`)로 남겨 화면이 다시 입력하게 한다. 수정 값이 없으면 뷰를 그대로 돌려준다.
+    """
+    render_inputs = report_render_inputs(content)
+    assert render_inputs is not None
+    stored = stored_ae_overrides(render_inputs)
+    if stored is None:
+        return rebuilt_view, None
+    old_base = base_view_of(render_inputs)
+    competitor_names = [
+        *rebuilt.registered_competitors,
+        *(row.name for row in rebuilt_view.competition.rows),
+        *((row.name for row in old_base.competition.rows) if old_base is not None else ()),
+    ]
+    kept, dropped = _competitor_refresh_carry(dict(stored["fields"]), old_base, rebuilt_view, competitor_names)
+    for path in list(kept):
+        if validate_ae_fields({path: kept[path]}, rebuilt_view):
+            dropped[path] = kept.pop(path)
+    candidates: list[CaseCandidate] = []
+    if kept and any((f := parse_ae_path(path)) is not None and f.kind == AE_FIELD_CASE_RECORD for path in kept):
+        candidates = case_candidates_for_view(rebuilt_view, list(rebuilt.records))
+        for path in list(kept):
+            if validate_ae_fields({path: kept[path]}, rebuilt_view, case_candidates=candidates):
+                dropped[path] = kept.pop(path)
+    if kept:
+        kept = normalize_ae_fields(kept, rebuilt_view, case_candidates=candidates)
+    applied = rebuilt_view
+    if kept:
+        edited = apply_ae_overrides(rebuilt_view, kept, case_candidates=candidates)
+        if ae_edit_fact_problems(rebuilt_view, edited):
+            dropped.update(kept)
+            kept = {}
+        else:
+            applied = edited
+    snapshot = dict(content.get("report_snapshot") or {})
+    inputs = dict(snapshot.get("render_inputs") or {})
+    inputs.pop("ae_overrides_dropped", None)
+    if kept:
+        inputs["ae_overrides"] = build_ae_overrides(
+            fields=kept,
+            base_view_payload=freeze_doctor_view(rebuilt_view),
+            edited_by=str(stored.get("edited_by") or ""),
+            edited_at=str(stored.get("edited_at") or ""),
+            previous=stored,
+            changed_paths=[],
+            report_version=None,
+        )
+    else:
+        inputs.pop("ae_overrides", None)
+    if dropped:
+        inputs["ae_overrides_dropped"] = {
+            "fields": dropped,
+            "reason": AE_EDIT_DROP_REASON_COMPETITION_CHANGED,
+            "from_report_id": str(latest.id),
+            "dropped_at": datetime.now(timezone.utc).isoformat(),
+        }
+    snapshot["render_inputs"] = inputs
+    content["report_snapshot"] = snapshot
+    return applied, (dropped or None)
 
 
 def _apply_rebuilt_view_to_content(content: dict, doctor_view: DoctorReportV4) -> None:
@@ -13478,36 +13848,7 @@ def _rebuild_v4_view_from_stored(
         .scalars()
         .all()
     )
-    manifest = (
-        db.execute(
-            select(MonthlyMeasurementManifest).where(MonthlyMeasurementManifest.id == old.manifest_id)
-        ).scalar_one_or_none()
-        if old.manifest_id is not None
-        else None
-    )
-    loaded = (
-        load_monthly_sov_manifest(
-            db,
-            manifest,
-            legacy_final=_legacy_manifest_is_final(
-                manifest, deadline_reached=_monthly_sov_deadline_reached(observed_at, now.year, now.month)
-            ),
-        )
-        if manifest is not None
-        else None
-    )
-    # 답변 사례·경쟁 집계는 원래 보고서가 점수에 쓴 관측(스냅샷의 attempt record_id)만 본다(검토 3-17).
-    frozen_record_ids = {
-        str(attempt.get("record_id"))
-        for cell in (render_inputs.measurement.cells or [])
-        for attempt in (cell.get("attempts") or [])
-        if isinstance(attempt, dict) and attempt.get("record_id")
-    }
-    records = [
-        record
-        for record in (loaded.scored_records if loaded is not None else ())
-        if str(getattr(record, "id", "")) in frozen_record_ids
-    ]
+    records = _frozen_scored_records(db, h, old, render_inputs, now)
     # 병원 이름·slug는 그 달에 얼린 값, 분류용 필드(지역·주력 진료·경쟁사)만 현재 행이다(검토 3-22).
     frozen_identity = SimpleNamespace(
         id=h.id,
@@ -13633,8 +13974,12 @@ def _build_monthly_template_refresh(
     operation_run_id: uuid.UUID | None = None,
     allow_recovery_pending: bool = False,
     competitor_refresh: bool = False,
+    ae_edit: Mapping[str, Any] | None = None,
 ) -> str:
     """대체할 버전의 숫자를 그대로 옮기고 원장·AE PDF만 새 템플릿으로 다시 그린다.
+
+    `ae_edit`가 있으면 AE 수정 판(`ReportBuildReason.AE_EDIT`)이다 — 같은 숫자 보존 판정 위에 사람이 고친
+    서술 문구·진료 항목 라벨만 얹는다.
 
     노출 행동 연결·Essence 재집계·매니페스트 마감 같은 부수효과가 없다. 숫자 판정이
     하나라도 어긋나면 아무것도 쓰지 않고 `TemplateRefreshRefused`를 올린다.
@@ -13647,13 +13992,17 @@ def _build_monthly_template_refresh(
         hospital_id=h.id,
         period=period,
         reason_code=(
-            ReportBuildReason.COMPETITOR_REFRESH if competitor_refresh else ReportBuildReason.TEMPLATE_REFRESH
+            ReportBuildReason.COMPETITOR_REFRESH
+            if competitor_refresh
+            else ReportBuildReason.AE_EDIT
+            if ae_edit is not None
+            else ReportBuildReason.TEMPLATE_REFRESH
         ),
         correlation_key=correlation_key,
     )
     plan = build_monthly_template_refresh_plan(
         db, h, now, observed_now=datetime.now(timezone.utc), exclude_run_id=operation_run_id,
-        allow_recovery_pending=allow_recovery_pending, competitor_refresh=competitor_refresh,
+        allow_recovery_pending=allow_recovery_pending, competitor_refresh=competitor_refresh, ae_edit=ae_edit,
     )
     if not plan.verdict.passed:
         raise TemplateRefreshRefused(plan.verdict)
@@ -14014,6 +14363,7 @@ def generate_monthly_report_for_hospital(
                     operation_run_id=run_id,
                     allow_recovery_pending=recovery_pending_allowed,
                     competitor_refresh=competitor_refresh,
+                    ae_edit=_ae_edit_request_of(db, run_id),
                 )
             except TemplateRefreshRefused as refused:
                 # 숫자를 지킬 수 없다는 판정은 재시도해도 같다 — 재시도 없이 실패로 닫는다.
