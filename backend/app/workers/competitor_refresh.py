@@ -24,7 +24,7 @@ from __future__ import annotations
 import logging
 import uuid
 from collections.abc import Mapping
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import arrow
@@ -48,6 +48,7 @@ from app.utils.db_locks import (
 )
 from app.workers.dispatch_auth import require_dispatch
 from app.workers.dispatch_envelope import build_dispatch_headers
+from app.workers.generation_run_control import defer_operation_run
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +60,8 @@ STAGE_COST_BLOCKED = "COST_BLOCKED"
 REPORT_REFRESH_TASK_FLAGS: tuple[Any, ...] = (True, False, True, False, True)
 # 재판정 직렬화 락의 이름공간 — 프로필 저장·V0가 쓰는 병원 공용 키와 분리한다(짧은 PATCH가 유일한 배달을 물러나게 하지 않게).
 LOCK_NAMESPACE = "competitor-rejudge"
+# 락이 바쁠 때(같은 병원 다른 달) 실행을 미루는 시간 — 자율 복구가 이 시각 뒤 다시 보낸다.
+LOCK_DEFER_SECONDS = 120
 _TERMINAL_STATES = (
     OperationRunState.SUCCEEDED,
     OperationRunState.PARTIAL,
@@ -307,7 +310,17 @@ def rejudge_month_competitors(self, hospital_id: str, year: int, month: int) -> 
         # 같은 이름의 판정을 두 번 사지 않도록 세션 advisory lock(전용 이름공간)으로 직렬화한다. 기다리지 않는다:
         # 못 잡은 사본은 조용히 물러난다(Ignore — 실패도 재시도 소모도 아니다). 주인 사본이 끝내고 자식을 큐에 넣는다.
         if not try_acquire_hospital_advisory_session_lock_sync(db, hospital_uuid, namespace=LOCK_NAMESPACE):
-            logger.info("competitor rejudge already running for hospital=%s; this delivery steps aside", hospital_uuid)
+            # 같은 병원의 **다른 달** 재판정이 락을 쥐고 있을 수 있다 — 이 실행에는 다른 사본이 없으니 버리지 않고
+            # 미룬다(QUEUED + not_before, claim 울타리 안에서). 자율 복구가 그 시각 뒤 새 봉투로 다시 보낸다(재배달
+            # 예산을 쓰지 않는다). 울타리에 맞지 않는 사본(주인이 따로 있는 재배달)은 아무것도 바꾸지 않고 물러난다.
+            deferred = defer_operation_run(
+                db, self, datetime.now(UTC) + timedelta(seconds=LOCK_DEFER_SECONDS),
+                result_summary={"stage": "DEFERRED_LOCK_BUSY", **period},
+            )
+            logger.info(
+                "competitor rejudge lock busy for hospital=%s; delivery %s",
+                hospital_uuid, "deferred" if deferred else "steps aside",
+            )
             raise Ignore()
         report_run_id: str | None = None
         try:

@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import arrow
@@ -582,3 +582,40 @@ def test_publish_failure_after_commit_leaves_a_recoverable_child_and_returns_its
     assert child.state == OperationRunState.REQUESTED and child.parent_run_id == parent.id  # 자율 복구가 재배달한다
     pg_session.refresh(parent)
     assert parent.state == OperationRunState.SUCCEEDED
+
+
+def test_redelivered_copy_does_not_reclaim_a_live_rejudge_lease(pg_session, quiet_renders, budget, monkeypatch):  # noqa: F811 - pytest fixture
+    """같은 task id의 재배달 사본은 살아 있는 재판정 lease를 다시 claim하지 않는다 — 주인 사본의 재시도 판 울타리를 지킨다."""
+    from app.workers import operation_run_signals
+
+    hospital, _records, _first = _first_version(pg_session)
+    now = datetime.now(timezone.utc)
+
+    class _Session:
+        def __enter__(self):
+            return pg_session
+
+        def __exit__(self, *_exc):
+            return False
+
+    monkeypatch.setattr(operation_run_signals, "SyncSessionLocal", _Session)
+    runs = {}
+    for operation_type in (cr.REJUDGE_OPERATION_TYPE, "GENERATE_MONTHLY_REPORT"):
+        run = OperationRun(
+            id=uuid.uuid4(), hospital_id=hospital.id, operation_type=operation_type, state=OperationRunState.RUNNING,
+            idempotency_key=f"test:{uuid.uuid4()}", task_id=f"task-{operation_type}", lease_owner=f"task-{operation_type}",
+            lease_expires_at=now + timedelta(hours=1), request_payload={}, version=2,
+        )
+        pg_session.add(run)
+        runs[operation_type] = run
+    pg_session.commit()
+    rejudge = runs[cr.REJUDGE_OPERATION_TYPE]
+    assert operation_run_signals._claim(rejudge.id, rejudge.task_id, now, redelivered=True) is None
+    pg_session.refresh(rejudge)
+    assert rejudge.version == 2 and rejudge.state == OperationRunState.RUNNING
+    other = runs["GENERATE_MONTHLY_REPORT"]
+    assert operation_run_signals._claim(other.id, other.task_id, now, redelivered=True) == 3
+    # 만료된 lease는 종전처럼 인수한다.
+    rejudge.lease_expires_at = now - timedelta(minutes=1)
+    pg_session.commit()
+    assert operation_run_signals._claim(rejudge.id, rejudge.task_id, now, redelivered=False) == 3
