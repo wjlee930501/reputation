@@ -30,6 +30,7 @@ test('LLM-backed autofill and source processing receive the slow timeout', () =>
   for (const path of [
     'hospitals/demo/profile/autofill',
     'hospitals/demo/essence/sources/source-id/process',
+    'hospitals/demo/reports/report-id/ae-edit/preview-pdf',
   ]) {
     assert.equal(adminProxyTimeoutMsForPath(path), ADMIN_PROXY_SLOW_TIMEOUT_MS, path)
   }
@@ -42,6 +43,8 @@ test('nearby reads and ordinary writes keep the short timeout', () => {
     'hospitals/demo/essence/philosophies',
     'hospitals/demo/essence/philosophy/philosophy-id/re-review',
     'hospitals/demo/essence/philosophy/philosophy-id/archive',
+    'hospitals/demo/reports/report-id/ae-edit/preview',
+    'hospitals/demo/reports/report-id/ae-edit',
   ]) {
     assert.equal(adminProxyTimeoutMsForPath(path), ADMIN_PROXY_TIMEOUT_MS, path)
   }
