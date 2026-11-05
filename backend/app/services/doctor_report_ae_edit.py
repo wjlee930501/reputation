@@ -263,12 +263,22 @@ def normalize_ae_fields(
 # ── 숫자 보존 판정 ──────────────────────────────────────────────────────────────
 
 
+# 진료 항목 **묶음** 사실 — 라벨을 고치면 묶음이 갈라지거나 합쳐져 값이 바뀌는 키. 막대(`treatment.*`)와 카드 4의 n
+# (`card.treatments`, '{n}개 항목')이 같은 노출 행에서 나오므로 함께 예외다. 그 밖의 숫자는 라벨로 바뀌지 않는다.
+TREATMENT_GROUPING_FACT_KEYS = frozenset({"card.treatments"})
+TREATMENT_GROUPING_FACT_PREFIX = "treatment."
+
+
+def is_treatment_grouping_fact(key: str) -> bool:
+    return key in TREATMENT_GROUPING_FACT_KEYS or key.startswith(TREATMENT_GROUPING_FACT_PREFIX)
+
+
 def _facts_without_treatments(facts: Mapping[str, str]) -> dict[str, str]:
-    return {key: value for key, value in facts.items() if not key.startswith("treatment.")}
+    return {key: value for key, value in facts.items() if not is_treatment_grouping_fact(key)}
 
 
 def ae_edit_fact_problems(base: DoctorReportV4, edited: DoctorReportV4) -> list[str]:
-    """수정을 적용한 뷰의 숫자 사실이 pristine 뷰와 같은가. 진료 항목 묶음(`treatment.*`)만 라벨에 따라 달라질 수 있다."""
+    """수정을 적용한 뷰의 숫자 사실이 pristine 뷰와 같은가. 진료 항목 묶음(`treatment.*`·카드 4의 n)만 라벨에 따라 달라질 수 있다."""
     before = _facts_without_treatments(base.facts())
     after = _facts_without_treatments(edited.facts())
     problems = [
@@ -281,7 +291,7 @@ def ae_edit_fact_problems(base: DoctorReportV4, edited: DoctorReportV4) -> list[
 
 
 def numbers_changed_between(previous_base_facts: Mapping[str, str], new_facts: Mapping[str, str]) -> bool:
-    """일반 재생성이 숫자·키워드 집합을 바꿨는가 — 바뀌었으면 사람이 쓴 문장을 잇지 않는다."""
+    """일반 재생성이 숫자·키워드 집합을 바꿨는가 — 바뀌었으면 사람이 쓴 문장을 잇지 않는다(진료 항목 묶음 사실은 보지 않는다)."""
     return _facts_without_treatments(previous_base_facts) != _facts_without_treatments(new_facts)
 
 

@@ -840,16 +840,7 @@ def _summary_page(
             "노출 키워드", f"{len(measured)}개 중 {len(exposed)}개",
             f"측정 키워드 {len(measured)}개 중 {len(exposed)}개에서 병원명 노출",
         )
-        names = _dedupe(k.info.treatment for k in exposed if k.info.treatment != UNKNOWN_TREATMENT)
-        shown = tuple(names[:TREATMENT_NAMES_ON_CARD])
-        if len(names) > TREATMENT_NAMES_ON_CARD:
-            shown = (*shown, f"외 {len(names) - TREATMENT_NAMES_ON_CARD}개")
-        treatment_card = Card(
-            "노출 진료 항목",
-            f"{len(names)}개 항목" if names else (UNKNOWN_TREATMENT if exposed else "0개 항목"),
-            "병원명이 노출된 진료·검사 항목",
-            names=shown,
-        )
+        treatment_card = _treatment_card((k.info.treatment for k in exposed), exposed_any=bool(exposed))
     key_lines = _key_lines(
         hospital_name=hospital_name, setup=setup, current=current, previous=previous,
         significance=significance, measured=measured, exposed=exposed, unexposed=unexposed,
@@ -867,6 +858,35 @@ def _summary_page(
         key_lines=key_lines,
         notice=notice,
     )
+
+
+TREATMENT_CARD_LABEL = "노출 진료 항목"
+TREATMENT_CARD_DEFINITION = "병원명이 노출된 진료·검사 항목"
+_TREATMENT_CARD_COUNT = re.compile(r"^(\d+)개 항목$")
+
+
+def _treatment_card(treatments: Iterable[str], *, exposed_any: bool) -> Card:
+    """카드 4 '노출 진료 항목' — 노출된 키워드의 진료 항목 이름(중복 제거)에서 n·이름 목록·'외 N개' 꼬리를 센다.
+
+    빌더와 AE 수정 판의 라벨 재적용(`treatment_card_from_appendix`)이 같은 규칙을 쓴다 — 라벨을 고쳐 묶음이
+    갈라지거나 합쳐지면 n도 함께 바뀐다(2026-11-05 운영 미리보기: '골절·상처 봉합' 분리 뒤 n이 4로 남아 '상처봉합'이 빠짐).
+    """
+    names = _dedupe(name for name in treatments if name != UNKNOWN_TREATMENT)
+    shown = tuple(names[:TREATMENT_NAMES_ON_CARD])
+    if len(names) > TREATMENT_NAMES_ON_CARD:
+        shown = (*shown, f"외 {len(names) - TREATMENT_NAMES_ON_CARD}개")
+    return Card(
+        TREATMENT_CARD_LABEL,
+        f"{len(names)}개 항목" if names else (UNKNOWN_TREATMENT if exposed_any else "0개 항목"),
+        TREATMENT_CARD_DEFINITION,
+        names=shown,
+    )
+
+
+def treatment_card_count(card: Card) -> int | None:
+    """카드 4 값('{n}개 항목')의 n. 셀 수 없는 값(측정 전·측정 미완료·분류 전)은 None."""
+    match = _TREATMENT_CARD_COUNT.match(card.value)
+    return int(match.group(1)) if match else None
 
 
 def _key_lines(
@@ -1719,7 +1739,7 @@ def v3_frozen_facts_problems(
 # 뷰 조립 뒤 이 함수 하나가 pristine 뷰(시스템이 만든 판)에 적용한다. 템플릿은 바뀌지 않는다.
 # 경로 문법(화이트리스트 — 여기 없는 경로는 거절한다):
 #   summary.key_lines[0|1|2]        P1 핵심 3줄
-#   summary.cards[3].names          카드 4 '{n}개 항목'의 이름 목록(숫자 n은 그대로, '외 N개' 꼬리는 시스템이 붙인다)
+#   summary.cards[3].names          카드 4 '{n}개 항목'의 이름 목록(숫자 n은 노출 행에서 세고, '외 N개' 꼬리는 n에서 시스템이 붙인다)
 #   cases.found.insight / cases.missing.insight    P5 시사점 문장
 #   cases.found.record_id / cases.missing.record_id 대표 사례 교체(그 달 매니페스트의 관측 기록 중에서만)
 #   plan.action[<측정 키워드>]        P6 '실행 내용' 문구(본문 행·부록 이어짐 행)
@@ -1816,6 +1836,56 @@ def relabel_quoted(text: str, old: str, new: str) -> str:
     return _QUOTED.sub(swap, text)
 
 
+def _exposed_appendix_rows(rows: Iterable[AppendixKeywordRow]) -> list[AppendixKeywordRow]:
+    """부록 A에서 병원명이 노출된 행(m > 0) — 빌더의 `exposed`(키워드 `mentioned > 0`)와 같은 판정."""
+    return [row for row in rows if row.total != "—" and int(row.total.split("/", 1)[0]) > 0]
+
+
+def treatment_card_from_appendix(
+    rows: Iterable[AppendixKeywordRow],
+    *,
+    pristine_rows: Iterable[AppendixKeywordRow] | None = None,
+    pristine_card: Card | None = None,
+) -> Card:
+    """부록 A 행(라벨 적용 뒤)에서 카드 4를 다시 만든다 — 빌더와 같은 규칙이라 라벨을 바꾸지 않으면 빌더의 카드와 같다.
+
+    n·이름 목록·'외 N개'를 모두 노출 행에서 다시 센다. 라벨 묶음이 갈라지면 n이 늘고 합쳐지면 줄어든다 — 이 값은
+    진료 항목 묶음 사실(`treatment.*`)과 같은 성격이라 숫자 보존 판정(`card.treatments`)이 예외로 둔다.
+
+    이름 순서: 빌더는 측정 질문 순서로 이름을 세고 부록은 (묶음·노출 수·문장)으로 정렬돼 뷰만으로는 그 순서를 되살릴 수
+    없다. 그래서 `pristine_rows`(같은 순서의 라벨 적용 전 행)·`pristine_card`(시스템이 만든 카드)를 주면 **옛 라벨이 카드에
+    섰던 자리**를 지킨다 — 이름만 바꾸면 자리가 그대로이고, 합치면 앞선 자리로, 갈라지면 옛 자리에 부록 순서로 나란히 선다.
+    카드에 보이지 않던 이름(5번째부터)과 힌트 없는 호출은 부록 순서다.
+    """
+    rows = tuple(rows)
+    old_rows = tuple(pristine_rows) if pristine_rows is not None else rows
+    if [row.keyword for row in old_rows] != [row.keyword for row in rows]:
+        old_rows = rows
+    shown_names, _tail = split_card_names(pristine_card.names) if pristine_card is not None else ([], None)
+    rank = {name: index for index, name in enumerate(shown_names)}
+    exposed = [
+        (rank.get(old.treatment, len(rank)), index, row)
+        for index, (row, old) in enumerate(zip(rows, old_rows, strict=True))
+        if row.total != "—" and int(row.total.split("/", 1)[0]) > 0
+    ]
+    exposed.sort(key=lambda item: item[:2])
+    return _treatment_card((row.treatment for _rank, _index, row in exposed), exposed_any=bool(exposed))
+
+
+def card_names_with_tail(card: Card, names: Sequence[str]) -> tuple[str, ...]:
+    """사람이 고른 카드 4 이름 목록에 n(카드 값)에서 센 '외 N개' 꼬리를 붙인다 — n은 그대로이고 꼬리만 목록 길이에 맞춘다.
+
+    n을 셀 수 없는 카드(측정 전 등)는 종전 꼬리를 그대로 둔다.
+    """
+    renamed = _dedupe(str(name).strip() for name in names if str(name).strip())
+    count = treatment_card_count(card)
+    if count is None:
+        _, tail = split_card_names(card.names)
+        return (*renamed, *([tail] if tail else ()))
+    rest = count - len(renamed)
+    return (*renamed, *([f"외 {rest}개"] if rest > 0 else ()))
+
+
 def treatment_bars_from_appendix(rows: Iterable[AppendixKeywordRow]) -> tuple[BarItem, ...]:
     """부록 A 행(키워드별 `m/a`)에서 진료 항목별 노출률 막대를 다시 만든다 — 빌더(`_exposure_page`)와 같은 합산·정렬.
 
@@ -1905,20 +1975,16 @@ def apply_ae_overrides(
         content = replace(content, rows=content_rows, bars=_treatment_publish_bars(content_rows))
         exposure = replace(exposure, treatment_bars=treatment_bars_from_appendix(appendix.keyword_rows))
         cards = list(summary.cards)
-        # 카드 4 이름은 **노출된** 키워드의 진료 항목이다 — 미노출 키워드의 라벨을 고쳐도 카드는 바뀌지 않고(검토 1-P2-2),
-        # 노출 키워드의 라벨을 고치면 노출 행(부록 A의 m>0)에서 이름을 다시 모은다. 숫자 n과 '외 N개' 꼬리는 그대로다.
-        exposed_relabelled = any(
-            row.keyword in labels and row.total != "—" and int(row.total.split("/", 1)[0]) > 0
-            for row in view.appendix.keyword_rows
-        )
-        if len(cards) >= 4 and cards[3].names and exposed_relabelled:
-            _names, tail = split_card_names(cards[3].names)
-            renamed = _dedupe(
-                row.treatment
-                for row in appendix.keyword_rows
-                if row.total != "—" and int(row.total.split("/", 1)[0]) > 0 and row.treatment != UNKNOWN_TREATMENT
-            )[:TREATMENT_NAMES_ON_CARD]
-            cards[3] = replace(cards[3], names=(*renamed, *([tail] if tail else ())))
+        # 카드 4는 **노출된** 키워드의 진료 항목이다 — 미노출 키워드의 라벨을 고쳐도 카드는 바뀌지 않고(검토 1-P2-2),
+        # 노출 키워드의 라벨을 고치면 노출 행(부록 A의 m>0)에서 n·이름 목록·'외 N개'를 빌더와 같은 규칙으로 다시 센다
+        # — 묶음이 갈라지면 n이 늘고(4→5) 합쳐지면 줄어든다(4→3). 셀 수 없는 카드(측정 전·미완료)는 건드리지 않는다.
+        exposed_relabelled = any(row.keyword in labels for row in _exposed_appendix_rows(view.appendix.keyword_rows))
+        if len(cards) >= 4 and exposed_relabelled and (
+            treatment_card_count(cards[3]) is not None or cards[3].value == UNKNOWN_TREATMENT
+        ):
+            cards[3] = treatment_card_from_appendix(
+                appendix.keyword_rows, pristine_rows=view.appendix.keyword_rows, pristine_card=cards[3],
+            )
         key_lines = list(summary.key_lines)
         top = _top_plan_row(view.plan)
         if top is not None and top.keyword in labels and len(key_lines) == 3:
@@ -1947,9 +2013,8 @@ def apply_ae_overrides(
         if field_.kind == AE_FIELD_KEY_LINE and 0 <= field_.arg < len(key_lines):
             key_lines[field_.arg] = str(value).strip()
         elif field_.kind == AE_FIELD_CARD_NAMES and len(cards) >= 4 and isinstance(value, (list, tuple)):
-            _, tail = split_card_names(cards[3].names)
-            renamed = _dedupe(str(name).strip() for name in value)
-            cards[3] = replace(cards[3], names=(*renamed, *([tail] if tail else ())))
+            # 사람이 고른 이름 목록 — n은 그대로이고 '외 N개'는 n과 목록 길이에서 다시 붙인다.
+            cards[3] = replace(cards[3], names=card_names_with_tail(cards[3], value))
         elif field_.kind == AE_FIELD_CASE_INSIGHT:
             current = getattr(cases, field_.arg)
             if current is not None:
@@ -2016,5 +2081,5 @@ __all__ = [
     "AE_OVERRIDES_SCHEMA_VERSION", "AE_PATH_CARD_NAMES", "AeField", "CaseCandidate", "ae_path",
     "apply_ae_overrides", "case_candidates_for_view", "case_from_record", "parse_ae_path",
     "relabel_quoted", "split_card_names", "treatment_bars_from_appendix", "urls_to_titles",
-    "usable_case_records",
+    "usable_case_records", "card_names_with_tail", "treatment_card_count", "treatment_card_from_appendix",
 ]

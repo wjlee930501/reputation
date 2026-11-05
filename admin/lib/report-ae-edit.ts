@@ -192,6 +192,20 @@ export function draftFromSummary(summary: AeEditSummary): AeEditDraft {
 
 export const AE_CARD_NAMES_PATH = 'summary.cards[3].names'
 
+/**
+ * 라벨 수정으로 노출 진료 항목 묶음이 갈라지거나 합쳐지면 서버가 카드 4의 n·이름·'외 N개'를 노출 행에서 다시 센다.
+ * 검증 미리보기(`preview`)의 카드가 지금 찍히는 카드(`current`)와 다를 때만 그 카드를 돌려준다 — 화면은 입력란 옆에
+ * "다시 센 카드"로 보여 준다(2026-11-05 운영 미리보기: '4개 항목'이 그대로 남아 노출된 항목이 빠졌다).
+ */
+export function recountedCard(
+  current: AeEditSummary,
+  preview: AeEditSummary | null,
+): { readonly value: string; readonly names: readonly string[]; readonly tail: string | null } | null {
+  if (!preview) return null
+  const same = preview.cardValue === current.cardValue && preview.cardNamesTail === current.cardNamesTail && sameList(preview.cardNames, current.cardNames)
+  return same ? null : { value: preview.cardValue, names: preview.cardNames, tail: preview.cardNamesTail }
+}
+
 export function keyLinePath(index: number): string {
   return `summary.key_lines[${index}]`
 }

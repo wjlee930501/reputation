@@ -19,14 +19,16 @@ import {
   planActionPath,
   problemsByPath,
   problemsFromRejection,
+  recountedCard,
   treatmentLabelPath,
   type AeEditDraft,
   type AeEditPreview,
   type AeEditProblem,
+  type AeEditSummary,
 } from '@/lib/report-ae-edit'
 import { parseReportRuns } from '@/lib/report-run'
 
-type Validation = { readonly fingerprint: string; readonly problems: readonly AeEditProblem[] }
+type Validation = { readonly fingerprint: string; readonly problems: readonly AeEditProblem[]; readonly summary: AeEditSummary | null }
 
 const INPUT = 'mt-1 w-full rounded-lg border border-[var(--color-revisit-coolgrey-20)] bg-white p-2 text-sm font-normal'
 const BUTTON = 'min-h-11 rounded-lg px-4 text-sm font-bold disabled:opacity-40'
@@ -109,6 +111,7 @@ export function ReportAeEditPanel({
   const validated = validation?.fingerprint === fingerprint ? validation : null
   const problems = validated ? problemsByPath(validated.problems) : {}
   const changed = hasAeEditChanges(fields)
+  const recounted = preview && validated ? recountedCard(preview.current, validated.summary) : null
   const canSubmit = changed && validated !== null && validated.problems.length === 0 && !busy && reason.trim().length >= 3
 
   function update(patch: Partial<AeEditDraft>) {
@@ -123,7 +126,7 @@ export function ReportAeEditPanel({
     try {
       const parsed = parseAeEditPreview(await fetchAPI<unknown>(`${base}/preview?overrides=${encodeURIComponent(JSON.stringify(fields))}`))
       if (!parsed) throw new Error('preview shape')
-      setValidation({ fingerprint, problems: parsed.problems })
+      setValidation({ fingerprint, problems: parsed.problems, summary: parsed.preview })
       setMessage(parsed.problems.length === 0 ? ADMIN_COPY.aeEditPreviewOk : ADMIN_COPY.aeEditPreviewFailed)
     } catch (caught) {
       setError(caught instanceof ApiError && caught.status === 409 ? ADMIN_COPY.aeEditLoadFailed : ADMIN_COPY.aeEditRequestFailed)
@@ -151,7 +154,7 @@ export function ReportAeEditPanel({
     } catch (caught) {
       if (caught instanceof ApiError && caught.status === 422) {
         const rejected = problemsFromRejection(caught.detail)
-        setValidation({ fingerprint, problems: rejected.length > 0 ? rejected : [{ path: '', code: 'REJECTED', message: caught.message }] })
+        setValidation({ fingerprint, problems: rejected.length > 0 ? rejected : [{ path: '', code: 'REJECTED', message: caught.message }], summary: null })
         setMessage(rejected.length > 0 ? ADMIN_COPY.aeEditPreviewFailed : caught.message)
       } else setError(ADMIN_COPY.aeEditRequestFailed)
     } finally {
@@ -189,6 +192,11 @@ export function ReportAeEditPanel({
           <fieldset className="space-y-2">
             <legend className="text-sm font-bold text-[var(--color-revisit-text-title)]">{ADMIN_COPY.aeEditCardNames} <span className="font-normal text-[var(--color-revisit-text-caption)]">· {preview.original.cardValue}{preview.original.cardNamesTail ? ` · ${preview.original.cardNamesTail}` : ''}</span></legend>
             <Field id="ae-card-names" label="이름 목록(쉼표로 구분)" value={draft.cardNames.join(', ')} original={preview.original.cardNames.join(', ')} problems={problems[AE_CARD_NAMES_PATH]} onChange={(value) => update({ cardNames: value.split(',').map((item) => item.trim()) })} />
+            {recounted && (
+              <p className="text-xs leading-5 text-[var(--color-revisit-text-caption)] [word-break:keep-all]" role="status" data-testid="ae-card-recounted">
+                {ADMIN_COPY.aeEditCardRecounted} · {recounted.value} · {recounted.names.join(', ')}{recounted.tail ? ` · ${recounted.tail}` : ''}
+              </p>
+            )}
           </fieldset>
 
           <fieldset className="space-y-3">

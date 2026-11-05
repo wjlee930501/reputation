@@ -14,6 +14,7 @@ import {
   parseAeEditPreview,
   problemsByPath,
   problemsFromRejection,
+  recountedCard,
   treatmentLabelPath,
 } from './report-ae-edit.ts'
 
@@ -103,6 +104,22 @@ test('draft starts from the current printed values and sends only what the user 
   assert.ok(hasAeEditChanges(edited))
   assert.ok(!hasAeEditChanges({}))
   assert.equal(AE_CARD_NAMES_PATH, 'summary.cards[3].names')
+})
+
+test('a label change that regroups the exposed treatments shows the recounted card next to the names input', () => {
+  const preview = parseAeEditPreview(payload)!
+  // 아직 검증 전·카드가 그대로면 캡션이 없다.
+  assert.equal(recountedCard(preview.current, null), null)
+  assert.equal(recountedCard(preview.current, preview.current), null)
+  // 라벨을 합쳐 1개 항목이 되면 서버가 다시 센 값·이름을 그대로 보여 준다.
+  const merged = { ...preview.current, cardValue: '1개 항목', cardNames: ['심장초음파'] }
+  assert.deepEqual(recountedCard(preview.current, merged), { value: '1개 항목', names: ['심장초음파'], tail: null })
+  // 갈라져 5개가 되면 '외 N개' 꼬리까지.
+  const split = { ...preview.current, cardValue: '5개 항목', cardNames: ['a', 'b', 'c', 'd'], cardNamesTail: '외 1개' }
+  assert.deepEqual(recountedCard(preview.current, split), { value: '5개 항목', names: ['a', 'b', 'c', 'd'], tail: '외 1개' })
+  const panel = readFileSync(new URL('../app/hospitals/[id]/reports/ReportAeEditPanel.tsx', import.meta.url), 'utf8')
+  assert.match(panel, /recountedCard\(preview\.current, validated\.summary\)/)
+  assert.match(panel, /ADMIN_COPY\.aeEditCardRecounted/)
 })
 
 test('a finished run counts as done only when the report version rose past the edited one', () => {
