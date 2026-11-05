@@ -141,7 +141,7 @@ def _text_problems(path: str, value: Any, original: str | None, *, limit: int) -
     problems: list[AeEditProblem] = []
     if len(text) > limit:
         problems.append(AeEditProblem(path, "TOO_LONG", f"{limit}자를 넘을 수 없습니다."))
-    if _CONTROL.search(text) or "\n" in text or "\t" in text:
+    if _CONTROL.search(text) or any(ch in text for ch in "\n\r\t"):
         problems.append(AeEditProblem(path, "CONTROL_CHARS", "줄바꿈이나 제어 문자는 넣을 수 없습니다."))
     labels = check_forbidden(text)
     if labels:

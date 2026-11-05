@@ -7,6 +7,7 @@ import {
   AE_CARD_NAMES_PATH,
   aeEditFingerprint,
   aeEditIdempotencyKey,
+  aeEditRunOutcome,
   buildAeEditFields,
   draftFromSummary,
   hasAeEditChanges,
@@ -65,23 +66,27 @@ test('preview parser keeps original, current, candidates and dropped paths apart
   assert.equal(parseAeEditPreview('nope'), null)
 })
 
-test('draft starts from the current printed values and sends only real differences', () => {
+test('draft starts from the current printed values and sends only what the user actually changed', () => {
   const preview = parseAeEditPreview(payload)!
   const draft = draftFromSummary(preview.current)
   assert.equal(draft.keyLines[0], '사람이 고친 첫 줄')
-  // 아무것도 안 바꿨다: 이전 수정이 있던 첫 줄은 '지금 값'이 원문과 달라 다시 보낸다(서버가 같은 값이면 거른다).
-  const unchanged = buildAeEditFields(preview.original, draft, preview.overrides)
-  assert.deepEqual(unchanged, { 'summary.key_lines[0]': '사람이 고친 첫 줄' })
-  // 원문으로 되돌리면 수정 취소(null)를 보낸다.
-  const reverted = buildAeEditFields(preview.original, { ...draft, keyLines: ['첫 줄', '둘째 줄', draft.keyLines[2]] }, preview.overrides)
+  assert.deepEqual(draft.caseRecords, { found: 'keep', missing: 'keep' })
+  // 아무것도 안 바꿨다: 저장된 수정은 서버가 그대로 잇는다 — 다시 보내지 않는다(검토 1-P2-1).
+  assert.deepEqual(buildAeEditFields(preview.original, preview.current, draft, preview.overrides), {})
+  // 저장된 수정이 있는 칸을 원문으로 되돌리면 수정 취소(null)를 보낸다.
+  const reverted = buildAeEditFields(preview.original, preview.current, { ...draft, keyLines: ['첫 줄', '둘째 줄', draft.keyLines[2]] }, preview.overrides)
   assert.deepEqual(reverted, { 'summary.key_lines[0]': null })
+  // 저장된 수정이 없는 칸을 원문과 같은 값으로 바꾸면(자동 전파된 문장을 되돌릴 때) 명시 값으로 보낸다.
+  const propagated = { ...preview.current, planRows: [{ ...preview.current.planRows[0], action: "'가상동 도수치료' 키워드 대응 콘텐츠 1편 발행 예정" }] }
+  const back = buildAeEditFields(preview.original, propagated, { ...draftFromSummary(propagated), planActions: { '가상동 위내시경 가능한 병원': "'가상동 위내시경' 키워드 대응 콘텐츠 1편 발행 예정" } }, preview.overrides)
+  assert.deepEqual(back, { 'plan.action[가상동 위내시경 가능한 병원]': "'가상동 위내시경' 키워드 대응 콘텐츠 1편 발행 예정" })
   // 라벨 정정·실행 내용·사례 교체·카드 이름.
-  const edited = buildAeEditFields(preview.original, {
+  const edited = buildAeEditFields(preview.original, preview.current, {
     ...draft,
     keyLines: ['첫 줄', '둘째 줄', draft.keyLines[2]],
     treatmentLabels: { ...draft.treatmentLabels, '가상동 치료하는 병원': ' 도수치료 ' },
     planActions: { '가상동 위내시경 가능한 병원': "'가상동 위내시경' 키워드 대응 콘텐츠 1편 발행 예정(안내문 보강)" },
-    caseRecords: { found: 'rec-1', missing: null },
+    caseRecords: { found: 'rec-1', missing: 'keep' },
     cardNames: ['심장초음파', '위내시경', ''],
   }, preview.overrides)
   assert.deepEqual(edited, {
@@ -90,9 +95,22 @@ test('draft starts from the current printed values and sends only real differenc
     'plan.action[가상동 위내시경 가능한 병원]': "'가상동 위내시경' 키워드 대응 콘텐츠 1편 발행 예정(안내문 보강)",
     'cases.found.record_id': 'rec-1',
   })
+  // 교체 사례 되돌리기는 저장된 교체가 있을 때만 null을 보낸다(검토 1-P1-2).
+  const swapped = parseAeEditPreview({ ...payload, overrides: { 'cases.found.record_id': 'rec-9' } })!
+  assert.deepEqual(buildAeEditFields(swapped.original, swapped.current, { ...draftFromSummary(swapped.current), caseRecords: { found: 'revert', missing: 'keep' } }, swapped.overrides), { 'cases.found.record_id': null })
+  assert.deepEqual(buildAeEditFields(swapped.original, swapped.current, { ...draftFromSummary(swapped.current), keyLines: ['고친 줄', '둘째 줄', draft.keyLines[2]] }, swapped.overrides), { 'summary.key_lines[0]': '고친 줄' })
+  assert.deepEqual(buildAeEditFields(preview.original, preview.current, { ...draft, caseRecords: { found: 'revert', missing: 'keep' } }, preview.overrides), {})
   assert.ok(hasAeEditChanges(edited))
   assert.ok(!hasAeEditChanges({}))
   assert.equal(AE_CARD_NAMES_PATH, 'summary.cards[3].names')
+})
+
+test('a finished run counts as done only when the report version rose past the edited one', () => {
+  assert.equal(aeEditRunOutcome(undefined, 2), 'running')
+  assert.equal(aeEditRunOutcome({ isActive: true, reportVersion: 2 }, 2), 'running')
+  assert.equal(aeEditRunOutcome({ isActive: false, reportVersion: 2 }, 2), 'failed')
+  assert.equal(aeEditRunOutcome({ isActive: false, reportVersion: null }, 2), 'failed')
+  assert.equal(aeEditRunOutcome({ isActive: false, reportVersion: 3 }, 2), 'done')
 })
 
 test('request keys and fingerprints are stable for the same field set', () => {
@@ -122,6 +140,8 @@ test('the panel only speaks through ADMIN_COPY and the ae-edit endpoints, and wa
   assert.match(panel, /fetchAPI<\{ operation_run_id\?: string \}>\(base, \{/)
   assert.match(panel, /'Idempotency-Key': key/)
   assert.match(panel, /ADMIN_COPY\.aeEditRedelivery/)
+  assert.match(panel, /<label htmlFor=\{id\}>/)
+  assert.match(panel, /aeEditRunOutcome\(/)
   assert.match(panel, /ADMIN_COPY\.aeEditPreview\b/)
   assert.match(panel, /ADMIN_COPY\.aeEditSubmit\b/)
   assert.match(panel, /role="alert"/)

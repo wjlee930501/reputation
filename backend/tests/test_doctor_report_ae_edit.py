@@ -127,11 +127,27 @@ def test_label_override_rewrites_the_quoted_span_in_rule_sentences_only():
     assert edited.summary.key_lines[2] == relabel_quoted(view.summary.key_lines[2], old, "새 항목")
     assert "'새 항목'" in edited.summary.key_lines[2]
     assert edited.summary.key_lines[:2] == view.summary.key_lines[:2]
-    # 카드 4 이름도 같은 라벨 사전으로 바뀌고 숫자 칸('{n}개 항목')은 그대로다.
+    # 카드 4 이름도 바뀌고 숫자 칸('{n}개 항목')은 그대로다.
     assert edited.summary.cards[3].value == view.summary.cards[3].value
     assert relabel_quoted("'서울 치료하' 키워드", "치료하", "도수치료") == "'서울 도수치료' 키워드"
     assert relabel_quoted("'치료하' 키워드와 '치료하기'", "치료하", "도수치료") == "'도수치료' 키워드와 '치료하기'"
     assert relabel_quoted("문장 치료하 그대로", "치료하", "도수치료") == "문장 치료하 그대로"
+
+
+def test_card_names_follow_exposed_keywords_only():
+    """카드 4는 노출된 키워드의 진료 항목이다 — 미노출 키워드의 라벨을 고쳐도 카드는 그대로(검토 1-P2-2)."""
+    view = build()
+    exposed = [r for r in view.appendix.keyword_rows if r.total != "—" and int(r.total.split("/")[0]) > 0]
+    unexposed = [r for r in view.appendix.keyword_rows if r.total != "—" and int(r.total.split("/")[0]) == 0]
+    assert exposed and unexposed
+    same = apply_ae_overrides(view, {f"treatment_label[{unexposed[0].keyword}]": exposed[0].treatment})
+    assert same.summary.cards[3].names == view.summary.cards[3].names
+    assert same.summary.cards[3].value == view.summary.cards[3].value
+    renamed = apply_ae_overrides(view, {f"treatment_label[{exposed[0].keyword}]": "새 노출 항목"})
+    names, tail = split_card_names(renamed.summary.cards[3].names)
+    assert "새 노출 항목" in names and exposed[0].treatment not in names
+    assert tail == split_card_names(view.summary.cards[3].names)[1]
+    assert renamed.summary.cards[3].value == view.summary.cards[3].value
 
 
 def test_text_overrides_replace_sentences_and_keep_every_fact():
@@ -237,6 +253,7 @@ def test_length_emptiness_control_chars_and_shapes_are_rejected():
     assert "TOO_LONG" in _codes(validate_ae_fields({"summary.key_lines[0]": "가" * 201}, view))
     assert "TOO_LONG" in _codes(validate_ae_fields({LABEL: "가" * 41}, view))
     assert "CONTROL_CHARS" in _codes(validate_ae_fields({"summary.key_lines[0]": "한 줄\n두 줄"}, view))
+    assert "CONTROL_CHARS" in _codes(validate_ae_fields({"summary.key_lines[0]": "앞\r뒤"}, view))
     assert _codes(validate_ae_fields({"summary.key_lines[0]": 3}, view)) == ["NOT_TEXT"]
     assert _codes(validate_ae_fields({AE_PATH_CARD_NAMES: "심장초음파"}, view)) == ["NOT_LIST"]
     assert "TOO_MANY_NAMES" in _codes(validate_ae_fields({AE_PATH_CARD_NAMES: [f"항목{i}" for i in range(9)]}, view))
@@ -484,6 +501,10 @@ def api(monkeypatch):
         run = OperationRun(id=uuid.uuid4(), hospital_id=context.hospital.id, operation_type="GENERATE_MONTHLY_REPORT", state=OperationRunState.QUEUED, request_payload={})
         return SimpleNamespace(run=run, replayed=False)
 
+    async def no_replay(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(operations, "_find_ae_edit_replay", no_replay)
     monkeypatch.setattr(operations, "_load_ae_edit_context", load_context)
     monkeypatch.setattr(operations, "_load_ae_candidates_sync", lambda *_a: candidates)
     monkeypatch.setattr(operations, "_prepare_monthly_rebuild_audit", prepare)
@@ -512,7 +533,7 @@ async def test_preview_returns_editable_fields_candidates_and_problems_without_w
 @pytest.mark.asyncio
 async def test_ae_edit_request_dispatches_a_template_refresh_with_the_edit_payload_and_field_audit(api):
     body = operations.ReportAeEditRequest(reason="진료 항목 라벨 정정", fields={LABEL: "위 내시경 검사", "summary.key_lines[0]": "고친 첫 줄입니다."})
-    response = await operations.request_report_ae_edit(api.context.hospital.id, api.context.report.id, body, db=AsyncMock(), idempotency_key="ae-edit:k1")
+    response = await operations.request_report_ae_edit(api.context.hospital.id, api.context.report.id, body, db=AsyncMock(), idempotency_key="ae-edit:k1", actor=SimpleNamespace(email="ae@example.invalid"))
     assert response["redelivery_required"] is True and response["report_id"] == str(api.context.report.id)
     assert {c["path"] for c in response["changes"]} == {LABEL, "summary.key_lines[0]"}
     enqueue = api.seen["enqueue"]
@@ -520,6 +541,7 @@ async def test_ae_edit_request_dispatches_a_template_refresh_with_the_edit_paylo
     assert enqueue["idempotency_key"] == "ae-edit:k1"
     ae_edit = enqueue["request_payload_extra"]["ae_edit"]
     assert ae_edit["report_id"] == str(api.context.report.id) and ae_edit["fields"] == body.fields
+    assert ae_edit["edited_by"] == "ae@example.invalid"
     audit = api.seen["audit"]
     assert audit["template_only"] is True and audit["mode_detail"]["mode"] == "AE_EDIT"
     assert audit["mode_detail"]["report_id"] == str(api.context.report.id)
@@ -530,11 +552,11 @@ async def test_ae_edit_request_dispatches_a_template_refresh_with_the_edit_paylo
 @pytest.mark.asyncio
 async def test_ae_edit_request_rejects_forbidden_values_and_no_op_requests_before_writing(api):
     with pytest.raises(HTTPException) as caught:
-        await operations.request_report_ae_edit(api.context.hospital.id, api.context.report.id, operations.ReportAeEditRequest(fields={"summary.key_lines[0]": "최고의 병원입니다."}), db=AsyncMock(), idempotency_key="k")
+        await operations.request_report_ae_edit(api.context.hospital.id, api.context.report.id, operations.ReportAeEditRequest(fields={"summary.key_lines[0]": "최고의 병원입니다."}), db=AsyncMock(), idempotency_key="k", actor=SimpleNamespace(email="ae@example.invalid"))
     assert caught.value.status_code == 422 and caught.value.detail["code"] == "AE_EDIT_REJECTED"
     assert caught.value.detail["problems"][0]["code"] == "FORBIDDEN_EXPRESSION"
     with pytest.raises(HTTPException) as caught:
-        await operations.request_report_ae_edit(api.context.hospital.id, api.context.report.id, operations.ReportAeEditRequest(fields={"summary.key_lines[0]": api.view.summary.key_lines[0]}), db=AsyncMock(), idempotency_key="k")
+        await operations.request_report_ae_edit(api.context.hospital.id, api.context.report.id, operations.ReportAeEditRequest(fields={"summary.key_lines[0]": api.view.summary.key_lines[0]}), db=AsyncMock(), idempotency_key="k", actor=SimpleNamespace(email="ae@example.invalid"))
     assert caught.value.status_code == 422 and caught.value.detail["code"] == "AE_EDIT_NO_CHANGES"
     assert "audit" not in api.seen and "enqueue" not in api.seen
 
@@ -551,7 +573,7 @@ async def test_ae_edit_request_replay_with_different_values_is_a_conflict(api, m
     monkeypatch.setattr(operations, "_enqueue_with_truthful_audit", replayed)
     monkeypatch.setattr(operations, "_prepare_monthly_rebuild_audit", prepare)
     with pytest.raises(HTTPException) as caught:
-        await operations.request_report_ae_edit(api.context.hospital.id, api.context.report.id, operations.ReportAeEditRequest(fields={"summary.key_lines[0]": "고친 첫 줄"}), db=AsyncMock(), idempotency_key="k")
+        await operations.request_report_ae_edit(api.context.hospital.id, api.context.report.id, operations.ReportAeEditRequest(fields={"summary.key_lines[0]": "고친 첫 줄"}), db=AsyncMock(), idempotency_key="k", actor=SimpleNamespace(email="ae@example.invalid"))
     assert caught.value.status_code == 409
 
 
@@ -581,3 +603,33 @@ def test_task_reads_the_ae_edit_request_from_the_operation_run_payload():
     assert tasks._ae_edit_request_of(db, run_id) == {"report_id": "r", "fields": {"summary.key_lines[0]": "x"}}
     assert tasks._ae_edit_request_of(SimpleNamespace(get=lambda _m, _pk: SimpleNamespace(request_payload={"_dispatch": {}})), run_id) is None
     assert tasks._ae_edit_request_of(db, None) is None
+
+
+@pytest.mark.asyncio
+async def test_same_key_replay_returns_the_stored_run_before_the_latest_version_check():
+    """응답을 잃은 재요청은 새 버전이 이미 생겨도 409가 아니라 기존 실행의 영수증이다(검토 1-P2-4)."""
+    report_id = uuid.uuid4()
+    run = OperationRun(id=uuid.uuid4(), hospital_id=uuid.uuid4(), operation_type="GENERATE_MONTHLY_REPORT", state=OperationRunState.SUCCEEDED, task_id="t", request_payload={"ae_edit": {"report_id": str(report_id), "fields": {"summary.key_lines[0]": "고친 줄"}}})
+    db = AsyncMock()
+    db.scalar = AsyncMock(return_value=run)
+    receipt = await operations._find_ae_edit_replay(db, run.hospital_id, report_id, "k", {"summary.key_lines[0]": "고친 줄"})
+    assert receipt["idempotent_replay"] is True and receipt["operation_run_id"] == str(run.id)
+    with pytest.raises(HTTPException) as caught:
+        await operations._find_ae_edit_replay(db, run.hospital_id, report_id, "k", {"summary.key_lines[0]": "다른 줄"})
+    assert caught.value.status_code == 409
+    with pytest.raises(HTTPException):
+        await operations._find_ae_edit_replay(db, run.hospital_id, uuid.uuid4(), "k", {"summary.key_lines[0]": "고친 줄"})
+    db.scalar = AsyncMock(return_value=None)
+    assert await operations._find_ae_edit_replay(db, run.hospital_id, report_id, "k", {}) is None
+
+
+def test_ae_edit_request_requires_a_human_account():
+    """시스템 actor(`X-Admin-Actor-System`)로는 문구를 고칠 수 없다 — 라우트가 사람 계정을 요구한다(검토 1-P1-1)."""
+    import inspect
+
+    from app.api.admin.accounts import require_active_account
+
+    signature = inspect.signature(operations.request_report_ae_edit)
+    actor = signature.parameters["actor"].default
+    assert getattr(actor, "dependency", None) is require_active_account
+    assert signature.parameters["idempotency_key"].default is inspect.Parameter.empty

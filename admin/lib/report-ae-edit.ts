@@ -73,12 +73,18 @@ export type AeEditPreview = {
   readonly redeliveryNote: string
 }
 
-/** 화면 입력란의 상태 — 값은 '지금 찍히는 값' 기준이고, 서버 `fields`로 바꿀 때 원문과 비교한다. */
+/** 사례 선택 상태: 'keep' = 지금 사례 그대로(저장된 교체가 있으면 그것도 그대로), 'revert' = 시스템 원래 사례로, 아니면 후보 기록 id. */
+export type AeEditCaseChoice = 'keep' | 'revert' | string
+
+/**
+ * 화면 입력란의 상태 — 값은 '지금 찍히는 값'(저장된 수정 포함) 기준이다. 서버 `fields`로 바꿀 때는 지금 값과
+ * 비교해 **실제로 고친 칸만** 보낸다(저장된 수정은 서버가 합쳐 그대로 잇는다). 원문으로 되돌리면 null(수정 취소).
+ */
 export type AeEditDraft = {
   readonly keyLines: readonly string[]
   readonly cardNames: readonly string[]
   readonly caseInsights: { readonly found: string | null; readonly missing: string | null }
-  readonly caseRecords: { readonly found: string | null; readonly missing: string | null }
+  readonly caseRecords: { readonly found: AeEditCaseChoice; readonly missing: AeEditCaseChoice }
   readonly planActions: Readonly<Record<string, string>>
   readonly treatmentLabels: Readonly<Record<string, string>>
 }
@@ -172,13 +178,13 @@ export function parseAeEditPreview(payload: unknown): AeEditPreview | null {
   }
 }
 
-/** 저장된 버전이 찍는 값으로 입력란을 채운다 — 사례 선택은 '현재 유지'(null)에서 시작한다. */
+/** 저장된 버전이 찍는 값으로 입력란을 채운다 — 사례 선택은 '지금 사례 유지'에서 시작한다. */
 export function draftFromSummary(summary: AeEditSummary): AeEditDraft {
   return {
     keyLines: [...summary.keyLines],
     cardNames: [...summary.cardNames],
     caseInsights: { found: summary.cases.found?.insight ?? null, missing: summary.cases.missing?.insight ?? null },
-    caseRecords: { found: null, missing: null },
+    caseRecords: { found: 'keep', missing: 'keep' },
     planActions: Object.fromEntries(summary.planRows.map((row) => [row.keyword, row.action])),
     treatmentLabels: Object.fromEntries(summary.keywordLabels.map((row) => [row.keyword, row.treatment])),
   }
@@ -207,45 +213,64 @@ function sameList(a: readonly string[], b: readonly string[]): boolean {
 }
 
 /**
- * 입력란 상태 → 서버 `fields`. 원문과 같은 값은 보내지 않고, 이전 수정이 있던 칸을 원문으로
- * 되돌렸으면 null(수정 취소)을 보낸다. 서버가 원문과 같은 값을 다시 거르므로 여기 판정은
- * "무엇을 보낼지"만 정한다.
+ * 입력란 상태 → 서버 `fields`. 지금 찍히는 값(`current`)과 같은 칸은 보내지 않는다 — 저장된 수정은 서버가
+ * 합쳐 그대로 잇고, 라벨에서 자동 전파된 문장을 명시적 수정으로 되돌려 보내지 않는다(검토 1-P2-1).
+ * 바꾼 칸은 값을 보내고, 저장된 수정이 있는 칸을 원문(`original`)으로 되돌렸으면 null(수정 취소)을 보낸다.
  */
 export function buildAeEditFields(
   original: AeEditSummary,
+  current: AeEditSummary,
   draft: AeEditDraft,
   overrides: Readonly<Record<string, unknown>>,
 ): Record<string, unknown> {
   const fields: Record<string, unknown> = {}
-  const put = (path: string, value: unknown, same: boolean) => {
-    if (!same) fields[path] = value
-    else if (path in overrides) fields[path] = null
+  const put = (path: string, value: unknown, sameAsCurrent: boolean, sameAsOriginal: boolean) => {
+    if (sameAsCurrent) return
+    fields[path] = sameAsOriginal && path in overrides ? null : value
   }
   draft.keyLines.forEach((line, index) => {
     if (index > 2) return
-    put(keyLinePath(index), line.trim(), line.trim() === (original.keyLines[index] ?? ''))
+    const value = line.trim()
+    put(keyLinePath(index), value, value === (current.keyLines[index] ?? ''), value === (original.keyLines[index] ?? ''))
   })
   const names = draft.cardNames.map((name) => name.trim()).filter((name) => name.length > 0)
-  put(AE_CARD_NAMES_PATH, names, sameList(names, original.cardNames))
+  put(AE_CARD_NAMES_PATH, names, sameList(names, current.cardNames), sameList(names, original.cardNames))
   for (const slot of ['found', 'missing'] as const) {
-    const originalCase = original.cases[slot]
     const insight = draft.caseInsights[slot]
-    if (originalCase && insight !== null) put(caseInsightPath(slot), insight.trim(), insight.trim() === originalCase.insight)
-    const record = draft.caseRecords[slot]
-    if (record) fields[caseRecordPath(slot)] = record
-    else if (caseRecordPath(slot) in overrides) fields[caseRecordPath(slot)] = null
+    const currentCase = current.cases[slot]
+    if (currentCase && insight !== null) {
+      const value = insight.trim()
+      put(caseInsightPath(slot), value, value === currentCase.insight, value === (original.cases[slot]?.insight ?? ''))
+    }
+    const choice = draft.caseRecords[slot]
+    if (choice === 'revert') {
+      if (caseRecordPath(slot) in overrides) fields[caseRecordPath(slot)] = null
+    } else if (choice !== 'keep') fields[caseRecordPath(slot)] = choice
   }
-  for (const row of original.planRows) {
+  for (const row of current.planRows) {
     const action = draft.planActions[row.keyword]
     if (action === undefined) continue
-    put(planActionPath(row.keyword), action.trim(), action.trim() === row.action)
+    const value = action.trim()
+    const originalRow = original.planRows.find((item) => item.keyword === row.keyword)
+    put(planActionPath(row.keyword), value, value === row.action, value === originalRow?.action)
   }
-  for (const row of original.keywordLabels) {
+  for (const row of current.keywordLabels) {
     const label = draft.treatmentLabels[row.keyword]
     if (label === undefined) continue
-    put(treatmentLabelPath(row.keyword), label.trim(), label.trim() === row.treatment)
+    const value = label.trim()
+    const originalRow = original.keywordLabels.find((item) => item.keyword === row.keyword)
+    put(treatmentLabelPath(row.keyword), value, value === row.treatment, value === originalRow?.treatment)
   }
   return fields
+}
+
+/** 작업 기록에서 이 요청의 결과를 읽는다 — 실패한 작업도 그 달의 기존 보고서 버전을 싣기 때문에 버전이 **올랐는지** 본다(검토 1-P2-3). */
+export function aeEditRunOutcome(
+  run: { readonly isActive: boolean; readonly reportVersion: number | null } | undefined,
+  versionBefore: number,
+): 'running' | 'done' | 'failed' {
+  if (!run || run.isActive) return 'running'
+  return run.reportVersion !== null && run.reportVersion > versionBefore ? 'done' : 'failed'
 }
 
 export function hasAeEditChanges(fields: Readonly<Record<string, unknown>>): boolean {

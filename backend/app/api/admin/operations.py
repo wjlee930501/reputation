@@ -22,7 +22,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
-from app.api.admin.accounts import require_owner_account
+from app.api.admin.accounts import require_active_account, require_owner_account
 from app.api.admin.domain import verify_domain_for_hospital
 from app.core.database import SyncSessionLocal, get_db
 from app.models.admin_user import AdminUser
@@ -90,6 +90,7 @@ from app.services.monthly_period import (
 )
 from app.services.monthly_remasure_gate import ManualRemasureLocked, authorize_manual_remasure
 from app.services.monthly_report_snapshot import report_render_inputs, restore_doctor_view
+from app.services.operation_run_keys import normalize_operation_key
 from app.services.operation_run_payloads import UnsafeDispatchPayload, parse_stored_dispatch
 from app.services.operation_runs import (
     DispatchTask,
@@ -1403,6 +1404,53 @@ async def _load_ae_edit_context(db: AsyncSession, hospital_id: uuid.UUID, report
     return _AeEditContext(hospital, report, base, render_inputs, stored_ae_overrides(render_inputs))
 
 
+def _ae_edit_receipt(run: OperationRun, *, report_id: uuid.UUID, changes: list, replayed: bool) -> dict[str, Any]:
+    return {
+        "detail": "AE 수정 판 생성을 요청했습니다. 새 버전이 만들어지면 다시 전달해야 원장님께 반영됩니다.",
+        "hospital_id": str(run.hospital_id),
+        "report_id": str(report_id),
+        "operation_run_id": str(run.id),
+        "operation_state": run.state,
+        "task_id": run.task_id,
+        "idempotent_replay": replayed,
+        "changes": changes,
+        "redelivery_required": True,
+    }
+
+
+async def _find_ae_edit_replay(
+    db: AsyncSession,
+    hospital_id: uuid.UUID,
+    report_id: uuid.UUID,
+    idempotency_key: str,
+    fields: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """같은 요청 키로 이미 접수한 AE 수정 판이 있으면 그 영수증(같은 판·같은 수정 값일 때). 다른 값이면 409."""
+    key = normalize_operation_key(idempotency_key)
+    if key is None:
+        return None
+    run = await db.scalar(
+        select(OperationRun).where(
+            OperationRun.hospital_id == hospital_id,
+            OperationRun.operation_type == "GENERATE_MONTHLY_REPORT",
+            OperationRun.idempotency_key == key,
+        )
+    )
+    if run is None:
+        return None
+    stored = run.request_payload.get("ae_edit") if isinstance(run.request_payload, dict) else None
+    if (
+        not isinstance(stored, dict)
+        or str(stored.get("report_id") or "") != str(report_id)
+        or stored.get("fields") != {path: fields.get(path) for path in fields}
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="같은 요청 키가 다른 판이나 다른 수정 값에 이미 사용됐습니다. 화면을 새로고침한 뒤 다시 시도해 주세요.",
+        )
+    return _ae_edit_receipt(run, report_id=report_id, changes=[], replayed=True)
+
+
 def _load_ae_candidates_sync(hospital_id: uuid.UUID, report_id: uuid.UUID) -> list[CaseCandidate]:
     with SyncSessionLocal() as session:
         hospital = session.get(Hospital, hospital_id)
@@ -1509,12 +1557,19 @@ async def request_report_ae_edit(
     hospital_id: uuid.UUID,
     report_id: uuid.UUID,
     payload: ReportAeEditRequest,
+    idempotency_key: RequiredIdempotencyKeyHeader,
     db: AsyncSession = Depends(get_db),
-    idempotency_key: RequiredIdempotencyKeyHeader = None,  # type: ignore[assignment]
+    actor: AdminUser = Depends(require_active_account),
 ):
     """AE 수정 판 — 검증을 통과한 수정 값으로 템플릿 갱신과 같은 OperationRun(`GENERATE_MONTHLY_REPORT`,
     `template_only`)을 큐에 넣는다. 워커가 숫자 보존 판정·원장 PDF 검증을 다시 하고 PASS일 때만 새 버전을 만든다.
-    걸리면 422로 거절하고 아무것도 쓰지 않는다. 새 버전은 다시 전달해야 반영된다."""
+    걸리면 422로 거절하고 아무것도 쓰지 않는다. 새 버전은 다시 전달해야 반영된다.
+
+    사람 계정만 받는다(`require_active_account` — 시스템 actor는 403). 같은 요청 키의 기존 실행이 있으면 최신
+    버전 검사보다 먼저 그 실행을 돌려준다 — 응답을 잃은 재요청이 새 버전이 이미 생긴 뒤 409로 떨어지지 않게."""
+    replay = await _find_ae_edit_replay(db, hospital_id, report_id, idempotency_key, payload.fields)
+    if replay is not None:
+        return replay
     context = await _load_ae_edit_context(db, hospital_id, report_id)
     candidates = await run_in_threadpool(_load_ae_candidates_sync, hospital_id, report_id)
     preview = _ae_edit_preview_payload(context, requested=payload.fields, candidates=candidates)
@@ -1536,11 +1591,10 @@ async def request_report_ae_edit(
         raise HTTPException(status_code=400, detail="새 버전을 만드는 이유를 3자 이상 입력해 주세요.")
     year, month = context.report.period_year, context.report.period_month
     requested_at = datetime.now(UTC).isoformat()
-    actor = default_actor()
     ae_edit = {
         "report_id": str(context.report.id),
         "fields": {path: payload.fields.get(path) for path in payload.fields},
-        "edited_by": actor,
+        "edited_by": actor.email,
         "requested_at": requested_at,
     }
     audit_created = await _prepare_monthly_rebuild_audit(
@@ -1579,14 +1633,4 @@ async def request_report_ae_edit(
                 status_code=409,
                 detail="같은 요청 키가 다른 수정 값에 이미 사용됐습니다. 화면을 새로고침한 뒤 다시 시도해 주세요.",
             )
-    return {
-        "detail": "AE 수정 판 생성을 요청했습니다. 새 버전이 만들어지면 다시 전달해야 원장님께 반영됩니다.",
-        "hospital_id": str(context.hospital.id),
-        "report_id": str(context.report.id),
-        "operation_run_id": str(dispatch.run.id),
-        "operation_state": dispatch.run.state,
-        "task_id": dispatch.run.task_id,
-        "idempotent_replay": dispatch.replayed,
-        "changes": changes,
-        "redelivery_required": True,
-    }
+    return _ae_edit_receipt(dispatch.run, report_id=context.report.id, changes=changes, replayed=dispatch.replayed)

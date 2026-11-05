@@ -7,6 +7,7 @@ import { getOrCreatePendingActionKey } from '@/lib/pending-action-key'
 import {
   AE_CARD_NAMES_PATH,
   aeEditFingerprint,
+  aeEditRunOutcome,
   aeEditIdempotencyKey,
   buildAeEditFields,
   caseInsightPath,
@@ -84,16 +85,16 @@ export function ReportAeEditPanel({
     if (!runId) return
     const timer = window.setInterval(() => {
       void fetchAPI<unknown>(`/admin/hospitals/${hospitalId}/operations/monthly-report-runs`).then((payload) => {
-        const run = parseReportRuns(payload).find((item) => item.runId === runId)
-        if (run && !run.isActive) {
-          setRunState(run.reportVersion !== null && run.reportVersion > 0 ? 'done' : 'failed')
+        const outcome = aeEditRunOutcome(parseReportRuns(payload).find((item) => item.runId === runId), preview?.reportVersion ?? 0)
+        if (outcome !== 'running') {
+          setRunState(outcome)
           setRunId(null)
           onRequested()
         }
       }).catch(() => undefined)
     }, 5000)
     return () => window.clearInterval(timer)
-  }, [hospitalId, onRequested, runId])
+  }, [hospitalId, onRequested, preview?.reportVersion, runId])
 
   if (!open) {
     return (
@@ -103,7 +104,7 @@ export function ReportAeEditPanel({
     )
   }
 
-  const fields = preview && draft ? buildAeEditFields(preview.original, draft, preview.overrides) : {}
+  const fields = preview && draft ? buildAeEditFields(preview.original, preview.current, draft, preview.overrides) : {}
   const fingerprint = aeEditFingerprint(reportId, fields)
   const validated = validation?.fingerprint === fingerprint ? validation : null
   const problems = validated ? problemsByPath(validated.problems) : {}
@@ -181,13 +182,13 @@ export function ReportAeEditPanel({
           <fieldset className="space-y-2">
             <legend className="text-sm font-bold text-[var(--color-revisit-text-title)]">{ADMIN_COPY.aeEditKeyLines}</legend>
             {draft.keyLines.slice(0, 3).map((line, index) => (
-              <Field key={index} label={['잘된 점', '보완할 점', '다음 달 중점'][index] ?? `${index + 1}번째 줄`} value={line} original={preview.original.keyLines[index] ?? ''} problems={problems[keyLinePath(index)]} onChange={(value) => update({ keyLines: draft.keyLines.map((item, i) => (i === index ? value : item)) })} />
+              <Field key={index} id={`ae-key-line-${index}`} label={['잘된 점', '보완할 점', '다음 달 중점'][index] ?? `${index + 1}번째 줄`} value={line} original={preview.original.keyLines[index] ?? ''} problems={problems[keyLinePath(index)]} onChange={(value) => update({ keyLines: draft.keyLines.map((item, i) => (i === index ? value : item)) })} />
             ))}
           </fieldset>
 
           <fieldset className="space-y-2">
             <legend className="text-sm font-bold text-[var(--color-revisit-text-title)]">{ADMIN_COPY.aeEditCardNames} <span className="font-normal text-[var(--color-revisit-text-caption)]">· {preview.original.cardValue}{preview.original.cardNamesTail ? ` · ${preview.original.cardNamesTail}` : ''}</span></legend>
-            <Field label="이름 목록(쉼표로 구분)" value={draft.cardNames.join(', ')} original={preview.original.cardNames.join(', ')} problems={problems[AE_CARD_NAMES_PATH]} onChange={(value) => update({ cardNames: value.split(',').map((item) => item.trim()) })} />
+            <Field id="ae-card-names" label="이름 목록(쉼표로 구분)" value={draft.cardNames.join(', ')} original={preview.original.cardNames.join(', ')} problems={problems[AE_CARD_NAMES_PATH]} onChange={(value) => update({ cardNames: value.split(',').map((item) => item.trim()) })} />
           </fieldset>
 
           <fieldset className="space-y-3">
@@ -203,15 +204,16 @@ export function ReportAeEditPanel({
                   {current && <p className="mt-1 text-xs leading-5 text-[var(--color-revisit-text-helper)] [word-break:keep-all]">{current.keyword} · {current.platform} · {current.measuredOn}<br />{current.excerpt}</p>}
                   {candidates.length > 0 && (
                     <label className="mt-2 block text-sm font-semibold">{ADMIN_COPY.aeEditCasePick}
-                      <select value={draft.caseRecords[slot] ?? ''} onChange={(event) => update({ caseRecords: { ...draft.caseRecords, [slot]: event.target.value || null } })} className={INPUT}>
-                        <option value="">{ADMIN_COPY.aeEditCaseKeep}</option>
+                      <select value={draft.caseRecords[slot]} onChange={(event) => update({ caseRecords: { ...draft.caseRecords, [slot]: event.target.value } })} className={INPUT}>
+                        <option value="keep">{ADMIN_COPY.aeEditCaseKeep}</option>
+                        {caseRecordPath(slot) in preview.overrides && <option value="revert">{ADMIN_COPY.aeEditCaseRevert}</option>}
                         {candidates.map((candidate) => <option key={candidate.recordId} value={candidate.recordId}>{candidate.keyword} · {candidate.platform} · {candidate.measuredOn}</option>)}
                       </select>
                       {problems[caseRecordPath(slot)]?.map((text) => <span key={text} className="mt-1 block text-xs text-[var(--color-revisit-red-50)]" role="alert">{text}</span>)}
                     </label>
                   )}
                   {original && draft.caseInsights[slot] !== null && (
-                    <Field label={ADMIN_COPY.aeEditCaseInsight} value={draft.caseInsights[slot] ?? ''} original={original.insight} problems={problems[caseInsightPath(slot)]} onChange={(value) => update({ caseInsights: { ...draft.caseInsights, [slot]: value } })} />
+                    <Field id={`ae-case-insight-${slot}`} label={ADMIN_COPY.aeEditCaseInsight} value={draft.caseInsights[slot] ?? ''} original={original.insight} problems={problems[caseInsightPath(slot)]} onChange={(value) => update({ caseInsights: { ...draft.caseInsights, [slot]: value } })} />
                   )}
                 </div>
               )
@@ -222,7 +224,7 @@ export function ReportAeEditPanel({
             <fieldset className="space-y-2">
               <legend className="text-sm font-bold text-[var(--color-revisit-text-title)]">{ADMIN_COPY.aeEditPlanRows}</legend>
               {preview.original.planRows.map((row) => (
-                <Field key={row.keyword} label={`${row.priority}. ${draft.treatmentLabels[row.keyword] ?? row.treatment} · ${row.rateLabel} · ${row.keyword}${row.continued ? ' (부록 이어짐)' : ''}`} value={draft.planActions[row.keyword] ?? row.action} original={row.action} problems={problems[planActionPath(row.keyword)]} onChange={(value) => update({ planActions: { ...draft.planActions, [row.keyword]: value } })} />
+                <Field key={row.keyword} id={`ae-plan-${row.priority}`} label={`${row.priority}. ${draft.treatmentLabels[row.keyword] ?? row.treatment} · ${row.rateLabel} · ${row.keyword}${row.continued ? ' (부록 이어짐)' : ''}`} value={draft.planActions[row.keyword] ?? row.action} original={row.action} problems={problems[planActionPath(row.keyword)]} onChange={(value) => update({ planActions: { ...draft.planActions, [row.keyword]: value } })} />
               ))}
             </fieldset>
           )}
@@ -232,7 +234,7 @@ export function ReportAeEditPanel({
               <legend className="text-sm font-bold text-[var(--color-revisit-text-title)]">{ADMIN_COPY.aeEditLabels}</legend>
               <p className="text-xs leading-5 text-[var(--color-revisit-text-helper)] [word-break:keep-all]">{ADMIN_COPY.aeEditLabelHint}</p>
               {preview.original.keywordLabels.map((row) => (
-                <Field key={row.keyword} label={`${row.keyword} · ${row.total}`} value={draft.treatmentLabels[row.keyword] ?? row.treatment} original={row.treatment} problems={problems[treatmentLabelPath(row.keyword)]} onChange={(value) => update({ treatmentLabels: { ...draft.treatmentLabels, [row.keyword]: value } })} single />
+                <Field key={row.keyword} id={`ae-label-${encodeURIComponent(row.keyword)}`} label={`${row.keyword} · ${row.total}`} value={draft.treatmentLabels[row.keyword] ?? row.treatment} original={row.treatment} problems={problems[treatmentLabelPath(row.keyword)]} onChange={(value) => update({ treatmentLabels: { ...draft.treatmentLabels, [row.keyword]: value } })} single />
               ))}
             </fieldset>
           )}
@@ -257,18 +259,20 @@ export function ReportAeEditPanel({
   )
 }
 
-function Field({ label, value, original, problems, onChange, single = false }: { label: string; value: string; original: string; problems?: readonly string[]; onChange: (value: string) => void; single?: boolean }) {
+/** 입력란 하나. 라벨은 `htmlFor`로 입력란에만 묶이고 '원문으로' 버튼은 라벨 밖에 둔다(검토 1-P2-6). */
+function Field({ id, label, value, original, problems, onChange, single = false }: { id: string; label: string; value: string; original: string; problems?: readonly string[]; onChange: (value: string) => void; single?: boolean }) {
   const changed = value.trim() !== original
   return (
-    <label className="block text-sm font-semibold [word-break:keep-all]">
-      <span className="flex flex-wrap items-center justify-between gap-2">{label}
+    <div className="text-sm font-semibold [word-break:keep-all]">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <label htmlFor={id}>{label}</label>
         {changed && <button type="button" onClick={() => onChange(original)} className="text-xs font-bold text-[var(--color-revisit-primary-40)]">{ADMIN_COPY.aeEditRevert}</button>}
-      </span>
+      </div>
       {single
-        ? <input value={value} onChange={(event) => onChange(event.target.value)} maxLength={40} className={INPUT} />
-        : <textarea value={value} onChange={(event) => onChange(event.target.value)} maxLength={200} rows={2} className={INPUT} />}
+        ? <input id={id} value={value} onChange={(event) => onChange(event.target.value)} maxLength={40} className={INPUT} />
+        : <textarea id={id} value={value} onChange={(event) => onChange(event.target.value)} maxLength={200} rows={2} className={INPUT} />}
       {changed && <span className="mt-1 block text-xs font-normal text-[var(--color-revisit-text-caption)]">원문: {original}</span>}
       {problems?.map((text) => <span key={text} className="mt-1 block text-xs font-normal text-[var(--color-revisit-red-50)]" role="alert">{text}</span>)}
-    </label>
+    </div>
   )
 }

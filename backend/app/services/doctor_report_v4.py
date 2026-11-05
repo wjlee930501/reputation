@@ -1829,7 +1829,6 @@ def apply_ae_overrides(
         view.summary, view.content, view.exposure, view.cases, view.plan, view.appendix,
     )
     if labels:
-        label_map = {old_labels[keyword]: label for keyword, label in labels.items()}
         appendix = replace(
             appendix,
             keyword_rows=tuple(
@@ -1856,9 +1855,19 @@ def apply_ae_overrides(
         content = replace(content, rows=content_rows, bars=_treatment_publish_bars(content_rows))
         exposure = replace(exposure, treatment_bars=treatment_bars_from_appendix(appendix.keyword_rows))
         cards = list(summary.cards)
-        if len(cards) >= 4 and cards[3].names:
-            names, tail = split_card_names(cards[3].names)
-            renamed = _dedupe(label_map.get(name, name) for name in names)
+        # 카드 4 이름은 **노출된** 키워드의 진료 항목이다 — 미노출 키워드의 라벨을 고쳐도 카드는 바뀌지 않고(검토 1-P2-2),
+        # 노출 키워드의 라벨을 고치면 노출 행(부록 A의 m>0)에서 이름을 다시 모은다. 숫자 n과 '외 N개' 꼬리는 그대로다.
+        exposed_relabelled = any(
+            row.keyword in labels and row.total != "—" and int(row.total.split("/", 1)[0]) > 0
+            for row in view.appendix.keyword_rows
+        )
+        if len(cards) >= 4 and cards[3].names and exposed_relabelled:
+            _names, tail = split_card_names(cards[3].names)
+            renamed = _dedupe(
+                row.treatment
+                for row in appendix.keyword_rows
+                if row.total != "—" and int(row.total.split("/", 1)[0]) > 0 and row.treatment != UNKNOWN_TREATMENT
+            )[:TREATMENT_NAMES_ON_CARD]
             cards[3] = replace(cards[3], names=(*renamed, *([tail] if tail else ())))
         key_lines = list(summary.key_lines)
         top = _top_plan_row(view.plan)
