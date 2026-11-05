@@ -55,7 +55,7 @@ test('page and dialog components wire the tested preflight and focus behavior', 
   assert.match(dialogSource, /issueRef\.current\?\.focus\(\)/)
 })
 
-test('the reports tab opens exactly one dialog, ordered 열기 → 문구·라벨 고치기 → 전달 기록 → 이력', () => {
+test('the reports tab opens exactly one dialog, ordered 열기 → 보고서 고치기 → 전달 기록 → 이력', () => {
   // 설계 §4.3: 목록 한 줄에 ‘열기’ 하나, 그 뒤는 다이얼로그 하나뿐이다. 두 번째
   // 모달이 다시 생기면 담당자가 어느 화면에서 전달을 기록했는지 흐려진다.
   const files = readdirSync(new URL(REPORTS_DIR))
@@ -66,7 +66,7 @@ test('the reports tab opens exactly one dialog, ordered 열기 → 문구·라�
   const sections = [...dialogSource.matchAll(/data-report-section="([a-z-]+)"/g)].map((match) => match[1])
   assert.deepEqual(sections, [...REPORT_DIALOG_SECTION_ORDER])
   assert.match(dialogSource, /1\. 원장용 파일 열기/)
-  assert.match(dialogSource, /2\. 문구·라벨 고치기 \(선택\)/)
+  assert.match(dialogSource, /2\. 보고서 고치기 \(선택\)/)
   assert.match(dialogSource, /3\. 전달 기록/)
   assert.match(dialogSource, /4\. 전달 이력/)
   // 내부 진단은 원장 대면 구획에 섞이지 않고 접힌 ‘내부 상태’ 안에만 있다.

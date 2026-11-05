@@ -60,13 +60,17 @@ from app.services.competitor_rejudge import (
 from app.services.content_visibility import assess_sampled_visibility, visibility_load_only
 from app.services.content_yield import compute_content_yield_async, kst_week_start
 from app.services.doctor_report_ae_edit import (
-    ae_edit_fact_problems,
     base_view_of,
     editable_fields,
     editable_summary,
+    editor_items,
+    empty_section_problems,
+    fact_changes,
     field_changes,
+    is_treatment_grouping_fact,
     merge_ae_fields,
     normalize_ae_fields,
+    number_changes,
     stored_ae_overrides,
     validate_ae_fields,
 )
@@ -74,8 +78,6 @@ from app.services.doctor_report_v4 import (
     CaseCandidate,
     DoctorReportV4,
     apply_ae_overrides,
-    compare_facts_v4,
-    stored_facts_v4,
 )
 from app.services.hospital_lifecycle import missing_profile_requirement_keys
 from app.services.incident_safety import sanitize_operator_text
@@ -1639,19 +1641,26 @@ def _serialize_audit_log(log: AdminAuditLog) -> dict:
     }
 
 
-# ── AE 수정 판(2026-11-05) — 원장용 v4 보고서의 서술 문구·진료 항목 라벨만 고쳐 새 버전 ──────────────────
+# ── AE 수정 판(2026-11-05) — 원장용 v4 보고서의 모든 글자를 고치거나 지우고 숫자도 바꿔 새 버전 ──────────────────
 
 
 class ReportAeEditRequest(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     reason: str | None = Field(default=None, max_length=200)
-    # 경로 → 값. 값 null은 그 경로의 기존 수정을 지운다(원문으로). 문법은 `doctor_report_v4.parse_ae_path`.
+    # 경로 → 값. 값 null은 그 경로의 기존 수정을 지운다(원문으로), `{"deleted": true}`는 그 요소를 지운다.
+    # 문법은 `doctor_report_v4.parse_ae_path`.
     fields: dict[str, Any]
 
 
+class ReportAeEditPreviewRequest(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    fields: dict[str, Any] = Field(default_factory=dict)
+
+
 AE_EDIT_AUDIT_MODE = "AE_EDIT"
-_AE_EDIT_DEFAULT_REASON = "AE 수정 판(문구·라벨만, 숫자 변경 없음)"
+_AE_EDIT_DEFAULT_REASON = "AE 수정 판"
 
 
 @dataclass(frozen=True, slots=True)
@@ -1781,23 +1790,25 @@ def _ae_edit_preview_payload(
 ) -> dict[str, Any]:
     """쓰기 없이 수정 값을 pristine 뷰에 적용한 결과와 거절 사유. 요청 값이 없으면 저장된 수정 값 그대로를 미리본다."""
     base = context.base
-    stored_fields = dict(context.stored["fields"]) if context.stored is not None else {}
+    # 저장된 수정 값은 새 경로로 정규화해 돌려준다 — 화면의 '원래대로'가 옛 별칭(`plan.action[K]`)을 못 찾지 않게(Codex 2-P1-1).
+    stored_fields = merge_ae_fields(dict(context.stored["fields"]) if context.stored is not None else {}, {})
     merged = merge_ae_fields(stored_fields, requested or {})
     problems = validate_ae_fields(merged, base, case_candidates=candidates)
     preview = None
-    fact_problems: list[str] = []
+    changed_facts: dict[str, Any] = {}
+    edited: DoctorReportV4 | None = None
+    requested_number_changes: list[dict[str, Any]] = []
     if not problems:
         normalized = normalize_ae_fields(merged, base, case_candidates=candidates)
         edited = apply_ae_overrides(base, normalized, case_candidates=candidates) if normalized else base
-        fact_problems = ae_edit_fact_problems(base, edited)
-        fact_problems.extend(
-            compare_facts_v4(
-                stored_facts_v4(context.report.sov_summary or {}, context.report.content_summary or {}),
-                edited.facts(),
+        problems = empty_section_problems(edited)
+        if not problems:
+            changed_facts = fact_changes(base, edited)
+            preview = editable_summary(edited)
+            requested_number_changes = number_changes(
+                base, stored_fields, normalized, edited_by="", edited_at="", case_candidates=candidates
             )
-        )
-        preview = editable_summary(edited)
-        merged = normalized
+            merged = normalized
     current = restore_doctor_view(context.render_inputs.doctor_view)
     return {
         "report_id": str(context.report.id),
@@ -1810,9 +1821,14 @@ def _ae_edit_preview_payload(
         "requested": dict(requested) if requested is not None else None,
         "merged": merged,
         "preview": preview,
-        "problems": [problem.as_dict() for problem in problems]
-        + [{"path": "", "code": "NUMBERS_CHANGED", "message": line} for line in fact_problems],
-        "numbers_preserved": not problems and not fact_problems,
+        # 보고서 순서(01~06·부록)대로의 편집 항목 — 저장된 수정이 아니라 **이번 요청까지 합친** 값과 원문·지움 여부·측정값과 다른 숫자.
+        "items": editor_items(base, merged if not problems else stored_fields, case_candidates=candidates),
+        "problems": [problem.as_dict() for problem in problems],
+        # 숫자는 자유롭게 바뀐다(2026-11-05 대표 결정) — 달라진 사실은 거절이 아니라 기록·표시다.
+        "numbers_preserved": not {key for key in changed_facts if not is_treatment_grouping_fact(key)},
+        "fact_changes": changed_facts,
+        "number_changes": [{"path": c["path"], "before": c["before"], "after": c["after"]} for c in requested_number_changes],
+        "stored_number_changes": list((context.stored or {}).get("number_changes") or []),
         "candidates": {
             "found": [_candidate_dict(c) for c in candidates if c.found],
             "missing": [_candidate_dict(c) for c in candidates if not c.found],
@@ -1833,8 +1849,8 @@ async def preview_report_ae_edit(
     overrides: str | None = Query(default=None, max_length=20000),
     db: AsyncSession = Depends(get_db),
 ):
-    """AE 수정 판 미리보기(쓰기 없음) — 편집 가능 필드의 원문·현재 값·후보 사례와, `overrides`(JSON 경로→값)를
-    적용했을 때의 결과와 거절 사유(금지 표현·내부 표식·새 숫자·화이트리스트 밖·숫자 불일치)를 돌려준다."""
+    """AE 수정 판 미리보기(쓰기 없음) — 편집 항목의 원문·현재 값·후보 사례와, `overrides`(JSON 경로→값)를
+    적용했을 때의 결과와 거절 사유(금지 표현·내부 표식·문법 밖 경로·빈 절)를 돌려준다. 긴 수정 값은 POST로 보낸다."""
     requested: dict[str, Any] | None = None
     if overrides is not None and overrides.strip():
         try:
@@ -1847,6 +1863,70 @@ async def preview_report_ae_edit(
     context = await _load_ae_edit_context(db, hospital_id, report_id)
     candidates = await run_in_threadpool(_load_ae_candidates_sync, hospital_id, report_id)
     return _ae_edit_preview_payload(context, requested=requested, candidates=candidates)
+
+
+@router.post("/{hospital_id}/reports/{report_id}/ae-edit/preview")
+async def preview_report_ae_edit_json(
+    hospital_id: uuid.UUID,
+    report_id: uuid.UUID,
+    payload: ReportAeEditPreviewRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """GET 미리보기와 같되 수정 값을 본문(JSON)으로 받는다 — 보고서 전체를 고칠 수 있어 질의 문자열에 안 들어간다. 쓰기 없음."""
+    context = await _load_ae_edit_context(db, hospital_id, report_id)
+    candidates = await run_in_threadpool(_load_ae_candidates_sync, hospital_id, report_id)
+    return _ae_edit_preview_payload(context, requested=payload.fields, candidates=candidates)
+
+
+def _render_ae_preview_pdf(context: _AeEditContext, merged: Mapping[str, Any], candidates: Sequence[CaseCandidate]) -> bytes:
+    from app.services.doctor_pdf_rendering import render_validated_doctor_pdf
+    from app.services.doctor_report_artifact import build_doctor_pdf_expectation
+
+    base = context.base
+    edited = apply_ae_overrides(base, merged, case_candidates=candidates) if merged else base
+    public_url = context.render_inputs.public_url
+    label = f"{context.report.period_year:04d}-{context.report.period_month:02d}"
+    return render_validated_doctor_pdf(
+        view=edited, period_label=label, public_url=public_url, expectation=build_doctor_pdf_expectation(edited, public_url)
+    ).pdf_bytes
+
+
+@router.post("/{hospital_id}/reports/{report_id}/ae-edit/preview-pdf")
+async def preview_report_ae_edit_pdf(
+    hospital_id: uuid.UUID,
+    report_id: uuid.UUID,
+    payload: ReportAeEditPreviewRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """저장 전 PDF 미리보기(쓰기·저장소 없음) — 수정 값을 적용한 원장 PDF를 실제 렌더러·이진 검증으로 만들어 돌려준다.
+
+    검증(문법·금지 표현·빈 절)에 걸리면 422 `AE_EDIT_REJECTED`, 렌더·이진 검증에 걸리면 422 `AE_EDIT_PDF_INVALID`다.
+    저장 때 워커가 같은 렌더러를 다시 돈다 — 여기서 통과한 PDF는 저장 때도 같은 바이트로 통과한다.
+    """
+    from fastapi.responses import Response
+
+    from app.services.doctor_pdf_contracts import DoctorPdfValidationError
+
+    context = await _load_ae_edit_context(db, hospital_id, report_id)
+    candidates = await run_in_threadpool(_load_ae_candidates_sync, hospital_id, report_id)
+    preview = _ae_edit_preview_payload(context, requested=payload.fields, candidates=candidates)
+    if preview["problems"]:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "AE_EDIT_REJECTED", "message": "수정 값을 받을 수 없습니다.", "problems": preview["problems"]},
+        )
+    try:
+        pdf_bytes = await run_in_threadpool(_render_ae_preview_pdf, context, preview["merged"], candidates)
+    except DoctorPdfValidationError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "AE_EDIT_PDF_INVALID", "message": f"{exc.code}: {exc.problem}", "problems": [{"path": "", "code": exc.code, "message": exc.problem}]},
+        ) from exc
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": "inline; filename=\"ae-edit-preview.pdf\"", "Cache-Control": "no-store, private"},
+    )
 
 
 @router.post("/{hospital_id}/reports/{report_id}/ae-edit")
@@ -1902,7 +1982,13 @@ async def request_report_ae_edit(
         month=month,
         reason=reason,
         template_only=True,
-        mode_detail={"mode": AE_EDIT_AUDIT_MODE, "report_id": str(context.report.id), "changes": changes},
+        mode_detail={
+            "mode": AE_EDIT_AUDIT_MODE,
+            "report_id": str(context.report.id),
+            "changes": changes,
+            "number_changes": preview["number_changes"],
+            "fact_changes": preview["fact_changes"],
+        },
     )
     task_args: list[JSONValue] = [str(context.hospital.id), year, month, True, False, True]
     dispatch = await _enqueue_with_truthful_audit(

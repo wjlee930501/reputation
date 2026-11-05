@@ -6,7 +6,10 @@ export const ADMIN_PROXY_SLOW_TIMEOUT_MS = 210_000
 export function isSlowAdminProxyPath(path: string): boolean {
   return (
     path.endsWith('/profile/autofill') ||
-    /\/essence\/sources\/[^/]+\/process$/.test(path)
+    /\/essence\/sources\/[^/]+\/process$/.test(path) ||
+    // AE 수정 판 PDF 미리보기 — 렌더·쪽 넘김 변형·이진 검증을 다 거친다(로컬 운영 크기 픽스처 6~7초, Cloud Run은 더 느릴 수 있다).
+    // JSON 미리보기(POST …/ae-edit/preview)와 새 버전 만들기(POST …/ae-edit)는 렌더하지 않아 기본 시간이면 된다.
+    /\/reports\/[^/]+\/ae-edit\/preview-pdf$/.test(path)
   )
 }
 

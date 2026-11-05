@@ -225,45 +225,56 @@ API: `GET/POST /api/v1/admin/hospitals/{id}/reports/competitors/refresh?year=&mo
   판정(미언급)으로 기록되므로 분모는 보고서가 쓴 확정 답변 수와 같다.
 - 경쟁 사실을 뺀 다른 사실(진료 항목·누적 편수 등)이 현재 행 변화로 어긋나면 DIFF로 거절한다 — 그때는 일반 재생성이
   아니라 원인을 먼저 본다.
-## AE 수정 판 — 서술 문구·진료 항목 라벨만 고쳐 새 버전 (2026-11-05)
+## AE 수정 판 — 보고서의 모든 글자를 고치거나 지우고 숫자도 바꿔 새 버전 (2026-11-05, 오후 전면 확장)
 
-대표 지시(2026-11-05): 원장용 v4 보고서의 문장과 라벨을 AE가 직접 바로잡고, 저장된 숫자는 그대로 둔 채 새 버전
-PDF를 만든다. 템플릿 갱신과 **같은 경로**(`generate_monthly_report_for_hospital(template_only=True)`,
-`build_monthly_template_refresh_plan`)를 타며, 사유 코드만 `AE_EDIT`다. 코드는 `services/doctor_report_ae_edit.py`
-(검증·승계)와 `doctor_report_v4.apply_ae_overrides`(적용)다.
+대표 결정(2026-11-05 오후): "보고서 파일은 AE들이 직접 수정할 수 있어야 한다" — 원장용 v4 보고서에 찍히는 **모든 글자**를
+AE가 고치거나 지울 수 있고 **숫자도 자유롭게** 바꾼다(오전의 화이트리스트·숫자 보존 계약을 대체한다). 템플릿 갱신과
+**같은 경로**(`generate_monthly_report_for_hospital(template_only=True)`, `build_monthly_template_refresh_plan`)를 타며,
+사유 코드만 `AE_EDIT`다. 코드는 `services/doctor_report_ae_edit.py`(검증·항목·승계)와 `doctor_report_v4.apply_ae_overrides`(적용)다.
 
 | 고칠 수 있는 것 | 고칠 수 없는 것 |
 |---|---|
-| P1 핵심 3줄(`summary.key_lines[0..2]`), 카드 4 '{n}개 항목'의 이름 목록(`summary.cards[3].names` — n은 노출 행에서 세고 '외 N개'는 n에서 시스템이 붙인다), P5 시사점(`cases.found|missing.insight`), 대표 사례 교체(`cases.found|missing.record_id` — 그 달 매니페스트의 관측 기록 중에서만), P6 실행 내용(`plan.action[<측정 키워드>]`), 측정 키워드별 진료 항목 라벨(`treatment_label[<측정 키워드>]` — 부록 A·P6·진료 항목 막대·콘텐츠 표에 일관 적용, 같은 키워드의 규칙 문장 속 따옴표 구간도 함께 바뀌고, **노출된** 키워드의 라벨을 고치면 카드 4의 n·이름 목록·'외 N개'를 노출 행에서 빌더와 같은 규칙으로 다시 센다 — 묶음이 갈라지면 n이 늘고(4→5) 합쳐지면 줄어들며(4→3), 이름은 옛 라벨이 카드에 섰던 자리를 지킨다(`treatment_card_from_appendix`)) | 모든 숫자·비율·건수·순위, 측정 키워드 문장, 콘텐츠 제목·링크, 부록 A 표의 칸, 부록 B~D 고정 문구 |
+| 뷰 모델의 모든 글자 — 제목·머리말·카드 라벨·값·이름·설명·핵심 3줄과 그 라벨·비교 안내 문장·막대 라벨·값·글자·표의 모든 칸(콘텐츠 목록·그룹 표·히트맵 키워드와 칸 글자·칸 표시·경쟁 표·대신 언급·계획 표·부록 A)·AI 인용 줄·사례의 라벨·키워드·발췌·강조·플랫폼·날짜·설명 줄·시사점·검정 면의 라벨·값·설명·지난달 참고 줄·부록 B·C·D의 줄, 그리고 **템플릿에 박혀 있던 문구**(소제목·범례·캡션·표 머리글·링크 글자·시사점 소제목 — 이제 뷰의 기본값이다). 문장 하나·목록 항목·표 행·절 전체(예: 부록 D 통째로)를 **지울 수** 있고, 내용을 모두 지운 부록 절은 소제목도 사라진다. 숫자(막대 값·비율·건수·카드 값·검정 면 값)를 바꾸면 막대 길이도 따라간다. | 병원명·기간·공개 페이지 링크 주소·콘텐츠 링크 주소·마스트헤드(01~06·부록 라벨)·러닝 헤드. 본문 6절과 부록은 저마다 한 글자는 남아야 한다(다 지우면 빈 쪽이라 거절 — `SECTION_EMPTY`). 추이 값·경쟁 언급률·우선순위·키워드 수는 비울 수 없고 바꾸거나 행을 지운다. |
 
-- **검증**: 경로 화이트리스트 밖·빈 값·200자(라벨 40자) 초과·줄바꿈·의료광고 금지 표현(`medical_filter.check_forbidden`)·
-  내부 표식(`INTERNAL_ONLY_MARKERS`)·**원문에 없는 숫자**는 422로 거절하고 아무것도 쓰지 않는다. 워커는 적용 뒤
-  뷰 사실이 pristine 뷰와 같은지(`AE_EDIT_NUMBERS`, 진료 항목 묶음 사실 `treatment.*`와 카드 4의 n `card.treatments`만 예외 —
-  `doctor_report_ae_edit.is_treatment_grouping_fact`; 둘 다 같은 노출 행의 라벨 묶음에서 나온다. 카드 4 이름 목록은 라벨을 적용해
-  다시 센 n을 넘을 수 없다 — `TOO_MANY_NAMES`, 이어진 옛 목록도 같은 검사를 받는다)와 저장 요약에서 다시 만든
-  사실과 같은지(`AE_EDIT_FACTS`, `stored_facts_v4`)를 다시 보고, 원장 PDF는 종전과 같은 이진 검증
-  (`doctor-pdf-v4`)을 통과해야만 새 버전을 커밋한다(`refuse_without_artifact`).
-- **저장**: `content_summary.report_snapshot.render_inputs.ae_overrides = {schema_version, edited_by, edited_at,
-  fields, base_view, history}`. `doctor_view`는 수정을 적용한(실제로 찍은) 뷰라 검증·대조·전달의 독자는 바뀌지
-  않고, `base_view`는 시스템이 만든 pristine 뷰라 다음 버전이 같은 수정을 다시 얹고 화면이 원문을 보여 준다.
-- **승계**: 다음 템플릿 갱신·AE 수정 판은 저장된 수정 값을 전부 잇는다. 일반 재생성(`_build_monthly_report_for_hospital`)은
-  pristine 뷰의 숫자·키워드 집합이 같으면 전부, 바뀌었으면 **라벨만** 잇고 문장·사례 교체는 버려
-  (pristine끼리의 비교라 카드 4의 n 변화도 '바뀐 숫자'다 — 그 수를 담은 문장을 잇지 않기 위해; 막대 `treatment.*`만 보지 않는다)
-  `render_inputs.ae_overrides_dropped = {fields, reason: NUMBERS_CHANGED, from_report_id}`로 남긴다. 사라진 키워드의
-  라벨도 버린다(`NO_LONGER_APPLIES`). 이어진 값의 검증은 경로 하나씩이 아니라 **전체 문맥**(이어진 라벨 포함)으로 한다
-  (`invalid_carry_paths`) — 카드 4 이름 목록의 상한이 라벨을 적용해 다시 센 n이기 때문이다.
-- **옛 판 보정**: #286 코드로 저장된 AE 판은 라벨을 합치거나 갈라도 카드 4의 n·'외 N개'가 그대로였다. 그런 판은 다음 AE 수정 판·
-  템플릿 갱신이 pristine 뷰에서 다시 세어 바로잡고, 경쟁 병원 반영의 얼린 뷰·사실 대조와 그 postcheck는 저장된 수정 값을 지금
-  규칙으로 다시 얹은 카드로 바꿔 비교한다(`doctor_report_ae_edit.legacy_card_corrected`, WARN `AE_LEGACY_CARD_RECOUNTED`).
-- **API**: `GET /admin/hospitals/{id}/reports/{report_id}/ae-edit/preview[?overrides=<JSON>]`는 쓰기 없이 원문·현재 값·
-  사례 후보와 적용 결과·거절 사유를 돌려준다. `POST …/ae-edit`(본문 `{reason?, fields}`, `Idempotency-Key` 필수, 사람 계정만 — `require_active_account`라
-  시스템 actor는 403)는 같은 요청 키의 기존 실행이 있으면 먼저 그 영수증을 돌려주고(수정 값이 다르면 409), 그 뒤 최신 버전·v4 스냅샷일 때만 받고(아니면 409 `AE_EDIT_NOT_LATEST`·`AE_EDIT_REQUIRES_V4`), 감사
-  `generate_monthly_report_rebuild_requested`에 `mode: AE_EDIT`·`report_id`·필드별 전/후(`changes`)를 남긴 뒤
-  템플릿 갱신과 같은 OperationRun(`request_payload.ae_edit`)을 큐에 넣는다. 실패한 실행을 운영센터에서 재시도하면 같은 인자와 `ae_edit`가 그대로 이어진다. 새 버전은 `supersedes_report_id`로 이어지고
-  전달 기록은 건드리지 않으며 **다시 전달해야 반영된다**.
-- **Admin**: 보고서 다이얼로그 2번 구획 '문구·라벨 고치기 (선택)'(`ReportAeEditPanel`)에서 편집 가능 칸만 입력란으로
-  보이고(원문·현재 값, 숫자 칸은 읽기 전용), '저장 전 검증'이 미리보기로 거절 사유를 칸 옆에 보이며, '새 버전
-  만들기' 뒤 작업 기록을 따라 완료·실패를 알린다. 문구는 `ADMIN_COPY.aeEdit*`뿐이다.
-- **사후 확인**: `postcheck`는 AE 수정 판이 든 버전을 v3→v4 승격처럼 다룬다(`WARN:AE_EDIT`) — 원장 뷰·수정 기록은 숫자
-  칸으로 비교하지 않고, 저장 요약·얼린 뷰 사실이 새 PDF에 찍혔는지는 그대로 본다. 핵심 3줄의 숫자는 원문에 있던 것만
-  남길 수 있어 줄 수는 있고 늘지는 못한다.
+- **경로 문법**(`doctor_report_v4.parse_ae_path`, `AE_SCALARS`·`AE_INDEXED`·`AE_FIGURES`·`AE_COLLECTIONS`): 스칼라 `summary.title`·
+  `appendix.caveat_heading` …, 번호 목록 `summary.key_lines[i]`·`appendix.caveat_lines[i]`·`*.table_headers[i]`·`platform_labels[i]`, 카드
+  `summary.cards[i].label|value|definition|names`, 검정 면 `plan.figure(.label|.value|.caption)`, 사례 `cases.found|missing(.label|keyword|excerpt|
+  highlight|platform|measured_on|insight|caption|record_id)`, 행 `content.rows[<제목>]`·`exposure.heatmap[<키워드>]`·`competition.rows[<병원>]`·
+  `plan.rows[<키워드>]`·`appendix.keyword_rows[<키워드>]`·`appendix.glossary[<용어>]` …(행 자체 또는 `.<칸>`), 칸 `exposure.heatmap[<키워드>].cells[<플랫폼>].detail|state`·
+  `appendix.keyword_rows[<키워드>].cells[<플랫폼>]`, 종전 경로 `plan.action[<키워드>]`·`treatment_label[<키워드>]`(라벨은 부록 A·P6·막대·카드 4·콘텐츠 표에
+  일관 적용되고 노출 묶음이 바뀌면 카드 4의 n을 다시 센다). 값은 글자(""는 지움), 숫자, 목록, 칸 상태, `{"deleted": true}`(행·사례·검정 면·문구 지움),
+  None(수정 취소). 행의 키는 라벨·사례 교체를 적용한 뷰의 값이다.
+- **검증**: 경로 문법 밖·뷰에 없는 키·형 오류·400자(라벨 60자) 초과·줄바꿈·의료광고 금지 표현(`medical_filter.check_forbidden`, 100% 포함)·
+  내부 표식(`INTERNAL_ONLY_MARKERS`)·빈 절(`SECTION_EMPTY`)은 422로 거절하고 아무것도 쓰지 않는다. **숫자 보존 게이트는 없다**
+  (`AE_EDIT_NUMBERS`·`AE_EDIT_FACTS`·'원문에 없는 숫자' 제거) — pristine 뷰와 달라진 사실은 WARN `AE_EDIT_NUMBERS_CHANGED`와
+  `ae_overrides.fact_changes`(사실 키 → 전후)·`number_changes`(경로 → 전후·수정자·시각)·감사 `generate_monthly_report_rebuild_requested`의
+  `changes[].numbers_changed`·`fact_changes`로 남긴다. 원장 PDF 이진 검증(`doctor-pdf-v4`)·전달 게이트·postcheck는 **고친 뷰 자신의 사실**
+  (`required_texts`·`facts` = 저장되는 `doctor_metric_facts`)과 대조한다 — 지운 글자는 요구하지 않고, 인용 줄·지난달 참고 줄을 지우면 그 사실도 빠진다.
+  `refuse_without_artifact`는 그대로라 PDF가 검증을 통과해야만 새 버전을 커밋한다. 파생 문구(콘텐츠 편수·키워드 수·'나머지 N개'·사례 설명 줄)는 사람이 손대지
+  않았으면 지운 행에 맞춰 다시 센다(`with_derived_defaults`).
+- **저장**: `content_summary.report_snapshot.render_inputs.ae_overrides = {schema_version: 2, edited_by, edited_at, fields, base_view, history,
+  number_changes, fact_changes}`. `doctor_view`·`doctor_metric_facts`는 수정을 적용한(실제로 찍은) 뷰 기준이라 검증·대조·전달의 독자는 바뀌지
+  않고, `base_view`는 시스템이 만든 pristine 뷰라 다음 버전이 같은 수정을 다시 얹고 화면이 원문을 보여 준다. 확장 전 스냅샷(새 필드 없음)은
+  복원 때 기본값·파생값으로 채워져 같은 글자를 그린다(`restore_v4`).
+- **승계**: 다음 템플릿 갱신·AE 수정 판은 저장된 수정 값을 **전부** 잇는다. 경쟁 병원 반영은 `competition.*` 경로(경쟁 절의 행·칸·문구·지우기)와
+  경쟁 병원을 말하거나 원문이 바뀐 문장만 기존 규칙(`COMPETITION_CHANGED`)으로 버린다. 숫자가 바뀐 일반 재생성은 종전처럼 **라벨만** 잇되 새 경로는
+  분류(`doctor_report_v4.path_class`)로 가른다 — `label`(진료 항목 라벨)과 `static`(소제목·표 머리글·캡션·범례·링크 글자·용어·유의사항 줄과 그 지우기
+  — 측정과 무관한 고정 문구)은 잇고, `sentence`(핵심 3줄·notice·시사점·실행 내용·측정 방법 줄·인용 줄·발췌·빈 상태 문장)·`cell`(표의 칸·막대·카드 값·
+  검정 면 값·숫자)·`structure`(행·사례 지우기·사례 교체)는 버려 `ae_overrides_dropped = {fields, reason: NUMBERS_CHANGED}`로 남긴다. 이어진 값의
+  검증은 전체 문맥(`invalid_carry_paths`)으로 하고, 다 지운 절이 생기면 이어진 값 전부를 버린다.
+- **옛 판 보정**: #286 코드로 저장된 AE 판(라벨 합치기·분리 뒤 카드 4의 n이 그대로)은 경쟁 병원 반영의 얼린 뷰·사실 대조와 그 postcheck에서 지금 규칙으로
+  다시 얹은 카드로 바꿔 비교한다(`legacy_card_corrected`, WARN `AE_LEGACY_CARD_RECOUNTED`).
+- **API**: `GET …/reports/{report_id}/ae-edit/preview[?overrides=<JSON>]`와 `POST …/ae-edit/preview`(본문 `{fields}`, 긴 수정 값)는 쓰기 없이 보고서 순서대로의
+  편집 항목(`items`: 경로·절·종류·형·원문·지금 값·지움·행 지움·측정값과 다른 숫자)·사례 후보·적용 결과·거절 사유·`fact_changes`·`number_changes`를 돌려준다.
+  `POST …/ae-edit/preview-pdf`(본문 `{fields}`)는 저장 전에 같은 렌더러·이진 검증으로 만든 원장 PDF를 돌려준다(검증·렌더 실패는 422). `POST …/ae-edit`
+  (본문 `{reason?, fields}`, `Idempotency-Key` 필수, 사람 계정만)는 같은 요청 키의 기존 실행이 있으면 그 영수증을 돌려주고(수정 값이 다르면 409), 최신 버전·v4
+  스냅샷일 때만 받으며(아니면 409 `AE_EDIT_NOT_LATEST`·`AE_EDIT_REQUIRES_V4`), 감사에 `mode: AE_EDIT`·필드별 전/후·`number_changes`·`fact_changes`를 남긴 뒤
+  템플릿 갱신과 같은 OperationRun(`request_payload.ae_edit`)을 큐에 넣는다. 새 버전은 `supersedes_report_id`로 이어지고 전달 기록은 건드리지 않으며
+  **다시 전달해야 반영된다**.
+- **Admin**: 보고서 다이얼로그 2번 구획 '보고서 고치기 (선택)'(`ReportAeEditPanel`)이 01~06·부록 순서로 모든 항목을 보인다 — 항목마다 '지우기'와
+  '원래대로', 행마다 '행 지우기'/'행 원래대로', 측정값과 다른 숫자에 '측정값과 다름' 표시, '저장 전 검증'(POST 미리보기)·'PDF 미리보기'(새 탭)·
+  '새 버전 만들기'. 문구는 `ADMIN_COPY.aeEdit*`(항목 이름은 `aeEditKinds`, 절 이름은 `aeEditSections`)뿐이다.
+- **사후 확인**: `postcheck`는 AE 수정 판이 든 버전을 `WARN:AE_EDIT`로 표시하고 저장 요약 숫자가 아니라 **그 판의 `doctor_metric_facts`**가 새 PDF에
+  찍혔는지 본다. `precheck`도 AE 판은 지난달 참고 근거와 맞추지 않는다(WARN). `monthly_competitor_refresh` postcheck는 두 판 모두 수정 적용 사실이라
+  경쟁 사실만 달라야 PASS다.
+

@@ -225,7 +225,9 @@ def test_ae_edit_makes_a_validated_new_version_and_later_versions_carry_it(pg_se
     assert inputs.doctor_metric_facts == view.facts()
     assert second.content_summary["talking_points"] == list(view.summary.key_lines)
     stored = stored_ae_overrides(inputs)
-    assert stored["fields"] == fields and stored["edited_by"] == "ae@example.invalid"
+    from app.services.doctor_report_v4 import canonical_ae_path
+
+    assert stored["fields"] == {canonical_ae_path(path): value for path, value in fields.items()} and stored["edited_by"] == "ae@example.invalid"
     assert base_view_of(inputs) == base
     assert inputs.ae_overrides_dropped is None
     # 새 원장 PDF에 고친 문장과 라벨이 찍혔다.
@@ -244,7 +246,7 @@ def test_ae_edit_makes_a_validated_new_version_and_later_versions_carry_it(pg_se
     third = _latest(pg_session, hospital)
     third_inputs = report_render_inputs(third.content_summary)
     assert third.version == 3 and restore_doctor_view(third_inputs.doctor_view) == view
-    assert stored_ae_overrides(third_inputs)["fields"] == fields
+    assert stored_ae_overrides(third_inputs)["fields"] == {canonical_ae_path(path): value for path, value in fields.items()}
     assert stored_ae_overrides(third_inputs)["history"] == stored["history"]
 
     # 숫자가 같은 일반 재생성: 전부 잇는다.
@@ -256,7 +258,7 @@ def test_ae_edit_makes_a_validated_new_version_and_later_versions_carry_it(pg_se
     fourth_inputs = report_render_inputs(fourth.content_summary)
     fourth_view = restore_doctor_view(fourth_inputs.doctor_view)
     assert fourth.version == 4 and fourth_view.summary.key_lines[0] == fields["summary.key_lines[0]"]
-    assert stored_ae_overrides(fourth_inputs)["fields"] == fields and fourth_inputs.ae_overrides_dropped is None
+    assert stored_ae_overrides(fourth_inputs)["fields"] == {canonical_ae_path(path): value for path, value in fields.items()} and fourth_inputs.ae_overrides_dropped is None
 
     # 숫자가 바뀐 일반 재생성(발행 편수 변화): 라벨만 잇고 문장·사례 교체는 버린다.
     late = items[2]
@@ -276,7 +278,7 @@ def test_ae_edit_makes_a_validated_new_version_and_later_versions_carry_it(pg_se
     assert fifth_view.summary.key_lines[0] != fields["summary.key_lines[0]"]
     dropped = fifth_inputs.ae_overrides_dropped
     assert dropped["reason"] == "NUMBERS_CHANGED" and dropped["from_report_id"] == str(fourth.id)
-    assert set(dropped["fields"]) == {"summary.key_lines[0]", f"plan.action[{KEYWORD_2}]", "cases.missing.record_id"}
+    assert set(dropped["fields"]) == {"summary.key_lines[0]", f"plan.rows[{KEYWORD_2}].action", "cases.missing.record_id"}
 
 
 def test_ae_edit_with_a_forbidden_sentence_or_a_stale_report_writes_nothing(pg_session, monkeypatch):
@@ -284,7 +286,8 @@ def test_ae_edit_with_a_forbidden_sentence_or_a_stale_report_writes_nothing(pg_s
     hospital, _items, _records, first = _v4_first_version(pg_session, monkeypatch, texts)
     for ae_edit, code in (
         (_ae_edit(first, {"summary.key_lines[0]": "최고의 위내시경 병원입니다."}), "AE_EDIT_INVALID"),
-        (_ae_edit(first, {"summary.cards[1].value": "99%"}), "AE_EDIT_INVALID"),
+        # 숫자는 이제 자유다(2026-11-05 전면 확장) — 절을 통째로 비우는 요청만 거절한다.
+        (_ae_edit(first, {"cases.found": {"deleted": True}, "cases.missing": {"deleted": True}, "cases.headline": {"deleted": True}, "cases.empty_text": {"deleted": True}, "cases.empty_figure": {"deleted": True}}), "AE_EDIT_INVALID"),
         ({**_ae_edit(first, {"summary.key_lines[0]": "문장"}), "report_id": str(uuid.uuid4())}, "AE_EDIT_STALE_REPORT"),
     ):
         with pytest.raises(TemplateRefreshRefused) as caught:

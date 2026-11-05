@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import re
+from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from math import isfinite
@@ -94,9 +95,64 @@ _INTENT_TO_GROUP = {
     INTENT_INFO: None,
 }
 _NUMBER = re.compile(r"\d+(?:\.\d+)?")
+_CITATION_LINE = re.compile(r"AI 답변 (\d+)건 중 .*?인용 (\d+)건")
+_REFERENCE_NOTE = re.compile(r"지난달 AI 노출률 (\d+(?:\.\d+)?)%")
 # 뷰 사실 중 저장 요약에서 다시 만들 수 있어 근거가 꼭 있어야 하는 키(접두어 포함).
 _STORED_BACKED_KEYS = frozenset({"rate.current", "rate.previous", "card.rate", "card.keywords", "card.published", "citation"})
 _STORED_BACKED_PREFIXES = ("platform.", "kw.")
+
+
+# ── 템플릿에 박혀 있던 문구(2026-11-05 AE 수정 판 확장) — 뷰의 기본값이라 AE가 고치거나 지울 수 있다 ──────
+# 기본값으로 그린 결과는 문구를 템플릿에 두던 때와 글자 단위로 같다(`test_doctor_report_ae_full.py`).
+
+
+@dataclass(frozen=True, slots=True)
+class FigureBand:
+    """검정 면(큰 숫자 하나) — 라벨·값·설명. 셋 다 비면 그리지 않는다(= 지운 것)."""
+
+    label: str
+    value: str
+    caption: str = ""
+
+    def shown(self) -> bool:
+        return bool(self.label or self.value or self.caption)
+
+
+EYEBROW = "AI 노출 성과 보고서"
+KEY_LINE_LABELS = ("잘된 점", "보완할 점", "다음 달 중점")
+PUBLIC_LINK_LABEL = "병원 안내 페이지 보기"
+CONTENT_BARS_HEADING = "진료 항목별 발행 편수"
+CONTENT_ROWS_HEADING = "발행 콘텐츠 목록"
+CONTENT_TABLE_HEADERS = ("발행일", "콘텐츠 제목", "진료 항목", "타깃 키워드", "링크")
+CONTENT_LINK_LABEL = "보기"
+CONTENT_EMPTY_FIGURE = FigureBand("이번 달 발행 편수", "0편")
+TREND_HEADING = "월별 AI 노출률 추이"
+PLATFORM_HEADING = "AI 서비스별 노출률"
+TREATMENT_HEADING = "진료 항목별 AI 노출률"
+GROUP_HEADING = "질문 그룹별 노출률"
+GROUP_HEADERS = ("그룹", "키워드 수", "노출률", "근거")
+HEATMAP_HEADING = "측정 키워드별 노출"
+HEATMAP_ASIDE = "주황 노출 · 회색 미노출 · 빗금 측정 실패"
+HEATMAP_KEYWORD_HEAD = "측정 키워드"
+KEYWORD_FIGURE_LABEL = "측정 키워드"
+KEYWORD_FIGURE_CAPTION_TAIL = " — 키워드별 결과는 다음 측정부터 이 자리에 보입니다."
+COMPETITION_HEADERS = ("병원", "언급 답변 수", "언급률")
+UNEXPOSED_FIGURE_LABEL = "병원명이 노출되지 않은 측정 키워드"
+UNEXPOSED_FIGURE_CAPTION = "다음 달 실행 계획(06)에서 키워드마다 대응 콘텐츠를 정했습니다."
+INSIGHT_LABEL = "시사점"
+CASE_CAPTION_TAIL = " 확인 · 답변 발췌"
+CASES_EMPTY_FIGURE = FigureBand("이번 달 확인한 답변 사례", "0건")
+PLAN_HEADERS = ("우선순위", "진료 항목", "현재 노출률", "실행 내용", "목표 키워드")
+PLAN_FIGURE_LABEL = "다음 달 대응 키워드"
+PLAN_CONTINUED_HEADING = "다음 달 실행 계획 (이어짐)"
+APPENDIX_HEADING = "A. 측정 키워드 전체와 결과"
+APPENDIX_HEADERS = ("측정 키워드", "그룹", "진료 항목", "합계", "지난달")
+APPENDIX_TABLE_CAPTION = "칸의 수는 노출 답변 수/AI 답변 수입니다. —는 그 칸의 측정이 없었다는 뜻입니다."
+APPENDIX_EMPTY_TEXT = "이번 달 측정 키워드 결과가 없습니다. 다음 달 첫 측정부터 이 표에 담깁니다."
+METHOD_HEADING = "B. 측정 방법"
+GLOSSARY_HEADING = "C. 용어 정의"
+CAVEAT_HEADING = "D. 유의사항"
+HEAT_STATES = ("mentioned", "unmentioned", "failed", "unmeasured")
 
 
 # ── 뷰 모델 ──────────────────────────────────────────────────────────────────
@@ -120,6 +176,9 @@ class SummaryPage:
     key_lines: tuple[str, ...]
     # 비교하지 않은 달에만 한 줄. 아니면 빈 문자열.
     notice: str = ""
+    eyebrow: str = EYEBROW
+    key_labels: tuple[str, ...] = KEY_LINE_LABELS
+    public_link_label: str = PUBLIC_LINK_LABEL
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,6 +203,12 @@ class ContentPage:
     bars: tuple[BarItem, ...]  # 진료 항목별 발행 편수
     rows: tuple[ContentRow, ...]
     empty_text: str = ""
+    bars_heading: str = CONTENT_BARS_HEADING
+    rows_heading: str = CONTENT_ROWS_HEADING
+    rows_aside: str | None = None  # 파생: "{n}편"
+    table_headers: tuple[str, ...] = CONTENT_TABLE_HEADERS
+    link_label: str = CONTENT_LINK_LABEL
+    empty_figure: FigureBand = CONTENT_EMPTY_FIGURE
 
 
 @dataclass(frozen=True, slots=True)
@@ -185,6 +250,17 @@ class ExposurePage:
     citation_lines: tuple[str, ...]
     # 비교한 달에 헤드라인(같은 질문만)과 AI 서비스별 수치(이번 달 전체)의 분모가 다를 때 한 줄.
     platform_note: str = ""
+    trend_heading: str = TREND_HEADING
+    platform_heading: str = PLATFORM_HEADING
+    treatment_heading: str = TREATMENT_HEADING
+    group_heading: str = GROUP_HEADING
+    group_headers: tuple[str, ...] = GROUP_HEADERS
+    heatmap_heading: str = HEATMAP_HEADING
+    heatmap_aside: str = HEATMAP_ASIDE
+    heatmap_keyword_head: str = HEATMAP_KEYWORD_HEAD
+    treatment_empty_text: str | None = None  # 파생: 측정 상태 문구
+    heatmap_empty_text: str | None = None  # 파생: 측정 상태 문구
+    keyword_figure: FigureBand | None = None  # 파생: 히트맵이 없을 때의 검정 면
 
 
 @dataclass(frozen=True, slots=True)
@@ -211,6 +287,9 @@ class CompetitionPage:
     replaced: tuple[ReplacedRow, ...]
     unexposed_count: int | None
     empty_text: str = ""
+    table_headers: tuple[str, ...] = COMPETITION_HEADERS
+    replaced_heading: str | None = None  # 파생: "{병원명}이 빠진 키워드에서 대신 언급된 병원"
+    figure: FigureBand | None = None  # 파생: 미노출 키워드 수 또는 측정 키워드 수
 
 
 @dataclass(frozen=True, slots=True)
@@ -222,6 +301,7 @@ class Case:
     platform: str
     measured_on: str  # "2026-10-01"
     insight: str
+    caption: str | None = None  # 파생: "{platform} · {measured_on} 확인 · 답변 발췌"
 
 
 @dataclass(frozen=True, slots=True)
@@ -230,6 +310,8 @@ class CasesPage:
     found: Case | None
     missing: Case | None
     empty_text: str = ""
+    insight_label: str = INSIGHT_LABEL
+    empty_figure: FigureBand = CASES_EMPTY_FIGURE
 
 
 PlanKind = Literal["publish", "optimize", "first"]
@@ -251,6 +333,10 @@ class PlanPage:
     rows: tuple[PlanRow, ...]  # 본문에 두는 행
     continued: tuple[PlanRow, ...]  # 부록으로 이어지는 행
     empty_text: str = ""
+    table_headers: tuple[str, ...] = PLAN_HEADERS
+    continued_caption: str | None = None  # 파생: "나머지 {n}개는 부록에 이어집니다."
+    continued_heading: str = PLAN_CONTINUED_HEADING
+    figure: FigureBand | None = None  # 파생: "다음 달 대응 키워드 {n}개"
 
 
 @dataclass(frozen=True, slots=True)
@@ -270,6 +356,13 @@ class Appendix:
     method_lines: tuple[str, ...]
     glossary: tuple[tuple[str, str], ...]
     caveat_lines: tuple[str, ...]
+    heading: str = APPENDIX_HEADING
+    table_headers: tuple[str, ...] = APPENDIX_HEADERS
+    table_caption: str = APPENDIX_TABLE_CAPTION
+    empty_text: str = APPENDIX_EMPTY_TEXT
+    method_heading: str = METHOD_HEADING
+    glossary_heading: str = GLOSSARY_HEADING
+    caveat_heading: str = CAVEAT_HEADING
 
 
 @dataclass(frozen=True, slots=True)
@@ -299,73 +392,123 @@ class DoctorReportV4:
     keyword_measured: int | None = None
     keyword_exposed: int | None = None
     sample_label: str = ""
+    platform_labels: tuple[str, ...] = ()  # 파생: 플랫폼 표시 이름(ChatGPT·Gemini) — 히트맵·부록 A 머리글
 
     # 내부 AE 화면·Admin이 읽는 세 줄. 원장 PDF 본문의 핵심 3줄과 같다.
     @property
     def talking_points(self) -> list[str]:
         return list(self.summary.key_lines)
 
-    # 렌더 검증이 쪽마다 요구하는 문구. 템플릿은 이 문자열을 글자 그대로 찍는다.
+    # 렌더 검증이 쪽마다 요구하는 문구. 템플릿은 이 문자열을 글자 그대로 찍는다 — 조건부로 그리는 요소는 템플릿과
+    # 같은 조건으로만 요구하고, AE가 지운 글자("")는 요구하지 않는다.
     def required_texts(self) -> tuple[tuple[str, ...], ...]:
         s = self.summary
-        p1: list[str] = [s.title, self.hospital_name, *s.key_lines]
+        p1: list[str] = [s.eyebrow, s.title, self.hospital_name]
+        for label, line in zip(s.key_labels, s.key_lines, strict=False):
+            if line:
+                p1.extend((label, line))
         for card in s.cards:
             p1.extend((card.label, card.value, card.definition))
             p1.extend(card.names)
-        if s.notice:
-            p1.append(s.notice)
-        p2: list[str] = [self.content.headline]
-        for row in self.content.rows:
-            p2.extend((row.title, row.treatment))
-        p2.extend(bar.detail for bar in self.content.bars)
-        if self.content.empty_text:
-            p2.append(self.content.empty_text)
-        p3: list[str] = [self.exposure.headline]
-        for bar in (*self.exposure.platform_bars, *self.exposure.treatment_bars):
+        p1.extend((s.notice, s.public_link_label))
+        c = self.content
+        p2: list[str] = [c.headline]
+        if c.bars:
+            p2.append(c.bars_heading)
+            p2.extend(bar.detail for bar in c.bars if bar.value is not None)  # 값을 비운 막대는 '—'로 찍힌다
+        if c.rows:
+            p2.extend((c.rows_heading, c.rows_aside or "", *c.table_headers))
+            for row in c.rows:
+                p2.extend((row.title, row.treatment))
+        else:
+            p2.extend(_band_texts(c.empty_figure))
+            p2.append(c.empty_text)
+        e = self.exposure
+        p3: list[str] = [e.headline, e.platform_heading, e.treatment_heading, e.group_heading, e.heatmap_heading, e.heatmap_aside]
+        if len(e.trend) >= 2:
+            p3.append(e.trend_heading)
+        for bar in (*e.platform_bars, *e.treatment_bars):
             p3.extend((bar.label, bar.detail))
             if bar.value is not None:
                 p3.append(_pct(bar.value))
-        for row in self.exposure.group_rows:
+        if not e.treatment_bars:
+            p3.append(e.treatment_empty_text or "")
+        p3.extend(e.group_headers)
+        for row in e.group_rows:
             p3.append(row.detail)
             if row.rate is not None:
                 p3.append(_pct(row.rate))
-        p3.extend(_pct(point.value) for point in self.exposure.trend)
-        p3.extend(self.exposure.citation_lines)
-        if self.exposure.platform_note:
-            p3.append(self.exposure.platform_note)
-        p4: list[str] = [self.competition.headline]
-        if self.competition.basis:
-            p4.append(self.competition.basis)
-        for row in self.competition.rows:
-            p4.extend((row.name, row.count_label, _pct(row.rate)))
-        if self.competition.empty_text:
-            p4.append(self.competition.empty_text)
-        p5: list[str] = [self.cases.headline]
-        for case in (self.cases.found, self.cases.missing):
-            if case is not None:
-                p5.extend((case.keyword, case.insight))
-        if self.cases.empty_text:
-            p5.append(self.cases.empty_text)
-        p6: list[str] = [self.plan.headline]
-        for row in self.plan.rows:
-            p6.extend((row.keyword, row.action))
-        if self.plan.empty_text:
-            p6.append(self.plan.empty_text)
-        appendix: list[str] = []
-        for row in self.appendix.keyword_rows:
-            appendix.extend((row.keyword, row.total))
-        for row in self.plan.continued:
-            appendix.extend((row.keyword, row.action))
-        appendix.extend(self.appendix.method_lines)
-        for term, definition in self.appendix.glossary:
-            appendix.extend((term, definition))
-        appendix.extend(self.appendix.caveat_lines)
-        if self.appendix.keyword_note:
-            appendix.append(self.appendix.keyword_note)
-        return (
-            tuple(_dedupe(p1)), tuple(_dedupe(p2)), tuple(_dedupe(p3)), tuple(_dedupe(p4)),
-            tuple(_dedupe(p5)), tuple(_dedupe(p6)), tuple(_dedupe(appendix)),
-        )
+        if len(e.trend) >= 2:  # 추이 그래프는 두 점부터 그린다(템플릿 `has_trend`)
+            p3.extend(_pct(point.value) for point in e.trend)
+        if e.heatmap:
+            p3.extend((e.heatmap_keyword_head, *self.platform_labels))
+            for row in e.heatmap:
+                p3.extend((row.keyword, *(cell.detail for cell in row.cells)))
+        else:
+            p3.append(e.heatmap_empty_text or "")
+            p3.extend(_band_texts(e.keyword_figure))
+        p3.extend(e.citation_lines)
+        p3.append(e.platform_note)
+        k = self.competition
+        p4: list[str] = [k.headline]
+        if k.rows:
+            p4.extend((k.basis, *k.table_headers))
+            for row in k.rows:
+                p4.extend((row.name, row.count_label, _pct(row.rate)))
+            if k.replaced:
+                p4.append(k.replaced_heading or "")
+                for replaced in k.replaced:
+                    p4.extend((replaced.keyword, *replaced.competitors))
+        else:
+            p4.append(k.empty_text)
+        p4.extend(_band_texts(k.figure))
+        cs = self.cases
+        p5: list[str] = [cs.headline]
+        cases = [case for case in (cs.found, cs.missing) if case is not None]
+        for case in cases:
+            p5.extend((case.label, case.keyword, case.insight, case.caption or ""))
+        if any(case.insight for case in cases):  # 시사점 패널은 시사점이 하나라도 있을 때만
+            p5.append(cs.insight_label)
+        if not cases:
+            p5.append(cs.empty_text)
+            p5.extend(_band_texts(cs.empty_figure))
+        p = self.plan
+        p6: list[str] = [p.headline]
+        if p.rows:
+            p6.extend(p.table_headers)
+            for row in p.rows:
+                p6.extend((row.keyword, row.action, row.treatment, row.rate_label))
+            if p.continued:
+                p6.append(p.continued_caption or "")
+        else:
+            p6.append(p.empty_text)
+        p6.extend(_band_texts(p.figure))
+        a = self.appendix
+        appendix: list[str] = [a.heading]
+        if a.keyword_rows:
+            # '지난달' 열은 비교한 달에만 그린다(템플릿 `show_previous`).
+            show_previous = any(row.previous for row in a.keyword_rows)
+            appendix.extend((*a.table_headers[:3], *self.platform_labels, *a.table_headers[3:4], a.table_caption))
+            if show_previous:
+                appendix.extend(a.table_headers[4:5])
+            for row in a.keyword_rows:
+                appendix.extend((row.keyword, row.total))
+        else:
+            appendix.append(a.empty_text)
+        appendix.append(a.keyword_note)
+        if p.continued:
+            appendix.extend((p.continued_heading, *p.table_headers))
+            for row in p.continued:
+                appendix.extend((row.keyword, row.action))
+        if any(a.method_lines):
+            appendix.extend((a.method_heading, *a.method_lines))
+        if any(term or definition for term, definition in a.glossary):
+            appendix.append(a.glossary_heading)
+            for term, definition in a.glossary:
+                appendix.extend((term, definition))
+        if any(a.caveat_lines):
+            appendix.extend((a.caveat_heading, *a.caveat_lines))
+        return tuple(tuple(_dedupe(text for text in group if text)) for group in (p1, p2, p3, p4, p5, p6, appendix))
 
     def required_links(self) -> tuple[str, ...]:
         return tuple(_dedupe(row.url for row in self.content.rows if row.url))
@@ -379,8 +522,16 @@ class DoctorReportV4:
             ("rate.previous", self.previous_rate),
             ("rate.reference_previous", self.reference_previous_rate),
         ):
-            if value is not None:
-                facts[key] = _pct(value)
+            if value is None:
+                continue
+            # 지난달 참고치는 부록 A의 참고 줄에만 찍힌다 — AE가 그 줄을 지웠거나 고쳤으면(2026-11-05) 사실에서도 뺀다.
+            if key == "rate.reference_previous":
+                match = _REFERENCE_NOTE.search(self.appendix.keyword_note or "")
+                if match is None:
+                    continue
+                facts[key] = match.group(1) + "%"
+                continue
+            facts[key] = _pct(value)
         for card, key in zip(self.summary.cards, ("published", "rate", "keywords", "treatments"), strict=False):
             if _NUMBER.search(card.value):
                 facts[f"card.{key}"] = card.value
@@ -392,30 +543,39 @@ class DoctorReportV4:
                 if match:
                     facts["card.cumulative"] = match.group(1)
         for bar in self.exposure.platform_bars:
-            if bar.value is not None:
+            if bar.value is not None and bar.label:
                 platform = _platform_id(bar.label)
                 facts[f"platform.{platform}"] = _pct(bar.value)
                 facts[f"platform.{platform}.answers"] = bar.detail
         for bar in self.exposure.treatment_bars:
-            if bar.value is not None:
+            if bar.value is not None and bar.label:
                 facts[f"treatment.{bar.label}"] = bar.detail
                 facts[f"treatment.{bar.label}.rate"] = _pct(bar.value)
         for row in self.exposure.group_rows:
-            if row.rate is not None:
+            if row.rate is not None and row.group:
                 facts[f"group.{row.group}"] = row.detail
                 facts[f"group.{row.group}.rate"] = _pct(row.rate)
-        for point in self.exposure.trend:
-            facts[f"trend.{point.label}"] = _pct(point.value)
-        if self.citation_measured is not None and self.citation_cited is not None:
-            facts["citation"] = f"{self.citation_measured}건 중 {self.citation_cited}건"
+        if len(self.exposure.trend) >= 2:
+            for point in self.exposure.trend:
+                if point.label:
+                    facts[f"trend.{point.label}"] = _pct(point.value)
+        # 인용 사실은 실제로 찍히는 인용 줄에서 읽는다 — AE가 줄을 지우거나 숫자를 고치면(2026-11-05) 사실도 따라간다.
+        for line in self.exposure.citation_lines:
+            match = _CITATION_LINE.search(line or "")
+            if match:
+                facts["citation"] = f"{match.group(1)}건 중 {match.group(2)}건"
+                break
         for row in self.competition.rows:
-            facts[f"competitor.{row.name}"] = row.count_label
-            facts[f"competitor.{row.name}.rate"] = _pct(row.rate)
+            if row.name and _NUMBER.search(row.count_label):
+                facts[f"competitor.{row.name}"] = row.count_label
+                facts[f"competitor.{row.name}.rate"] = _pct(row.rate)
         for row in self.appendix.keyword_rows:
-            if row.total != "—":
+            if not row.keyword:
+                continue
+            if row.total and row.total != "—":
                 facts[f"kw.{row.keyword}.total"] = row.total
             for platform, cell in zip(self.platforms, row.cells, strict=False):
-                if cell != "—":
+                if cell and cell != "—":
                     facts[f"kw.{row.keyword}.{platform}"] = cell
             if row.previous:
                 facts[f"kw.{row.keyword}.previous"] = row.previous
@@ -463,6 +623,10 @@ def _dedupe(values: Iterable[str]) -> list[str]:
         if value and value not in seen:
             seen.append(value)
     return seen
+
+
+def _band_texts(band: FigureBand | None) -> tuple[str, ...]:
+    return (band.label, band.value, band.caption) if band is not None and band.shown() else ()
 
 
 def _comparable_comparison(comparison: Mapping[str, Any] | None) -> bool:
@@ -776,7 +940,7 @@ def build_doctor_report_v4(
         keywords=keywords, platform_ids=platform_ids, comparable=comparable,
         reference=reference, v0_baseline=v0_baseline, coverage=coverage, setup=setup,
     )
-    return DoctorReportV4(
+    return with_derived_defaults(DoctorReportV4(
         template_version=TEMPLATE_VERSION,
         report_kind=report_kind,
         hospital_name=hospital_name,
@@ -804,7 +968,7 @@ def build_doctor_report_v4(
         keyword_measured=len(measured) if not setup else None,
         keyword_exposed=len(exposed) if not setup else None,
         sample_label=sample_label,
-    )
+    ))
 
 
 # ── P1 ──────────────────────────────────────────────────────────────────────
@@ -1250,7 +1414,10 @@ def case_from_record(
         else:
             insight = f"병원명이 나오지 않았습니다 → '{treatment}' 콘텐츠 1편 발행"
         label = "미노출 사례"
-    return Case(label, keyword, excerpt, highlight, platform, measured_on, insight)
+    return Case(
+        label, keyword, excerpt, highlight, platform, measured_on, insight,
+        caption=f"{platform} · {measured_on}{CASE_CAPTION_TAIL}",
+    )
 
 
 def _cases_page(*, records, hospital_name, setup, by_text, regions, works, registered, registered_names=()) -> CasesPage:
@@ -1422,6 +1589,118 @@ def _appendix(*, keywords, platform_ids, comparable, reference, v0_baseline, cov
     )
 
 
+# ── 파생 기본값 ────────────────────────────────────────────────────────────────
+# 템플릿이 계산하던 문구(편수·키워드 수·병원명이 든 소제목·사례 캡션)는 뷰 필드가 됐다. None은 '아직 정하지 않음'이고
+# 빌더·복원(옛 스냅샷)·AE 적용 끝에서 `with_derived_defaults`가 채운다. ""는 AE가 지운 것이라 건드리지 않는다.
+
+
+def _measurement_detail(exposure: ExposurePage) -> str:
+    return exposure.platform_bars[0].detail if exposure.platform_bars else NOT_MEASURED_YET
+
+
+def keyword_total(view: DoctorReportV4) -> int:
+    return len(view.appendix.keyword_rows) or (len(view.plan.rows) + len(view.plan.continued))
+
+
+def derived_defaults(view: DoctorReportV4) -> dict[str, Any]:
+    """뷰 구조에서 계산한 파생 문구 — 경로 → 값(`with_derived_defaults`·AE 적용의 '손대지 않은 값' 판정 공용)."""
+    detail = _measurement_detail(view.exposure)
+    total = keyword_total(view)
+    plan_count = len(view.plan.rows) + len(view.plan.continued)
+    k = view.competition
+    if k.unexposed_count is not None:
+        figure = FigureBand(UNEXPOSED_FIGURE_LABEL, f"{k.unexposed_count}개", UNEXPOSED_FIGURE_CAPTION)
+    else:
+        figure = FigureBand(KEYWORD_FIGURE_LABEL, f"{total}개")
+    values: dict[str, Any] = {
+        "platform_labels": tuple(platform_name(p) for p in view.platforms),
+        "content.rows_aside": f"{len(view.content.rows)}편",
+        "exposure.treatment_empty_text": detail,
+        "exposure.heatmap_empty_text": detail,
+        "exposure.keyword_figure": FigureBand(KEYWORD_FIGURE_LABEL, f"{total}개", f"{detail}{KEYWORD_FIGURE_CAPTION_TAIL}"),
+        "competition.replaced_heading": f"{view.hospital_name}이 빠진 키워드에서 대신 언급된 병원",
+        "competition.figure": figure,
+        "plan.continued_caption": f"나머지 {len(view.plan.continued)}개는 부록에 이어집니다.",
+        "plan.figure": FigureBand(PLAN_FIGURE_LABEL, f"{plan_count}개"),
+    }
+    for slot in ("found", "missing"):
+        case = getattr(view.cases, slot)
+        if case is not None:
+            values[f"cases.{slot}.caption"] = f"{case.platform} · {case.measured_on}{CASE_CAPTION_TAIL}"
+    return values
+
+
+def with_derived_defaults(view: DoctorReportV4) -> DoctorReportV4:
+    """None(아직 정하지 않음)인 파생 필드를 구조에서 계산한 값으로 채운다. ""(지움)과 사람이 적은 값은 그대로다."""
+    defaults = derived_defaults(view)
+    platform_labels = view.platform_labels if len(view.platform_labels) == len(view.platforms) else defaults["platform_labels"]
+    content = view.content
+    if content.rows_aside is None:
+        content = replace(content, rows_aside=defaults["content.rows_aside"])
+    exposure = view.exposure
+    exposure = replace(
+        exposure,
+        treatment_empty_text=defaults["exposure.treatment_empty_text"] if exposure.treatment_empty_text is None else exposure.treatment_empty_text,
+        heatmap_empty_text=defaults["exposure.heatmap_empty_text"] if exposure.heatmap_empty_text is None else exposure.heatmap_empty_text,
+        keyword_figure=defaults["exposure.keyword_figure"] if exposure.keyword_figure is None else exposure.keyword_figure,
+    )
+    competition = replace(
+        view.competition,
+        replaced_heading=defaults["competition.replaced_heading"] if view.competition.replaced_heading is None else view.competition.replaced_heading,
+        figure=defaults["competition.figure"] if view.competition.figure is None else view.competition.figure,
+    )
+    cases = view.cases
+    for slot in ("found", "missing"):
+        case = getattr(cases, slot)
+        if case is not None and case.caption is None:
+            cases = replace(cases, **{slot: replace(case, caption=defaults[f"cases.{slot}.caption"])})
+    plan = replace(
+        view.plan,
+        continued_caption=defaults["plan.continued_caption"] if view.plan.continued_caption is None else view.plan.continued_caption,
+        figure=defaults["plan.figure"] if view.plan.figure is None else view.plan.figure,
+    )
+    return replace(
+        view, platform_labels=platform_labels, content=content, exposure=exposure, competition=competition,
+        cases=cases, plan=plan,
+    )
+
+
+def _reset_untouched_derived(edited: DoctorReportV4, pristine: DoctorReportV4, explicit: set[str]) -> DoctorReportV4:
+    """AE 적용 뒤: 사람이 명시하지 않았고 값이 pristine의 파생값 그대로인 파생 필드를 None으로 되돌려 새 구조에서 다시 계산하게 한다."""
+    old = derived_defaults(pristine)
+
+    def keep(path: str, current: Any) -> bool:
+        touched = any(item == path or item.startswith(path + ".") for item in explicit)
+        return touched or current != old.get(path)
+
+    content = edited.content if keep("content.rows_aside", edited.content.rows_aside) else replace(edited.content, rows_aside=None)
+    e = edited.exposure
+    e = replace(
+        e,
+        treatment_empty_text=e.treatment_empty_text if keep("exposure.treatment_empty_text", e.treatment_empty_text) else None,
+        heatmap_empty_text=e.heatmap_empty_text if keep("exposure.heatmap_empty_text", e.heatmap_empty_text) else None,
+        keyword_figure=e.keyword_figure if keep("exposure.keyword_figure", e.keyword_figure) else None,
+    )
+    k = edited.competition
+    k = replace(
+        k,
+        replaced_heading=k.replaced_heading if keep("competition.replaced_heading", k.replaced_heading) else None,
+        figure=k.figure if keep("competition.figure", k.figure) else None,
+    )
+    cases = edited.cases
+    for slot in ("found", "missing"):
+        case = getattr(cases, slot)
+        if case is not None and not keep(f"cases.{slot}.caption", case.caption):
+            cases = replace(cases, **{slot: replace(case, caption=None)})
+    p = edited.plan
+    p = replace(
+        p,
+        continued_caption=p.continued_caption if keep("plan.continued_caption", p.continued_caption) else None,
+        figure=p.figure if keep("plan.figure", p.figure) else None,
+    )
+    return with_derived_defaults(replace(edited, content=content, exposure=e, competition=k, cases=cases, plan=p))
+
+
 # ── 얼리기·복원 ─────────────────────────────────────────────────────────────
 
 
@@ -1429,14 +1708,31 @@ def freeze_v4(view: DoctorReportV4) -> dict[str, Any]:
     return asdict(view)
 
 
+def _band(value: Any, default: FigureBand | None) -> FigureBand | None:
+    if isinstance(value, Mapping):
+        return FigureBand(str(value.get("label") or ""), str(value.get("value") or ""), str(value.get("caption") or ""))
+    return default
+
+
+def _strings_tuple(value: Any, default: tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(str(item) for item in value) if isinstance(value, (list, tuple)) else default
+
+
 def restore_v4(payload: Mapping[str, Any]) -> DoctorReportV4:
+    """얼린 v4 뷰를 복원한다. 템플릿 문구 확장(2026-11-05) 전 스냅샷은 새 필드가 없어 기본값·파생값으로 채운다."""
     data = dict(payload)
     s = dict(data["summary"])
     s["cards"] = tuple(Card(**{**c, "names": tuple(c.get("names") or ())}) for c in s["cards"])
     s["key_lines"] = tuple(s["key_lines"])
+    s["key_labels"] = _strings_tuple(s.get("key_labels"), KEY_LINE_LABELS)
+    s.setdefault("eyebrow", EYEBROW)
+    s.setdefault("public_link_label", PUBLIC_LINK_LABEL)
     c = dict(data["content"])
     c["bars"] = tuple(BarItem(**b) for b in c["bars"])
     c["rows"] = tuple(ContentRow(**r) for r in c["rows"])
+    c["table_headers"] = _strings_tuple(c.get("table_headers"), CONTENT_TABLE_HEADERS)
+    c["empty_figure"] = _band(c.get("empty_figure"), CONTENT_EMPTY_FIGURE)
+    c.setdefault("rows_aside", None)
     e = dict(data["exposure"])
     e["trend"] = tuple(TrendPoint(**t) for t in e["trend"])
     e["treatment_bars"] = tuple(BarItem(**b) for b in e["treatment_bars"])
@@ -1445,22 +1741,30 @@ def restore_v4(payload: Mapping[str, Any]) -> DoctorReportV4:
     e["heatmap"] = tuple(HeatRow(r["keyword"], tuple(HeatCell(**h) for h in r["cells"])) for r in e["heatmap"])
     e["citation_lines"] = tuple(e["citation_lines"])
     e["platform_note"] = str(e.get("platform_note") or "")
+    e["group_headers"] = _strings_tuple(e.get("group_headers"), GROUP_HEADERS)
+    e["keyword_figure"] = _band(e.get("keyword_figure"), None)
     k = dict(data["competition"])
     k["rows"] = tuple(CompetitorRow(**r) for r in k["rows"])
     k["replaced"] = tuple(ReplacedRow(r["keyword"], tuple(r["competitors"])) for r in k["replaced"])
+    k["table_headers"] = _strings_tuple(k.get("table_headers"), COMPETITION_HEADERS)
+    k["figure"] = _band(k.get("figure"), None)
     cs = dict(data["cases"])
     cs["found"] = Case(**cs["found"]) if cs.get("found") else None
     cs["missing"] = Case(**cs["missing"]) if cs.get("missing") else None
+    cs["empty_figure"] = _band(cs.get("empty_figure"), CASES_EMPTY_FIGURE)
     p = dict(data["plan"])
     p["rows"] = tuple(PlanRow(**r) for r in p["rows"])
     p["continued"] = tuple(PlanRow(**r) for r in p["continued"])
+    p["table_headers"] = _strings_tuple(p.get("table_headers"), PLAN_HEADERS)
+    p["figure"] = _band(p.get("figure"), None)
     a = dict(data["appendix"])
     a["keyword_rows"] = tuple(AppendixKeywordRow(**{**r, "cells": tuple(r["cells"])}) for r in a["keyword_rows"])
     a["method_lines"] = tuple(a["method_lines"])
     a["glossary"] = tuple(tuple(pair) for pair in a["glossary"])
     a["caveat_lines"] = tuple(a["caveat_lines"])
+    a["table_headers"] = _strings_tuple(a.get("table_headers"), APPENDIX_HEADERS)
     platforms = data.get("platforms")
-    return DoctorReportV4(
+    return with_derived_defaults(DoctorReportV4(
         template_version="v4",
         report_kind=data["report_kind"],
         hospital_name=data["hospital_name"],
@@ -1483,7 +1787,8 @@ def restore_v4(payload: Mapping[str, Any]) -> DoctorReportV4:
         keyword_measured=data.get("keyword_measured"),
         keyword_exposed=data.get("keyword_exposed"),
         sample_label=str(data.get("sample_label") or ""),
-    )
+        platform_labels=_strings_tuple(data.get("platform_labels"), ()),
+    ))
 
 
 def is_v4_payload(payload: Any) -> bool:
@@ -1737,20 +2042,35 @@ def v3_frozen_facts_problems(
 # ── AE 수정 판 — 서술 문구·진료 항목 라벨만 덮어쓰기 ────────────────────────────
 # 저장된 숫자는 건드리지 않는다. 수정 값은 `render_inputs.ae_overrides.fields`(필드 경로 → 값)에 있고,
 # 뷰 조립 뒤 이 함수 하나가 pristine 뷰(시스템이 만든 판)에 적용한다. 템플릿은 바뀌지 않는다.
-# 경로 문법(화이트리스트 — 여기 없는 경로는 거절한다):
-#   summary.key_lines[0|1|2]        P1 핵심 3줄
-#   summary.cards[3].names          카드 4 '{n}개 항목'의 이름 목록(숫자 n은 노출 행에서 세고, '외 N개' 꼬리는 n에서 시스템이 붙인다)
-#   cases.found.insight / cases.missing.insight    P5 시사점 문장
-#   cases.found.record_id / cases.missing.record_id 대표 사례 교체(그 달 매니페스트의 관측 기록 중에서만)
-#   plan.action[<측정 키워드>]        P6 '실행 내용' 문구(본문 행·부록 이어짐 행)
-#   treatment_label[<측정 키워드>]    측정 키워드의 진료 항목 라벨 — 부록 A·P6·막대·카드 4·콘텐츠 표에 일관 적용
-AE_OVERRIDES_SCHEMA_VERSION = 1
+# ── AE 수정 판(2026-11-05, 대표 결정으로 전면 확장) ───────────────────────────────────────────
+# 원장 PDF v4에 찍히는 모든 글자를 AE가 고치거나 지울 수 있고 숫자도 바꿀 수 있다. 경로 문법:
+#   스칼라 문구           summary.title · content.headline · appendix.caveat_heading … (`AE_SCALARS`)
+#   번호 목록             summary.key_lines[i] · summary.key_labels[i] · exposure.citation_lines[i] · appendix.method_lines[i]
+#                         · appendix.caveat_lines[i] · *.table_headers[i] · exposure.group_headers[i] · platform_labels[i]
+#   카드                  summary.cards[i].label|value|definition|names (names는 목록; 카드 4는 '외 N개' 꼬리를 n에서 붙인다)
+#   검정 면               content.empty_figure · exposure.keyword_figure · competition.figure · cases.empty_figure · plan.figure
+#                         (+ .label|.value|.caption)
+#   사례                  cases.found|missing (지우기) · .label|keyword|excerpt|highlight|platform|measured_on|insight|caption
+#                         · .record_id(그 달 관측 기록으로 교체)
+#   표·목록의 행          content.rows[<제목>] · content.bars[<라벨>] · exposure.trend[<라벨>] · exposure.treatment_bars[<라벨>]
+#                         · exposure.platform_bars[<라벨>] · exposure.group_rows[<그룹>] · exposure.heatmap[<키워드>]
+#                         · competition.rows[<병원>] · competition.replaced[<키워드>] · plan.rows[<키워드>]
+#                         · appendix.keyword_rows[<키워드>] · appendix.glossary[<용어>] — 행 자체(지우기) 또는 .<칸>
+#   히트맵·부록 칸        exposure.heatmap[<키워드>].cells[<플랫폼>].detail|state · appendix.keyword_rows[<키워드>].cells[<플랫폼>]
+#   별칭(종전 경로)       plan.action[<키워드>] = plan.rows[<키워드>].action
+#   진료 항목 라벨        treatment_label[<키워드>] — 부록 A·P6·막대·카드 4·콘텐츠 표에 일관 적용(묶음을 다시 센다)
+# 값: 글자(""는 지움 — 요소를 그리지 않는다), 숫자(막대 값·비율·건수 — 막대 길이도 따라간다), 목록, 상태,
+#     `{"deleted": true}`(행·사례·검정 면·문구를 지움), None(그 경로의 수정 취소). 행의 키는 라벨·사례를 적용한 뷰의 값이다.
+AE_OVERRIDES_SCHEMA_VERSION = 2
+MAX_AE_PATH_CHARS = 1024
+AE_DELETE: Mapping[str, Any] = {"deleted": True}
 AE_FIELD_KEY_LINE = "key_line"
 AE_FIELD_CARD_NAMES = "card_names"
 AE_FIELD_CASE_INSIGHT = "case_insight"
 AE_FIELD_CASE_RECORD = "case_record"
 AE_FIELD_PLAN_ACTION = "plan_action"
 AE_FIELD_TREATMENT_LABEL = "treatment_label"
+AE_FIELD_VIEW = "view"
 AE_PATH_CARD_NAMES = "summary.cards[3].names"
 _AE_KEY_LINE_RE = re.compile(r"^summary\.key_lines\[([0-2])\]$")
 _AE_CASE_RE = re.compile(r"^cases\.(found|missing)\.(insight|record_id)$")
@@ -1759,10 +2079,170 @@ _AE_TREATMENT_LABEL_RE = re.compile(r"^treatment_label\[(.+)\]$", re.DOTALL)
 _AE_CARD_TAIL_RE = re.compile(r"^외 \d+개$")
 _QUOTED = re.compile(r"'([^']*)'")
 
+# 값의 종류 — 검증(`doctor_report_ae_edit`)과 적용이 같은 표를 읽는다.
+T_TEXT = "text"  # 문장·칸(400자)
+T_LABEL = "label"  # 라벨·짧은 칸(60자)
+T_COUNT = "count"  # 0 이상의 수(편수 막대 값)
+T_PCT = "pct"  # 0~100(추이·경쟁 언급률 — 비울 수 없다)
+T_PCT_OPT = "pct_opt"  # 0~100 또는 비움(막대·그룹 행 — 비우면 '—')
+T_INT = "int"  # 0 이상의 정수(우선순위·키워드 수)
+T_STATE = "state"  # 히트맵 칸 상태
+T_LIST = "list"  # 글자 목록(카드 이름·대신 언급 병원)
+
+# 글자 경로의 분류 — 숫자가 바뀐 일반 재생성의 승계(`carry_ae_fields`)와 경쟁 병원 반영의 승계가 읽는다.
+CLASS_LABEL = "label"  # 진료 항목 라벨
+CLASS_STATIC = "static"  # 소제목·표 머리글·캡션·용어·유의사항 — 측정과 무관한 고정 문구
+CLASS_SENTENCE = "sentence"  # 측정 결과를 말하는 문장(핵심 3줄·시사점·실행 내용·notice·측정 방법·인용 줄 …)
+CLASS_CELL = "cell"  # 표의 칸·막대·카드 값·검정 면 값 — 숫자가 바뀌면 다시 센 값이 맞다
+CLASS_STRUCTURE = "structure"  # 행·사례 지우기, 사례 교체
+
+AE_SCALARS: dict[str, tuple[str, str, str, str]] = {
+    # 경로: (절, 필드, 값 종류, 분류)
+    "summary.title": ("summary", "title", T_TEXT, CLASS_STATIC),
+    "summary.eyebrow": ("summary", "eyebrow", T_LABEL, CLASS_STATIC),
+    "summary.notice": ("summary", "notice", T_TEXT, CLASS_SENTENCE),
+    "summary.public_link_label": ("summary", "public_link_label", T_LABEL, CLASS_STATIC),
+    "content.headline": ("content", "headline", T_TEXT, CLASS_STATIC),
+    "content.bars_heading": ("content", "bars_heading", T_LABEL, CLASS_STATIC),
+    "content.rows_heading": ("content", "rows_heading", T_LABEL, CLASS_STATIC),
+    "content.rows_aside": ("content", "rows_aside", T_LABEL, CLASS_CELL),
+    "content.link_label": ("content", "link_label", T_LABEL, CLASS_STATIC),
+    "content.empty_text": ("content", "empty_text", T_TEXT, CLASS_SENTENCE),
+    "exposure.headline": ("exposure", "headline", T_TEXT, CLASS_STATIC),
+    "exposure.trend_heading": ("exposure", "trend_heading", T_LABEL, CLASS_STATIC),
+    "exposure.platform_heading": ("exposure", "platform_heading", T_LABEL, CLASS_STATIC),
+    "exposure.treatment_heading": ("exposure", "treatment_heading", T_LABEL, CLASS_STATIC),
+    "exposure.group_heading": ("exposure", "group_heading", T_LABEL, CLASS_STATIC),
+    "exposure.heatmap_heading": ("exposure", "heatmap_heading", T_LABEL, CLASS_STATIC),
+    "exposure.heatmap_aside": ("exposure", "heatmap_aside", T_LABEL, CLASS_STATIC),
+    "exposure.heatmap_keyword_head": ("exposure", "heatmap_keyword_head", T_LABEL, CLASS_STATIC),
+    "exposure.platform_note": ("exposure", "platform_note", T_TEXT, CLASS_SENTENCE),
+    "exposure.treatment_empty_text": ("exposure", "treatment_empty_text", T_TEXT, CLASS_SENTENCE),
+    "exposure.heatmap_empty_text": ("exposure", "heatmap_empty_text", T_TEXT, CLASS_SENTENCE),
+    "competition.headline": ("competition", "headline", T_TEXT, CLASS_STATIC),
+    "competition.basis": ("competition", "basis", T_TEXT, CLASS_SENTENCE),
+    "competition.replaced_heading": ("competition", "replaced_heading", T_TEXT, CLASS_STATIC),
+    "competition.empty_text": ("competition", "empty_text", T_TEXT, CLASS_SENTENCE),
+    "cases.headline": ("cases", "headline", T_TEXT, CLASS_STATIC),
+    "cases.insight_label": ("cases", "insight_label", T_LABEL, CLASS_STATIC),
+    "cases.empty_text": ("cases", "empty_text", T_TEXT, CLASS_SENTENCE),
+    "plan.headline": ("plan", "headline", T_TEXT, CLASS_STATIC),
+    "plan.continued_caption": ("plan", "continued_caption", T_TEXT, CLASS_CELL),
+    "plan.continued_heading": ("plan", "continued_heading", T_LABEL, CLASS_STATIC),
+    "plan.empty_text": ("plan", "empty_text", T_TEXT, CLASS_SENTENCE),
+    "appendix.heading": ("appendix", "heading", T_LABEL, CLASS_STATIC),
+    "appendix.table_caption": ("appendix", "table_caption", T_TEXT, CLASS_STATIC),
+    "appendix.empty_text": ("appendix", "empty_text", T_TEXT, CLASS_SENTENCE),
+    "appendix.keyword_note": ("appendix", "keyword_note", T_TEXT, CLASS_SENTENCE),
+    "appendix.method_heading": ("appendix", "method_heading", T_LABEL, CLASS_STATIC),
+    "appendix.glossary_heading": ("appendix", "glossary_heading", T_LABEL, CLASS_STATIC),
+    "appendix.caveat_heading": ("appendix", "caveat_heading", T_LABEL, CLASS_STATIC),
+}
+AE_INDEXED: dict[str, tuple[str | None, str, str, str]] = {
+    # 경로 접두어: (절 또는 None=뷰 자신, 필드, 값 종류, 분류). 항목은 ""로 지운다(번호는 그대로).
+    "summary.key_lines": ("summary", "key_lines", T_TEXT, CLASS_SENTENCE),
+    "summary.key_labels": ("summary", "key_labels", T_LABEL, CLASS_STATIC),
+    "exposure.citation_lines": ("exposure", "citation_lines", T_TEXT, CLASS_SENTENCE),
+    "appendix.method_lines": ("appendix", "method_lines", T_TEXT, CLASS_SENTENCE),
+    "appendix.caveat_lines": ("appendix", "caveat_lines", T_TEXT, CLASS_STATIC),
+    "content.table_headers": ("content", "table_headers", T_LABEL, CLASS_STATIC),
+    "exposure.group_headers": ("exposure", "group_headers", T_LABEL, CLASS_STATIC),
+    "competition.table_headers": ("competition", "table_headers", T_LABEL, CLASS_STATIC),
+    "plan.table_headers": ("plan", "table_headers", T_LABEL, CLASS_STATIC),
+    "appendix.table_headers": ("appendix", "table_headers", T_LABEL, CLASS_STATIC),
+    "platform_labels": (None, "platform_labels", T_LABEL, CLASS_STATIC),
+}
+AE_FIGURES: dict[str, tuple[str, str]] = {
+    "content.empty_figure": ("content", "empty_figure"),
+    "exposure.keyword_figure": ("exposure", "keyword_figure"),
+    "competition.figure": ("competition", "figure"),
+    "cases.empty_figure": ("cases", "empty_figure"),
+    "plan.figure": ("plan", "figure"),
+}
+_FIGURE_ATTRS = {"label": (T_LABEL, CLASS_STATIC), "value": (T_LABEL, CLASS_CELL), "caption": (T_TEXT, CLASS_STATIC)}
+_CARD_ATTRS = {"label": (T_LABEL, CLASS_STATIC), "value": (T_LABEL, CLASS_CELL), "definition": (T_TEXT, CLASS_SENTENCE), "names": (T_LIST, CLASS_CELL)}
+_CASE_ATTRS = {
+    "label": (T_LABEL, CLASS_STATIC), "keyword": (T_TEXT, CLASS_CELL), "excerpt": (T_TEXT, CLASS_SENTENCE),
+    "highlight": (T_TEXT, CLASS_SENTENCE), "platform": (T_LABEL, CLASS_CELL), "measured_on": (T_LABEL, CLASS_CELL),
+    "insight": (T_TEXT, CLASS_SENTENCE), "caption": (T_TEXT, CLASS_CELL),
+}
+
+
+@dataclass(frozen=True, slots=True)
+class AeCollection:
+    """키로 고르는 행 목록 — 절·필드(들)·키 칸·칸별 값 종류. `plan.rows`는 본문·부록 이어짐을 한 목록으로 본다."""
+
+    section: str
+    attrs: tuple[str, ...]
+    key: str
+    columns: Mapping[str, tuple[str, str]]  # 칸 → (값 종류, 분류)
+    identity: str | None = None  # 키가 겹칠 때 행을 가르는 불변 칸(콘텐츠의 URL = 글 id) — 순서가 바뀌어도 같은 행을 가리킨다
+
+
+AE_COLLECTIONS: dict[str, AeCollection] = {
+    "content.rows": AeCollection("content", ("rows",), "title", {
+        "published_on": (T_LABEL, CLASS_CELL), "title": (T_TEXT, CLASS_CELL), "treatment": (T_LABEL, CLASS_CELL), "keyword": (T_LABEL, CLASS_CELL),
+    }, identity="url"),
+    "content.bars": AeCollection("content", ("bars",), "label", {
+        "label": (T_LABEL, CLASS_CELL), "value": (T_COUNT, CLASS_CELL), "detail": (T_LABEL, CLASS_CELL),
+    }),
+    "exposure.trend": AeCollection("exposure", ("trend",), "label", {"label": (T_LABEL, CLASS_CELL), "value": (T_PCT, CLASS_CELL)}),
+    "exposure.treatment_bars": AeCollection("exposure", ("treatment_bars",), "label", {
+        "label": (T_LABEL, CLASS_CELL), "value": (T_PCT_OPT, CLASS_CELL), "detail": (T_LABEL, CLASS_CELL),
+    }),
+    "exposure.platform_bars": AeCollection("exposure", ("platform_bars",), "label", {
+        "label": (T_LABEL, CLASS_CELL), "value": (T_PCT_OPT, CLASS_CELL), "detail": (T_LABEL, CLASS_CELL),
+    }),
+    "exposure.group_rows": AeCollection("exposure", ("group_rows",), "group", {
+        "group": (T_LABEL, CLASS_CELL), "label": (T_LABEL, CLASS_STATIC), "keyword_count": (T_INT, CLASS_CELL),
+        "rate": (T_PCT_OPT, CLASS_CELL), "detail": (T_LABEL, CLASS_CELL),
+    }),
+    "exposure.heatmap": AeCollection("exposure", ("heatmap",), "keyword", {"keyword": (T_TEXT, CLASS_CELL)}),
+    "competition.rows": AeCollection("competition", ("rows",), "name", {
+        "name": (T_TEXT, CLASS_CELL), "count_label": (T_LABEL, CLASS_CELL), "rate": (T_PCT, CLASS_CELL),
+    }),
+    "competition.replaced": AeCollection("competition", ("replaced",), "keyword", {
+        "keyword": (T_TEXT, CLASS_CELL), "competitors": (T_LIST, CLASS_CELL),
+    }),
+    "plan.rows": AeCollection("plan", ("rows", "continued"), "keyword", {
+        "priority": (T_INT, CLASS_CELL), "treatment": (T_LABEL, CLASS_CELL), "rate_label": (T_LABEL, CLASS_CELL),
+        "action": (T_TEXT, CLASS_SENTENCE), "keyword": (T_TEXT, CLASS_CELL),
+    }),
+    "appendix.keyword_rows": AeCollection("appendix", ("keyword_rows",), "keyword", {
+        "keyword": (T_TEXT, CLASS_CELL), "group": (T_LABEL, CLASS_CELL), "treatment": (T_LABEL, CLASS_CELL),
+        "total": (T_LABEL, CLASS_CELL), "previous": (T_LABEL, CLASS_CELL),
+    }),
+    "appendix.glossary": AeCollection("appendix", ("glossary",), "term", {"term": (T_LABEL, CLASS_STATIC), "definition": (T_TEXT, CLASS_STATIC)}),
+}
+_HEAT_CELL_ATTRS = {"detail": (T_LABEL, CLASS_CELL), "state": (T_STATE, CLASS_CELL)}
+_INDEXED_RE = re.compile(r"^(.+)\[(\d{1,6})\]$")
+_FIGURE_RE = re.compile(r"^(.+)\.(label|value|caption)$")
+_CARD_RE = re.compile(r"^summary\.cards\[(\d{1,3})\]\.(label|value|definition|names)$")
+_CASE_ANY_RE = re.compile(r"^cases\.(found|missing)(?:\.(\w+))?$")
+_HEAT_CELL_RE = re.compile(r"^exposure\.heatmap\[(.+)\]\.cells\[([^\]]+)\]\.(detail|state)$", re.DOTALL)
+_APPENDIX_CELL_RE = re.compile(r"^appendix\.keyword_rows\[(.+)\]\.cells\[([^\]]+)\]$", re.DOTALL)
+_COLLECTION_RES = [
+    (prefix, re.compile(r"^" + re.escape(prefix) + r"\[(.+)\](?:\.(\w+))?$", re.DOTALL))
+    for prefix in AE_COLLECTIONS
+]
+
+
+@dataclass(frozen=True, slots=True)
+class ViewPath:
+    """해석된 뷰 경로. `family`는 scalar·indexed·figure·card·case·row·heat_cell·appendix_cell."""
+
+    family: str
+    base: str  # 스칼라 경로 / 접두어 / 모음 접두어
+    key: str | None = None  # 행 키·사례 자리·플랫폼
+    index: int | None = None
+    attr: str | None = None  # 칸 이름(없으면 행·사례·검정 면 자체)
+    value_type: str | None = None
+    klass: str = CLASS_CELL
+
 
 @dataclass(frozen=True, slots=True)
 class AeField:
-    """해석된 수정 경로. `arg`는 핵심 줄 번호(int)·사례 자리('found'/'missing')·측정 키워드(str)다."""
+    """해석된 수정 경로. `arg`는 핵심 줄 번호(int)·사례 자리('found'/'missing')·측정 키워드(str)·`ViewPath`다."""
 
     kind: str
     arg: Any = None
@@ -1777,9 +2257,56 @@ class CaseCandidate:
     case: Case
 
 
+def is_delete_marker(value: Any) -> bool:
+    return isinstance(value, Mapping) and value.get("deleted") is True and len(value) == 1
+
+
+def parse_view_path(path: str) -> ViewPath | None:
+    """일반 뷰 경로 → `ViewPath`. 문법 밖이면 None(키·번호가 뷰에 있는지는 `resolve_view_path`가 본다)."""
+    if path in AE_SCALARS:
+        section, attr, value_type, klass = AE_SCALARS[path]
+        return ViewPath("scalar", path, attr=attr, value_type=value_type, klass=klass)
+    if path in AE_FIGURES:
+        return ViewPath("figure", path, klass=CLASS_STRUCTURE)
+    if (match := _FIGURE_RE.match(path)) is not None and match.group(1) in AE_FIGURES:
+        value_type, klass = _FIGURE_ATTRS[match.group(2)]
+        return ViewPath("figure", match.group(1), attr=match.group(2), value_type=value_type, klass=klass)
+    if (match := _INDEXED_RE.match(path)) is not None and match.group(1) in AE_INDEXED:
+        _section, _attr, value_type, klass = AE_INDEXED[match.group(1)]
+        return ViewPath("indexed", match.group(1), index=int(match.group(2)), value_type=value_type, klass=klass)
+    if (match := _CARD_RE.match(path)) is not None:
+        value_type, klass = _CARD_ATTRS[match.group(2)]
+        return ViewPath("card", "summary.cards", index=int(match.group(1)), attr=match.group(2), value_type=value_type, klass=klass)
+    if (match := _CASE_ANY_RE.match(path)) is not None:
+        attr = match.group(2)
+        if attr is None:
+            return ViewPath("case", "cases", key=match.group(1), klass=CLASS_STRUCTURE)
+        if attr in _CASE_ATTRS:
+            value_type, klass = _CASE_ATTRS[attr]
+            return ViewPath("case", "cases", key=match.group(1), attr=attr, value_type=value_type, klass=klass)
+        return None
+    if (match := _HEAT_CELL_RE.match(path)) is not None:
+        value_type, klass = _HEAT_CELL_ATTRS[match.group(3)]
+        return ViewPath("heat_cell", "exposure.heatmap", key=match.group(1), attr=match.group(2), index=None, value_type=value_type, klass=klass)
+    if (match := _APPENDIX_CELL_RE.match(path)) is not None:
+        return ViewPath("appendix_cell", "appendix.keyword_rows", key=match.group(1), attr=match.group(2), value_type=T_LABEL, klass=CLASS_CELL)
+    for prefix, pattern in _COLLECTION_RES:
+        match = pattern.match(path)
+        if match is None:
+            continue
+        attr = match.group(2)
+        if attr is None:
+            return ViewPath("row", prefix, key=match.group(1), klass=CLASS_STRUCTURE)
+        column = AE_COLLECTIONS[prefix].columns.get(attr)
+        if column is None:
+            return None
+        return ViewPath("row", prefix, key=match.group(1), attr=attr, value_type=column[0], klass=column[1])
+    return None
+
+
 def parse_ae_path(path: str) -> AeField | None:
-    """수정 경로 → 필드. 화이트리스트 밖이면 None."""
-    if not isinstance(path, str):
+    """수정 경로 → 필드. 문법 밖이면 None."""
+    if not isinstance(path, str) or len(path) > MAX_AE_PATH_CHARS:
         return None
     if path == AE_PATH_CARD_NAMES:
         return AeField(AE_FIELD_CARD_NAMES)
@@ -1792,6 +2319,9 @@ def parse_ae_path(path: str) -> AeField | None:
         return AeField(AE_FIELD_PLAN_ACTION, match.group(1))
     if (match := _AE_TREATMENT_LABEL_RE.match(path)) is not None:
         return AeField(AE_FIELD_TREATMENT_LABEL, match.group(1))
+    view_path = parse_view_path(path)
+    if view_path is not None:
+        return AeField(AE_FIELD_VIEW, view_path)
     return None
 
 
@@ -1812,8 +2342,31 @@ def ae_path(kind: str, arg: Any = None) -> str:
     raise ValueError(f"unknown AE field kind: {kind}")
 
 
+def canonical_ae_path(path: str) -> str:
+    """종전 별칭을 새 경로로 — `plan.action[K]` → `plan.rows[K].action`. 같은 칸에 override가 둘 남지 않게(Codex 1-P1-1)."""
+    if isinstance(path, str) and (match := _AE_PLAN_ACTION_RE.match(path)) is not None:
+        return f"plan.rows[{match.group(1)}].action"
+    return path
+
+
+def path_class(path: str) -> str | None:
+    """경로의 분류(`CLASS_*`). 문법 밖이면 None."""
+    field_ = parse_ae_path(path)
+    if field_ is None:
+        return None
+    if field_.kind == AE_FIELD_TREATMENT_LABEL:
+        return CLASS_LABEL
+    if field_.kind in (AE_FIELD_KEY_LINE, AE_FIELD_CASE_INSIGHT, AE_FIELD_PLAN_ACTION):
+        return CLASS_SENTENCE
+    if field_.kind == AE_FIELD_CARD_NAMES:
+        return CLASS_CELL
+    if field_.kind == AE_FIELD_CASE_RECORD:
+        return CLASS_STRUCTURE
+    return field_.arg.klass
+
+
 def split_card_names(names: Sequence[str]) -> tuple[list[str], str | None]:
-    """카드 4 이름 목록을 (이름들, '외 N개' 꼬리)로 가른다 — 꼬리는 숫자라 사람이 고치지 않는다."""
+    """카드 4 이름 목록을 (이름들, '외 N개' 꼬리)로 가른다 — 꼬리는 숫자라 n에서 다시 붙인다."""
     items = list(names)
     if items and _AE_CARD_TAIL_RE.match(items[-1]):
         return items[:-1], items[-1]
@@ -1838,7 +2391,12 @@ def relabel_quoted(text: str, old: str, new: str) -> str:
 
 def _exposed_appendix_rows(rows: Iterable[AppendixKeywordRow]) -> list[AppendixKeywordRow]:
     """부록 A에서 병원명이 노출된 행(m > 0) — 빌더의 `exposed`(키워드 `mentioned > 0`)와 같은 판정."""
-    return [row for row in rows if row.total != "—" and int(row.total.split("/", 1)[0]) > 0]
+    return [row for row in rows if _mentioned_of(row.total) > 0]
+
+
+def _mentioned_of(total: str) -> int:
+    match = re.match(r"^(\d+)/\d+$", total or "")
+    return int(match.group(1)) if match else 0
 
 
 def treatment_card_from_appendix(
@@ -1849,13 +2407,9 @@ def treatment_card_from_appendix(
 ) -> Card:
     """부록 A 행(라벨 적용 뒤)에서 카드 4를 다시 만든다 — 빌더와 같은 규칙이라 라벨을 바꾸지 않으면 빌더의 카드와 같다.
 
-    n·이름 목록·'외 N개'를 모두 노출 행에서 다시 센다. 라벨 묶음이 갈라지면 n이 늘고 합쳐지면 줄어든다 — 이 값은
-    진료 항목 묶음 사실(`treatment.*`)과 같은 성격이라 숫자 보존 판정(`card.treatments`)이 예외로 둔다.
-
+    n·이름 목록·'외 N개'를 모두 노출 행에서 다시 센다. 라벨 묶음이 갈라지면 n이 늘고 합쳐지면 줄어든다.
     이름 순서: 빌더는 측정 질문 순서로 이름을 세고 부록은 (묶음·노출 수·문장)으로 정렬돼 뷰만으로는 그 순서를 되살릴 수
-    없다. 그래서 `pristine_rows`(같은 순서의 라벨 적용 전 행)·`pristine_card`(시스템이 만든 카드)를 주면 **옛 라벨이 카드에
-    섰던 자리**를 지킨다 — 이름만 바꾸면 자리가 그대로이고, 합치면 앞선 자리로, 갈라지면 옛 자리에 부록 순서로 나란히 선다.
-    카드에 보이지 않던 이름(5번째부터)과 힌트 없는 호출은 부록 순서다.
+    없다. 그래서 `pristine_rows`·`pristine_card`를 주면 **옛 라벨이 카드에 섰던 자리**를 지킨다.
     """
     rows = tuple(rows)
     old_rows = tuple(pristine_rows) if pristine_rows is not None else rows
@@ -1866,7 +2420,7 @@ def treatment_card_from_appendix(
     exposed = [
         (rank.get(old.treatment, len(rank)), index, row)
         for index, (row, old) in enumerate(zip(rows, old_rows, strict=True))
-        if row.total != "—" and int(row.total.split("/", 1)[0]) > 0
+        if _mentioned_of(row.total) > 0
     ]
     exposed.sort(key=lambda item: item[:2])
     return _treatment_card((row.treatment for _rank, _index, row in exposed), exposed_any=bool(exposed))
@@ -1875,8 +2429,7 @@ def treatment_card_from_appendix(
 def card_names_with_tail(card: Card, names: Sequence[str]) -> tuple[str, ...]:
     """사람이 고른 카드 4 이름 목록에 n(카드 값)에서 센 '외 N개' 꼬리를 붙인다 — n은 그대로이고 꼬리만 목록 길이에 맞춘다.
 
-    목록이 n보다 길면 n개까지만 싣는다(검증이 먼저 거절하지만, 라벨을 합쳐 n이 줄어든 뒤 이어진 옛 목록이 카드 값보다
-    길게 찍히는 일은 적용 단계에서도 막는다 — Codex 3-P1-1). n을 셀 수 없는 카드(측정 전 등)는 종전 꼬리를 그대로 둔다.
+    목록이 n보다 길면 n개까지만 싣는다. n을 셀 수 없는 카드(측정 전·사람이 값을 고친 카드)는 목록을 그대로 두고 종전 꼬리만 잇는다.
     """
     renamed = _dedupe(str(name).strip() for name in names if str(name).strip())
     count = treatment_card_count(card)
@@ -1889,13 +2442,10 @@ def card_names_with_tail(card: Card, names: Sequence[str]) -> tuple[str, ...]:
 
 
 def treatment_bars_from_appendix(rows: Iterable[AppendixKeywordRow]) -> tuple[BarItem, ...]:
-    """부록 A 행(키워드별 `m/a`)에서 진료 항목별 노출률 막대를 다시 만든다 — 빌더(`_exposure_page`)와 같은 합산·정렬.
-
-    라벨을 바꾸면 묶음이 바뀌므로 막대는 라벨을 적용한 행에서 다시 센다. 숫자는 행의 분수 그대로다.
-    """
+    """부록 A 행(키워드별 `m/a`)에서 진료 항목별 노출률 막대를 다시 만든다 — 빌더(`_exposure_page`)와 같은 합산·정렬."""
     by_treatment: dict[str, list[int]] = {}
     for row in rows:
-        if row.total == "—":
+        if not re.match(r"^\d+/\d+$", row.total or ""):
             continue
         mentioned, attempts = (int(part) for part in row.total.split("/", 1))
         bucket = by_treatment.setdefault(row.treatment, [0, 0])
@@ -1925,16 +2475,43 @@ def _relabel_case(case: Case | None, labels: Mapping[str, str], old_labels: Mapp
     return replace(case, insight=relabel_quoted(case.insight, old, labels[case.keyword]))
 
 
-def apply_ae_overrides(
-    view: DoctorReportV4,
-    fields: Mapping[str, Any],
-    *,
-    case_candidates: Sequence[CaseCandidate] = (),
-) -> DoctorReportV4:
-    """pristine v4 뷰에 AE 수정 값을 적용한 새 뷰. 숫자 사실(`facts`)은 진료 항목 라벨 묶음 말고는 바뀌지 않는다.
+def coerce_ae_value(value_type: str, value: Any) -> Any:
+    """값을 뷰의 형으로 바꾼다(검증이 먼저 거절하므로 여기서는 느슨하다). 글자 종류는 strip, 수는 float/int, 비움은 None."""
+    if value_type in (T_TEXT, T_LABEL, T_STATE):
+        return str(value).strip() if value is not None else ""
+    if value_type == T_LIST:
+        return tuple(_dedupe(str(item).strip() for item in (value if isinstance(value, (list, tuple)) else [value]) if str(item).strip()))
+    if value_type in (T_COUNT, T_PCT, T_PCT_OPT, T_INT):
+        number = parse_ae_number(value)
+        if number is None:
+            return None
+        return int(number) if value_type == T_INT else float(number)
+    return value
 
-    순서: 라벨(묶음·막대·카드 이름·규칙 문장의 따옴표 구간) → 사례 교체 → 명시한 문장. 명시한 문장이 유도된
-    값을 이긴다. 경로가 화이트리스트 밖이거나 값이 None(= 수정 취소)이면 건너뛴다 — 거절은 호출부의 검증이 한다.
+
+def parse_ae_number(value: Any) -> float | None:
+    """'40'·'40%'·40·40.5 → 40.0. 비움(''·None)·읽을 수 없는 값·무한은 None."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        if isinstance(value, (int, float)):
+            number = float(value)
+        else:
+            text = str(value).strip().rstrip("%").strip()
+            if not text or len(text) > 40:
+                return None
+            number = float(text)
+    except (ValueError, OverflowError):
+        return None
+    return number if isfinite(number) else None
+
+
+def apply_structural_overrides(
+    view: DoctorReportV4, fields: Mapping[str, Any], *, case_candidates: Sequence[CaseCandidate] = ()
+) -> DoctorReportV4:
+    """구조를 바꾸는 수정만 적용한 뷰 — 진료 항목 라벨(묶음·막대·카드 4·규칙 문장의 따옴표 구간)과 사례 교체.
+
+    행의 키·칸의 원문(`editable_fields`)은 이 뷰 기준이다. 글자·숫자·지우기는 `apply_ae_overrides`가 그 위에 얹는다.
     """
     parsed: list[tuple[AeField, Any]] = []
     for path, value in fields.items():
@@ -1977,9 +2554,8 @@ def apply_ae_overrides(
         content = replace(content, rows=content_rows, bars=_treatment_publish_bars(content_rows))
         exposure = replace(exposure, treatment_bars=treatment_bars_from_appendix(appendix.keyword_rows))
         cards = list(summary.cards)
-        # 카드 4는 **노출된** 키워드의 진료 항목이다 — 미노출 키워드의 라벨을 고쳐도 카드는 바뀌지 않고(검토 1-P2-2),
-        # 노출 키워드의 라벨을 고치면 노출 행(부록 A의 m>0)에서 n·이름 목록·'외 N개'를 빌더와 같은 규칙으로 다시 센다
-        # — 묶음이 갈라지면 n이 늘고(4→5) 합쳐지면 줄어든다(4→3). 셀 수 없는 카드(측정 전·미완료)는 건드리지 않는다.
+        # 카드 4는 **노출된** 키워드의 진료 항목이다 — 노출 키워드의 라벨을 고치면 노출 행에서 n·이름 목록·'외 N개'를
+        # 빌더와 같은 규칙으로 다시 센다. 셀 수 없는 카드(측정 전·미완료)는 건드리지 않는다.
         exposed_relabelled = any(row.keyword in labels for row in _exposed_appendix_rows(view.appendix.keyword_rows))
         if len(cards) >= 4 and exposed_relabelled and (
             treatment_card_count(cards[3]) is not None or cards[3].value == UNKNOWN_TREATMENT
@@ -2008,33 +2584,447 @@ def apply_ae_overrides(
         if labels:
             chosen = _relabel_case(chosen, labels, old_labels) or chosen
         cases = replace(cases, **{field_.arg: chosen}, empty_text="")
-    key_lines = list(summary.key_lines)
-    cards = list(summary.cards)
-    plan_actions: dict[str, str] = {}
-    for field_, value in parsed:
-        if field_.kind == AE_FIELD_KEY_LINE and 0 <= field_.arg < len(key_lines):
-            key_lines[field_.arg] = str(value).strip()
-        elif field_.kind == AE_FIELD_CARD_NAMES and len(cards) >= 4 and isinstance(value, (list, tuple)):
-            # 사람이 고른 이름 목록 — n은 그대로이고 '외 N개'는 n과 목록 길이에서 다시 붙인다.
-            cards[3] = replace(cards[3], names=card_names_with_tail(cards[3], value))
-        elif field_.kind == AE_FIELD_CASE_INSIGHT:
-            current = getattr(cases, field_.arg)
-            if current is not None:
-                cases = replace(cases, **{field_.arg: replace(current, insight=str(value).strip())})
-        elif field_.kind == AE_FIELD_PLAN_ACTION:
-            plan_actions[field_.arg] = str(value).strip()
-    if plan_actions:
-        plan = replace(
-            plan,
-            rows=tuple(replace(r, action=plan_actions[r.keyword]) if r.keyword in plan_actions else r for r in plan.rows),
-            continued=tuple(
-                replace(r, action=plan_actions[r.keyword]) if r.keyword in plan_actions else r for r in plan.continued
-            ),
-        )
-    summary = replace(summary, cards=tuple(cards), key_lines=tuple(key_lines))
     return replace(
         view, summary=summary, content=content, exposure=exposure, cases=cases, plan=plan, appendix=appendix
     )
+
+
+def is_structural_path(path: str) -> bool:
+    field_ = parse_ae_path(path)
+    return field_ is not None and field_.kind in (AE_FIELD_TREATMENT_LABEL, AE_FIELD_CASE_RECORD)
+
+
+def _collection_rows(view: DoctorReportV4, spec: AeCollection) -> list[Any]:
+    section = getattr(view, spec.section)
+    rows: list[Any] = []
+    for attr in spec.attrs:
+        rows.extend(getattr(section, attr))
+    return rows
+
+
+def _row_key(spec: AeCollection, row: Any) -> str:
+    if isinstance(row, tuple):  # 용어 정의 (term, definition)
+        return row[0]
+    return str(getattr(row, spec.key))
+
+
+def _row_keys(spec: AeCollection, rows: Sequence[Any]) -> list[str]:
+    """행마다 고유한 키 — 같은 키(제목·라벨)가 두 번 나오면 둘째부터 `#2`·`#3`을 붙인다(Codex 1-P1-6: 제목은 유일하지 않다)."""
+    raw = [_row_key(spec, row) for row in rows]
+    counts = Counter(raw)
+    taken = set(raw)
+    used: set[str] = set()
+    keys: list[str] = []
+    for base, row in zip(raw, rows, strict=True):
+        key = base
+        if counts[base] > 1:
+            # 같은 제목이 둘 이상: 불변 칸(콘텐츠 URL의 글 id)으로 가른다 — 다음 버전에서 순서가 바뀌어도 같은 행이다(Codex 3-P1-A).
+            ident = _row_identity(spec, row)
+            key = f"{base}#{ident}" if ident else base
+        suffix = 1
+        # 실제 제목이 '제목#2'일 수도 있다 — 만든 접미가 실제 키나 앞서 만든 키와 겹치지 않을 때까지 올린다(Codex 2-P1-6).
+        while key in used or (key != base and key in taken):
+            suffix += 1
+            key = f"{base}#{ident}#{suffix}" if counts[base] > 1 and _row_identity(spec, row) else f"{base}#{suffix}"
+        used.add(key)
+        keys.append(key)
+    return keys
+
+
+def _row_identity(spec: AeCollection, row: Any) -> str:
+    if spec.identity is None or isinstance(row, tuple):
+        return ""
+    value = str(getattr(row, spec.identity, "") or "").rstrip("/")
+    return value.rsplit("/", 1)[-1][-8:] if value else ""  # UUID는 앞이 같을 수 있어 끝 8자
+
+
+def _write_collection_rows(view: DoctorReportV4, spec: AeCollection, rows: list[Any]) -> DoctorReportV4:
+    section = getattr(view, spec.section)
+    if len(spec.attrs) == 1:
+        return replace(view, **{spec.section: replace(section, **{spec.attrs[0]: tuple(rows)})})
+    # plan.rows + plan.continued — 본문 행 수는 그대로 두고 남은 행을 잇는다.
+    body = len(getattr(section, spec.attrs[0]))
+    kept = [row for row in rows if row is not None]
+    return replace(view, **{spec.section: replace(section, **{spec.attrs[0]: tuple(kept[:body]), spec.attrs[1]: tuple(kept[body:])})})
+
+
+def _set_row_attr(spec: AeCollection, row: Any, attr: str, value: Any) -> Any:
+    if isinstance(row, tuple):  # glossary
+        term, definition = row
+        return (value if attr == "term" else term, value if attr == "definition" else definition)
+    if attr == "competitors":
+        return replace(row, competitors=tuple(value))
+    return replace(row, **{attr: value})
+
+
+def apply_ae_overrides(
+    view: DoctorReportV4,
+    fields: Mapping[str, Any],
+    *,
+    case_candidates: Sequence[CaseCandidate] = (),
+) -> DoctorReportV4:
+    """pristine v4 뷰에 AE 수정 값을 적용한 새 뷰.
+
+    순서: 라벨·사례 교체(구조) → 글자·숫자·지우기(행 키는 구조를 적용한 뷰 기준) → 카드 4 이름 목록 → 파생 문구
+    (사람이 손대지 않은 편수·키워드 수·캡션은 새 구조에서 다시 센다). 문법 밖 경로·None(수정 취소)·뷰에 없는 키는
+    건너뛴다 — 거절은 호출부의 검증이 한다.
+    """
+    derived_view = apply_structural_overrides(view, fields, case_candidates=case_candidates)
+    out = derived_view
+    explicit: set[str] = set()
+    deletions: dict[str, set[int]] = {}
+    card_names: tuple[str, ...] | None = None
+    key_lines = list(out.summary.key_lines)
+    plan_actions: dict[str, Any] = {}
+    # 부모(행·사례·검정 면)를 지우면 그 아래 칸의 수정은 보지 않는다 — 저장된 하위 값이 지운 부모를 다시 채우지 않게(Codex 3-P2-1).
+    deleted_parents = [path for path, value in fields.items() if is_delete_marker(value) and _is_parent_path(path)]
+    for path, value in fields.items():
+        field_ = parse_ae_path(path)
+        if field_ is None or value is None or field_.kind in (AE_FIELD_TREATMENT_LABEL, AE_FIELD_CASE_RECORD):
+            continue
+        if any(path.startswith(parent + ".") for parent in deleted_parents):
+            continue
+        explicit.add(path)
+        if field_.kind == AE_FIELD_KEY_LINE:
+            if 0 <= field_.arg < len(key_lines):
+                key_lines[field_.arg] = "" if is_delete_marker(value) else str(value).strip()
+            continue
+        if field_.kind == AE_FIELD_CARD_NAMES:
+            if is_delete_marker(value):
+                card_names = ()
+            elif isinstance(value, (list, tuple)):
+                card_names = tuple(value)
+            continue
+        if field_.kind == AE_FIELD_CASE_INSIGHT:
+            current = getattr(out.cases, field_.arg)
+            if current is not None:
+                text = "" if is_delete_marker(value) else str(value).strip()
+                out = replace(out, cases=replace(out.cases, **{field_.arg: replace(current, insight=text)}))
+            continue
+        if field_.kind == AE_FIELD_PLAN_ACTION:
+            plan_actions[field_.arg] = "" if is_delete_marker(value) else str(value).strip()
+            continue
+        out = _apply_view_path(out, derived_view, field_.arg, value, deletions)
+    if plan_actions:
+        out = replace(
+            out,
+            plan=replace(
+                out.plan,
+                rows=tuple(replace(r, action=plan_actions[r.keyword]) if r.keyword in plan_actions else r for r in out.plan.rows),
+                continued=tuple(
+                    replace(r, action=plan_actions[r.keyword]) if r.keyword in plan_actions else r for r in out.plan.continued
+                ),
+            ),
+        )
+    out = replace(out, summary=replace(out.summary, key_lines=tuple(key_lines)))
+    # 행 지우기는 키를 다 적용한 뒤 한 번에 — 같은 행의 칸 수정과 순서가 섞이지 않게.
+    for prefix, indexes in deletions.items():
+        spec = AE_COLLECTIONS[prefix]
+        rows = _collection_rows(out, spec)
+        out = _write_collection_rows(out, spec, [row for index, row in enumerate(rows) if index not in indexes])
+    if card_names is not None and len(out.summary.cards) >= 4:
+        cards = list(out.summary.cards)
+        cards[3] = replace(cards[3], names=card_names_with_tail(cards[3], card_names))
+        out = replace(out, summary=replace(out.summary, cards=tuple(cards)))
+    # 파생 문구는 구조(라벨·사례 교체)를 적용한 뷰를 기준으로 '손대지 않음'을 판정한다 — 교체한 사례의 캡션이 명시 수정으로 남지 않게(Codex 3-P2-3).
+    return _reset_untouched_derived(out, derived_view, explicit)
+
+
+def _is_parent_path(path: str) -> bool:
+    field_ = parse_ae_path(path)
+    if field_ is None or field_.kind != AE_FIELD_VIEW:
+        return False
+    vp = field_.arg
+    return vp.attr is None and vp.family in ("row", "case", "figure")
+
+
+def _apply_view_path(
+    out: DoctorReportV4, derived: DoctorReportV4, vp: ViewPath, value: Any, deletions: dict[str, set[int]]
+) -> DoctorReportV4:
+    deleting = is_delete_marker(value)
+    if vp.family == "scalar":
+        section, attr, value_type, _klass = AE_SCALARS[vp.base]
+        text = "" if deleting else coerce_ae_value(value_type, value)
+        return replace(out, **{section: replace(getattr(out, section), **{attr: text})})
+    if vp.family == "indexed":
+        section, attr, value_type, _klass = AE_INDEXED[vp.base]
+        holder = out if section is None else getattr(out, section)
+        items = list(getattr(holder, attr))
+        if vp.index is None or not 0 <= vp.index < len(items):
+            return out
+        items[vp.index] = "" if deleting else coerce_ae_value(value_type, value)
+        if section is None:
+            return replace(out, **{attr: tuple(items)})
+        return replace(out, **{section: replace(holder, **{attr: tuple(items)})})
+    if vp.family == "figure":
+        section, attr = AE_FIGURES[vp.base]
+        holder = getattr(out, section)
+        band = getattr(holder, attr) or FigureBand("", "")
+        if vp.attr is None:
+            band = FigureBand("", "") if deleting else band
+        else:
+            band = replace(band, **{vp.attr: "" if deleting else coerce_ae_value(_FIGURE_ATTRS[vp.attr][0], value)})
+        return replace(out, **{section: replace(holder, **{attr: band})})
+    if vp.family == "card":
+        cards = list(out.summary.cards)
+        if vp.index is None or not 0 <= vp.index < len(cards) or vp.attr is None:
+            return out
+        if vp.attr == "names":
+            if vp.index == 3:
+                return out  # 카드 4의 이름 목록은 `AE_PATH_CARD_NAMES`(꼬리 규칙)가 맡는다
+            cards[vp.index] = replace(cards[vp.index], names=() if deleting else coerce_ae_value(T_LIST, value))
+        else:
+            cards[vp.index] = replace(cards[vp.index], **{vp.attr: "" if deleting else coerce_ae_value(_CARD_ATTRS[vp.attr][0], value)})
+        return replace(out, summary=replace(out.summary, cards=tuple(cards)))
+    if vp.family == "case":
+        case = getattr(out.cases, vp.key)
+        if vp.attr is None:
+            return replace(out, cases=replace(out.cases, **{vp.key: None})) if deleting else out
+        if case is None:
+            return out
+        text = "" if deleting else coerce_ae_value(_CASE_ATTRS[vp.attr][0], value)
+        updated = replace(case, **{vp.attr: text})
+        if vp.attr == "excerpt" and updated.highlight and updated.highlight not in updated.excerpt:
+            updated = replace(updated, highlight="")
+        if vp.attr == "highlight" and text and text not in updated.excerpt:
+            updated = replace(updated, highlight="")
+        return replace(out, cases=replace(out.cases, **{vp.key: updated}))
+    if vp.family in ("heat_cell", "appendix_cell"):
+        spec = AE_COLLECTIONS[vp.base]
+        index = _find_row(derived, spec, vp.key)
+        if index is None:
+            return out
+        rows = _collection_rows(out, spec)
+        row = rows[index]
+        platforms = list(out.platforms)
+        if vp.attr not in platforms:
+            return out
+        column = platforms.index(vp.attr)
+        if vp.family == "heat_cell":
+            cells = list(row.cells)
+            if column >= len(cells):
+                return out
+            cell_attr = "state" if vp.value_type == T_STATE else "detail"
+            text = "" if deleting else coerce_ae_value(vp.value_type, value)
+            if cell_attr == "state" and text not in HEAT_STATES:
+                return out
+            cells[column] = replace(cells[column], **{cell_attr: text})
+            rows[index] = replace(row, cells=tuple(cells))
+        else:
+            cells = list(row.cells)
+            if column >= len(cells):
+                return out
+            cells[column] = "" if deleting else coerce_ae_value(T_LABEL, value)
+            rows[index] = replace(row, cells=tuple(cells))
+        return _write_collection_rows(out, spec, rows)
+    if vp.family == "row":
+        spec = AE_COLLECTIONS[vp.base]
+        index = _find_row(derived, spec, vp.key)
+        if index is None:
+            return out
+        if vp.attr is None:
+            if deleting:
+                deletions.setdefault(vp.base, set()).add(index)
+            return out
+        value_type = spec.columns[vp.attr][0]
+        rows = _collection_rows(out, spec)
+        if deleting:
+            if value_type in (T_PCT, T_INT):
+                return out  # 비울 수 없는 수(추이·경쟁 언급률·우선순위·키워드 수) — 검증이 거절한다
+            new_value: Any = () if value_type == T_LIST else (None if value_type in (T_COUNT, T_PCT_OPT) else "")
+        else:
+            new_value = coerce_ae_value(value_type, value)
+            if new_value is None and value_type in (T_PCT, T_INT):
+                return out
+        rows[index] = _set_row_attr(spec, rows[index], vp.attr, new_value)
+        return _write_collection_rows(out, spec, rows)
+    return out
+
+
+def _find_row(derived: DoctorReportV4, spec: AeCollection, key: str | None) -> int | None:
+    if key is None:
+        return None
+    keys = _row_keys(spec, _collection_rows(derived, spec))
+    return keys.index(key) if key in keys else None
+
+
+def resolve_view_path(derived: DoctorReportV4, vp: ViewPath) -> bool:
+    """경로의 키·번호가 (구조를 적용한) 뷰에 있는가 — 검증·이어진 값의 유효성."""
+    if vp.family == "scalar" or vp.family == "figure":
+        return True
+    if vp.family == "indexed":
+        section, attr, _t, _k = AE_INDEXED[vp.base]
+        holder = derived if section is None else getattr(derived, section)
+        return vp.index is not None and 0 <= vp.index < len(getattr(holder, attr))
+    if vp.family == "card":
+        return vp.index is not None and 0 <= vp.index < len(derived.summary.cards)
+    if vp.family == "case":
+        return getattr(derived.cases, vp.key) is not None
+    if vp.family in ("heat_cell", "appendix_cell"):
+        return _find_row(derived, AE_COLLECTIONS[vp.base], vp.key) is not None and vp.attr in derived.platforms
+    if vp.family == "row":
+        return _find_row(derived, AE_COLLECTIONS[vp.base], vp.key) is not None
+    return False
+
+
+@dataclass(frozen=True, slots=True)
+class AePathItem:
+    """편집 화면·원문 추출의 항목 하나 — 보고서 순서대로. `row`는 행 단위 지우기 경로(행의 칸이면), `context`는 행의 키."""
+
+    path: str
+    section: str  # p1..p6, appendix
+    kind: str  # 화면 문구 키(ADMIN_COPY) — 경로 모양에서 키·번호를 뺀 것
+    value_type: str
+    value: Any
+    row: str | None = None
+    context: str = ""
+    deletable: bool = True
+    row_deletable: bool = True  # 카드는 행 단위로 지울 수 없다(칸만 지운다)
+
+
+def walk_ae_paths(view: DoctorReportV4) -> list[AePathItem]:
+    """(구조를 적용한) 뷰의 모든 편집 경로를 보고서 순서(01~06·부록)대로 — 원문 값과 함께."""
+    items: list[AePathItem] = []
+
+    def scalar(path: str, section: str) -> None:
+        sec, attr, value_type, _klass = AE_SCALARS[path]
+        items.append(AePathItem(path, section, path, value_type, getattr(getattr(view, sec), attr) or ""))
+
+    def indexed(prefix: str, section: str) -> None:
+        sec, attr, value_type, _klass = AE_INDEXED[prefix]
+        holder = view if sec is None else getattr(view, sec)
+        for index, value in enumerate(getattr(holder, attr)):
+            items.append(AePathItem(f"{prefix}[{index}]", section, prefix, value_type, value, context=str(index + 1)))
+
+    def figure(prefix: str, section: str) -> None:
+        sec, attr = AE_FIGURES[prefix]
+        band = getattr(getattr(view, sec), attr)
+        if band is None:
+            return
+        for name, (value_type, _klass) in _FIGURE_ATTRS.items():
+            items.append(AePathItem(f"{prefix}.{name}", section, f"{prefix}.{name}", value_type, getattr(band, name), row=prefix))
+
+    def rows(prefix: str, section: str, *, label_from: str | None = None) -> None:
+        spec = AE_COLLECTIONS[prefix]
+        collection = _collection_rows(view, spec)
+        for key, row in zip(_row_keys(spec, collection), collection, strict=True):
+            row_path = f"{prefix}[{key}]"
+            for column, (value_type, _klass) in spec.columns.items():
+                if prefix == "appendix.keyword_rows" and column == "treatment":
+                    continue  # 부록 A의 진료 항목은 `treatment_label[<키워드>]`(전체 반영)로 고친다
+                value = row[0 if column == "term" else 1] if isinstance(row, tuple) else getattr(row, column)
+                items.append(AePathItem(f"{row_path}.{column}", section, f"{prefix}.{column}", value_type, value, row=row_path, context=key))
+            if prefix == "appendix.keyword_rows":
+                items.append(AePathItem(f"treatment_label[{key}]", section, "treatment_label", T_LABEL, row.treatment, row=row_path, context=key, deletable=False))
+                for platform, cell in zip(view.platforms, row.cells, strict=False):
+                    items.append(AePathItem(f"{row_path}.cells[{platform}]", section, "appendix.keyword_rows.cells", T_LABEL, cell, row=row_path, context=f"{key} · {platform_name(platform)}"))
+            if prefix == "exposure.heatmap":
+                for platform, cell in zip(view.platforms, row.cells, strict=False):
+                    items.append(AePathItem(f"{row_path}.cells[{platform}].detail", section, "exposure.heatmap.cells.detail", T_LABEL, cell.detail, row=row_path, context=f"{key} · {platform_name(platform)}"))
+                    items.append(AePathItem(f"{row_path}.cells[{platform}].state", section, "exposure.heatmap.cells.state", T_STATE, cell.state, row=row_path, context=f"{key} · {platform_name(platform)}"))
+
+    # 01
+    scalar("summary.eyebrow", "p1")
+    scalar("summary.title", "p1")
+    for index, card in enumerate(view.summary.cards):
+        for name, (value_type, _klass) in _CARD_ATTRS.items():
+            if name == "names":
+                if index == 3:
+                    names, _tail = split_card_names(card.names)
+                    items.append(AePathItem(AE_PATH_CARD_NAMES, "p1", "summary.cards.names", T_LIST, list(names), row=f"summary.cards[{index}]", context=str(index + 1), row_deletable=False))
+                elif card.names:
+                    items.append(AePathItem(f"summary.cards[{index}].names", "p1", "summary.cards.names", T_LIST, list(card.names), row=f"summary.cards[{index}]", context=str(index + 1), row_deletable=False))
+                continue
+            items.append(AePathItem(f"summary.cards[{index}].{name}", "p1", f"summary.cards.{name}", value_type, getattr(card, name), row=f"summary.cards[{index}]", context=str(index + 1), row_deletable=False))
+    for index, (label, line) in enumerate(zip(view.summary.key_labels, view.summary.key_lines, strict=False)):
+        items.append(AePathItem(f"summary.key_labels[{index}]", "p1", "summary.key_labels", T_LABEL, label, row=f"summary.key_lines[{index}]", context=str(index + 1)))
+        items.append(AePathItem(f"summary.key_lines[{index}]", "p1", "summary.key_lines", T_TEXT, line, row=f"summary.key_lines[{index}]", context=str(index + 1)))
+    scalar("summary.notice", "p1")
+    scalar("summary.public_link_label", "p1")
+    # 02
+    scalar("content.headline", "p2")
+    scalar("content.bars_heading", "p2")
+    rows("content.bars", "p2")
+    scalar("content.rows_heading", "p2")
+    scalar("content.rows_aside", "p2")
+    indexed("content.table_headers", "p2")
+    rows("content.rows", "p2")
+    scalar("content.link_label", "p2")
+    scalar("content.empty_text", "p2")
+    figure("content.empty_figure", "p2")
+    # 03
+    scalar("exposure.headline", "p3")
+    scalar("exposure.trend_heading", "p3")
+    rows("exposure.trend", "p3")
+    scalar("exposure.platform_heading", "p3")
+    rows("exposure.platform_bars", "p3")
+    scalar("exposure.platform_note", "p3")
+    scalar("exposure.treatment_heading", "p3")
+    rows("exposure.treatment_bars", "p3")
+    scalar("exposure.treatment_empty_text", "p3")
+    scalar("exposure.group_heading", "p3")
+    indexed("exposure.group_headers", "p3")
+    rows("exposure.group_rows", "p3")
+    scalar("exposure.heatmap_heading", "p3")
+    scalar("exposure.heatmap_aside", "p3")
+    scalar("exposure.heatmap_keyword_head", "p3")
+    indexed("platform_labels", "p3")
+    rows("exposure.heatmap", "p3")
+    scalar("exposure.heatmap_empty_text", "p3")
+    figure("exposure.keyword_figure", "p3")
+    indexed("exposure.citation_lines", "p3")
+    # 04
+    scalar("competition.headline", "p4")
+    scalar("competition.basis", "p4")
+    indexed("competition.table_headers", "p4")
+    rows("competition.rows", "p4")
+    scalar("competition.replaced_heading", "p4")
+    rows("competition.replaced", "p4")
+    scalar("competition.empty_text", "p4")
+    figure("competition.figure", "p4")
+    # 05
+    scalar("cases.headline", "p5")
+    for slot in ("found", "missing"):
+        case = getattr(view.cases, slot)
+        if case is None:
+            continue
+        for name, (value_type, _klass) in _CASE_ATTRS.items():
+            items.append(AePathItem(f"cases.{slot}.{name}", "p5", f"cases.{name}", value_type, getattr(case, name) or "", row=f"cases.{slot}", context=slot))
+    scalar("cases.insight_label", "p5")
+    scalar("cases.empty_text", "p5")
+    figure("cases.empty_figure", "p5")
+    # 06
+    scalar("plan.headline", "p6")
+    indexed("plan.table_headers", "p6")
+    rows("plan.rows", "p6")
+    scalar("plan.continued_caption", "p6")
+    scalar("plan.continued_heading", "p6")
+    figure("plan.figure", "p6")
+    scalar("plan.empty_text", "p6")
+    # 부록
+    scalar("appendix.heading", "appendix")
+    indexed("appendix.table_headers", "appendix")
+    rows("appendix.keyword_rows", "appendix")
+    scalar("appendix.table_caption", "appendix")
+    scalar("appendix.empty_text", "appendix")
+    scalar("appendix.keyword_note", "appendix")
+    scalar("appendix.method_heading", "appendix")
+    indexed("appendix.method_lines", "appendix")
+    scalar("appendix.glossary_heading", "appendix")
+    rows("appendix.glossary", "appendix")
+    scalar("appendix.caveat_heading", "appendix")
+    indexed("appendix.caveat_lines", "appendix")
+    return items
+
+
+def section_texts(view: DoctorReportV4) -> dict[str, list[str]]:
+    """절(p1..p6·appendix)마다 실제로 찍히는 글자 — 절이 통째로 비었는지(빈 쪽) 판정하는 데 쓴다."""
+    texts = view.required_texts()
+    names = ("p1", "p2", "p3", "p4", "p5", "p6", "appendix")
+    out = {name: [t for t in group if t] for name, group in zip(names, texts, strict=True)}
+    # 발췌는 강조 표시로 나뉘어 찍혀 필수 문구는 아니지만 실제로 보이는 글자다(Codex 3-P2-2).
+    out["p5"].extend(case.excerpt for case in (view.cases.found, view.cases.missing) if case is not None and case.excerpt)
+    return out
 
 
 def case_candidates_for_view(
@@ -2084,4 +3074,9 @@ __all__ = [
     "apply_ae_overrides", "case_candidates_for_view", "case_from_record", "parse_ae_path",
     "relabel_quoted", "split_card_names", "treatment_bars_from_appendix", "urls_to_titles",
     "usable_case_records", "card_names_with_tail", "treatment_card_count", "treatment_card_from_appendix",
+    "AE_DELETE", "AE_COLLECTIONS", "AE_FIGURES", "AE_INDEXED", "AE_SCALARS", "AePathItem", "FigureBand", "ViewPath",
+    "apply_structural_overrides", "coerce_ae_value", "derived_defaults", "is_delete_marker", "is_structural_path",
+    "parse_ae_number", "parse_view_path", "path_class", "canonical_ae_path", "MAX_AE_PATH_CHARS", "resolve_view_path", "section_texts", "walk_ae_paths",
+    "with_derived_defaults", "CLASS_CELL", "CLASS_LABEL", "CLASS_SENTENCE", "CLASS_STATIC", "CLASS_STRUCTURE",
+    "T_COUNT", "T_INT", "T_LABEL", "T_LIST", "T_PCT", "T_PCT_OPT", "T_STATE", "T_TEXT", "HEAT_STATES",
 ]
