@@ -61,6 +61,13 @@ def acquire_hospital_advisory_session_lock_sync(db, hospital_id: uuid.UUID) -> N
     db.execute(select(func.pg_advisory_lock(hospital_lock_key(hospital_id))))
 
 
+def try_acquire_hospital_advisory_session_lock_sync(db, hospital_id: uuid.UUID) -> bool:
+    """pg_try_advisory_lock — 기다리지 않는다. 다른 커넥션이 들고 있으면 False(문장 시간 제한에 걸리지 않는다)."""
+    if not _is_postgres_bind(db):
+        return True
+    return bool(db.execute(select(func.pg_try_advisory_lock(hospital_lock_key(hospital_id)))).scalar())
+
+
 def release_hospital_advisory_session_lock_sync(db, hospital_id: uuid.UUID) -> bool | None:
     """pg_advisory_unlock — 같은 커넥션에서만 해제된다.
 

@@ -7,9 +7,13 @@
 묻지 못했을 때만 재생성을 부르지 않는다(반영할 새 판정이 없다).
 
 실행 수명은 공통 claim(`AuthenticatedTask.before_start` → `track_operation_prerun`)이 소유한다 — 이 모듈은
-그 claim의 버전·시도 수를 돌리지 않고, 끝낼 때만 같은 울타리(task_id·lease_owner·claim 버전)로 종결한다.
-부모를 **먼저** 종결한 뒤 자식을 큐에 넣는다 — 자식의 숫자 보존 판정이 진행 중인 부모를
-`OPERATION_IN_FLIGHT`로 보지 않게 하기 위해서다(자식 쪽도 자기 부모 실행을 명시적으로 제외한다).
+그 claim의 버전·시도 수를 돌리지 않고, 끝낼 때는 **열린 상태**(REQUESTED·QUEUED·RUNNING)만 울타리로 종결한다.
+같은 병원의 재판정은 세션 advisory lock(고정 커넥션, 기다리지 않는 try-lock)으로 직렬화한다 — 락을 못 잡은 사본은
+`Ignore`로 조용히 물러나 실행 기록·사고를 남기지 않고(재시도도 소모하지 않고), 주인 사본만 판정을 사고 종결한다.
+claim 버전까지 울타리에 넣지 않는 이유: 같은 task id로 다시 배달된 사본이 살아 있는 lease를 다시 claim하면
+버전이 바뀌어, 일을 끝낸 주인 사본의 종결이 거절되고 자식 체인이 사라진다. 부모 종결과 자식 REQUESTED 행은
+한 트랜잭션에 쓴 뒤 발행한다 — 끝난 부모에 자식이 없는 창이 없고, 자식의 숫자 보존 판정은 자기 부모를
+`OPERATION_IN_FLIGHT`에서 뺀다.
 
 이 재판정은 새 유료 측정 단계가 아니다(`services/competitor_rejudge.py` 모듈 설명) — 저장된 답변 원문에
 대한 경쟁사 판정만 다시 하므로 마감(1일 07:00 KST)이 지난 달도 대상이다.
@@ -24,6 +28,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import arrow
+from celery.exceptions import Ignore
 from sqlalchemy import select, update
 
 from app.core.celery_app import celery_app
@@ -38,12 +43,11 @@ from app.services.competitor_rejudge import (
 )
 from app.services.monthly_period import MonthlyPeriodError, require_closed_period
 from app.utils.db_locks import (
-    acquire_hospital_advisory_session_lock_sync,
     release_hospital_advisory_session_lock_sync,
+    try_acquire_hospital_advisory_session_lock_sync,
 )
 from app.workers.dispatch_auth import require_dispatch
 from app.workers.dispatch_envelope import build_dispatch_headers
-from app.workers.generation_run_control import explicit_run_context
 
 logger = logging.getLogger(__name__)
 
@@ -87,16 +91,15 @@ def _finish(
     safe_error_message: str | None = None,
     commit: bool = True,
 ) -> bool:
-    """실행을 종결한다. 공통 claim 문맥이 있으면 그 울타리(task_id·lease·버전)로만 쓴다 — 다른 사본이 가져간
-    실행은 건드리지 않는다. 문맥이 없으면(직접 호출·테스트) 열린 상태만 보고 쓴다. 종결했으면 True.
-    `commit=False`면 호출자가 같은 트랜잭션에 다른 행(자식 실행)을 함께 묶어 커밋한다."""
+    """실행을 종결한다. 울타리는 열린 상태(REQUESTED·QUEUED·RUNNING)다 — 이미 끝난 실행은 건드리지 않는다. 종결했으면 True.
+    `commit=False`면 호출자가 같은 트랜잭션에 다른 행(자식 실행)을 함께 묶어 커밋한다. 동시 실행은 세션 락이 막는다."""
+    del task  # 울타리에 claim 버전을 쓰지 않는다(모듈 설명 참조)
     if run_id is None:
         return False
     run = db.get(OperationRun, run_id)
     if run is None:
         return False
     merged = {**(run.result_summary if isinstance(run.result_summary, dict) else {}), **summary}
-    context = explicit_run_context(task) if task is not None else None
     statement = (
         update(OperationRun)
         .where(OperationRun.id == run_id)
@@ -116,23 +119,33 @@ def _finish(
             version=OperationRun.version + 1,
         )
         .returning(OperationRun.id)
+        .where(OperationRun.state.in_(_OPEN_STATES))
     )
-    if context is not None and context.run_id == run_id:
-        statement = statement.where(
-            OperationRun.state == OperationRunState.RUNNING,
-            OperationRun.task_id == context.worker_id,
-            OperationRun.lease_owner == context.worker_id,
-            OperationRun.version == context.version,
-        )
-    else:
-        statement = statement.where(OperationRun.state.in_(_OPEN_STATES))
     finished = db.execute(statement).scalar_one_or_none()
     if commit:
         db.commit()
         db.expire_all()
     if finished is None:
-        logger.info("competitor rejudge run not finished by this delivery (fenced): run_id=%s", run_id)
+        logger.info("competitor rejudge run already terminal; not finished by this delivery: run_id=%s", run_id)
     return finished is not None
+
+
+def _release_session_lock(db, hospital_uuid: uuid.UUID) -> None:
+    """세션 락을 반드시 푼 채 커넥션을 돌려준다(V0 `release_v0_session_lock`과 같은 이유) — 락 구간의 SQL 오류로 세션이
+    pending-rollback이면 unlock 자체가 실패하고, 세션 락은 롤백으로 풀리지 않아 풀에 돌아간 커넥션이 그 병원의 모든
+    쓰기를 막는다. 먼저 롤백하고, 해제를 확인하지 못하면 커넥션을 폐기한다."""
+    try:
+        db.rollback()
+        if release_hospital_advisory_session_lock_sync(db, hospital_uuid) is False:
+            logger.error("competitor rejudge session lock for %s was not held by this connection; discarding it", hospital_uuid)
+            db.invalidate()
+        return
+    except Exception:
+        logger.exception("failed to release competitor rejudge session lock for %s", hospital_uuid)
+    try:
+        db.invalidate()
+    except Exception:
+        logger.exception("failed to discard the competitor rejudge lock connection for %s", hospital_uuid)
 
 
 def _existing_child_run(db, idempotency_key: str) -> OperationRun | None:
@@ -282,9 +295,13 @@ def rejudge_month_competitors(self, hospital_id: str, year: int, month: int) -> 
             )
             return {"status": "period_not_closed"}
         _note_progress(db, run_id, {"stage": "RUNNING", **period})
+        hospital_uuid = hospital.id
         # 같은 병원의 재판정은 한 번에 하나만 돈다 — 같은 task id로 다시 배달된 사본이 살아 있는 lease를 다시 claim해
-        # 같은 이름의 판정을 두 번 사지 않도록 세션 advisory lock으로 직렬화한다(뒤에 온 사본은 남은 이름이 없다).
-        acquire_hospital_advisory_session_lock_sync(db, hospital.id)
+        # 같은 이름의 판정을 두 번 사지 않도록 세션 advisory lock으로 직렬화한다. 기다리지 않는다: 못 잡은 사본은
+        # 조용히 물러난다(Ignore — 실패도 재시도 소모도 아니다). 주인 사본이 끝내고 자식을 큐에 넣는다.
+        if not try_acquire_hospital_advisory_session_lock_sync(db, hospital_uuid):
+            logger.info("competitor rejudge already running for hospital=%s; this delivery steps aside", hospital_uuid)
+            raise Ignore()
         try:
             try:
                 outcome: RejudgeOutcome = execute_rejudge(db, hospital, int(year), int(month), run_id=run_id)
@@ -322,10 +339,10 @@ def rejudge_month_competitors(self, hospital_id: str, year: int, month: int) -> 
             )
             if run_id is not None and not owned:
                 db.rollback()
-                return {"status": "stale_delivery", **outcome.summary()}
+                return {"status": "already_finished", **outcome.summary()}
             db.commit()
             db.expire_all()
             report_run = _publish_child_run(db, db.get(OperationRun, report_run.id))
         finally:
-            release_hospital_advisory_session_lock_sync(db, hospital.id)
+            _release_session_lock(db, hospital_uuid)
     return {"status": "report_refresh_queued", "report_run_id": str(report_run.id), **outcome.summary()}

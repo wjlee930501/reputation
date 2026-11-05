@@ -153,7 +153,8 @@
    기록 단위로 커밋하고 쓰기 직전에 행을 잠가 다시 계산하므로 다시 돌려도 같은 이름을 두 번 사지 않는다(멱등).
    보고서 조립은 **지금 등록된** 경쟁사만 등록 표기로 센다(`services/competitor_scope.py`, 원장 뷰·전략 요약 공용) — 등록에서 뺀
    이름의 판정은 기록에 남아도 04절·전략 요약에 싣지 않고, "가나 의원"/"가나의원" 같은 표기 차이는 한 병원으로 합친다.
-   같은 병원의 재판정은 세션 advisory lock으로 직렬화되고, 부모 종결과 자식 실행 행은 한 트랜잭션에 쓴 뒤 발행된다.
+   같은 병원의 재판정은 세션 advisory lock(기다리지 않는 try-lock, 못 잡은 사본은 조용히 물러남)으로 직렬화되고, 부모
+   종결과 자식 실행 행은 한 트랜잭션에 쓴 뒤 발행된다.
 2. **부분 재생성** = 템플릿 갱신 사유 `COMPETITOR_REFRESH`(재판정 실행의 자식 OperationRun `GENERATE_MONTHLY_REPORT`,
    `parent_run_id`로 체인, 인자 `[…, rebuild=True, False, template_only=True, False, competitor_refresh=True]`).
    v4 스냅샷이라도 얼린 뷰를 그대로 쓰지 않고 저장 숫자로 뷰를 다시 만들어(`tasks._rebuild_v4_view_from_stored`)

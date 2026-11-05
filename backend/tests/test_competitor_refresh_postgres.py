@@ -478,3 +478,39 @@ def test_report_without_snapshot_evidence_has_nothing_to_rejudge(pg_session, qui
     assert (plan.records_total, plan.pending_records) == (0, 0)
     outcome = cr.execute_rejudge(pg_session, hospital, 2026, 7, run_id=uuid.uuid4(), judge=_async_judge)
     assert outcome.records_total == 0 and budget["reserve"] == []
+
+
+def test_rejudge_delivery_steps_aside_when_another_copy_holds_the_hospital_lock(pg_session, quiet_renders, budget, monkeypatch):  # noqa: F811 - pytest fixture
+    from celery.exceptions import Ignore
+
+    hospital, _records, _first = _first_version(pg_session)
+    _register(pg_session, hospital, [RIVAL])
+    parent = OperationRun(
+        id=uuid.uuid4(), hospital_id=hospital.id, operation_type=cr.REJUDGE_OPERATION_TYPE,
+        state=OperationRunState.RUNNING, idempotency_key=f"test:{uuid.uuid4()}", task_id="t", request_payload={},
+    )
+    pg_session.add(parent)
+    pg_session.commit()
+
+    class _Session:
+        def __enter__(self):
+            return pg_session
+
+        def __exit__(self, *_exc):
+            return False
+
+    released: list = []
+    monkeypatch.setattr(competitor_refresh, "SyncSessionPinnedConnection", _Session)
+    monkeypatch.setattr(competitor_refresh, "try_acquire_hospital_advisory_session_lock_sync", lambda *_a: False)
+    monkeypatch.setattr(competitor_refresh, "_release_session_lock", lambda *a: released.append(a))
+    monkeypatch.setattr(competitor_refresh, "execute_rejudge", lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("판정을 사면 안 된다")))
+    task = competitor_refresh.rejudge_month_competitors
+    task.push_request(headers={"operation_run_id": str(parent.id)}, retries=0, id="t")
+    try:
+        with pytest.raises(Ignore):
+            task.run(str(hospital.id), 2026, 7)
+    finally:
+        task.pop_request()
+    pg_session.refresh(parent)
+    assert parent.state == OperationRunState.RUNNING  # 주인 사본의 실행 기록은 그대로다
+    assert released == [] and budget["reserve"] == []
