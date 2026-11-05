@@ -15,6 +15,7 @@ import {
   buildAeEditFields,
   bulkDeleteTargets,
   bulkRestoreTargets,
+  bundleDiffersFromOriginal,
   caseRecordPath,
   changedCountBySection,
   describeAeItem,
@@ -463,7 +464,7 @@ export function ReportAeEditPanel({
                     {section.section === 'appendix' && !filtering && <p className="text-xs leading-5 text-[var(--color-revisit-text-helper)] [word-break:keep-all]">{ADMIN_COPY.aeEditLabelHint}</p>}
                     {problems[section.section]?.map((text) => <p key={text} className="text-xs text-[var(--color-revisit-red-50)]" role="alert">{text}</p>)}
                     {section.bundles.map((bundle) => (
-                      <BundleBlock key={bundle.key} bundle={bundle} items={preview.items} draft={draft} fields={fields} problems={problems} recounted={recounted} onValue={setValue} onRow={setRow} onDeleteAll={() => bulkDelete(bundle)} onRestoreAll={() => bulkRestore(bundle)} />
+                      <BundleBlock key={bundle.key} bundle={bundle} items={preview.items} draft={draft} problems={problems} recounted={recounted} onValue={setValue} onRow={setRow} onDeleteAll={() => bulkDelete(bundle)} onRestoreAll={() => bulkRestore(bundle)} />
                     ))}
                   </div>
                 </details>
@@ -492,7 +493,7 @@ export function ReportAeEditPanel({
           )}
 
           {/* 하단 고정 바 — 이유 한 칸·버튼 네 개·상태 한 줄. 좁은 폭에서도 줄바꿈만 하고 세로로 쌓지 않는다. */}
-          <div ref={barRef} className="sticky bottom-0 z-10 -mx-3 -mb-3 space-y-1 border-t border-[var(--color-revisit-coolgrey-20)] bg-white px-3 pt-2 pb-2 sm:-mx-4 sm:-mb-4 sm:px-4" data-testid="ae-bar">
+          <div ref={barRef} className="sticky bottom-0 z-10 -mx-3 -mb-3 space-y-1 border-t border-[var(--color-revisit-coolgrey-20)] bg-white px-3 pt-2 sm:-mx-4 sm:-mb-4 sm:px-4" style={{ bottom: 'calc(-1 * var(--ae-overlay-pad, 0px))', paddingBottom: 'calc(0.5rem + var(--ae-overlay-pad, 0px))' }} data-testid="ae-bar">
             <div className="flex flex-wrap items-center gap-2">
               <input value={reason} onChange={(event) => setReason(event.target.value)} maxLength={200} placeholder={ADMIN_COPY.aeEditReason} aria-label={ADMIN_COPY.aeEditReason} className="min-h-9 min-w-[10rem] flex-1 rounded-lg border border-[var(--color-revisit-coolgrey-20)] bg-white px-2 text-sm" data-testid="ae-reason" />
               <button type="button" onClick={() => void validate()} disabled={busy || !changed} className={`${BAR_BUTTON} border border-[var(--color-revisit-coolgrey-20)] bg-white text-[var(--color-revisit-text-title)]`}>{ADMIN_COPY.aeEditPreview}</button>
@@ -515,11 +516,10 @@ export function ReportAeEditPanel({
 }
 
 /** 묶음 — 연속된 같은 종류의 행·줄(부록 D 유의사항 전체, 핵심 3줄, 콘텐츠 목록 …). 지울 대상이 둘 이상이면 '이 묶음 모두 지우기 / 모두 원래대로'가 있다. */
-function BundleBlock({ bundle, items, draft, fields, problems, recounted, onValue, onRow, onDeleteAll, onRestoreAll }: {
+function BundleBlock({ bundle, items, draft, problems, recounted, onValue, onRow, onDeleteAll, onRestoreAll }: {
   bundle: AeEditBundle
   items: readonly AeEditItem[]
   draft: AeEditDraft
-  fields: Readonly<Record<string, unknown>>
   problems: Readonly<Record<string, string[]>>
   recounted: Recounted
   onValue: (path: string, value: unknown) => void
@@ -528,7 +528,7 @@ function BundleBlock({ bundle, items, draft, fields, problems, recounted, onValu
   onRestoreAll: () => void
 }) {
   const name = ADMIN_COPY.aeEditBundles[bundle.key]
-  const anyChanged = bundle.groups.some((group) => group.items.some((item) => itemIsChanged(item, fields)))
+  const anyChanged = bundleDiffersFromOriginal(bundle, draft)
   const targets = bulkDeleteTargets(bundle)
   const allDeleted = targets.rows.every((row) => draft.rows[row] === true) && targets.paths.every((path) => isDeleteMarker(draft.values[path]))
   return (

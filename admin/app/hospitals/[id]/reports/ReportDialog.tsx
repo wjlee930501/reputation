@@ -179,7 +179,7 @@ export function ReportDialog({
 
   if (!mounted) return null
   return createPortal(
-    <div className="fixed inset-0 z-50 overflow-y-auto bg-[color-mix(in_srgb,var(--color-revisit-nav)_60%,transparent)] p-2 sm:p-5" onMouseDown={(event) => { if (event.target === event.currentTarget) requestClose() }}>
+    <div className="fixed inset-0 z-50 overflow-y-auto bg-[color-mix(in_srgb,var(--color-revisit-nav)_60%,transparent)] p-2 [--ae-overlay-pad:0.5rem] sm:p-5 sm:[--ae-overlay-pad:1.25rem]" onMouseDown={(event) => { if (event.target === event.currentTarget) requestClose() }}>
       <div ref={panelRef} role="dialog" aria-modal="true" aria-labelledby="report-dialog-title" aria-describedby="report-dialog-description" className="mx-auto my-2 w-full max-w-4xl rounded-xl bg-white sm:my-5">
         {/* 편집 중에는 머리글을 줄인다(상태 줄·설명을 접어 약 113px → 한 줄) — 하단 고정 바와 합쳐 화면을 가리지 않게. */}
         <header className={`sticky top-0 z-10 flex items-start justify-between gap-3 rounded-t-xl border-b border-[var(--color-revisit-coolgrey-20)] bg-white ${editing ? 'px-3 py-2 sm:px-4' : 'p-4 sm:p-5'}`} data-dialog-header-compact={editing ? 'true' : 'false'}>

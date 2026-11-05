@@ -550,6 +550,18 @@ export function bulkRestoreTargets(bundle: Pick<AeEditBundle, 'groups'>): { read
   return { rows, items }
 }
 
+/** 묶음의 어느 칸이든 원문과 다른가(저장된 지움 포함) — '모두 원래대로'는 저장된 수정이 있는 묶음에도 보여야 한다. */
+export function bundleDiffersFromOriginal(bundle: Pick<AeEditBundle, 'groups'>, draft: AeEditDraft): boolean {
+  for (const group of bundle.groups) {
+    if (group.row && draft.rows[group.row] === true) return true
+    for (const item of group.items) {
+      const value = draft.values[item.path]
+      if (isDeleteMarker(value) || displayValue(item, value) !== displayValue(item, item.original)) return true
+    }
+  }
+  return false
+}
+
 export type AeEditPlace = {
   /** 묶음·행 머리에 보이는 위치(예: '1면 카드 2 (AI 노출률)', '부록 D 유의사항 · 1번째 줄'). 행이 없는 낱개 항목은 ''. */
   readonly place: string

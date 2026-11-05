@@ -302,6 +302,7 @@ import {
   bulkDeleteTargets,
   bulkRestoreTargets,
   bundleAeEditGroups,
+  bundleDiffersFromOriginal,
   describeAeItem,
   filterAeSections,
   firstProblemTarget,
@@ -367,6 +368,10 @@ test('묶음은 연속된 같은 종류(부록 하위 절·번호 목록·같은
   const fields = buildAeEditFields(preview.items, deletedD, preview.overrides)
   assert.deepEqual(Object.keys(fields).sort(), ['appendix.caveat_heading', 'appendix.caveat_lines[0]', 'appendix.caveat_lines[1]', 'appendix.caveat_lines[2]', 'summary.key_lines[0]', 'summary.key_lines[1]'])
   assert.ok(Object.values(fields).every(isDeleteMarker))
+  // 저장된 지움(stored)만 있는 묶음도 원문과 다르므로 '모두 원래대로'가 보인다(운영 10월 v2의 부록 D).
+  assert.equal(bundleDiffersFromOriginal(d, draft), false)
+  assert.equal(bundleDiffersFromOriginal(d, deletedD), true)
+  assert.equal(bundleDiffersFromOriginal(p1[1], deletedD), true)
   // 모두 원래대로 → 보낼 것 없음.
   const restored = { ...deletedD, values: { ...deletedD.values, ...Object.fromEntries(bulkRestoreTargets(d).items.map((entry) => [entry.path, entry.original])) }, rows: { ...deletedD.rows, 'summary.key_lines[0]': false, 'summary.key_lines[1]': false } }
   assert.deepEqual(buildAeEditFields(preview.items, restored, preview.overrides), {})
@@ -419,6 +424,8 @@ test('다이얼로그의 X·Esc·바깥 클릭이 모두 같은 닫기 확인을
   // 하단 바는 한 줄(이유 칸 + 버튼)·상태 한 줄이고 높이만큼 스크롤 여백을 준다.
   assert.match(panel, /data-testid="ae-bar"/)
   assert.match(panel, /scroll-margin-bottom:calc\(var\(--ae-bar-h\)\+16px\)/)
+  assert.match(panel, /bottom: 'calc\(-1 \* var\(--ae-overlay-pad, 0px\)\)'/)
+  assert.match(dialog, /\[--ae-overlay-pad:0\.5rem\] sm:p-5 sm:\[--ae-overlay-pad:1\.25rem\]/)
   assert.match(panel, /new ResizeObserver/)
   assert.match(panel, /data-testid="ae-go-first-problem"/)
   assert.match(panel, /data-testid="ae-bundle-delete"/)
