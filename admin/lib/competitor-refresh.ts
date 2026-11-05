@@ -163,14 +163,14 @@ export function competitorRefreshProgress(run: CompetitorRefreshRunView | null):
       return { label: '경쟁 현황을 다시 만드는 중', detail: `${counts}. 숫자는 그대로 두고 경쟁 현황만 다시 계산한 새 버전을 만들고 있습니다.`, tone: 'progress' }
     }
     if (report.state === 'SUCCEEDED') {
-      const version = report.reportVersion ? ` 새 버전 v${report.reportVersion}이 준비됐습니다.` : ' 새 버전이 준비됐습니다.'
+      const version = report.reportVersion ? ` 새 버전(v${report.reportVersion})이 준비됐습니다.` : ' 새 버전이 준비됐습니다.'
       return { label: '경쟁 병원 반영 완료', detail: `${counts}.${version} ${COMPETITOR_REDELIVER_WARNING}`, tone: 'done' }
     }
     if (report.state === 'PARTIAL' && report.reportVersion) {
       // 새 버전은 생겼지만 전달 조건(측정 완료·원장 PDF)이 아직이다 — '만들지 않았다'와 다르다.
       return {
         label: '새 버전은 만들어졌지만 전달 전 확인이 필요합니다',
-        detail: `${counts}. 새 버전 v${report.reportVersion}이 생겼으나 전달 차단 사유가 남아 있습니다. 보고서 목록에서 새 버전을 열어 차단 사유를 확인해 주세요. ${COMPETITOR_REDELIVER_WARNING}`,
+        detail: `${counts}. 새 버전(v${report.reportVersion})이 생겼으나 전달 차단 사유가 남아 있습니다. 보고서 목록에서 새 버전을 열어 차단 사유를 확인해 주세요. ${COMPETITOR_REDELIVER_WARNING}`,
         tone: 'problem',
       }
     }

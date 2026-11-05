@@ -106,7 +106,7 @@ export function CompetitorRefreshPanel({
 
   return (
     <section data-report-section="competitors" className="rounded-xl border border-[var(--color-revisit-coolgrey-20)] p-4" aria-labelledby="report-competitors-heading">
-      <h4 id="report-competitors-heading" className="text-lg font-bold text-[var(--color-revisit-text-title)]">4. 경쟁 병원 반영</h4>
+      <h4 id="report-competitors-heading" className="text-lg font-bold text-[var(--color-revisit-text-title)]">5. 경쟁 병원 반영</h4>
       <p className="mt-2 text-sm leading-6 text-[var(--color-revisit-text-helper)] [word-break:keep-all]">
         경쟁 병원을 나중에 등록했다면, 이 달의 저장된 AI 답변에서 그 병원의 언급을 확인해 경쟁 현황만 다시 만든 새 버전을 만듭니다. 측정 숫자는 바뀌지 않습니다.
       </p>
