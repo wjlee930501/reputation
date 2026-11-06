@@ -46,6 +46,7 @@ from app.services.doctor_report_v4 import (
     DoctorReportV4,
     ae_path,
     apply_ae_overrides,
+    apply_report_copy_policy,
     apply_structural_overrides,
     canonical_ae_path,
     coerce_ae_value,
@@ -594,17 +595,47 @@ def stored_ae_overrides(render_inputs: Any) -> dict[str, Any] | None:
     fields = raw.get("fields")
     if not isinstance(fields, Mapping) or not fields:
         return None
-    return dict(raw)
+    fields = _without_copy_policy_paths(raw.get("base_view"), fields)
+    if not fields:
+        return None
+    return {**raw, "fields": fields}
+
+
+def _without_copy_policy_paths(base_payload: Any, fields: Mapping[str, Any]) -> dict[str, Any]:
+    """공통 문구 규칙(2026-11-06)이 걷어 낸 줄을 가리키던 수정 값은 버린다 — 부록 B·D 줄, 인용 0건 줄 같은 것.
+
+    옛 pristine 뷰에서는 찾을 수 있는데 지금 규칙으로 바꾼 뷰에서는 없어진 경로만 뺀다. 그 줄은 더는 그려지지 않으므로
+    지우기·고치기 모두 의미가 없고, 남겨 두면 다음 새 버전 만들기가 '이 보고서에 없는 행이나 칸'으로 막힌다.
+    """
+    if not is_v4_payload(base_payload):
+        return dict(fields)
+    stored = restore_v4(base_payload)
+    current = apply_report_copy_policy(stored)
+    if current is stored:
+        return dict(fields)
+    kept: dict[str, Any] = {}
+    for path, value in fields.items():
+        field_ = parse_ae_path(path)
+        if (
+            field_ is not None
+            and field_.kind == AE_FIELD_VIEW
+            and resolve_view_path(stored, field_.arg)
+            and not resolve_view_path(current, field_.arg)
+        ):
+            continue
+        kept[path] = value
+    return kept
 
 
 def base_view_of(render_inputs: Any) -> DoctorReportV4 | None:
     """저장된 pristine 뷰 — 수정 값이 있으면 `ae_overrides.base_view`, 없으면 `doctor_view` 자신(v4일 때)."""
+    # 옛 판의 pristine 뷰는 지금 공통 문구 규칙으로 바꿔 돌려준다(2026-11-06) — 편집 화면·새 버전이 같은 문구를 본다.
     overrides = stored_ae_overrides(render_inputs)
     if overrides is not None and is_v4_payload(overrides.get("base_view")):
-        return restore_v4(overrides["base_view"])
+        return apply_report_copy_policy(restore_v4(overrides["base_view"]))
     doctor_view = getattr(render_inputs, "doctor_view", None) if not isinstance(render_inputs, Mapping) else render_inputs.get("doctor_view")
     if is_v4_payload(doctor_view):
-        return restore_v4(doctor_view)
+        return apply_report_copy_policy(restore_v4(doctor_view))
     return None
 
 

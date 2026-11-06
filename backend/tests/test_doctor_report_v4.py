@@ -18,11 +18,8 @@ from test_report_redesign import monthly_view
 from app.services.doctor_report_v4 import (
     CAVEAT_LINES,
     MEASUREMENT_INCOMPLETE,
-    METHOD_CHANGED_LINE,
     NOT_MEASURED_YET,
-    NOT_VERIFIED_LINE,
     PLAN_ROWS_IN_BODY,
-    REFERENCE_IN_APPENDIX_LINE,
     DoctorReportV4,
     build_doctor_report_v4,
     compare_facts_v4,
@@ -68,6 +65,12 @@ PLATFORMS = ("chatgpt", "gemini")
 # 지시문 6-2·6-3의 옛 표현 — v4 전용 금지어(§5.4). '약속드리지'는 부록 D에만 허용된다.
 BANNED_IN_V4 = [
     "우리 병원", "언급 비율", "올린 글", "출처로 쓰인 답변", "다듬겠습니다", "약속드리지", "원장님,",
+]
+# 2026-11-06 마케팅팀이 모든 보고서에서 빼 달라고 한 부정적·단정적·어색한 문구(9개 예시).
+MARKETING_REMOVED_COPY = [
+    "직접 비교하지", "지난달 수치는 부록 A에", "환자 수가 아닙니다", "약속하지 않습니다", "예정 사항입니다", "측정 실패",
+    "같은 방식으로 묻습니다", "고정 키워드로만", "달라질 수 있습니다", "인용 0건", "출처 확인이 가능한", "측정이 없었다는",
+    "확인하지 못했습니다. 0건이라는", "참고만 합니다",
 ]
 
 
@@ -314,6 +317,73 @@ def build(**overrides) -> DoctorReportV4:
     return build_doctor_report_v4(**values)
 
 
+def with_legacy_copy(view: DoctorReportV4) -> DoctorReportV4:
+    """2026-11-06 공통 문구 정리 **전** 빌더가 만들던 모양 — 10월분처럼 옛 문구를 얼린 스냅샷을 흉내 낸다(테스트 전용).
+
+    부록 B 네 줄(실패 횟수 포함)·부록 D 세 줄·옛 범례·옛 표 설명, 비교하지 않은 달의 1면 안내 줄, '—' 첫 칸의 측정 실패 빗금,
+    인용 줄의 옛 문구(인용이 없으면 '인용 0건'/'출처 미확인' 줄)를 되살린다.
+    """
+    from dataclasses import replace
+
+    from app.services.doctor_report_v4 import (
+        LEGACY_APPENDIX_TABLE_CAPTION,
+        LEGACY_CAVEAT_LINES,
+        LEGACY_CITATION_UNAVAILABLE_LINE,
+        LEGACY_GLOSSARY_DEFINITIONS,
+        LEGACY_HEATMAP_ASIDE,
+        LEGACY_REFERENCE_NOTE_TAIL,
+        METHOD_COMPARISON_LINE,
+        METHOD_VARIABILITY_LINE,
+        REFERENCE_NOTE_TAIL,
+    )
+
+    names = "·".join(view.platform_labels) or "ChatGPT·Gemini"
+    if view.report_kind == "SETUP":
+        method = (f"다음 달부터 측정 키워드를 {names}에 같은 방식으로 묻습니다.", METHOD_COMPARISON_LINE, METHOD_VARIABILITY_LINE)
+    else:
+        method = (
+            f"측정 키워드 {len(view.appendix.keyword_rows)}개를 {names}에 매달 1일 새벽에 같은 방식으로 묻습니다.",
+            "키워드·AI 서비스 조합 계획 8개 / 확인 7개 / 실패 1개",
+            METHOD_COMPARISON_LINE,
+            METHOD_VARIABILITY_LINE,
+        )
+    marked = False
+    rows = []
+    for row in view.exposure.heatmap:
+        cells = []
+        for cell in row.cells:
+            if not marked and cell.state == "unmeasured" and view.report_kind != "SETUP":
+                cells.append(replace(cell, state="failed"))
+                marked = True
+            else:
+                cells.append(cell)
+        rows.append(replace(row, cells=tuple(cells)))
+    citation = view.exposure.citation_lines
+    if view.report_kind != "SETUP":
+        if view.citation_measured is not None:
+            citation = (
+                f"출처 확인이 가능한 AI 답변 {view.citation_measured}건 중 {view.hospital_name} 콘텐츠 인용 {view.citation_cited or 0}건",
+            )
+        else:
+            citation = (LEGACY_CITATION_UNAVAILABLE_LINE,)
+    notice = ""
+    if "지난달 AI 노출률" in (view.appendix.keyword_note or ""):  # 참고 줄은 비교하지 않은 달에만 생긴다
+        notice = "측정 방식이 바뀌어 지난달과 직접 비교하지 않았습니다. 지난달 수치는 부록 A에 있습니다."
+    return replace(
+        view,
+        summary=replace(view.summary, notice=notice),
+        exposure=replace(view.exposure, heatmap=tuple(rows), heatmap_aside=LEGACY_HEATMAP_ASIDE, citation_lines=citation),
+        appendix=replace(
+            view.appendix,
+            method_lines=method,
+            caveat_lines=LEGACY_CAVEAT_LINES,
+        glossary=tuple((term, LEGACY_GLOSSARY_DEFINITIONS.get(term, d)) for term, d in view.appendix.glossary),
+            table_caption=LEGACY_APPENDIX_TABLE_CAPTION,
+            keyword_note=(view.appendix.keyword_note or "").replace(REFERENCE_NOTE_TAIL, LEGACY_REFERENCE_NOTE_TAIL),
+        ),
+    )
+
+
 SCENARIOS = {
     "comparable": {},
     "first": dict(
@@ -425,15 +495,15 @@ def test_key_lines_fall_back_to_risen_rate_then_citation_then_count():
 
 def test_method_changed_month_keeps_last_month_out_of_the_body_and_in_the_appendix():
     view = build(**SCENARIOS["method_reference"])
-    assert view.summary.notice == f"{METHOD_CHANGED_LINE} {REFERENCE_IN_APPENDIX_LINE}"
-    # 참고치가 없으면 부록 안내를 덧붙이지 않고, 원인을 모르는 비교 불가는 '확인되지 않아' 문장이다.
+    # 비교하지 않은 달도 1면에 '직접 비교하지 않았습니다' 안내 줄을 두지 않는다(2026-11-06 마케팅팀 요청) — 증감만 숨긴다.
+    assert view.summary.notice == ""
     without = build(**{**SCENARIOS["method_reference"], "reference_prev_sov_pct": None})
-    assert without.summary.notice == METHOD_CHANGED_LINE and without.reference_previous_rate is None
+    assert without.summary.notice == "" and without.reference_previous_rate is None
     unverified = build(
         sov_coverage=_coverage(comparison_reason="NO_MATCHED_CELLS"), comparison_reason="NO_MATCHED_CELLS",
         reference_prev_sov_pct=40.0, trend_points=(),
     )
-    assert unverified.summary.notice == f"{NOT_VERIFIED_LINE} {REFERENCE_IN_APPENDIX_LINE}"
+    assert unverified.summary.notice == ""
     assert unverified.reference_previous_rate == 40.0
     cards = {card.label: card for card in view.summary.cards}
     assert "지난달" not in cards["AI 노출률"].definition
@@ -448,7 +518,7 @@ def test_first_month_has_no_notice_and_no_previous():
     view = build(**SCENARIOS["first"])
     assert view.summary.notice == ""
     assert (view.previous_rate, view.reference_previous_rate) == (None, None)
-    assert view.appendix.keyword_note == "처음 측정 20% (측정 방식이 달라 참고만 합니다)"
+    assert view.appendix.keyword_note == "처음 측정 20% (참고)"
 
 
 def test_unavailable_month_never_writes_zero_for_unknown():
@@ -461,7 +531,7 @@ def test_unavailable_month_never_writes_zero_for_unknown():
     assert view.current_rate is None
     assert view.summary.key_lines[0] == "이번 달은 측정이 충분히 이뤄지지 않았습니다."
     assert all(bar.value is None and bar.detail == MEASUREMENT_INCOMPLETE for bar in view.exposure.platform_bars)
-    assert view.exposure.citation_lines == ("이번 달은 AI 답변의 출처를 확인하지 못했습니다. 0건이라는 뜻은 아닙니다.",)
+    assert view.exposure.citation_lines == ()  # 출처를 확인하지 못한 달은 인용 줄을 두지 않는다(2026-11-06)
     facts = view.facts()
     assert "rate.current" not in facts and "card.rate" not in facts and "citation" not in facts
     assert not any(key.startswith("platform.") for key in facts)
@@ -535,7 +605,7 @@ def test_exposure_page_pools_rates_by_treatment_platform_and_group():
     assert [c.state for c in heat["가상동 심장초음파 잘하는 병원"].cells] == ["mentioned", "mentioned"]
     assert [c.detail for c in heat["가상동 위내시경 가능한 병원"].cells] == ["0/3", "0/3"]
     assert view.exposure.citation_lines == (
-        f"출처 확인이 가능한 AI 답변 8건 중 {HOSPITAL_NAME} 콘텐츠 인용 2건",
+        f"출처를 확인한 AI 답변 8건 중 {HOSPITAL_NAME} 콘텐츠 인용 2건",
     )
 
 
@@ -741,11 +811,12 @@ def test_every_string_in_the_view_avoids_old_terms_and_internal_words(name):
     view = build(**SCENARIOS[name])
     frozen = freeze_v4(view)
     for path, text in _strings(frozen):
-        if path.startswith("appendix.caveat_lines") or path == "public_url":
+        if path == "public_url":
             continue
-        for banned in (*BANNED_IN_DOCTOR_COPY, *BANNED_IN_V4):
+        for banned in (*BANNED_IN_DOCTOR_COPY, *BANNED_IN_V4, *MARKETING_REMOVED_COPY):
             assert banned not in text, f"{path}: {banned!r} in {text!r}"
-    assert "약속하지" in " ".join(view.appendix.caveat_lines)
+    # 부록 B(측정 방법)·D(유의사항)는 기본 문구가 없다(2026-11-06).
+    assert view.appendix.method_lines == () and view.appendix.caveat_lines == ()
 
 
 @pytest.mark.parametrize("name", sorted(SCENARIOS))
@@ -939,3 +1010,102 @@ def test_fixture_targets_cover_every_keyword():
     assert {t.name for t in _targets()} == set(KEYWORDS)
     assert is_dataclass(DoctorReportV4) and {f.name for f in fields(DoctorReportV4)} >= {"summary", "appendix"}
     assert re.fullmatch(r"\d{4}-\d{2}", build().period_ym)
+
+
+# ── 2026-11-06 공통 문구 정리(마케팅팀 요청) ─────────────────────────────────────────
+
+
+@pytest.mark.parametrize("name", sorted(SCENARIOS))
+def test_copy_policy_turns_old_snapshots_into_the_current_view_and_keeps_numbers(name):
+    from app.services.doctor_report_v4 import apply_report_copy_policy, without_hidden_citation
+
+    view = build(**SCENARIOS[name])
+    assert apply_report_copy_policy(view) is view  # 지금 빌더의 뷰에는 아무것도 하지 않는다
+    legacy = with_legacy_copy(view)
+    assert legacy != view
+    assert apply_report_copy_policy(legacy) == view
+    # 숫자 사실은 그대로다 — 옛 판에서 빠지는 것은 인용 0건 사실뿐이다.
+    assert without_hidden_citation(legacy.facts()) == view.facts()
+    assert restore_v4(freeze_v4(apply_report_copy_policy(restore_v4(freeze_v4(legacy))))) == view
+
+
+def test_zero_citation_month_prints_no_citation_line_or_fact():
+    from app.services.doctor_report_v4 import (
+        apply_report_copy_policy,
+        stored_facts_v4,
+        without_hidden_citation,
+    )
+
+    zero = {**CITATIONS, "cited_cell_count": 0, "cited_content_count": 0, "cited_items": []}
+    view = build(citations=zero)
+    assert view.exposure.citation_lines == ()
+    assert "citation" not in view.facts()
+    assert "citation" not in stored_facts_v4(_coverage(), {"citations": zero, "attribution": _attribution(prior=True)})
+    legacy = with_legacy_copy(view)
+    assert legacy.exposure.citation_lines == (f"출처 확인이 가능한 AI 답변 8건 중 {HOSPITAL_NAME} 콘텐츠 인용 0건",)
+    assert legacy.facts()["citation"] == "8건 중 0건"
+    assert apply_report_copy_policy(legacy).exposure.citation_lines == ()
+    assert "citation" not in without_hidden_citation(legacy.facts())
+    # 인용이 있으면 사실은 그대로 찍힌다.
+    assert build().facts()["citation"] == "8건 중 2건"
+
+
+def test_copy_policy_leaves_ae_written_lines_alone():
+    from dataclasses import replace
+
+    from app.services.doctor_report_v4 import apply_report_copy_policy
+
+    legacy = with_legacy_copy(build())
+    custom = replace(
+        legacy,
+        summary=replace(legacy.summary, notice="원장님 요청으로 이번 달은 검사 키워드를 늘렸습니다."),
+        appendix=replace(legacy.appendix, caveat_lines=(*legacy.appendix.caveat_lines, "AE가 직접 쓴 줄입니다.")),
+    )
+    cleaned = apply_report_copy_policy(custom)
+    assert cleaned.summary.notice == "원장님 요청으로 이번 달은 검사 키워드를 늘렸습니다."
+    assert cleaned.appendix.caveat_lines == ("AE가 직접 쓴 줄입니다.",)
+    assert cleaned.appendix.method_lines == ()
+
+
+def test_stored_ae_edits_on_removed_lines_are_dropped_and_the_base_is_cleaned():
+    from app.services.doctor_report_ae_edit import base_view_of, stored_ae_overrides
+    from app.services.doctor_report_v4 import AE_DELETE
+
+    view = build()
+    legacy = with_legacy_copy(view)
+    render_inputs = {
+        "doctor_view": freeze_v4(legacy),
+        "ae_overrides": {
+            "base_view": freeze_v4(legacy),
+            "fields": {
+                "appendix.caveat_lines[1]": AE_DELETE,
+                "appendix.method_lines[1]": "계획 150회 / 확인 90회",
+                "summary.key_lines[0]": "고친 첫 줄입니다.",
+            },
+        },
+    }
+    assert stored_ae_overrides(render_inputs)["fields"] == {"summary.key_lines[0]": "고친 첫 줄입니다."}
+    assert base_view_of(render_inputs) == view
+    # 걷어 낸 줄만 가리키던 수정이면 수정 판이 아닌 것으로 읽는다.
+    only_removed = {**render_inputs, "ae_overrides": {**render_inputs["ae_overrides"], "fields": {"appendix.caveat_lines[0]": AE_DELETE}}}
+    assert stored_ae_overrides(only_removed) is None
+
+
+def test_copy_policy_also_clears_slots_an_ae_emptied_on_removed_lines():
+    from dataclasses import replace
+
+    from app.services.doctor_report_v4 import apply_report_copy_policy
+
+    zero = {**CITATIONS, "cited_cell_count": 0, "cited_content_count": 0, "cited_items": []}
+    view = build(citations=zero)
+    legacy = with_legacy_copy(view)
+    emptied = replace(
+        legacy,
+        exposure=replace(legacy.exposure, citation_lines=("",)),
+        appendix=replace(legacy.appendix, caveat_lines=("", *legacy.appendix.caveat_lines[1:]), method_lines=("",)),
+    )
+    assert apply_report_copy_policy(emptied) == view
+    # 인용이 있는 달에 AE가 지운 인용 자리는 그 수정이 계속 소유한다(경로가 살아 있다).
+    cited = build()
+    deleted = replace(cited, exposure=replace(cited.exposure, citation_lines=("",)))
+    assert apply_report_copy_policy(deleted) is deleted

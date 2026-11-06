@@ -51,8 +51,10 @@ EXCERPT_CHARS = 260
 TOP_COMPETITORS = 5
 PLATFORM_ORDER = ("chatgpt", "gemini")
 
-# 부록 D — 보고서 전체에서 면책은 여기 세 줄뿐이다(R5).
-CAVEAT_LINES = (
+# 부록 D(유의사항) — 2026-11-06 마케팅팀 요청으로 기본 문구를 두지 않는다(부정적·단정적 문구 정리). 빈 절은 그리지 않는다.
+# 옛 스냅샷의 세 줄은 `apply_report_copy_policy`가 걷어 낸다.
+CAVEAT_LINES: tuple[str, ...] = ()
+LEGACY_CAVEAT_LINES = (
     "AI 답변에 노출된 횟수는 환자 수가 아닙니다.",
     "순위나 환자 수 증가를 약속하지 않습니다.",
     "다음 달 계획은 예정 사항입니다.",
@@ -62,14 +64,23 @@ GLOSSARY = (
     ("AI 노출률", "측정 키워드로 AI에 물었을 때 병원명이 나온 답변의 비율입니다."),
     ("노출 키워드", "측정 키워드 가운데 병원명이 한 번 이상 나온 키워드입니다."),
     ("AI 인용", "AI가 답을 만들 때 병원 콘텐츠를 출처로 쓴 경우입니다."),
-    ("측정 키워드", "환자가 AI에 물어볼 만한 질문을 매달 같은 방식으로 묻습니다."),
+    ("측정 키워드", "환자가 AI에 물어볼 만한 질문으로 고른 키워드입니다."),
 )
+# 옛 정의(2026-11-06 전) — '같은 방식으로 묻습니다'가 어색하다는 마케팅팀 의견으로 바꿨다. 옛 스냅샷 정리만 읽는다.
+LEGACY_GLOSSARY_DEFINITIONS = {"측정 키워드": "환자가 AI에 물어볼 만한 질문을 매달 같은 방식으로 묻습니다."}
+# 부록 B(측정 방법)의 옛 고정 줄 — 2026-11-06부터 부록 B를 그리지 않는다. 옛 스냅샷 정리(`apply_report_copy_policy`)만 읽는다.
 METHOD_VARIABILITY_LINE = "AI 답변은 질문할 때마다 달라질 수 있습니다."
 METHOD_COMPARISON_LINE = "월별 비교는 고정 키워드로만 계산합니다."
-# 비교하지 않은 달의 P1 하단 한 줄. 이유가 '방식이 바뀜'인지 '확인할 수 없음'인지 가른다(검토 14).
+# 비교하지 않은 달의 P1 하단 한 줄(옛 문구) — 2026-11-06부터 쓰지 않는다. 비교하지 않는 달은 증감만 숨긴다.
 METHOD_CHANGED_LINE = "측정 방식이 바뀌어 지난달과 직접 비교하지 않았습니다."
 NOT_VERIFIED_LINE = "지난달과 같은 조건으로 물었는지 확인되지 않아 직접 비교하지 않았습니다."
 REFERENCE_IN_APPENDIX_LINE = "지난달 수치는 부록 A에 있습니다."
+# 부록 A 참고 줄 꼬리 — '측정 방식이 달라 참고만 합니다'는 비교하지 않는다는 말을 되풀이해 '(참고)'로 줄였다(2026-11-06).
+REFERENCE_NOTE_TAIL = " (참고)"
+LEGACY_REFERENCE_NOTE_TAIL = " (측정 방식이 달라 참고만 합니다)"
+# 인용 줄 — 인용이 있을 때만 그린다. 옛 문구('출처 확인이 가능한 …')는 `apply_report_copy_policy`가 바꾼다.
+_LEGACY_CITATION_LINE = re.compile(r"^출처 확인이 가능한 AI 답변 (\d+)건 중 (.+) 콘텐츠 인용 (\d+)건$")
+LEGACY_CITATION_UNAVAILABLE_LINE = "이번 달은 AI 답변의 출처를 확인하지 못했습니다. 0건이라는 뜻은 아닙니다."
 _METHOD_CHANGE_REASONS = frozenset(
     {
         "MEASUREMENT_POLICY_CHANGED",
@@ -132,7 +143,8 @@ TREATMENT_HEADING = "진료 항목별 AI 노출률"
 GROUP_HEADING = "질문 그룹별 노출률"
 GROUP_HEADERS = ("그룹", "키워드 수", "노출률", "근거")
 HEATMAP_HEADING = "측정 키워드별 노출"
-HEATMAP_ASIDE = "주황 노출 · 회색 미노출 · 빗금 측정 실패"
+HEATMAP_ASIDE = "주황 노출 · 회색 미노출"
+LEGACY_HEATMAP_ASIDE = "주황 노출 · 회색 미노출 · 빗금 측정 실패"
 HEATMAP_KEYWORD_HEAD = "측정 키워드"
 KEYWORD_FIGURE_LABEL = "측정 키워드"
 KEYWORD_FIGURE_CAPTION_TAIL = " — 키워드별 결과는 다음 측정부터 이 자리에 보입니다."
@@ -147,7 +159,8 @@ PLAN_FIGURE_LABEL = "다음 달 대응 키워드"
 PLAN_CONTINUED_HEADING = "다음 달 실행 계획 (이어짐)"
 APPENDIX_HEADING = "A. 측정 키워드 전체와 결과"
 APPENDIX_HEADERS = ("측정 키워드", "그룹", "진료 항목", "합계", "지난달")
-APPENDIX_TABLE_CAPTION = "칸의 수는 노출 답변 수/AI 답변 수입니다. —는 그 칸의 측정이 없었다는 뜻입니다."
+APPENDIX_TABLE_CAPTION = "칸의 수는 노출 답변 수/AI 답변 수입니다."
+LEGACY_APPENDIX_TABLE_CAPTION = "칸의 수는 노출 답변 수/AI 답변 수입니다. —는 그 칸의 측정이 없었다는 뜻입니다."
 APPENDIX_EMPTY_TEXT = "이번 달 측정 키워드 결과가 없습니다. 다음 달 첫 측정부터 이 표에 담깁니다."
 METHOD_HEADING = "B. 측정 방법"
 GLOSSARY_HEADING = "C. 용어 정의"
@@ -591,6 +604,96 @@ def _pct(value: float) -> str:
     return "100.0%" if rounded >= 100 else f"{rounded}%"
 
 
+def citation_line(measured: int, hospital_name: str, cited: int) -> str:
+    """노출 면의 인용 줄(인용이 있을 때만). 사실 정규식(`_CITATION_LINE`)과 PDF 토큰('답변N건중'·'인용n건')이 읽는 꼴이다."""
+    return f"출처를 확인한 AI 답변 {measured}건 중 {hospital_name} 콘텐츠 인용 {cited}건"
+
+
+def citation_fact_shown(value: str | None) -> bool:
+    """인용 사실('N건 중 n건')을 원장 보고서에 찍는가 — 인용 0건은 줄도 사실도 두지 않는다(2026-11-06)."""
+    numbers = re.findall(r"\d+", value or "")
+    return len(numbers) >= 2 and int(numbers[1]) > 0
+
+
+def without_hidden_citation(facts: Mapping[str, str]) -> dict[str, str]:
+    """옛 판의 뷰 사실에서 인용 0건 사실을 뺀다 — 지금 규칙의 뷰와 키 단위로 대조할 때 쓴다(숫자는 그대로다)."""
+    return {key: value for key, value in facts.items() if key != "citation" or citation_fact_shown(value)}
+
+
+_LEGACY_NOTICES = frozenset(
+    {
+        METHOD_CHANGED_LINE,
+        NOT_VERIFIED_LINE,
+        f"{METHOD_CHANGED_LINE} {REFERENCE_IN_APPENDIX_LINE}",
+        f"{NOT_VERIFIED_LINE} {REFERENCE_IN_APPENDIX_LINE}",
+    }
+)
+_LEGACY_METHOD_LINE = re.compile(
+    r"^(?:측정 키워드 \d+개를 .+에 매달 1일 새벽에 같은 방식으로 묻습니다\."
+    r"|다음 달부터 측정 키워드를 .+에 같은 방식으로 묻습니다\."
+    r"|계획 \d+회 / 확인 \d+회 / 실패 \d+회"
+    r"|키워드·AI 서비스 조합 계획 \d+개 / 확인 \d+개 / 실패 \d+개.*)$"
+)
+
+
+def apply_report_copy_policy(view: DoctorReportV4) -> DoctorReportV4:
+    """옛 스냅샷의 공통 문구를 지금 규칙(2026-11-06 마케팅팀 요청)으로 바꾼다 — 숫자 사실은 바꾸지 않는다(인용 0건 줄만 빠진다).
+
+    템플릿이 만들던 문구만 글자 그대로 맞춰 바꾸고, 그 밖의 글(AE가 쓴 문장 등)은 건드리지 않는다. 지금 빌더가 만든 뷰에는
+    아무것도 하지 않는다(멱등). 바꾸는 것: 1면 '직접 비교하지 않았습니다' 안내 줄, 히트맵 범례의 '빗금 측정 실패'와 실패 칸
+    빗금, 인용 0건·출처 미확인 줄(인용이 있으면 새 문구), 부록 A 표 설명의 '—' 줄·참고 줄 꼬리, 부록 B(측정 방법)·D(유의사항)의
+    옛 고정 줄.
+    """
+    summary = view.summary
+    if summary.notice in _LEGACY_NOTICES:
+        summary = replace(summary, notice="")
+    exposure = view.exposure
+    # 인용이 없는 달(0건·출처 미확인)의 인용 자리는 비어 있어야 한다 — AE가 옛 줄을 지운 자리('')도 함께 걷는다.
+    cited = bool(view.citation_measured and view.citation_cited)
+    citation_lines: list[str] = []
+    for line in exposure.citation_lines:
+        if not line and not cited:
+            continue
+        match = _LEGACY_CITATION_LINE.match(line or "")
+        if match:
+            if int(match.group(3)) > 0:
+                citation_lines.append(citation_line(int(match.group(1)), match.group(2), int(match.group(3))))
+            continue
+        if line == LEGACY_CITATION_UNAVAILABLE_LINE:
+            continue
+        citation_lines.append(line)
+    heatmap = tuple(
+        replace(row, cells=tuple(replace(cell, state="unmeasured") if cell.state == "failed" else cell for cell in row.cells))
+        for row in exposure.heatmap
+    )
+    exposure = replace(
+        exposure,
+        heatmap_aside=HEATMAP_ASIDE if exposure.heatmap_aside == LEGACY_HEATMAP_ASIDE else exposure.heatmap_aside,
+        citation_lines=tuple(citation_lines),
+        heatmap=heatmap,
+    )
+    appendix = view.appendix
+    appendix = replace(
+        appendix,
+        table_caption=(
+            APPENDIX_TABLE_CAPTION if appendix.table_caption == LEGACY_APPENDIX_TABLE_CAPTION else appendix.table_caption
+        ),
+        keyword_note=(appendix.keyword_note or "").replace(LEGACY_REFERENCE_NOTE_TAIL, REFERENCE_NOTE_TAIL),
+        # 부록 B·D는 지금 규칙에서 기본 줄이 없다 — 옛 고정 줄과 AE가 그 줄을 지운 자리('')를 걷고, AE가 쓴 글만 남긴다.
+        method_lines=tuple(
+            line for line in appendix.method_lines
+            if line and line not in (METHOD_COMPARISON_LINE, METHOD_VARIABILITY_LINE) and not _LEGACY_METHOD_LINE.match(line)
+        ),
+        caveat_lines=tuple(line for line in appendix.caveat_lines if line and line not in LEGACY_CAVEAT_LINES),
+        glossary=tuple(
+            (term, dict(GLOSSARY).get(term, definition) if LEGACY_GLOSSARY_DEFINITIONS.get(term) == definition else definition)
+            for term, definition in appendix.glossary
+        ),
+    )
+    result = replace(view, summary=summary, exposure=exposure, appendix=appendix)
+    return view if result == view else result
+
+
 def _platform_id(label: str) -> str:
     for key, name in PLATFORM_NAMES.items():
         if label.startswith(name):
@@ -1010,11 +1113,8 @@ def _summary_page(
         significance=significance, measured=measured, exposed=exposed, unexposed=unexposed,
         citation_cited=citation_cited, plan=plan,
     )
+    # 비교하지 않은 달은 증감만 숨긴다 — '직접 비교하지 않았습니다' 안내 줄은 2026-11-06 마케팅팀 요청으로 뺐다.
     notice = ""
-    if not_compared:
-        notice = METHOD_CHANGED_LINE if reason in _METHOD_CHANGE_REASONS else NOT_VERIFIED_LINE
-        if reference is not None:
-            notice = f"{notice} {REFERENCE_IN_APPENDIX_LINE}"
     return SummaryPage(
         title=f"{period_label} AI 노출 성과 보고서",
         subtitle=f"{hospital_name} · {period_label}",
@@ -1205,12 +1305,11 @@ def _exposure_page(
     )
     if setup:
         citation_lines = ("AI 인용은 다음 달 첫 측정부터 함께 확인합니다.",)
-    elif citation_measured is not None:
-        citation_lines = (
-            f"출처 확인이 가능한 AI 답변 {citation_measured}건 중 {hospital_name} 콘텐츠 인용 {citation_cited}건",
-        )
+    elif citation_measured is not None and citation_cited:
+        citation_lines = (citation_line(citation_measured, hospital_name, citation_cited),)
     else:
-        citation_lines = ("이번 달은 AI 답변의 출처를 확인하지 못했습니다. 0건이라는 뜻은 아닙니다.",)
+        # 인용 0건·출처 미확인은 줄을 두지 않는다(2026-11-06 마케팅팀 요청 — 부정적 문구 정리). 0건 사실도 찍지 않는다.
+        citation_lines = ()
     return ExposurePage(
         headline="AI 노출 성과",
         trend=trend,
@@ -1228,7 +1327,8 @@ def _heat_cell(platform: str, cell: tuple[str, int, int] | None) -> HeatCell:
         return HeatCell(platform, "unmeasured", "—")
     state, mentioned, attempts = cell
     if attempts <= 0:
-        return HeatCell(platform, "failed" if state == "FAILED" else "unmeasured", "—")
+        # 측정 실패도 '측정 없음'과 같은 칸으로 그린다 — 원장용 보고서에 '측정 실패'를 보이지 않는다(2026-11-06).
+        return HeatCell(platform, "unmeasured", "—")
     return HeatCell(platform, "mentioned" if mentioned > 0 else "unmentioned", f"{mentioned}/{attempts}")
 
 
@@ -1543,43 +1643,12 @@ def _appendix(*, keywords, platform_ids, comparable, reference, v0_baseline, cov
         )
     notes = []
     if reference is not None:
-        notes.append(f"지난달 AI 노출률 {_pct(reference)} (측정 방식이 달라 참고만 합니다)")
+        notes.append(f"지난달 AI 노출률 {_pct(reference)}{REFERENCE_NOTE_TAIL}")
     if v0_baseline and isinstance(v0_baseline.get("of_hundred"), int) and not isinstance(v0_baseline.get("of_hundred"), bool):
-        notes.append(f"처음 측정 {_pct(float(v0_baseline['of_hundred']))} (측정 방식이 달라 참고만 합니다)")
-    names = "·".join(platform_name(p) for p in platform_ids)
-    if setup:
-        method_lines = (
-            f"다음 달부터 측정 키워드를 {names}에 같은 방식으로 묻습니다.",
-            METHOD_COMPARISON_LINE,
-            METHOD_VARIABILITY_LINE,
-        )
-    else:
-        adequacy = coverage.get("observation_adequacy") or {}
-        planned = adequacy.get("planned_slots")
-        confirmed = adequacy.get("confirmed_slots")
-        lineage = str(adequacy.get("lineage") or "")
-        planned_cells = int(coverage.get("planned_count") or 0)
-        success_cells = int(coverage.get("success_count") or 0)
-        failed_cells = int(coverage.get("failed_count") or 0)
-        cells_line = f"키워드·AI 서비스 조합 계획 {planned_cells}개 / 확인 {success_cells}개 / 실패 {failed_cells}개"
-        if (
-            lineage == "SLOTTED"
-            and isinstance(planned, int) and isinstance(confirmed, int) and not isinstance(planned, bool)
-        ):
-            # 반복 단위(회). 실패에는 판정 보류·미도착도 들어간다.
-            counts_line = f"계획 {planned}회 / 확인 {confirmed}회 / 실패 {max(planned - confirmed, 0)}회"
-        elif lineage == "MIXED":
-            # 일부 조합만 반복 기록이 남아 있다 — 반복 횟수를 합계처럼 적지 않는다(검토 4-29).
-            counts_line = f"{cells_line} (반복 횟수 기록은 일부만 남아 있습니다)"
-        else:
-            # 반복 기록이 없는 옛 측정: 조합 수만 적는다. 0회로 쓰지 않는다.
-            counts_line = cells_line
-        method_lines = (
-            f"측정 키워드 {len(keywords)}개를 {names}에 매달 1일 새벽에 같은 방식으로 묻습니다.",
-            counts_line,
-            METHOD_COMPARISON_LINE,
-            METHOD_VARIABILITY_LINE,
-        )
+        notes.append(f"처음 측정 {_pct(float(v0_baseline['of_hundred']))}{REFERENCE_NOTE_TAIL}")
+    # 부록 B(측정 방법)는 2026-11-06 마케팅팀 요청으로 그리지 않는다 — 계획·확인·실패 횟수와 '같은 방식으로 묻습니다'는
+    # 원장에게 어색하고 부정적으로 읽혔다. 측정 범위 사실은 저장 요약(sov_summary)에 그대로 남는다.
+    method_lines: tuple[str, ...] = ()
     return Appendix(
         keyword_rows=tuple(rows),
         keyword_note=" ".join(notes),
@@ -1831,8 +1900,9 @@ def stored_facts_v4(sov_summary: Mapping[str, Any], content_summary: Mapping[str
                 facts[f"platform.{platform}.answers"] = f"AI 답변 {attempts}건 중 {int(row.get('mentioned_attempts') or 0)}건"
         citations = content_summary.get("citations") or {}
         measured_cells = int(citations.get("measured_cell_count") or 0)
-        if measured_cells:
-            facts["citation"] = f"{measured_cells}건 중 {int(citations.get('cited_cell_count') or 0)}건"
+        cited_cells = int(citations.get("cited_cell_count") or 0)
+        if measured_cells and cited_cells:  # 인용 0건은 원장 보고서에 찍지 않는다(2026-11-06)
+            facts["citation"] = f"{measured_cells}건 중 {cited_cells}건"
         keywords = _keywords(sov_summary, content_summary.get("attribution") or {}, {}, [])
         measured = [k for k in keywords if k.attempts > 0]
         if current is not None:
@@ -2003,7 +2073,12 @@ def v3_frozen_facts_problems(
     if published is not None and facts.get("card.published") != f"{published}편":
         problems.append(f"highlight.published_this_month: v3 {published} ≠ v4 {facts.get('card.published')}")
     cited_measured, cited = v3_facts.get("highlight.cited_answers_measured"), v3_facts.get("highlight.cited_questions")
-    if cited_measured is not None and cited is not None and facts.get("citation") != f"{cited_measured}건 중 {cited}건":
+    expected_citation = f"{cited_measured}건 중 {cited}건" if cited_measured is not None and cited is not None else None
+    if expected_citation is not None and not citation_fact_shown(expected_citation):
+        expected_citation = None  # 인용 0건은 v4가 찍지 않는다(2026-11-06)
+        if facts.get("citation") is not None:
+            problems.append(f"highlight.citation: v3 {cited_measured}/{cited} ≠ v4 {facts.get('citation')}")
+    if expected_citation is not None and facts.get("citation") != expected_citation:
         problems.append(f"highlight.citation: v3 {cited_measured}/{cited} ≠ v4 {facts.get('citation')}")
     cumulative = v3_facts.get("highlight.cumulative_published")
     if cumulative is not None and facts.get("card.cumulative") != f"{cumulative}편":
@@ -3065,7 +3140,8 @@ __all__ = [
     "Appendix", "AppendixKeywordRow", "BarItem", "CAVEAT_LINES", "Card", "Case", "CasesPage",
     "CompetitionPage", "CompetitorRow", "ContentPage", "ContentRow", "DoctorReportV4",
     "ExposurePage", "GLOSSARY", "GROUP_LABELS", "GroupRow", "HeatCell", "HeatRow",
-    "METHOD_CHANGED_LINE", "NOT_VERIFIED_LINE", "REFERENCE_IN_APPENDIX_LINE", "NOT_MEASURED_YET",
+    "METHOD_CHANGED_LINE", "NOT_VERIFIED_LINE", "REFERENCE_IN_APPENDIX_LINE", "apply_report_copy_policy",
+    "citation_fact_shown", "citation_line", "without_hidden_citation", "NOT_MEASURED_YET",
     "MEASUREMENT_INCOMPLETE", "PLAN_ROWS_IN_BODY", "PlanPage", "PlanRow", "ReplacedRow",
     "SummaryPage", "TEMPLATE_VERSION", "TrendPoint", "build_doctor_report_v4", "compare_facts_v4",
     "freeze_v4", "is_v4_payload", "pdf_tokens_v4", "platform_name", "restore_v4", "stored_facts_v4",

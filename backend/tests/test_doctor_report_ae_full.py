@@ -13,7 +13,7 @@ from io import BytesIO
 import pytest
 from pypdf import PdfReader
 from test_doctor_pdf_v4 import PUBLIC_URL, _view
-from test_doctor_report_v4 import SCENARIOS, build
+from test_doctor_report_v4 import SCENARIOS, build, with_legacy_copy
 
 from app.services.doctor_pdf_pagination import PageBreaks
 from app.services.doctor_pdf_rendering import render_v4_html, render_validated_doctor_pdf
@@ -32,7 +32,7 @@ from app.services.doctor_report_ae_edit import (
 from app.services.doctor_report_artifact import build_doctor_pdf_expectation
 from app.services.doctor_report_v4 import (
     AE_DELETE,
-    CAVEAT_LINES,
+    LEGACY_CAVEAT_LINES,
     DoctorReportV4,
     FigureBand,
     apply_ae_overrides,
@@ -65,8 +65,11 @@ def _edit(view: DoctorReportV4, fields: dict) -> DoctorReportV4:
 
 @pytest.fixture(scope="module")
 def failure_view() -> DoctorReportV4:
-    """10월 장편한 보고서처럼 측정 실패가 있는 달 — Gemini 측정 실패 셀 하나·측정 없음 셀 하나, 부록 B에 '실패 N개'."""
-    view = _view("comparable")
+    """10월 장편한 보고서처럼 측정 실패가 있는 달 — 옛 문구를 얼린 판(측정 실패 빗금 셀, 부록 B에 '실패 N개', 부록 D 세 줄).
+
+    2026-11-06 공통 문구 정리 뒤 빌더는 이 문구를 만들지 않는다 — 편집 기능은 옛 판에서도 그대로 동작해야 하므로 옛 모양을 되살린다.
+    """
+    view = with_legacy_copy(_view("comparable"))
     assert any(cell.state == "failed" for row in view.exposure.heatmap for cell in row.cells)
     assert any("실패" in line for line in view.appendix.method_lines)
     return view
@@ -78,12 +81,18 @@ def failure_view() -> DoctorReportV4:
 TEMPLATE_LITERALS = (
     "AI 노출 성과 보고서", "잘된 점", "보완할 점", "다음 달 중점", "병원 안내 페이지 보기", "진료 항목별 발행 편수",
     "발행 콘텐츠 목록", "진료 항목별 AI 노출률", "AI 서비스별 노출률", "질문 그룹별 노출률", "측정 키워드별 노출",
-    "주황 노출 · 회색 미노출 · 빗금 측정 실패", "언급 답변 수", "시사점", "다음 달 대응 키워드", "A. 측정 키워드 전체와 결과",
-    "칸의 수는 노출 답변 수/AI 답변 수입니다.", "B. 측정 방법", "C. 용어 정의", "D. 유의사항",
+    "주황 노출 · 회색 미노출", "언급 답변 수", "시사점", "다음 달 대응 키워드", "A. 측정 키워드 전체와 결과",
+    "칸의 수는 노출 답변 수/AI 답변 수입니다.", "C. 용어 정의",
 )
 
 
-def test_template_literals_now_come_from_the_view_and_old_snapshots_render_identically(failure_view):
+def test_template_literals_now_come_from_the_view_and_old_snapshots_render_identically():
+    _template_literals_round_trip(_view("comparable"))
+
+
+def _template_literals_round_trip(failure_view):
+
+
     html = render_v4_html(failure_view, period_label=failure_view.period_ym, public_url=PUBLIC_URL, density="comfortable", breaks=PageBreaks())
     squashed = "".join(re.sub(r"<[^>]+>", " ", html).split())  # 렌더러가 낱말을 nowrap span으로 감싼다
     for literal in TEMPLATE_LITERALS:
@@ -139,14 +148,14 @@ def test_marketer_example_1_failure_count_in_the_method_line_can_be_rewritten(fa
 
 def test_marketer_example_2_the_promise_caveat_can_be_deleted(failure_view):
     edited = _edit(failure_view, {"appendix.caveat_lines[1]": AE_DELETE})
-    assert edited.appendix.caveat_lines == (CAVEAT_LINES[0], "", CAVEAT_LINES[2])
+    assert edited.appendix.caveat_lines == (LEGACY_CAVEAT_LINES[0], "", LEGACY_CAVEAT_LINES[2])
     text = _pdf_text(_render(edited).pdf_bytes)
     assert "약속하지않습니다" not in text
-    assert "".join(CAVEAT_LINES[0].split()) in text and "D.유의사항" in text
+    assert "".join(LEGACY_CAVEAT_LINES[0].split()) in text and "D.유의사항" in text
 
 
 def test_marketer_example_3_the_comparison_notice_can_be_deleted():
-    view = _view("method-changed")
+    view = with_legacy_copy(_view("method-changed"))
     assert "측정 방식이 바뀌어" in view.summary.notice and "부록 A에 있습니다" in view.summary.notice
     edited = _edit(view, {"summary.notice": AE_DELETE})
     assert edited.summary.notice == ""
@@ -164,13 +173,13 @@ def test_marketer_example_4_appendix_d_can_be_deleted_whole_including_its_headin
     edited = _edit(failure_view, {f"appendix.caveat_lines[{i}]": AE_DELETE for i in range(3)})
     text = _pdf_text(_render(edited).pdf_bytes)
     assert "D.유의사항" not in text
-    for line in CAVEAT_LINES:
+    for line in LEGACY_CAVEAT_LINES:
         assert "".join(line.split()) not in text
     assert "C.용어정의" in text
     # 제목만 지워도 소제목은 사라지고 줄은 남는다.
     heading_only = _edit(failure_view, {"appendix.caveat_heading": AE_DELETE})
     text = _pdf_text(_render(heading_only).pdf_bytes)
-    assert "D.유의사항" not in text and "".join(CAVEAT_LINES[1].split()) in text
+    assert "D.유의사항" not in text and "".join(LEGACY_CAVEAT_LINES[1].split()) in text
 
 
 def test_marketer_example_5_the_measurement_failure_marks_can_be_removed(failure_view):
@@ -326,7 +335,7 @@ def test_editor_items_follow_report_order_and_flag_numbers_and_deletions(failure
     assert [s for i, s in enumerate(sections) if i == 0 or sections[i - 1] != s] == order
     by_path = {item["path"]: item for item in items}
     assert by_path["summary.cards[1].value"]["numbers_changed"] and by_path["summary.cards[1].value"]["value"] == "80%"
-    assert by_path["appendix.caveat_lines[1]"]["deleted"] and by_path["appendix.caveat_lines[1]"]["value"] == CAVEAT_LINES[1]
+    assert by_path["appendix.caveat_lines[1]"]["deleted"] and by_path["appendix.caveat_lines[1]"]["value"] == LEGACY_CAVEAT_LINES[1]
     assert by_path[f"content.rows[{failure_view.content.rows[0].title}].title"]["row_deleted"]
     assert not by_path["summary.key_lines[0]"]["numbers_changed"]  # 숫자를 뺀 문장은 '다름'이 아니다
     assert by_path["treatment_label[" + failure_view.appendix.keyword_rows[0].keyword + "]"]["deletable"] is False
