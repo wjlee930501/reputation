@@ -198,12 +198,14 @@ from app.services.doctor_report_v4 import (
     CaseCandidate,
     DoctorReportV4,
     apply_ae_overrides,
+    apply_report_copy_policy,
     build_doctor_report_v4,
     case_candidates_for_view,
     compare_facts_excluding_competitors,
     competitor_fact_changes,
     is_competitor_fact,
     parse_ae_path,
+    without_hidden_citation,
 )
 from app.services.domain_health_control import (
     PUBLIC_SITE_OUTAGE_MIN_HOSPITALS,
@@ -13597,7 +13599,18 @@ def build_monthly_template_refresh_plan(
     facts = doctor_view_facts(doctor_view)
     if facts != render_inputs.doctor_metric_facts:
         verdict.add("DIFF", "SNAPSHOT_METRIC_FACTS")
+    copy_cleaned = False
+    if isinstance(doctor_view, DoctorReportV4):
+        # 옛 판의 공통 문구(부록 B·D, '직접 비교하지 않았습니다', 인용 0건 줄 …)는 지금 규칙으로 바꿔 다시 그린다(2026-11-06).
+        cleaned = apply_report_copy_policy(doctor_view)
+        copy_cleaned = cleaned is not doctor_view
+        doctor_view = cleaned
     content = copy.deepcopy(latest.content_summary)
+    if copy_cleaned and verdict.status != "BLOCKED":
+        # 새 버전의 스냅샷도 찍는 뷰와 같아야 한다 — 산출물 검증·전달 게이트·다음 갱신이 이 얼린 뷰와 뷰 사실을 읽는다.
+        _apply_rebuilt_view_to_content(content, doctor_view)
+        verdict.add("WARN", "REPORT_COPY_POLICY")
+        _drop_copy_policy_only_overrides(content, render_inputs, latest)
     if verdict.status != "BLOCKED" and not isinstance(doctor_view, DoctorReportV4):
         # v4 배포 전 보고서: 저장된 숫자로 v4 뷰를 새로 만들고 스냅샷도 v4로 바꾼다. 사전 점검과 실행이 같은
         # 결과를 본다(검토 3-16) — 숫자가 하나라도 어긋나면 DIFF라 실행이 아무것도 쓰지 않는다.
@@ -13625,7 +13638,7 @@ def build_monthly_template_refresh_plan(
         )
         # 옛 코드로 저장된 AE 판의 카드 4(라벨 합치기·분리 뒤 n이 그대로였던 판)는 지금 규칙으로 다시 센 카드로 바꿔 비교한다.
         frozen_view, frozen_facts, legacy_note = legacy_card_corrected(
-            render_inputs, rebuilt.frozen_view, dict(render_inputs.doctor_metric_facts or {})
+            render_inputs, rebuilt.frozen_view, without_hidden_citation(render_inputs.doctor_metric_facts or {})
         )
         if legacy_note:
             verdict.add("WARN", "AE_LEGACY_CARD_RECOUNTED", legacy_note)
@@ -13841,6 +13854,30 @@ def _apply_competitor_refresh_overrides(
     return applied, (dropped or None)
 
 
+def _drop_copy_policy_only_overrides(content: dict, render_inputs, latest: MonthlyReport) -> None:
+    """저장된 AE 수정 값이 모두 공통 문구 규칙(2026-11-06)이 걷어 낸 줄을 가리켰으면 새 버전에서 수정 기록을 뺀다.
+
+    남겨 두면 옛 pristine 뷰(`ae_overrides.base_view`)가 새 스냅샷에 그대로 실려, 옛 코드로 되돌린 워커가 다음 갱신에서
+    걷어 낸 부록 B·D 문구를 되살린다. 버린 값은 `ae_overrides_dropped`(사유 `REPORT_COPY_POLICY`)에 남긴다.
+    일부만 걷어 낸 경우는 AE 수정 판 적용(`_apply_ae_edit_to_plan`)이 새 pristine 뷰로 수정 기록을 다시 쓴다.
+    """
+    raw = getattr(render_inputs, "ae_overrides", None)
+    raw_fields = raw.get("fields") if isinstance(raw, Mapping) else None
+    if not isinstance(raw_fields, Mapping) or not raw_fields or stored_ae_overrides(render_inputs) is not None:
+        return
+    snapshot = dict(content.get("report_snapshot") or {})
+    inputs = dict(snapshot.get("render_inputs") or {})
+    inputs.pop("ae_overrides", None)
+    inputs["ae_overrides_dropped"] = {
+        "fields": dict(raw_fields),
+        "reason": "REPORT_COPY_POLICY",
+        "from_report_id": str(latest.id),
+        "dropped_at": datetime.now(timezone.utc).isoformat(),
+    }
+    snapshot["render_inputs"] = inputs
+    content["report_snapshot"] = snapshot
+
+
 def _apply_rebuilt_view_to_content(content: dict, doctor_view: DoctorReportV4) -> None:
     """다시 만든 v4 뷰를 스냅샷(얼린 뷰·뷰 사실·AE 핵심 3줄)에 쓴다. 다른 저장값은 그대로다."""
     snapshot = dict(content.get("report_snapshot") or {})
@@ -13934,7 +13971,8 @@ def _rebuild_v4_view_from_stored(
     # 지난달 참고치·초기 측정 참고선은 다시 읽지 않고 그 달에 얼린 사실을 그대로 쓴다(검토 4-25). v3 스냅샷은 v3 사실 키로,
     # v4 스냅샷은 얼린 v4 뷰(부록 참고 줄)에서 읽는다 — v4 사실에는 초기 측정 키가 없어 v3 키만 보면 그 줄이 사라진다.
     frozen_doctor_view = restore_doctor_view(render_inputs.doctor_view)
-    frozen_v4 = frozen_doctor_view if isinstance(frozen_doctor_view, DoctorReportV4) else None
+    # 얼린 뷰도 지금 공통 문구 규칙으로 바꿔 비교한다(2026-11-06) — 다시 만든 뷰는 새 규칙이라 옛 문구가 '다름'으로 읽힌다.
+    frozen_v4 = apply_report_copy_policy(frozen_doctor_view) if isinstance(frozen_doctor_view, DoctorReportV4) else None
     v3_facts = dict(render_inputs.doctor_metric_facts or {})
     # AE가 참고 줄·숫자를 고친 판(2026-11-05)은 얼린 뷰·사실이 수정값이다 — 다시 만드는 pristine 뷰는 pristine(`base_view`)의 참고치·
     # 초기 측정선에서 읽고, 그 위에 수정값을 다시 얹는다(Codex 3-P1-B). 수정이 없는 판은 종전과 같다.

@@ -697,3 +697,110 @@ def test_template_refresh_refuses_without_a_doctor_artifact_and_writes_no_versio
     ).scalars().all()
     assert versions == [1]
     assert recorded == []  # 커밋되지 않은 보고서에 사고를 열지 않는다
+
+
+# ── 2026-11-06 공통 문구 정리 — 옛 문구를 얼린 v4 판(10월분)의 템플릿 갱신 ───────────────────────
+
+
+def test_template_refresh_cleans_old_common_copy_and_postcheck_passes(pg_session, renders, monkeypatch):
+    """옛 v4 판(부록 B·D, '직접 비교하지 않았습니다', 측정 실패 빗금 …)을 템플릿 갱신하면 새 버전은 지금 공통 문구로 찍히고
+    숫자는 그대로라 사전·사후 확인이 통과한다(마케팅팀 요청 9개 예시)."""
+    from test_doctor_report_v4 import MARKETING_REMOVED_COPY, with_legacy_copy
+
+    from app.services.doctor_report_v4 import apply_report_copy_policy
+    from app.services.monthly_report_snapshot import freeze_doctor_view
+    from app.services.monthly_template_refresh import doctor_view_facts
+    from app.utils import monthly_template_refresh as cli
+
+    hospital, _schedule, _items, first = _first_version(pg_session)
+    current = renders["doctor"][-1]
+    assert isinstance(current, DoctorReportV4)
+    legacy = with_legacy_copy(current)
+    assert legacy != current
+    content = dict(first.content_summary)
+    snapshot = dict(content["report_snapshot"])
+    inputs = dict(snapshot["render_inputs"])
+    inputs["doctor_view"] = freeze_doctor_view(legacy)
+    inputs["doctor_metric_facts"] = doctor_view_facts(legacy)
+    snapshot["render_inputs"] = inputs
+    content["report_snapshot"] = snapshot
+    first.content_summary = content
+    pg_session.commit()
+
+    monkeypatch.setattr(tasks, "_public_site_url", lambda *_a: "https://fictional.example.invalid/")
+    texts = {"old": _rendered_text(legacy)}
+    assert "약속하지" in "".join(texts["old"].split())
+    monkeypatch.setattr(
+        cli, "_stored_doctor_text",
+        lambda _db, report, _verdict: texts["old"] if report.version == 1 else texts.get("new"),
+    )
+    before = cli.precheck_hospital(pg_session, hospital, ANCHOR)
+    assert before.verdict.status == "PASS", before.verdict.summary()
+    pg_session.rollback()
+
+    rendered_before = len(renders["doctor"])
+    tasks._build_monthly_template_refresh(pg_session, hospital, ANCHOR, correlation_key=f"test:copy:{hospital.id}")
+    assert len(renders["doctor"]) == rendered_before + 1
+    rebuilt = renders["doctor"][-1]
+    assert rebuilt == apply_report_copy_policy(legacy)
+    texts["new"] = _rendered_text(rebuilt)
+    squashed = "".join(texts["new"].split())
+    for phrase in MARKETING_REMOVED_COPY:
+        assert "".join(phrase.split()) not in squashed, phrase
+    after = cli.postcheck_hospital(pg_session, hospital, 2026, 7)
+    assert after.verdict.status == "PASS", after.verdict.summary()
+    latest = pg_session.execute(
+        select(MonthlyReport).where(MonthlyReport.hospital_id == hospital.id).order_by(MonthlyReport.version.desc()).limit(1)
+    ).scalar_one()
+    assert latest.version == 2
+    stored = restore_doctor_view(report_render_inputs(latest.content_summary).doctor_view)
+    assert stored == rebuilt and stored.appendix.caveat_lines == () and stored.appendix.method_lines == ()
+
+
+def test_template_refresh_drops_ae_edits_that_only_touched_removed_lines(pg_session, renders, monkeypatch):
+    """옛 판에서 AE가 '약속하지 않습니다' 한 줄만 지웠다면(Codex 검토) 새 버전은 수정 기록 없이 지금 문구로 찍히고, 옛 pristine
+    뷰를 싣지 않는다 — 지운 자리('')도 남지 않는다."""
+    from test_doctor_report_v4 import with_legacy_copy
+
+    from app.services.doctor_report_ae_edit import build_ae_overrides
+    from app.services.doctor_report_v4 import (
+        AE_DELETE,
+        apply_ae_overrides,
+        apply_report_copy_policy,
+    )
+    from app.services.monthly_report_snapshot import freeze_doctor_view
+    from app.services.monthly_template_refresh import doctor_view_facts
+
+    hospital, _schedule, _items, first = _first_version(pg_session)
+    legacy = with_legacy_copy(renders["doctor"][-1])
+    fields = {"appendix.caveat_lines[1]": AE_DELETE}
+    edited = apply_ae_overrides(legacy, fields)
+    assert edited.appendix.caveat_lines[1] == ""
+    content = dict(first.content_summary)
+    snapshot = dict(content["report_snapshot"])
+    inputs = dict(snapshot["render_inputs"])
+    inputs["doctor_view"] = freeze_doctor_view(edited)
+    inputs["doctor_metric_facts"] = doctor_view_facts(edited)
+    inputs["ae_overrides"] = build_ae_overrides(
+        fields=fields, base_view_payload=freeze_doctor_view(legacy), edited_by="ae@example.invalid",
+        edited_at="2026-11-06T00:00:00+00:00", previous=None, changed_paths=list(fields), report_version=2,
+        number_changes=[], fact_changes={},
+    )
+    snapshot["render_inputs"] = inputs
+    content["report_snapshot"] = snapshot
+    first.content_summary = content
+    pg_session.commit()
+    monkeypatch.setattr(tasks, "_public_site_url", lambda *_a: "https://fictional.example.invalid/")
+
+    tasks._build_monthly_template_refresh(pg_session, hospital, ANCHOR, correlation_key=f"test:copy-ae:{hospital.id}")
+    rebuilt = renders["doctor"][-1]
+    assert rebuilt == apply_report_copy_policy(legacy)
+    assert rebuilt.appendix.caveat_lines == ()
+    latest = pg_session.execute(
+        select(MonthlyReport).where(MonthlyReport.hospital_id == hospital.id).order_by(MonthlyReport.version.desc()).limit(1)
+    ).scalar_one()
+    new_inputs = report_render_inputs(latest.content_summary)
+    assert new_inputs.ae_overrides is None
+    assert new_inputs.ae_overrides_dropped["reason"] == "REPORT_COPY_POLICY"
+    assert new_inputs.ae_overrides_dropped["fields"] == {"appendix.caveat_lines[1]": AE_DELETE}
+    assert restore_doctor_view(new_inputs.doctor_view) == rebuilt

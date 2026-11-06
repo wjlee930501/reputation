@@ -233,10 +233,11 @@ def test_grammar_rejects_paths_outside_the_view_and_keys_the_report_does_not_hav
     for path in ("hospital_name", "period_label", "public_url", "summary.subtitle", "plan.action[]", "treatment_label[]", "x.y"):
         assert parse_ae_path(path) is None, path
         assert _codes(validate_ae_fields({path: "x"}, view)) == ["UNKNOWN_FIELD"], path
-    for path in ("summary.key_lines[3]", "appendix.keyword_rows[0].keyword", "content.rows[0].title", "exposure.platform_bars[0].detail"):
+    # 부록 D(유의사항)는 2026-11-06부터 기본 줄이 없다 — 그 줄 번호도 '없는 번호'다.
+    for path in ("summary.key_lines[3]", "appendix.keyword_rows[0].keyword", "content.rows[0].title", "exposure.platform_bars[0].detail", "appendix.caveat_lines[0]"):
         assert parse_ae_path(path) is not None, path
         assert _codes(validate_ae_fields({path: "x"}, view)) == ["UNKNOWN_KEY"], path
-    for path in ("summary.cards[1].value", "summary.cards[3].value", "appendix.caveat_lines[0]", f"appendix.keyword_rows[{KW_ENDO}].keyword"):
+    for path in ("summary.cards[1].value", "summary.cards[3].value", "appendix.table_caption", f"appendix.keyword_rows[{KW_ENDO}].keyword"):
         assert validate_ae_fields({path: "x"}, view) == [], path
     assert _codes(validate_ae_fields({"plan.action[없는 키워드]": "문장"}, view)) == ["UNKNOWN_KEYWORD"]
     assert _codes(validate_ae_fields({"treatment_label[없는 키워드]": "라벨"}, view)) == ["UNKNOWN_KEYWORD"]
@@ -456,10 +457,10 @@ def test_plan_records_changed_numbers_as_warnings_and_stores_them_with_the_edite
     view = build()
     latest = _latest(view)
     content = copy.deepcopy(latest.content_summary)
-    fields = {"summary.cards[1].value": "99%", "exposure.platform_bars[ChatGPT].value": 80, "appendix.caveat_lines[1]": {"deleted": True}}
+    fields = {"summary.cards[1].value": "99%", "exposure.platform_bars[ChatGPT].value": 80, "appendix.table_caption": {"deleted": True}}
     edited, problems = tasks._apply_ae_edit_to_plan(None, None, latest, arrow.get("2026-10-31T23:59:00+09:00"), content, view, {"report_id": str(latest.id), "fields": fields, "edited_by": "ae@example.invalid", "requested_at": "2026-11-05T01:00:00+00:00"})
     assert [(k, c) for k, c, _d in problems] and all((k, c) == ("WARN", "AE_EDIT_NUMBERS_CHANGED") for k, c, _d in problems)
-    assert edited.summary.cards[1].value == "99%" and edited.appendix.caveat_lines[1] == ""
+    assert edited.summary.cards[1].value == "99%" and edited.appendix.table_caption == ""
     inputs = report_render_inputs(content)
     assert inputs.doctor_metric_facts == edited.facts() and inputs.doctor_metric_facts["card.rate"] == "99%"
     assert inputs.ae_overrides["fact_changes"]["card.rate"] == {"before": view.summary.cards[1].value, "after": "99%"}

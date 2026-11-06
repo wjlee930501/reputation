@@ -46,6 +46,7 @@ from app.services.doctor_report_v4 import (
     compare_facts_excluding_competitors,
     competitor_fact_changes,
     is_competitor_fact,
+    without_hidden_citation,
 )
 from app.services.monthly_period import MonthlyPeriodError
 from app.services.monthly_report_snapshot import report_render_inputs
@@ -193,7 +194,9 @@ def postcheck_hospital(db, hospital: Hospital, year: int, month: int) -> Hospita
     new_facts = dict(new_inputs.doctor_metric_facts)
     if old_inputs is not None and stored_doctor_view_is_v4(previous.content_summary or {}):
         # 옛 코드(#286)로 저장된 AE 판의 카드 4는 지금 규칙으로 다시 센 값으로 바꿔 비교한다(실행 단계와 같은 보정).
-        _view, old_facts, legacy_note = legacy_card_corrected(old_inputs, None, dict(old_inputs.doctor_metric_facts))
+        _view, old_facts, legacy_note = legacy_card_corrected(
+            old_inputs, None, without_hidden_citation(old_inputs.doctor_metric_facts)
+        )
         if legacy_note:
             verdict.add("WARN", "AE_LEGACY_CARD_RECOUNTED", legacy_note)
         for problem in compare_facts_excluding_competitors(old_facts, new_facts):

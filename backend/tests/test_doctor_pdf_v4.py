@@ -16,6 +16,7 @@ from uuid import UUID
 
 import pytest
 from pypdf import PdfReader
+from test_doctor_report_v4 import MARKETING_REMOVED_COPY, with_legacy_copy
 from test_doctor_report_view import BANNED_IN_DOCTOR_COPY
 
 from app.services.doctor_pdf_contracts import DoctorPdfExpectation, DoctorPdfValidationError
@@ -271,8 +272,10 @@ def test_comparable_month_draws_trend_and_heatmap_states():
     view, _, html = _rendered("comparable")
     assert len(view.exposure.trend) == 3
     assert '<polyline' in html and html.count("<circle") == 3
-    for state in ("mentioned", "unmentioned", "failed", "unmeasured"):
+    # 측정 실패 칸은 '측정 없음'과 같은 칸으로 그린다 — 원장용 보고서에 '측정 실패' 빗금을 두지 않는다(2026-11-06).
+    for state in ("mentioned", "unmentioned", "unmeasured"):
         assert f'class="heat heat-{state}"' in html, state
+    assert 'class="heat heat-failed"' not in html and "측정 실패" not in _body_text(html)
     assert "<mark>" in html
     assert "지난달 31%" in _body_text(html) and "<th class=\"num\">지난달</th>" in html
 
@@ -286,7 +289,8 @@ def test_first_month_hides_trend_and_previous_column():
 
 def test_method_changed_month_keeps_prior_rate_in_appendix_only():
     view, _, html = _rendered("method-changed")
-    assert view.summary.notice and view.summary.notice in _body_text(html)
+    # 1면 '직접 비교하지 않았습니다 … 부록 A에 있습니다' 안내 줄은 두지 않는다(2026-11-06) — 참고치는 부록 A에만 있다.
+    assert view.summary.notice == "" and "직접 비교하지" not in _body_text(html)
     assert "지난달 AI 노출률 31%" in view.appendix.keyword_note
     assert "<th class=\"num\">지난달</th>" not in html
     body = _body_text(html)
@@ -312,11 +316,15 @@ def test_v4_copy_avoids_retired_terms(scenario, banned):
 
 
 @pytest.mark.parametrize("scenario", SCENARIOS)
-def test_promise_caveat_only_in_appendix_d(scenario):
+def test_marketing_removed_copy_is_absent_and_appendix_b_d_are_gone(scenario):
+    """2026-11-06 마케팅팀 요청 — 부정적·단정적·어색한 공통 문구 9개 예시가 어느 보고서에도 찍히지 않는다."""
     _, _, html = _rendered(scenario)
-    before, _, after = html.partition('class="appendix-lines caveats"')
-    assert "약속드리지 않" not in _body_text(before)
-    assert "약속하지 않습니다" in _body_text(after)
+    body = "".join(_body_text(html).split())
+    for phrase in MARKETING_REMOVED_COPY:
+        assert "".join(phrase.split()) not in body, phrase
+    for heading in ("B. 측정 방법", "D. 유의사항"):
+        assert heading not in html
+    assert 'class="appendix-lines caveats"' not in html
     for marker in INTERNAL_ONLY_MARKERS:
         assert marker not in _body_text(html)
 
@@ -715,12 +723,17 @@ def test_v4_expectation_is_drawn_from_the_view_model():
 
 
 def test_artifact_expectation_for_v4_uses_method_and_caveat_lines():
+    # 부록 B·D가 없는 지금 판은 고정 문구를 요구하지 않는다(빈 문구 = 언제나 통과).
     view = _view("comparable")
     expectation = build_doctor_pdf_expectation(view, PUBLIC_URL)
     assert expectation.template_version == "v4"
-    assert expectation.coverage_text == view.appendix.method_lines[0]
-    assert expectation.caveat_text == "순위나 환자 수 증가를 약속하지 않습니다."
+    assert (expectation.coverage_text, expectation.caveat_text) == ("", "")
     assert expectation.appendix_expected is True
+    # 옛 문구를 얼린 판(10월분)은 종전처럼 부록 B 첫 줄·부록 D 둘째 줄을 요구한다.
+    legacy = with_legacy_copy(view)
+    expectation = build_doctor_pdf_expectation(legacy, PUBLIC_URL)
+    assert expectation.coverage_text == legacy.appendix.method_lines[0]
+    assert expectation.caveat_text == "순위나 환자 수 증가를 약속하지 않습니다."
 
 
 def test_field_validation_rejects_control_characters_and_bad_rates():
