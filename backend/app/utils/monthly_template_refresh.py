@@ -41,10 +41,11 @@ from app.services.doctor_pdf_contracts import DoctorPdfValidationError
 from app.services.doctor_pdf_rendering import render_validated_doctor_pdf
 from app.services.doctor_report_ae_edit import stored_ae_overrides
 from app.services.doctor_report_artifact import build_doctor_pdf_expectation
+from app.services.doctor_report_v4 import DoctorReportV4, apply_report_copy_policy
 from app.services.doctor_report_v4 import _pct as _pct_v4
 from app.services.monthly_period import MonthlyPeriodError, require_closed_period
 from app.services.monthly_report_delivery import monthly_doctor_artifact_is_valid
-from app.services.monthly_report_snapshot import report_render_inputs
+from app.services.monthly_report_snapshot import report_render_inputs, restore_doctor_view
 from app.services.monthly_template_refresh import (
     RefreshVerdict,
     compare_doctor_facts,
@@ -206,6 +207,17 @@ def _has_ae_overrides(content_summary: Mapping) -> bool:
     return render_inputs is not None and stored_ae_overrides(render_inputs) is not None
 
 
+def _copy_policy_changes(content_summary: Mapping) -> bool:
+    """이 버전의 얼린 v4 원장 뷰가 지금 공통 문구 규칙(2026-11-06)으로 바뀌는가(옛 문구를 품었는가)."""
+    if not stored_doctor_view_is_v4(content_summary):
+        return False
+    render_inputs = report_render_inputs(content_summary)
+    if render_inputs is None:
+        return False
+    view = restore_doctor_view(render_inputs.doctor_view)
+    return isinstance(view, DoctorReportV4) and apply_report_copy_policy(view) is not view
+
+
 def _without_doctor_view(content_summary: dict) -> dict:
     """스냅샷의 원장 뷰·뷰 사실·AE 핵심 3줄·AE 수정 값을 뺀 content_summary(v3→v4 승격·AE 수정 판 비교용). 나머지는 그대로다."""
     content = dict(content_summary)
@@ -300,7 +312,12 @@ def postcheck_hospital(db, hospital: Hospital, year: int, month: int) -> Hospita
         verdict.add("WARN", "AE_EDIT")
     if upgraded:
         verdict.add("WARN", "V3_TO_V4_UPGRADE")
-    if upgraded or ae_edited:
+    # 공통 문구 규칙(2026-11-06)이 옛 판의 부록 B 횟수 줄·인용 0건 줄을 걷어 냈다 — 원장 뷰 칸은 숫자 칸으로 비교하지 않고,
+    # 숫자 보존은 아래 PDF 사실 확인(저장 요약 사실 + 새 뷰 사실)이 본다.
+    copy_refreshed = _copy_policy_changes(old_content)
+    if copy_refreshed:
+        verdict.add("WARN", "REPORT_COPY_POLICY")
+    if upgraded or ae_edited or copy_refreshed:
         old_content = _without_doctor_view(old_content)
         new_content = _without_doctor_view(new_content)
     for prefix, old, new in (
