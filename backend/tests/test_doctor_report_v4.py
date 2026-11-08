@@ -1234,3 +1234,32 @@ def test_competitor_refresh_keeps_ae_key_line_edits_on_a_frozen_zero_month():
     stored = {"summary.key_lines[0]": "AE가 쓴 잘된 점.", "summary.key_lines[1]": "AE가 쓴 보완할 점."}
     kept, dropped = _competitor_refresh_carry(stored, old_base, new_base, ["경쟁병원"])
     assert kept == stored and dropped == {}
+
+
+def test_template_refresh_postcheck_compares_policy_normalized_talking_points(monkeypatch):
+    """옛 0건 문장을 품은 판의 핵심 3줄은 숫자가 다른 문장으로 바뀐다 — 사후 확인은 옛 판도 같은 규칙을 거친 줄과 비교한다(Codex 2차 P2)."""
+    from app.services.doctor_report_v4 import apply_report_copy_policy
+    from app.services.monthly_report_snapshot import freeze_doctor_view
+    from app.services.monthly_template_refresh import number_tokens
+    from app.utils.monthly_template_refresh import _copy_policy_changes, _copy_policy_talking_points
+
+    legacy = _zero_month_view(key_lines=(
+        "측정 키워드 15개 중 0개에서 노출됐습니다.",
+        "'경산 내과 병원 어디가 좋은지 비교해줘' 등 15개 키워드는 아직 노출되지 않았습니다.",
+        "'내과' 키워드 대응 콘텐츠 4편을 우선 발행합니다.",
+    ))
+    from types import SimpleNamespace
+
+    from app.utils import monthly_template_refresh as cli
+
+    # 스냅샷 전체 스키마 대신 얼린 원장 뷰만 돌려준다 — 여기서 보는 것은 핵심 3줄 정규화다.
+    frozen = freeze_doctor_view(legacy)
+    monkeypatch.setattr(cli, "report_render_inputs", lambda _content: SimpleNamespace(doctor_view=frozen))
+    monkeypatch.setattr(cli, "stored_doctor_view_is_v4", lambda _content: True)
+    content = {"report_snapshot": {}}
+    assert _copy_policy_changes(content)
+    refreshed = apply_report_copy_policy(legacy).talking_points
+    normalized = _copy_policy_talking_points(content)
+    assert normalized == list(refreshed)
+    assert number_tokens(normalized) == number_tokens(list(refreshed))
+    assert number_tokens(list(legacy.talking_points)) != number_tokens(list(refreshed))  # 정규화 없이는 막혔다
