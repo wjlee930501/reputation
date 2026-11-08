@@ -947,6 +947,7 @@ def build_doctor_report_v4(
     published_count: int = 0,
     fulfilled_count: int | None = None,
     cumulative_published_count: int | None = None,
+    carried_in_count: int = 0,
     comparison_reason: str | None = None,
     reference_prev_sov_pct: float | None = None,
     v0_baseline: Mapping[str, Any] | None = None,
@@ -1022,8 +1023,8 @@ def build_doctor_report_v4(
         attempts_used=attempts_used, mentioned_attempts=mentioned_attempts,
         measured=measured, exposed=exposed, unexposed=unexposed,
         plan_quota=plan_quota, published_count=published_count, fulfilled=fulfilled,
-        cumulative=cumulative_published_count, citation_cited=citation_cited, plan=plan,
-        not_compared=not_compared, reason=reason, reference=reference,
+        cumulative=cumulative_published_count, carried_in=carried_in_count, citation_cited=citation_cited,
+        plan=plan, not_compared=not_compared, reason=reason, reference=reference,
     )
     exposure = _exposure_page(
         setup=setup, current=current, period_month=period_month, trend_points=trend_points,
@@ -1080,13 +1081,15 @@ def build_doctor_report_v4(
 def _summary_page(
     *, hospital_name, period_label, setup, current, previous, significance, attempts_used,
     mentioned_attempts, measured, exposed, unexposed, plan_quota, published_count, fulfilled,
-    cumulative, citation_cited, plan, not_compared, reason, reference,
+    cumulative, citation_cited, plan, not_compared, reason, reference, carried_in=0,
 ) -> SummaryPage:
     cumulative_text = f" · 누적 {cumulative}편" if cumulative is not None else ""
     if plan_quota is not None:
+        # 이전 달 예정 글이 그 달 보고서 뒤에 올라와 이번 달에 실리면 발행 편수가 계획 이행보다 많다 — 차이를 밝힌다.
+        carried_text = f" · 이전 달 예정분 {carried_in}편" if carried_in else ""
         published_card = Card(
             "발행 콘텐츠", f"{published_count}편",
-            f"계획 {plan_quota}편 중 {fulfilled}편 발행{cumulative_text}",
+            f"계획 {plan_quota}편 중 {fulfilled}편 발행{carried_text}{cumulative_text}",
         )
     else:
         published_card = Card("발행 콘텐츠", f"{published_count}편", f"이번 달 발행{cumulative_text}")
@@ -1883,7 +1886,9 @@ def stored_facts_v4(sov_summary: Mapping[str, Any], content_summary: Mapping[str
         facts["card.rate"] = _pct(current)
     if comparable:
         facts["rate.previous"] = _pct(float(comparison["prior_sov_pct"]))
-    facts["card.published"] = f"{content_summary.get('published_count')}편"
+    doctor_counts = content_summary.get("doctor_publications")
+    published = doctor_counts.get("published_count") if isinstance(doctor_counts, Mapping) else None
+    facts["card.published"] = f"{content_summary.get('published_count') if published is None else published}편"
     operations = content_summary.get("operations") or {}
     timing = content_summary.get("contract_timing") or {}
     quota = operations.get("plan_quota")

@@ -384,6 +384,9 @@ from app.services.monthly_publication_facts import (
     load_monthly_publication_facts as _load_monthly_publication_facts,  # noqa: F401 -- stable legacy worker import
 )
 from app.services.monthly_publication_facts import (
+    load_report_month_publications as _load_report_month_publications,
+)
+from app.services.monthly_publication_facts import (
     observed_contract_publications as _observed_contract_publications,  # noqa: F401 -- stable legacy worker import
 )
 from app.services.monthly_report_delivery import (
@@ -12998,14 +13001,9 @@ def _build_monthly_report_for_hospital(
     )
     # 원장용 첫 장의 "지금까지 올린 글" 칸. 최초 공개 사실은 철회돼도 지워지지 않으므로
     # 닫힌 달 기준 누적 발행 편수를 그대로 말할 수 있다.
-    cumulative_published_count = db.execute(
-        select(func.count())
-        .select_from(ContentItem)
-        .where(
-            ContentItem.hospital_id == h.id,
-            previous_first_publication_at < period_end,
-        )
-    ).scalar_one()
+    # 원장 보고서의 '발행 콘텐츠'(1면 편수·글 목록·누적)는 글마다 한 달에만 싣는다(2026-11-08) — 계약 월 보고서를
+    # 처음 만든 뒤에 공개된 글만 실제 공개 달로 간다(`_load_report_month_publications`). 운영 집계(위 세 목록)는 그대로다.
+    doctor_publications = _load_report_month_publications(db, h.id, period_start, actual_now)
     # 원장 뷰를 AE PDF보다 **먼저** 만든다. 토킹 포인트는 이 뷰가 바인딩한 숫자에서
     # 나오고, 내부 PDF와 Admin이 그 같은 문장을 읽어야 한 자리에서 두 말이 안 된다.
     # 2026-11-04 보고서 v4: 뷰 모델 하나(`DoctorReportV4`)가 숫자·문장·검증·대조 계약을 다 갖는다.
@@ -13019,13 +13017,14 @@ def _build_monthly_report_for_hospital(
         sov_coverage=monthly_sov_payload,
         attribution=attribution,
         citations=citations,
-        published_contents=list(published_contents),
+        published_contents=list(doctor_publications.visible),
         query_targets=list(query_targets),
         records=evidence_records,
         plan_quota=period_quota,
-        published_count=len(actual_published_contents),
+        published_count=len(doctor_publications.items),
         fulfilled_count=len(contract_contents),
-        cumulative_published_count=cumulative_published_count,
+        cumulative_published_count=doctor_publications.cumulative_count,
+        carried_in_count=doctor_publications.carried_in_count,
         comparison_reason=monthly_sov_payload["comparison"]["reason"],
         reference_prev_sov_pct=_prior_reported_sov_pct(db, prior_manifest),
         v0_baseline=v0_baseline,
@@ -13146,6 +13145,11 @@ def _build_monthly_report_for_hospital(
         sov_summary=monthly_sov_payload,
         content_summary={
             "published_count": len(actual_published_contents),
+            # 원장 보고서 1면의 발행 편수(글마다 한 달 귀속, 2026-11-08). 없으면 옛 판이라 `published_count`가 그 값이다.
+            "doctor_publications": {
+                "published_count": len(doctor_publications.items),
+                "carried_in_count": doctor_publications.carried_in_count,
+            },
             "operations": content_operations.payload,
             "contract_timing": {
                 "early_publication_count": early_publication_count,
@@ -13995,14 +13999,25 @@ def _rebuild_v4_view_from_stored(
         if match:
             v0_value = int(round(float(match.group(1))))
             v0_baseline = {"of_hundred": v0_value, "current_of_hundred": v0_value, "sentence": ""}
-    first_publication_at = func.coalesce(ContentItem.first_published_at, ContentItem.published_at)
-    cumulative_published_count = db.execute(
-        select(func.count())
-        .select_from(ContentItem)
-        .where(ContentItem.hospital_id == h.id, first_publication_at < period_end)
-    ).scalar_one()
     operations = content.get("operations") or {}
     timing = content.get("contract_timing") or {}
+    doctor_counts = content.get("doctor_publications")
+    published_count = int(content.get("published_count") or 0)
+    carried_in_count = 0
+    if isinstance(doctor_counts, dict):
+        # 글마다 한 달에 귀속하는 판(2026-11-08) — 목록·누적은 같은 귀속을 저장된 관측 시각으로 다시 읽고, 편수는 저장값이다.
+        doctor_publications = _load_report_month_publications(db, h.id, period_start, observed_at)
+        published_contents = list(doctor_publications.visible)
+        cumulative_published_count = doctor_publications.cumulative_count
+        published_count = int(doctor_counts.get("published_count") or 0)
+        carried_in_count = int(doctor_counts.get("carried_in_count") or 0)
+    else:
+        first_publication_at = func.coalesce(ContentItem.first_published_at, ContentItem.published_at)
+        cumulative_published_count = db.execute(
+            select(func.count())
+            .select_from(ContentItem)
+            .where(ContentItem.hospital_id == h.id, first_publication_at < period_end)
+        ).scalar_one()
     view = build_doctor_report_v4(
         hospital=frozen_identity,
         period_year=now.year,
@@ -14016,9 +14031,10 @@ def _rebuild_v4_view_from_stored(
         query_targets=list(query_targets),
         records=records,
         plan_quota=operations.get("plan_quota"),
-        published_count=int(content.get("published_count") or 0),
+        published_count=published_count,
         fulfilled_count=timing.get("published_for_contract_count"),
         cumulative_published_count=cumulative_published_count,
+        carried_in_count=carried_in_count,
         comparison_reason=comparison.get("reason"),
         reference_prev_sov_pct=reference_prev,
         v0_baseline=v0_baseline,

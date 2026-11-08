@@ -1109,3 +1109,28 @@ def test_copy_policy_also_clears_slots_an_ae_emptied_on_removed_lines():
     cited = build()
     deleted = replace(cited, exposure=replace(cited.exposure, citation_lines=("",)))
     assert apply_report_copy_policy(deleted) is deleted
+
+
+# ── 발행 콘텐츠 귀속(2026-11-08): 이전 달 예정 글이 이번 달에 실리면 계획 이행과의 차이를 밝힌다 ──────
+
+
+def test_published_card_names_carried_in_publications_only_when_present():
+    view = build(published_count=13, fulfilled_count=12, cumulative_published_count=40, carried_in_count=1)
+    card = view.summary.cards[0]
+    assert card.value == "13편"
+    assert card.definition == "계획 12편 중 12편 발행 · 이전 달 예정분 1편 · 누적 40편"
+    facts = view.facts()
+    assert facts["card.published"] == "13편"
+    assert facts["card.plan"] == "12편 중 12편"
+    assert facts["card.cumulative"] == "40편"
+    plain = build(published_count=12, fulfilled_count=12, cumulative_published_count=40)
+    assert plain.summary.cards[0].definition == "계획 12편 중 12편 발행 · 누적 40편"
+
+
+def test_stored_facts_read_the_doctor_publication_count_when_the_snapshot_has_it():
+    from app.services.doctor_report_v4 import stored_facts_v4
+
+    content = {"published_count": 11, "operations": {"plan_quota": 12}, "contract_timing": {"published_for_contract_count": 12}}
+    assert stored_facts_v4({}, content)["card.published"] == "11편"  # 옛 판: 운영 집계가 1면 편수였다
+    content["doctor_publications"] = {"published_count": 12, "carried_in_count": 0}
+    assert stored_facts_v4({}, content)["card.published"] == "12편"
