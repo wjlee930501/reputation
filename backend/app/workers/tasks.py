@@ -78,6 +78,7 @@ from app.models.sov import (
 from app.services import (
     cost_guard,
     indexnow,
+    mention_identity,
     notifier,
     openrouter_key_limit,
     operation_run_payloads,
@@ -10418,6 +10419,21 @@ def _result_from_sov_record(record: SovRecord) -> dict[str, Any]:
     }
 
 
+def _judgment_identity(
+    hospital: Hospital, hospital_name: str, region: str | None
+) -> mention_identity.MentionIdentity:
+    """정기 측정의 자사 신원 — 이름·주소·전화·지역어로 규칙 대조한다(`mention_identity`)."""
+    terms = [str(term) for term in (hospital.region or []) if str(term or "").strip()]
+    if region and region not in terms:
+        terms.insert(0, region)
+    return mention_identity.MentionIdentity.build(
+        hospital_name,
+        address=hospital.address,
+        phone=hospital.phone,
+        region_terms=terms,
+    )
+
+
 def _execute_paid_observation_slot(
     db,
     *,
@@ -10441,6 +10457,7 @@ def _execute_paid_observation_slot(
     """
     judgment_hospital_name = hospital_name or hospital.name
     judgment_region = region if region is not None else (hospital.region or [""])[0]
+    judgment_identity = _judgment_identity(hospital, judgment_hospital_name, judgment_region)
     if slot_needs_answer(slot):
         claim = claim_slot_stage(db, slot.id, stage="ANSWER", deadline=deadline)
         if claim is None:
@@ -10547,6 +10564,7 @@ def _execute_paid_observation_slot(
         region=judgment_region,
         competitors=competitors,
         policy=protocol,
+        identity=judgment_identity,
     )
     if slot_is_terminal(slot):
         if slot.judgment_input_fingerprint != fingerprint:
@@ -10566,6 +10584,7 @@ def _execute_paid_observation_slot(
         judgment_hospital_name,
         slot.raw_response or "",
         competitors=competitors,
+        identity=judgment_identity,
     )
     claim = claim_slot_stage(db, slot.id, stage="JUDGMENT", deadline=deadline)
     if claim is None:
@@ -10631,6 +10650,7 @@ def _execute_paid_observation_slot(
                     item_id=str(slot.id),
                     attempt_id=str(judgment_attempt),
                     policy=protocol,
+                    identity=judgment_identity,
                 )
             )
         except SoftTimeLimitExceeded:

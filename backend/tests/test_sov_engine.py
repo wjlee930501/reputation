@@ -12,25 +12,6 @@ class _FakeChoice:
         self.message = SimpleNamespace(content=content)
 
 
-class _PayloadCompletions:
-    def __init__(self, payload):
-        self.payload = payload
-
-    async def create(self, **kwargs):
-        return SimpleNamespace(
-            choices=[_FakeChoice(json.dumps(self.payload))],
-            usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1),
-        )
-
-
-def _mock_parse_response(monkeypatch, payload):
-    monkeypatch.setattr(
-        sov_engine.openai_client.chat,
-        "completions",
-        _PayloadCompletions(payload),
-    )
-
-
 class _QuotaError(RuntimeError):
     status_code = 429
     code = "credit_balance_exhausted"
@@ -62,6 +43,36 @@ def test_answer_and_judge_clients_disable_hidden_sdk_retries():
     assert sov_engine.openai_client.max_retries == 0
 
 
+# 규칙 대조가 '다른 지역'으로 본 같은 이름 — 보조 판정(두 번째 눈)에 한 번 더 묻는 답변.
+SECOND_LOOK_NAME = "장편한외과의원"
+SECOND_LOOK_REGION = "수원시 팔달구"
+SECOND_LOOK_ANSWER = "부산 해운대구의 장편한외과의원을 추천합니다."
+
+
+@pytest.mark.asyncio
+async def test_resolver_match_needs_no_provider_call(monkeypatch):
+    class _Unexpected:
+        async def create(self, **_kwargs):
+            raise AssertionError("규칙이 확정한 언급에 모델을 부르지 않는다")
+
+    monkeypatch.setattr(sov_engine.openai_client.chat, "completions", _Unexpected())
+
+    parsed = await sov_engine._parse_mention(
+        "마포성모탑정형외과",
+        "* **성모탑정형외과의원** — 마포구 큰우물로 76, 전화 02-711-8538",
+        "마포구",
+    )
+
+    assert parsed["verdict"] == "MATCHED"
+    assert parsed["is_mentioned"] is True
+    assert parsed["matched_text"] == "성모탑정형외과의원"
+    assert sov_engine.estimate_judgment_provider_calls(
+        "마포성모탑정형외과",
+        "* **성모탑정형외과의원** — 마포구 큰우물로 76",
+        region="마포구",
+    ) == 0
+
+
 @pytest.mark.asyncio
 async def test_judge_transient_retry_is_explicit_and_each_http_attempt_is_metered(monkeypatch):
     calls = 0
@@ -77,9 +88,7 @@ async def test_judge_transient_retry_is_explicit_and_each_http_attempt_is_metere
                 choices=[_FakeChoice(json.dumps({
                     "verdict": "MATCHED",
                     "matched_text": "장편한외과의원",
-                    "mention_rank": 1,
-                    "sentiment": "neutral",
-                    "mention_context": None,
+                    "evidence": None,
                 }))],
                 usage=SimpleNamespace(prompt_tokens=3, completion_tokens=2),
             )
@@ -99,10 +108,12 @@ async def test_judge_transient_retry_is_explicit_and_each_http_attempt_is_metere
     monkeypatch.setattr(sov_engine._request_judge_completion.retry, "sleep", _no_sleep)
 
     result = await sov_engine._parse_mention(
-        "장편한외과의원", "장편한외과의원을 추천합니다."
+        SECOND_LOOK_NAME, SECOND_LOOK_ANSWER, SECOND_LOOK_REGION
     )
 
-    assert result["verdict"] == "MATCHED"
+    # 규칙은 다른 지역이라 했고 보조 판정은 언급이라 했다 — 확정하지 않고 보류로 둔다.
+    assert result["verdict"] == "AMBIGUOUS"
+    assert result["is_mentioned"] is None
     assert calls == 2
     assert len(metered) == 2
     assert metered[0].get("response") is None
@@ -187,16 +198,21 @@ def test_judgment_fingerprint_binds_identity_answer_and_policy():
     )
 
 
-def test_judgment_reservation_estimate_includes_self_and_competitor_batches():
+def test_judgment_reservation_estimate_counts_only_second_look_calls():
     response = "가나의원과 다라병원을 비교해 주세요."
 
-    assert sov_engine.estimate_judgment_provider_calls("가나의원", response) == 1
+    # 규칙이 확정한 언급·경쟁 병원 판정은 공급자를 부르지 않는다.
+    assert sov_engine.estimate_judgment_provider_calls("가나의원", response) == 0
     assert sov_engine.estimate_judgment_provider_calls(
         "가나의원", response, ["다라병원", "마바사의원"]
-    ) == 2
+    ) == 0
     assert sov_engine.estimate_judgment_provider_calls(
         "없는의원", response, ["마바사의원"]
     ) == 0
+    # 이름 조각은 있는데 규칙이 아니라고 본 답변만 보조 판정 1회를 예약한다.
+    assert sov_engine.estimate_judgment_provider_calls(
+        SECOND_LOOK_NAME, SECOND_LOOK_ANSWER, region=SECOND_LOOK_REGION
+    ) == 1
 
 
 @pytest.mark.asyncio
@@ -249,96 +265,73 @@ async def test_lead_gemini_is_serialized_without_blocking_lead_openai(monkeypatc
     assert gemini_max == 1
 
 
-class _FakeCompletions:
-    async def create(self, **kwargs):
-        assert kwargs["response_format"] == {"type": "json_object"}
-        return SimpleNamespace(
-            choices=[
-                _FakeChoice(
-                    json.dumps(
-                        {
-                            "competitors": [
-                                {"name": "경쟁병원", "is_mentioned": True, "mention_rank": 1},
-                            ]
-                        }
-                    )
-                )
-            ]
-        )
-
-
 @pytest.mark.asyncio
-async def test_parse_competitors_accepts_json_object_wrapper(monkeypatch):
-    monkeypatch.setattr(
-        sov_engine.openai_client.chat,
-        "completions",
-        _FakeCompletions(),
+async def test_parse_competitors_uses_the_same_resolver_without_provider_calls(monkeypatch):
+    class _Unexpected:
+        async def create(self, **_kwargs):
+            raise AssertionError("경쟁 병원 판정은 공급자를 부르지 않는다")
+
+    monkeypatch.setattr(sov_engine.openai_client.chat, "completions", _Unexpected())
+    home = sov_engine.mention_identity_for("우리의원", "수원시 팔달구")
+
+    parsed = await sov_engine._parse_competitors(
+        ["경쟁병원", "모두탑365정형외과", "멀리내과의원"],
+        "1. **경쟁병원** (팔달구)\n2. 노원모두탑365정형외과의원\n3. **멀리내과의원** (부산 해운대구)",
+        home,
     )
 
-    parsed = await sov_engine._parse_competitors(["경쟁병원"], "경쟁병원이 먼저 언급되었습니다.")
-
-    assert parsed == [{"name": "경쟁병원", "is_mentioned": True, "mention_rank": 1}]
+    assert parsed == [
+        {"name": "경쟁병원", "is_mentioned": True, "mention_rank": 1},
+        # 더 긴 다른 이름의 일부는 언급이 아니다.
+        {"name": "모두탑365정형외과", "is_mentioned": False, "mention_rank": None},
+        # 같은 이름이라도 다른 시·군·구로 적혔으면 다른 지점이다.
+        {"name": "멀리내과의원", "is_mentioned": False, "mention_rank": None},
+    ]
 
 
 @pytest.mark.parametrize(
-    "metadata",
+    "payload",
     [
-        {"mention_rank": 0},
-        {"mention_rank": True},
-        {"sentiment": "mixed"},
-        {"sentiment": []},
-        {"matched_text": 123},
-        {"mention_context": []},
+        {"verdict": "MAYBE", "matched_text": "장편한외과의원"},
+        {"verdict": "MATCHED", "matched_text": 123},
+        {"verdict": "MATCHED", "matched_text": "장편한외과의원", "evidence": []},
+        "not json",
     ],
 )
-async def test_parse_mention_rejects_malformed_metadata(monkeypatch, metadata):
-    payload = {
-        "verdict": "MATCHED",
-        "matched_text": "장편한외과의원",
-        "mention_rank": 1,
-        "sentiment": "positive",
-        "mention_context": "추천 목록",
-        **metadata,
-    }
-    _mock_parse_response(monkeypatch, payload)
+async def test_second_look_rejects_malformed_payload(monkeypatch, payload):
+    class _Raw:
+        async def create(self, **_kwargs):
+            content = payload if isinstance(payload, str) else json.dumps(payload)
+            return SimpleNamespace(
+                choices=[_FakeChoice(content)],
+                usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1),
+            )
+
+    monkeypatch.setattr(sov_engine.openai_client.chat, "completions", _Raw())
 
     with pytest.raises(ValueError, match="^mention_parse_failed$"):
-        await sov_engine._parse_mention("장편한외과의원", "장편한외과의원을 추천합니다.")
+        await sov_engine._parse_mention(SECOND_LOOK_NAME, SECOND_LOOK_ANSWER, SECOND_LOOK_REGION)
 
 
-async def test_parse_mention_accepts_valid_metadata(monkeypatch):
-    payload = {
-        "verdict": "MATCHED",
-        "matched_text": "장편한외과의원",
-        "mention_rank": 2,
-        "sentiment": "neutral",
-        "mention_context": "지역 병원 목록",
-    }
-    _mock_parse_response(monkeypatch, payload)
+async def test_second_look_reads_json_wrapped_in_prose(monkeypatch):
+    class _Prose:
+        async def create(self, **kwargs):
+            # Anthropic 모델은 json_object 형식 강제를 받지 않는다 — 형식 인자를 보내지 않는다.
+            assert "response_format" not in kwargs
+            assert kwargs["model"].startswith("anthropic/")
+            return SimpleNamespace(
+                choices=[_FakeChoice('판정입니다.\n```json\n{"verdict": "NOT_MATCHED", "matched_text": null, "evidence": null}\n```')],
+                usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1),
+            )
+
+    monkeypatch.setattr(sov_engine.openai_client.chat, "completions", _Prose())
 
     parsed = await sov_engine._parse_mention(
-        "장편한외과의원", "장편한외과의원이 지역 병원 목록에 있습니다."
+        SECOND_LOOK_NAME, SECOND_LOOK_ANSWER, SECOND_LOOK_REGION
     )
 
-    assert parsed["mention_rank"] == 2
-    assert parsed["sentiment"] == "neutral"
-
-
-@pytest.mark.parametrize(
-    "entry",
-    [
-        {"name": "", "is_mentioned": True, "mention_rank": 1},
-        {"name": 123, "is_mentioned": True, "mention_rank": 1},
-        {"name": "경쟁병원", "is_mentioned": 1, "mention_rank": 1},
-        {"name": "경쟁병원", "is_mentioned": True, "mention_rank": 0},
-        {"name": "경쟁병원", "is_mentioned": True, "mention_rank": False},
-    ],
-)
-async def test_parse_competitors_rejects_malformed_metadata(monkeypatch, entry):
-    _mock_parse_response(monkeypatch, {"competitors": [entry]})
-
-    with pytest.raises(ValueError, match="^competitor_parse_failed$"):
-        await sov_engine._parse_competitors(["경쟁병원"], "경쟁병원이 언급되었습니다.")
+    assert parsed["verdict"] == "NOT_MATCHED"
+    assert parsed["is_mentioned"] is False
 
 
 # ── calculate_sov: 성공 측정 0건이면 None (측정 안 됨 ≠ 실제 0% 언급) ──
@@ -663,11 +656,10 @@ class _VerdictCompletions:
 
 @pytest.mark.asyncio
 async def test_matched_without_the_full_name_in_the_quote_is_downgraded(monkeypatch):
-    """사전 필터는 접미사를 뗀 핵심의 substring 일치라 느슨하다.
+    """"행복한의원"의 핵심 "행복한"은 "행복한 진료를 위해" 같은 평범한 문장에도 걸린다.
 
-    "행복한의원"의 핵심 "행복한"은 "행복한 진료를 위해" 같은 평범한 문장에도 걸린다.
-    판정기가 그 조각을 근거로 MATCHED를 주면 오탐이 그대로 언급률이 되므로,
-    근거 인용이 병원명 전체를 담지 않으면 승격시키지 않는다.
+    규칙 대조는 접미사 없는 맨 이름을 위치 증거 없이 인정하지 않는다. 보조 판정이 그 조각을
+    근거로 MATCHED를 주더라도 확정하지 않고 보류로 둔다 — 0으로도, 언급으로도 세지 않는다.
     """
     monkeypatch.setattr(
         sov_engine.openai_client.chat,
@@ -683,8 +675,8 @@ async def test_matched_without_the_full_name_in_the_quote_is_downgraded(monkeypa
 
 
 @pytest.mark.asyncio
-async def test_matched_with_a_fabricated_quote_is_downgraded(monkeypatch):
-    """답변에 없는 문자열을 근거랍시고 지어내면 근거가 아니다."""
+async def test_matched_with_a_fabricated_quote_is_not_counted(monkeypatch):
+    """보조 판정이 답변에 없는 문자열을 근거랍시고 지어내면 근거가 아니다 — 규칙의 판정(미언급)이 남는다."""
     monkeypatch.setattr(
         sov_engine.openai_client.chat,
         "completions",
@@ -693,7 +685,8 @@ async def test_matched_with_a_fabricated_quote_is_downgraded(monkeypatch):
 
     parsed = await sov_engine._parse_mention("행복한의원", "행복한 진료를 위해 노력합니다.")
 
-    assert parsed["verdict"] == "AMBIGUOUS"
+    assert parsed["verdict"] == "NOT_MATCHED"
+    assert parsed["is_mentioned"] is False
 
 
 @pytest.mark.asyncio
@@ -779,11 +772,18 @@ def test_records_without_a_mention_key_are_still_counted():
     assert len(sov_engine.successful_records(records)) == 1
 
 
-def test_both_parse_prompts_share_the_same_identity_rule():
-    assert sov_engine._IDENTITY_RULE in sov_engine.PARSE_PROMPT
-    assert sov_engine._IDENTITY_RULE in sov_engine.COMPETITOR_PARSE_PROMPT
-    # 경쟁사에만 적용되던 느슨한 기준이 남아 있으면 안 된다.
-    assert "앞 2~3글자 일치 시 동일 병원" not in sov_engine.COMPETITOR_PARSE_PROMPT
+def test_self_and_competitor_share_the_same_identity_rule():
+    """자사만 넓게 잡고 경쟁사를 좁게 잡으면 '우리 vs 경쟁 병원' 비교가 기운다 — 같은 규칙을 쓴다."""
+    home = sov_engine.mention_identity_for("성모탑정형외과의원", "마포구")
+    answer = "1. **성모탑정형외과의원** (마포역)\n2. **바른정형외과** (부산 해운대구)"
+
+    self_res = sov_engine.mention_identity.resolve(home, answer)
+    as_competitor = sov_engine.mention_identity.resolve(
+        home.for_competitor("성모탑정형외과의원"), answer
+    )
+
+    assert self_res.matched and as_competitor.matched
+    assert self_res.matched_text == as_competitor.matched_text
 
 
 class _MalformedCompletions:
@@ -794,35 +794,17 @@ class _MalformedCompletions:
 
 
 @pytest.mark.asyncio
-async def test_competitor_parse_failure_raises_like_self_judgment(monkeypatch):
-    # 같은 판정기 장애인데 자사는 FAILED(분모 제외), 경쟁사는 "미언급 SUCCESS"로
-    # 집계되면 경쟁사 언급률이 구조적으로 낮게 나온다. 양쪽 다 실패로 올라와야 한다.
+async def test_second_look_failure_raises_while_competitors_need_no_judge(monkeypatch):
+    # 보조 판정 장애는 미언급으로 삼키지 않는다(측정 실패로 올라가 다시 판정한다). 경쟁 병원은
+    # 규칙 대조만 쓰므로 판정기 장애의 영향을 받지 않는다.
     monkeypatch.setattr(sov_engine.openai_client.chat, "completions", _MalformedCompletions())
 
     with pytest.raises(ValueError):
-        await sov_engine._parse_mention("장편한외과의원", "장편한외과의원이 언급되었습니다.")
-    with pytest.raises(ValueError):
-        await sov_engine._parse_competitors(
-            ["장편한외과의원"], "장편한외과의원이 언급되었습니다."
-        )
-
-
-@pytest.mark.asyncio
-async def test_competitor_parse_rejects_wrong_typed_items(monkeypatch):
-    class _WrongType:
-        async def create(self, **kwargs):
-            return SimpleNamespace(
-                choices=[
-                    _FakeChoice(
-                        json.dumps({"competitors": [{"name": "경쟁병원", "is_mentioned": "yes"}]})
-                    )
-                ]
-            )
-
-    monkeypatch.setattr(sov_engine.openai_client.chat, "completions", _WrongType())
-
-    with pytest.raises(ValueError):
-        await sov_engine._parse_competitors(["경쟁병원"], "경쟁병원이 언급되었습니다.")
+        await sov_engine._parse_mention(SECOND_LOOK_NAME, SECOND_LOOK_ANSWER, SECOND_LOOK_REGION)
+    parsed = await sov_engine._parse_competitors(
+        ["장편한외과의원"], "장편한외과의원이 언급되었습니다."
+    )
+    assert parsed[0]["is_mentioned"] is True
 
 
 @pytest.mark.asyncio
@@ -943,29 +925,17 @@ async def test_fetch_answer_without_any_http_attempt_reports_zero(monkeypatch):
 
 
 class _ScriptedJudgeCompletions:
-    """Judge client: transient failures first, then self verdict, then competitor verdict."""
+    """Second-look client: transient failures first, then a NOT_MATCHED verdict."""
 
     def __init__(self, failures: int):
         self.failures = failures
         self.calls = 0
-        self.successes = 0
 
     async def create(self, **_kwargs):
         self.calls += 1
         if self.calls <= self.failures:
             raise _TransientRateLimitError("judge hiccup")
-        self.successes += 1
-        payload = (
-            {
-                "verdict": "MATCHED",
-                "matched_text": "가나의원",
-                "mention_rank": 1,
-                "sentiment": "neutral",
-                "mention_context": None,
-            }
-            if self.successes == 1
-            else {"competitors": [{"name": "다라병원", "is_mentioned": True, "mention_rank": 2}]}
-        )
+        payload = {"verdict": "NOT_MATCHED", "matched_text": None, "evidence": None}
         return SimpleNamespace(
             choices=[_FakeChoice(json.dumps(payload))],
             usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1),
@@ -973,9 +943,29 @@ class _ScriptedJudgeCompletions:
 
 
 @pytest.mark.asyncio
-async def test_judge_answer_counts_retried_self_and_competitor_attempts(monkeypatch):
+async def test_judge_answer_counts_retried_second_look_attempts(monkeypatch):
     _patch_attempt_plumbing(monkeypatch)
     completions = _ScriptedJudgeCompletions(failures=2)
+    monkeypatch.setattr(sov_engine.openai_client.chat, "completions", completions)
+
+    judgment = await sov_engine.judge_answer(
+        SECOND_LOOK_NAME,
+        SECOND_LOOK_ANSWER,
+        region=SECOND_LOOK_REGION,
+        competitors=["다라병원"],
+    )
+
+    assert judgment["measurement_status"] == "SUCCESS"
+    assert judgment["verdict"] == "NOT_MATCHED"
+    # 보조 판정: 일시 장애 2회 + 성공 1회. 경쟁 병원은 규칙 대조라 호출이 없다.
+    assert completions.calls == 3
+    assert judgment["provider_calls"] == 3
+
+
+@pytest.mark.asyncio
+async def test_judge_answer_resolver_match_makes_no_provider_call(monkeypatch):
+    _patch_attempt_plumbing(monkeypatch)
+    completions = _ScriptedJudgeCompletions(failures=10)
     monkeypatch.setattr(sov_engine.openai_client.chat, "completions", completions)
 
     judgment = await sov_engine.judge_answer(
@@ -983,9 +973,12 @@ async def test_judge_answer_counts_retried_self_and_competitor_attempts(monkeypa
     )
 
     assert judgment["measurement_status"] == "SUCCESS"
-    # self: 2 transient failures + 1 success; competitors: 1 success.
-    assert completions.calls == 4
-    assert judgment["provider_calls"] == 4
+    assert judgment["verdict"] == "MATCHED"
+    assert judgment["competitor_mentions"] == [
+        {"name": "다라병원", "is_mentioned": True, "mention_rank": 2}
+    ]
+    assert completions.calls == 0
+    assert judgment["provider_calls"] == 0
 
 
 @pytest.mark.asyncio
@@ -995,7 +988,7 @@ async def test_judge_answer_hard_failure_reports_exhausted_attempts(monkeypatch)
     monkeypatch.setattr(sov_engine.openai_client.chat, "completions", completions)
 
     judgment = await sov_engine.judge_answer(
-        "가나의원", "가나의원과 다라병원을 추천합니다.", competitors=["다라병원"]
+        SECOND_LOOK_NAME, SECOND_LOOK_ANSWER, region=SECOND_LOOK_REGION, competitors=["다라병원"]
     )
 
     assert judgment["measurement_status"] == "FAILED"
@@ -1006,7 +999,7 @@ async def test_judge_answer_hard_failure_reports_exhausted_attempts(monkeypatch)
 # ── 자사 판정/경쟁사 판정 분리 — 보조 분석 실패가 판정을 지우지 않는다 ──
 
 def _good_own(verdict: str):
-    async def _mention(_name, _text, _region=""):
+    async def _mention(_name, _text, _region="", identity=None):
         return {
             "verdict": verdict,
             "is_mentioned": None if verdict == "AMBIGUOUS" else verdict == "MATCHED",
@@ -1017,7 +1010,7 @@ def _good_own(verdict: str):
     return _mention
 
 
-async def _always_broken_competitors(_comp, _text):
+async def _always_broken_competitors(_comp, _text, _home=None):
     raise ValueError("competitor_parse_failed")
 
 
@@ -1053,12 +1046,12 @@ async def test_own_verdict_survives_a_failed_competitor_parse(monkeypatch, verdi
 
 @pytest.mark.asyncio
 async def test_self_parse_failure_still_fails_the_whole_judgment(monkeypatch):
-    async def _broken(_name, _text, _region=""):
+    async def _broken(_name, _text, _region="", identity=None):
         raise ValueError("mention_parse_failed")
 
     competitor_calls = {"n": 0}
 
-    async def _competitors(_comp, _text):
+    async def _competitors(_comp, _text, _home=None):
         competitor_calls["n"] += 1
         return [{"name": "다라병원", "is_mentioned": True, "mention_rank": 1}]
 
@@ -1080,7 +1073,7 @@ async def test_competitor_soft_time_limit_still_propagates(monkeypatch):
 
     monkeypatch.setattr(sov_engine, "_parse_mention", _good_own("MATCHED"))
 
-    async def _timeout(_comp, _text):
+    async def _timeout(_comp, _text, _home=None):
         raise SoftTimeLimitExceeded()
 
     monkeypatch.setattr(sov_engine, "_parse_competitors", _timeout)

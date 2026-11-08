@@ -63,6 +63,7 @@ _OPENROUTER_MODEL_FIELDS = (
     "OPENAI_IMAGE_MODEL",
     "OPENAI_MODEL_QUERY",
     "OPENAI_MODEL_PARSE",
+    "MENTION_SECOND_LOOK_MODEL",
     "GEMINI_MODEL",
     "CONTENT_AI_REVIEW_FALLBACK_MODEL",
 )
@@ -532,6 +533,10 @@ class Settings(BaseSettings):
     #      기준선 유지를 위해 바꾸지 않는다. 폐기 예정 없음.
     OPENAI_MODEL_QUERY: str = "openai/gpt-6-luna"
     OPENAI_MODEL_PARSE: str = "openai/gpt-4o-mini-2024-07-18"
+    # 언급 판정의 보조 판정(두 번째 눈) 모델. 자사·경쟁사 언급은 규칙 대조(`mention_identity`)가 정하고,
+    # 규칙이 '아니다'라고 했는데 이름 조각이 있는 답변만 이 모델에 한 번 더 묻는다(2026-11-09 정답표 비교:
+    # 정밀도 1.000, 재현율 0.95~0.97, 406건 $0.14). 생각 토큰을 쓰므로 출력 한도는 판정 코드가 넉넉히 준다.
+    MENTION_SECOND_LOOK_MODEL: str = "anthropic/claude-haiku-5.5"
     # 프로덕션은 Responses API + web_search tool만 허용한다. False는 모델 recall이므로
     # _validate_production_config에서 부팅을 차단한다.
     OPENAI_CHATGPT_USE_WEB_SEARCH: bool = True

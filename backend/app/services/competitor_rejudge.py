@@ -5,8 +5,8 @@
 
 - 답변을 새로 사지 않는다. 고정 매니페스트의 확정 셀에 묶인 `SovRecord.raw_response`(이미 저장된 답변
   원문)만 읽는다. 측정 슬롯·셀 상태·자사 판정(`is_mentioned`·`mention_verdict`)은 손대지 않는다.
-- 다시 묻는 것은 측정 때 `sov_engine._parse_competitors`가 했던 것과 **같은 판정**(같은 프롬프트·같은
-  사전 필터·`judgment:competitors`)이다. 측정 당시 등록돼 있지 않아 물어보지 못한 이름만 묻는다 —
+- 다시 묻는 것은 측정 때 `sov_engine._parse_competitors`가 했던 것과 **같은 판정**(2026-11-09부터 이름·위치
+  규칙 대조 — 모델 호출 없음)이다. 측정 당시 등록돼 있지 않아 물어보지 못한 이름만 묻는다 —
   이미 판정이 있는 이름은 덮지 않고, 등록에서 빠진 이름은 지우지 않는다(보고서 조립이 등록 목록으로 거른다).
 - 그래서 마감이 지난 달도 대상이다. 보고서의 분모·노출률·셀 집계는 바뀌지 않고, 경쟁 현황(04절·1면 카드·
   P6·부록)만 현재 `competitor_mentions`에서 다시 계산된다(`COMPETITOR_REFRESH` 템플릿 갱신).
@@ -33,7 +33,7 @@ from app.models.hospital import Hospital
 from app.models.monthly_control import MonthlyMeasurementManifest
 from app.models.report import MonthlyReport
 from app.models.sov import AIQueryTarget, SovRecord
-from app.services import cost_guard, sov_engine
+from app.services import cost_guard, mention_identity, sov_engine
 from app.services.competitor_scope import (
     competitor_key,
     registered_competitor_names,
@@ -440,11 +440,22 @@ def execute_rejudge(
 ) -> RejudgeOutcome:
     """계획대로 기록마다 빠진 이름을 묻고 `competitor_mentions`에 합쳐 **기록 단위로 커밋**한다.
 
-    예약은 대상 기록 수 × 1회(사전 필터에서 걸러진 기록은 호출 없이 판정이 나온다). 쓰기 직전에 행을 잠그고
+    예약은 대상 기록 수 × 1회(판정은 규칙 대조라 실제 공급자 호출은 없다). 쓰기 직전에 행을 잠그고
     빠진 이름을 다시 계산하므로 같은 병원을 두 실행이 겹쳐 돌아도 같은 이름을 두 번 묻지 않고, 나중 쓰기가
     먼저 쓴 bool 판정을 덮지 않는다. 다시 돌리면 미확정으로 남은 이름만 다시 묻는다(멱등).
     """
-    judge = judge or sov_engine._parse_competitors
+    if judge is None:
+        # 측정 때와 같은 규칙 대조 — 경쟁 병원의 생활권은 이 병원과 같다고 본다(`sov_engine._parse_competitors`).
+        home = mention_identity.MentionIdentity.build(
+            hospital.name,
+            address=hospital.address,
+            phone=hospital.phone,
+            region_terms=hospital.region or [],
+        )
+
+        async def judge(names: list[str], raw: str) -> list[dict[str, Any]]:
+            return await sov_engine._parse_competitors(names, raw, home)
+
     judged_at = now or datetime.now(UTC)
     plan = build_rejudge_plan(db, hospital, year, month, now=judged_at)
     outcome = RejudgeOutcome(
