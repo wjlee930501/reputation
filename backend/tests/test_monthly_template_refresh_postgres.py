@@ -545,6 +545,8 @@ def _v3_snapshot_version(session: Session, monkeypatch, texts: dict):
 
     # v4 배포 전 코드가 저장하던 모양: v3 뷰를 같은 저장 요약으로 만들어 스냅샷에 얼린다.
     content = dict(first.content_summary)
+    # v4 배포 전 판에는 원장 1면 귀속 편수(2026-11-08)가 없다 — 1면 편수는 운영 집계 `published_count`였다.
+    content.pop("doctor_publications", None)
     sov = first.sov_summary
     operations = content.get("operations") or {}
     timing = content.get("contract_timing") or {}
@@ -804,3 +806,89 @@ def test_template_refresh_drops_ae_edits_that_only_touched_removed_lines(pg_sess
     assert new_inputs.ae_overrides_dropped["reason"] == "REPORT_COPY_POLICY"
     assert new_inputs.ae_overrides_dropped["fields"] == {"appendix.caveat_lines[1]": AE_DELETE}
     assert restore_doctor_view(new_inputs.doctor_view) == rebuilt
+
+
+# ── 원장 보고서 '발행 콘텐츠' 귀속: 글마다 한 달(2026-11-08, 장보고 10/30 예정·11/1 공개 글) ──────────────
+
+
+def _manifest(hospital, year, month):
+    close = arrow.get(year, month, 1, tzinfo="Asia/Seoul").shift(months=1).datetime
+    return MonthlyMeasurementManifest(
+        hospital_id=hospital.id, period_year=year, period_month=month,
+        configured_platforms=["chatgpt"], platform_provenance={"query_intents": {}},
+        closes_at=close, closed_at=close,
+    )
+
+
+def _kst(*args):
+    return arrow.get(datetime(*args), tzinfo="Asia/Seoul").datetime
+
+
+def test_doctor_report_lists_each_publication_in_exactly_one_month(pg_session, renders):
+    session = pg_session
+    hospital = Hospital(name="귀속 가상 의원", slug=f"report-month-{uuid.uuid4().hex}")
+    session.add(hospital)
+    session.flush()
+    schedule = ContentSchedule(
+        hospital_id=hospital.id, plan="PLAN_12", publish_days=[0, 1, 2, 3, 4],
+        active_from=date(2026, 9, 1), is_active=True,
+    )
+    session.add(schedule)
+    session.flush()
+    sept_on_time = _item(hospital, schedule, 1, scheduled=date(2026, 9, 28), published_at=_kst(2026, 9, 28, 8))
+    sept_late = _item(hospital, schedule, 2, scheduled=date(2026, 9, 29), published_at=_kst(2026, 10, 5, 8))
+    oct_on_time = _item(hospital, schedule, 3, scheduled=date(2026, 10, 27), published_at=_kst(2026, 10, 27, 8))
+    # 10/30 예정 글이 11/1 08:00에 공개됐다 — 10월 보고서(11/1 09:00)보다 먼저라 10월에 싣고 11월에는 다시 싣지 않는다.
+    oct_late = _item(hospital, schedule, 4, scheduled=date(2026, 10, 30), published_at=_kst(2026, 11, 1, 8))
+    # 11월 예정 글을 10월에 미리 올렸다 — 11월 보고서에 싣는다.
+    nov_early = _item(hospital, schedule, 5, scheduled=date(2026, 11, 3), published_at=_kst(2026, 10, 29, 8))
+    for item, title in (
+        (sept_on_time, "9월 제때 글"), (sept_late, "9월 예정 늦은 글"), (oct_on_time, "10월 제때 글"),
+        (oct_late, "10월 예정 11월 1일 공개 글"), (nov_early, "11월 예정 미리 올린 글"),
+    ):
+        item.title = title
+    session.add_all([sept_on_time, sept_late, oct_on_time, oct_late, nov_early])
+    # 9월 보고서는 10/1 09:00에 처음 만들어졌다(그 뒤에 공개된 9월 예정 글은 10월로 간다).
+    session.add(
+        MonthlyReport(
+            hospital_id=hospital.id, period_year=2026, period_month=9, report_type="MONTHLY", version=1,
+            content_summary={"contract_timing": {"observed_at": _kst(2026, 10, 1, 9).isoformat()}},
+        )
+    )
+    session.add_all([_manifest(hospital, 2026, 10), _manifest(hospital, 2026, 11)])
+    session.commit()
+
+    outcome = tasks._build_monthly_report_for_hospital(
+        session, hospital, arrow.get(2026, 10, 31, 23, 59, tzinfo="Asia/Seoul"),
+        observed_at=_kst(2026, 11, 1, 9),
+        build_reason=ReportBuildReason.SCHEDULED_CLOSE,
+        correlation_key=f"test:oct:{hospital.id}",
+    )
+    assert outcome == "created"
+    october = renders["doctor"][-1]
+    card = october.summary.cards[0]
+    assert card.value == "3편"
+    assert card.definition == "계획 12편 중 2편 발행 · 이전 달 예정분 1편 · 누적 4편"
+    titles = [row.title for row in october.content.rows]
+    assert titles == ["9월 예정 늦은 글", "10월 제때 글", "10월 예정 11월 1일 공개 글"]
+    oct_report = session.execute(
+        select(MonthlyReport).where(
+            MonthlyReport.hospital_id == hospital.id, MonthlyReport.period_month == 10
+        )
+    ).scalar_one()
+    assert oct_report.content_summary["doctor_publications"] == {"published_count": 3, "carried_in_count": 1}
+    # 운영 집계(발행 시각 기준)는 그대로다 — 10월에 처음 공개된 글은 3편(9월 늦은 글·10월 제때 글·11월 미리 올린 글).
+    assert oct_report.content_summary["published_count"] == 3
+    assert october.facts()["card.published"] == "3편"
+
+    outcome = tasks._build_monthly_report_for_hospital(
+        session, hospital, arrow.get(2026, 11, 30, 23, 59, tzinfo="Asia/Seoul"),
+        observed_at=_kst(2026, 12, 1, 9),
+        build_reason=ReportBuildReason.SCHEDULED_CLOSE,
+        correlation_key=f"test:nov:{hospital.id}",
+    )
+    assert outcome == "created"
+    november = renders["doctor"][-1]
+    assert [row.title for row in november.content.rows] == ["11월 예정 미리 올린 글"]
+    assert november.summary.cards[0].value == "1편"
+    assert november.summary.cards[0].definition == "계획 12편 중 1편 발행 · 누적 5편"
