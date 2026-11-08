@@ -1134,3 +1134,33 @@ def test_stored_facts_read_the_doctor_publication_count_when_the_snapshot_has_it
     assert stored_facts_v4({}, content)["card.published"] == "11편"  # 옛 판: 운영 집계가 1면 편수였다
     content["doctor_publications"] = {"published_count": 12, "carried_in_count": 0}
     assert stored_facts_v4({}, content)["card.published"] == "12편"
+
+
+def test_zero_exposure_month_writes_what_was_done_not_zero_as_a_good_point():
+    """노출 0건인 달(2026-11-06 행복드림 0/84·마포 0/90)에 '0개에서 노출됐습니다'를 잘된 점으로 쓰지 않는다."""
+    from types import SimpleNamespace
+
+    from app.services.doctor_report_v4 import _key_lines
+
+    plan = SimpleNamespace(rows=(), continued=(), empty_text="다음 달 계획")
+    unexposed = [SimpleNamespace(text=f"키워드 {i}", lost=False, newly_exposed=False) for i in range(15)]
+    common = dict(
+        hospital_name=HOSPITAL_NAME, setup=False, current=0.0, previous=None, significance=None,
+        measured=unexposed, exposed=[], unexposed=unexposed, citation_cited=0, plan=plan,
+    )
+    good, weak, _ = _key_lines(**common, published_count=12, cumulative=37)
+    assert good == "콘텐츠 12편을 발행해 누적 37편이 됐습니다."
+    assert weak == "측정 키워드 15개 모두 아직 노출되지 않았습니다."
+    assert "0개에서 노출" not in good
+    # 첫 달처럼 누적이 이번 달과 같으면 누적을 되풀이하지 않는다.
+    assert _key_lines(**common, published_count=12, cumulative=12)[0] == "콘텐츠 12편을 발행했습니다."
+    assert _key_lines(**common, published_count=12, cumulative=None)[0] == "콘텐츠 12편을 발행했습니다."
+    # 발행도 없으면 측정한 사실만 적는다.
+    assert _key_lines(**common, published_count=0, cumulative=None)[0] == "측정 키워드 15개를 같은 방식으로 측정했습니다."
+    # 인용이 있으면 인용이 먼저다(노출 0건이어도 실제 성과).
+    assert _key_lines(**{**common, "citation_cited": 2}, published_count=12)[0] == f"{HOSPITAL_NAME} 콘텐츠가 AI 답변 2건에 인용됐습니다."
+    # 노출이 끊긴 키워드가 있으면 '모두 미노출'보다 이탈을 먼저 말한다.
+    lost = [SimpleNamespace(text="끊긴 키워드", lost=True, newly_exposed=False), *unexposed[1:]]
+    assert _key_lines(**{**common, "unexposed": lost, "measured": lost}, published_count=12)[1] == (
+        "'끊긴 키워드' 등 1개 키워드에서 노출이 끊겼습니다."
+    )

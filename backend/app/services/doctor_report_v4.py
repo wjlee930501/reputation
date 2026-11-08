@@ -1114,7 +1114,8 @@ def _summary_page(
     key_lines = _key_lines(
         hospital_name=hospital_name, setup=setup, current=current, previous=previous,
         significance=significance, measured=measured, exposed=exposed, unexposed=unexposed,
-        citation_cited=citation_cited, plan=plan,
+        citation_cited=citation_cited, plan=plan, published_count=published_count,
+        cumulative=cumulative,
     )
     # 비교하지 않은 달은 증감만 숨긴다 — '직접 비교하지 않았습니다' 안내 줄은 2026-11-06 마케팅팀 요청으로 뺐다.
     notice = ""
@@ -1158,7 +1159,7 @@ def treatment_card_count(card: Card) -> int | None:
 
 def _key_lines(
     *, hospital_name, setup, current, previous, significance, measured, exposed, unexposed,
-    citation_cited, plan,
+    citation_cited, plan, published_count: int = 0, cumulative: int | None = None,
 ) -> tuple[str, str, str]:
     if setup:
         return (
@@ -1179,11 +1180,22 @@ def _key_lines(
         good = f"AI 노출률이 {_pct(previous)}에서 {_pct(current)}로 올랐습니다."
     elif citation_cited:
         good = f"{hospital_name} 콘텐츠가 AI 답변 {citation_cited}건에 인용됐습니다."
-    else:
+    elif exposed:
         good = f"측정 키워드 {len(measured)}개 중 {len(exposed)}개에서 노출됐습니다."
+    elif published_count:
+        # 노출 0건인 달에 '0개에서 노출됐습니다'를 잘된 점으로 쓰지 않는다(2026-11-06 행복드림·마포 0%).
+        # 이번 달 실제로 한 일(1면 카드와 같은 발행 편수)을 적는다.
+        if cumulative is not None and cumulative > published_count:
+            good = f"콘텐츠 {published_count}편을 발행해 누적 {cumulative}편이 됐습니다."
+        else:
+            good = f"콘텐츠 {published_count}편을 발행했습니다."
+    else:
+        good = f"측정 키워드 {len(measured)}개를 같은 방식으로 측정했습니다."
     lost = sorted(k.text for k in unexposed if k.lost)
     if lost:
         weak = f"'{lost[0]}' 등 {len(lost)}개 키워드에서 노출이 끊겼습니다."
+    elif unexposed and not exposed:
+        weak = f"측정 키워드 {len(unexposed)}개 모두 아직 노출되지 않았습니다."
     elif unexposed:
         first = sorted(unexposed, key=lambda k: k.text)[0]
         weak = f"'{first.text}' 등 {len(unexposed)}개 키워드는 아직 노출되지 않았습니다."
