@@ -1164,3 +1164,73 @@ def test_zero_exposure_month_writes_what_was_done_not_zero_as_a_good_point():
     assert _key_lines(**{**common, "unexposed": lost, "measured": lost}, published_count=12)[1] == (
         "'끊긴 키워드' 등 1개 키워드에서 노출이 끊겼습니다."
     )
+
+
+def _zero_month_view(*, key_lines):
+    from dataclasses import replace as _replace
+
+    view = build()
+    cards = list(view.summary.cards)
+    cards[0] = _replace(cards[0], value="12편", definition="계획 12편 중 12편 발행 · 누적 37편")
+    cards[2] = _replace(cards[2], value="15개 중 0개", definition="측정 키워드 15개 중 0개에서 병원명 노출")
+    return _replace(view, summary=_replace(view.summary, cards=tuple(cards), key_lines=tuple(key_lines)))
+
+
+def test_copy_policy_rewrites_frozen_zero_month_key_lines_from_the_cards():
+    """이미 만든 v4 판(템플릿 갱신·AE 기준 뷰·경쟁 반영 비교가 모두 거치는 정책)의 0건 문장을 카드 숫자로 바꾼다."""
+    from app.services.doctor_report_v4 import apply_report_copy_policy
+
+    legacy = _zero_month_view(key_lines=(
+        "측정 키워드 15개 중 0개에서 노출됐습니다.",
+        "'경산 내과 병원 어디가 좋은지 비교해줘' 등 15개 키워드는 아직 노출되지 않았습니다.",
+        "'내과' 키워드 대응 콘텐츠 4편을 우선 발행합니다.",
+    ))
+    cleaned = apply_report_copy_policy(legacy)
+    assert cleaned.summary.key_lines == (
+        "콘텐츠 12편을 발행해 누적 37편이 됐습니다.",
+        "측정 키워드 15개 모두 아직 노출되지 않았습니다.",
+        "'내과' 키워드 대응 콘텐츠 4편을 우선 발행합니다.",
+    )
+    assert apply_report_copy_policy(cleaned) is cleaned  # 멱등
+    # AE가 쓴 문장은 그대로 둔다.
+    written = _zero_month_view(key_lines=("AE가 쓴 잘된 점.", "AE가 쓴 보완할 점.", "다음 달"))
+    assert apply_report_copy_policy(written).summary.key_lines == written.summary.key_lines
+    # 노출이 있는 달의 같은 모양 문장은 건드리지 않는다.
+    exposed = build()
+    assert apply_report_copy_policy(exposed).summary.key_lines == exposed.summary.key_lines
+
+
+def test_ae_card_edit_regenerates_the_untouched_zero_month_good_line():
+    from app.services.doctor_report_v4 import apply_ae_overrides
+
+    view = _zero_month_view(key_lines=(
+        "콘텐츠 12편을 발행해 누적 37편이 됐습니다.", "측정 키워드 15개 모두 아직 노출되지 않았습니다.", "다음 달",
+    ))
+    edited = apply_ae_overrides(view, {
+        "summary.cards[0].value": "13편", "summary.cards[0].definition": "계획 12편 중 13편 발행 · 누적 38편",
+    })
+    assert edited.summary.key_lines[0] == "콘텐츠 13편을 발행해 누적 38편이 됐습니다."
+    # 사람이 그 줄도 고쳤으면 사람 문장이 이긴다.
+    both = apply_ae_overrides(view, {"summary.cards[0].value": "13편", "summary.key_lines[0]": "직접 쓴 문장입니다."})
+    assert both.summary.key_lines[0] == "직접 쓴 문장입니다."
+    # 카드를 고치지 않으면 그대로다.
+    assert apply_ae_overrides(view, {}).summary.key_lines == view.summary.key_lines
+
+
+def test_competitor_refresh_keeps_ae_key_line_edits_on_a_frozen_zero_month():
+    """옛 0건 문장을 가진 기준 뷰와 새 문장으로 다시 만든 뷰를 비교해도, 경쟁과 무관한 핵심 줄 수정은 잇는다(Codex P2-3)."""
+    from app.services.doctor_report_v4 import apply_report_copy_policy
+    from app.workers.tasks import _competitor_refresh_carry
+
+    legacy = _zero_month_view(key_lines=(
+        "측정 키워드 15개 중 0개에서 노출됐습니다.",
+        "'경산 내과 병원 어디가 좋은지 비교해줘' 등 15개 키워드는 아직 노출되지 않았습니다.",
+        "다음 달",
+    ))
+    old_base = apply_report_copy_policy(legacy)  # base_view_of가 거치는 정책
+    new_base = _zero_month_view(key_lines=(
+        "콘텐츠 12편을 발행해 누적 37편이 됐습니다.", "측정 키워드 15개 모두 아직 노출되지 않았습니다.", "다음 달",
+    ))
+    stored = {"summary.key_lines[0]": "AE가 쓴 잘된 점.", "summary.key_lines[1]": "AE가 쓴 보완할 점."}
+    kept, dropped = _competitor_refresh_carry(stored, old_base, new_base, ["경쟁병원"])
+    assert kept == stored and dropped == {}
