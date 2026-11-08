@@ -218,6 +218,20 @@ def _copy_policy_changes(content_summary: Mapping) -> bool:
     return isinstance(view, DoctorReportV4) and apply_report_copy_policy(view) is not view
 
 
+def _copy_policy_talking_points(content_summary: Mapping) -> list[str] | None:
+    """얼린 v4 원장 뷰에 지금 공통 문구 규칙을 적용한 핵심 3줄 — 규칙이 바꾼 줄(노출 0건 달의 '잘된 점' 등, 2026-11-09)은
+    숫자가 다른 문장이 되므로 사후 확인이 옛 판도 같은 규칙을 거친 줄과 비교한다. v4 뷰가 아니면 None."""
+    if not stored_doctor_view_is_v4(content_summary):
+        return None
+    render_inputs = report_render_inputs(content_summary)
+    if render_inputs is None:
+        return None
+    view = restore_doctor_view(render_inputs.doctor_view)
+    if not isinstance(view, DoctorReportV4):
+        return None
+    return list(apply_report_copy_policy(view).talking_points)
+
+
 def _without_doctor_view(content_summary: dict) -> dict:
     """스냅샷의 원장 뷰·뷰 사실·AE 핵심 3줄·AE 수정 값을 뺀 content_summary(v3→v4 승격·AE 수정 판 비교용). 나머지는 그대로다."""
     content = dict(content_summary)
@@ -317,6 +331,9 @@ def postcheck_hospital(db, hospital: Hospital, year: int, month: int) -> Hospita
     copy_refreshed = _copy_policy_changes(old_content)
     if copy_refreshed:
         verdict.add("WARN", "REPORT_COPY_POLICY")
+        normalized_points = _copy_policy_talking_points(old_content)
+        if normalized_points is not None:
+            old_points = normalized_points
     if upgraded or ae_edited or copy_refreshed:
         old_content = _without_doctor_view(old_content)
         new_content = _without_doctor_view(new_content)

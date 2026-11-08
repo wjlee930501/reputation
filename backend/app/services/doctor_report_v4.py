@@ -636,6 +636,75 @@ _LEGACY_METHOD_LINE = re.compile(
 )
 
 
+# 노출 0건인 달의 1면 핵심 줄(2026-11-09 행복드림·마포 0%) — 새 빌드·옛 스냅샷 정리·AE 카드 수정이 같은 문장을 쓴다.
+_LEGACY_ZERO_GOOD_LINE = re.compile(r"^측정 키워드 (\d+)개 중 0개에서 노출됐습니다\.$")
+_LEGACY_ZERO_WEAK_LINE = re.compile(r"^'.+' 등 (\d+)개 키워드는 아직 노출되지 않았습니다\.$")
+_ZERO_KEYWORD_CARD = re.compile(r"^(\d+)개 중 0개$")
+_PUBLISHED_CARD_VALUE = re.compile(r"^(\d+)편$")
+_CUMULATIVE_IN_DEFINITION = re.compile(r"누적 (\d+)편")
+
+
+def zero_exposure_good_line(published_count: int, cumulative: int | None, measured_count: int) -> str:
+    """노출 키워드가 없는 달의 '잘된 점' — 0을 성과로 쓰지 않고 그 달 실제로 한 일(1면 발행 카드의 숫자)을 적는다."""
+    if published_count:
+        if cumulative is not None and cumulative > published_count:
+            return f"콘텐츠 {published_count}편을 발행해 누적 {cumulative}편이 됐습니다."
+        return f"콘텐츠 {published_count}편을 발행했습니다."
+    return f"측정 키워드 {measured_count}개를 같은 방식으로 측정했습니다."
+
+
+def zero_exposure_weak_line(measured_count: int) -> str:
+    return f"측정 키워드 {measured_count}개 모두 아직 노출되지 않았습니다."
+
+
+def _zero_exposure_measured(cards: Sequence[Card]) -> int | None:
+    """1면 노출 키워드 카드가 'N개 중 0개'면 N — 노출 0건인 달인지 카드로 판정한다."""
+    if len(cards) < 3:
+        return None
+    match = _ZERO_KEYWORD_CARD.match(cards[2].value or "")
+    return int(match.group(1)) if match else None
+
+
+def _published_card_numbers(cards: Sequence[Card]) -> tuple[int, int | None] | None:
+    if not cards:
+        return None
+    match = _PUBLISHED_CARD_VALUE.match(cards[0].value or "")
+    if not match:
+        return None
+    cumulative = _CUMULATIVE_IN_DEFINITION.search(cards[0].definition or "")
+    return int(match.group(1)), (int(cumulative.group(1)) if cumulative else None)
+
+
+def zero_exposure_good_line_for_cards(cards: Sequence[Card]) -> str | None:
+    """카드에서 다시 만든 0건 달 '잘된 점' — 노출 0건 달이 아니거나 카드를 읽을 수 없으면 None."""
+    measured = _zero_exposure_measured(cards)
+    numbers = _published_card_numbers(cards)
+    if measured is None or numbers is None:
+        return None
+    return zero_exposure_good_line(numbers[0], numbers[1], measured)
+
+
+def _normalize_zero_key_lines(summary: SummaryPage) -> SummaryPage:
+    """옛 스냅샷의 노출 0건 핵심 줄('15개 중 0개에서 노출됐습니다'·'…등 15개 키워드는 아직…')을 지금 문장으로 바꾼다.
+
+    1면 노출 키워드 카드가 'N개 중 0개'이고 줄이 템플릿 문장 그대로일 때만 바꾼다 — AE가 쓴 문장은 건드리지 않는다.
+    """
+    measured = _zero_exposure_measured(summary.cards)
+    if measured is None:
+        return summary
+    lines = list(summary.key_lines)
+    if lines:
+        good = _LEGACY_ZERO_GOOD_LINE.match(lines[0] or "")
+        replacement = zero_exposure_good_line_for_cards(summary.cards)
+        if good and int(good.group(1)) == measured and replacement is not None:
+            lines[0] = replacement
+    if len(lines) > 1:
+        weak = _LEGACY_ZERO_WEAK_LINE.match(lines[1] or "")
+        if weak and int(weak.group(1)) == measured:
+            lines[1] = zero_exposure_weak_line(measured)
+    return replace(summary, key_lines=tuple(lines)) if tuple(lines) != summary.key_lines else summary
+
+
 def apply_report_copy_policy(view: DoctorReportV4) -> DoctorReportV4:
     """옛 스냅샷의 공통 문구를 지금 규칙(2026-11-06 마케팅팀 요청)으로 바꾼다 — 숫자 사실은 바꾸지 않는다(인용 0건 줄만 빠진다).
 
@@ -647,6 +716,7 @@ def apply_report_copy_policy(view: DoctorReportV4) -> DoctorReportV4:
     summary = view.summary
     if summary.notice in _LEGACY_NOTICES:
         summary = replace(summary, notice="")
+    summary = _normalize_zero_key_lines(summary)
     exposure = view.exposure
     # 인용이 없는 달(0건·출처 미확인)의 인용 자리는 비어 있어야 한다 — AE가 옛 줄을 지운 자리('')도 함께 걷는다.
     cited = bool(view.citation_measured and view.citation_cited)
@@ -1114,7 +1184,8 @@ def _summary_page(
     key_lines = _key_lines(
         hospital_name=hospital_name, setup=setup, current=current, previous=previous,
         significance=significance, measured=measured, exposed=exposed, unexposed=unexposed,
-        citation_cited=citation_cited, plan=plan,
+        citation_cited=citation_cited, plan=plan, published_count=published_count,
+        cumulative=cumulative,
     )
     # 비교하지 않은 달은 증감만 숨긴다 — '직접 비교하지 않았습니다' 안내 줄은 2026-11-06 마케팅팀 요청으로 뺐다.
     notice = ""
@@ -1158,7 +1229,7 @@ def treatment_card_count(card: Card) -> int | None:
 
 def _key_lines(
     *, hospital_name, setup, current, previous, significance, measured, exposed, unexposed,
-    citation_cited, plan,
+    citation_cited, plan, published_count: int = 0, cumulative: int | None = None,
 ) -> tuple[str, str, str]:
     if setup:
         return (
@@ -1179,11 +1250,16 @@ def _key_lines(
         good = f"AI 노출률이 {_pct(previous)}에서 {_pct(current)}로 올랐습니다."
     elif citation_cited:
         good = f"{hospital_name} 콘텐츠가 AI 답변 {citation_cited}건에 인용됐습니다."
-    else:
+    elif exposed:
         good = f"측정 키워드 {len(measured)}개 중 {len(exposed)}개에서 노출됐습니다."
+    else:
+        # 노출 0건인 달에 '0개에서 노출됐습니다'를 잘된 점으로 쓰지 않는다(2026-11-06 행복드림·마포 0%).
+        good = zero_exposure_good_line(published_count, cumulative, len(measured))
     lost = sorted(k.text for k in unexposed if k.lost)
     if lost:
         weak = f"'{lost[0]}' 등 {len(lost)}개 키워드에서 노출이 끊겼습니다."
+    elif unexposed and not exposed:
+        weak = zero_exposure_weak_line(len(unexposed))
     elif unexposed:
         first = sorted(unexposed, key=lambda k: k.text)[0]
         weak = f"'{first.text}' 등 {len(unexposed)}개 키워드는 아직 노출되지 않았습니다."
@@ -2796,6 +2872,14 @@ def apply_ae_overrides(
                 ),
             ),
         )
+    # 노출 0건 달의 '잘된 점'은 발행 카드 숫자를 말한다 — 사람이 그 줄을 고치지 않았고 원문이 카드에서 만든 문장 그대로면
+    # 고친 카드 숫자로 다시 만든다(카드만 13편으로 고치고 문장이 12편으로 남지 않게, Codex 2026-11-09 P2-1).
+    if key_lines and "summary.key_lines[0]" not in explicit:
+        pristine_line = zero_exposure_good_line_for_cards(derived_view.summary.cards)
+        if pristine_line is not None and key_lines[0] == pristine_line:
+            edited_line = zero_exposure_good_line_for_cards(out.summary.cards)
+            if edited_line is not None:
+                key_lines[0] = edited_line
     out = replace(out, summary=replace(out.summary, key_lines=tuple(key_lines)))
     # 행 지우기는 키를 다 적용한 뒤 한 번에 — 같은 행의 칸 수정과 순서가 섞이지 않게.
     for prefix, indexes in deletions.items():

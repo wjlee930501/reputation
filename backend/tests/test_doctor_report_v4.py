@@ -1134,3 +1134,132 @@ def test_stored_facts_read_the_doctor_publication_count_when_the_snapshot_has_it
     assert stored_facts_v4({}, content)["card.published"] == "11편"  # 옛 판: 운영 집계가 1면 편수였다
     content["doctor_publications"] = {"published_count": 12, "carried_in_count": 0}
     assert stored_facts_v4({}, content)["card.published"] == "12편"
+
+
+def test_zero_exposure_month_writes_what_was_done_not_zero_as_a_good_point():
+    """노출 0건인 달(2026-11-06 행복드림 0/84·마포 0/90)에 '0개에서 노출됐습니다'를 잘된 점으로 쓰지 않는다."""
+    from types import SimpleNamespace
+
+    from app.services.doctor_report_v4 import _key_lines
+
+    plan = SimpleNamespace(rows=(), continued=(), empty_text="다음 달 계획")
+    unexposed = [SimpleNamespace(text=f"키워드 {i}", lost=False, newly_exposed=False) for i in range(15)]
+    common = dict(
+        hospital_name=HOSPITAL_NAME, setup=False, current=0.0, previous=None, significance=None,
+        measured=unexposed, exposed=[], unexposed=unexposed, citation_cited=0, plan=plan,
+    )
+    good, weak, _ = _key_lines(**common, published_count=12, cumulative=37)
+    assert good == "콘텐츠 12편을 발행해 누적 37편이 됐습니다."
+    assert weak == "측정 키워드 15개 모두 아직 노출되지 않았습니다."
+    assert "0개에서 노출" not in good
+    # 첫 달처럼 누적이 이번 달과 같으면 누적을 되풀이하지 않는다.
+    assert _key_lines(**common, published_count=12, cumulative=12)[0] == "콘텐츠 12편을 발행했습니다."
+    assert _key_lines(**common, published_count=12, cumulative=None)[0] == "콘텐츠 12편을 발행했습니다."
+    # 발행도 없으면 측정한 사실만 적는다.
+    assert _key_lines(**common, published_count=0, cumulative=None)[0] == "측정 키워드 15개를 같은 방식으로 측정했습니다."
+    # 인용이 있으면 인용이 먼저다(노출 0건이어도 실제 성과).
+    assert _key_lines(**{**common, "citation_cited": 2}, published_count=12)[0] == f"{HOSPITAL_NAME} 콘텐츠가 AI 답변 2건에 인용됐습니다."
+    # 노출이 끊긴 키워드가 있으면 '모두 미노출'보다 이탈을 먼저 말한다.
+    lost = [SimpleNamespace(text="끊긴 키워드", lost=True, newly_exposed=False), *unexposed[1:]]
+    assert _key_lines(**{**common, "unexposed": lost, "measured": lost}, published_count=12)[1] == (
+        "'끊긴 키워드' 등 1개 키워드에서 노출이 끊겼습니다."
+    )
+
+
+def _zero_month_view(*, key_lines):
+    from dataclasses import replace as _replace
+
+    view = build()
+    cards = list(view.summary.cards)
+    cards[0] = _replace(cards[0], value="12편", definition="계획 12편 중 12편 발행 · 누적 37편")
+    cards[2] = _replace(cards[2], value="15개 중 0개", definition="측정 키워드 15개 중 0개에서 병원명 노출")
+    return _replace(view, summary=_replace(view.summary, cards=tuple(cards), key_lines=tuple(key_lines)))
+
+
+def test_copy_policy_rewrites_frozen_zero_month_key_lines_from_the_cards():
+    """이미 만든 v4 판(템플릿 갱신·AE 기준 뷰·경쟁 반영 비교가 모두 거치는 정책)의 0건 문장을 카드 숫자로 바꾼다."""
+    from app.services.doctor_report_v4 import apply_report_copy_policy
+
+    legacy = _zero_month_view(key_lines=(
+        "측정 키워드 15개 중 0개에서 노출됐습니다.",
+        "'경산 내과 병원 어디가 좋은지 비교해줘' 등 15개 키워드는 아직 노출되지 않았습니다.",
+        "'내과' 키워드 대응 콘텐츠 4편을 우선 발행합니다.",
+    ))
+    cleaned = apply_report_copy_policy(legacy)
+    assert cleaned.summary.key_lines == (
+        "콘텐츠 12편을 발행해 누적 37편이 됐습니다.",
+        "측정 키워드 15개 모두 아직 노출되지 않았습니다.",
+        "'내과' 키워드 대응 콘텐츠 4편을 우선 발행합니다.",
+    )
+    assert apply_report_copy_policy(cleaned) is cleaned  # 멱등
+    # AE가 쓴 문장은 그대로 둔다.
+    written = _zero_month_view(key_lines=("AE가 쓴 잘된 점.", "AE가 쓴 보완할 점.", "다음 달"))
+    assert apply_report_copy_policy(written).summary.key_lines == written.summary.key_lines
+    # 노출이 있는 달의 같은 모양 문장은 건드리지 않는다.
+    exposed = build()
+    assert apply_report_copy_policy(exposed).summary.key_lines == exposed.summary.key_lines
+
+
+def test_ae_card_edit_regenerates_the_untouched_zero_month_good_line():
+    from app.services.doctor_report_v4 import apply_ae_overrides
+
+    view = _zero_month_view(key_lines=(
+        "콘텐츠 12편을 발행해 누적 37편이 됐습니다.", "측정 키워드 15개 모두 아직 노출되지 않았습니다.", "다음 달",
+    ))
+    edited = apply_ae_overrides(view, {
+        "summary.cards[0].value": "13편", "summary.cards[0].definition": "계획 12편 중 13편 발행 · 누적 38편",
+    })
+    assert edited.summary.key_lines[0] == "콘텐츠 13편을 발행해 누적 38편이 됐습니다."
+    # 사람이 그 줄도 고쳤으면 사람 문장이 이긴다.
+    both = apply_ae_overrides(view, {"summary.cards[0].value": "13편", "summary.key_lines[0]": "직접 쓴 문장입니다."})
+    assert both.summary.key_lines[0] == "직접 쓴 문장입니다."
+    # 카드를 고치지 않으면 그대로다.
+    assert apply_ae_overrides(view, {}).summary.key_lines == view.summary.key_lines
+
+
+def test_competitor_refresh_keeps_ae_key_line_edits_on_a_frozen_zero_month():
+    """옛 0건 문장을 가진 기준 뷰와 새 문장으로 다시 만든 뷰를 비교해도, 경쟁과 무관한 핵심 줄 수정은 잇는다(Codex P2-3)."""
+    from app.services.doctor_report_v4 import apply_report_copy_policy
+    from app.workers.tasks import _competitor_refresh_carry
+
+    legacy = _zero_month_view(key_lines=(
+        "측정 키워드 15개 중 0개에서 노출됐습니다.",
+        "'경산 내과 병원 어디가 좋은지 비교해줘' 등 15개 키워드는 아직 노출되지 않았습니다.",
+        "다음 달",
+    ))
+    old_base = apply_report_copy_policy(legacy)  # base_view_of가 거치는 정책
+    new_base = _zero_month_view(key_lines=(
+        "콘텐츠 12편을 발행해 누적 37편이 됐습니다.", "측정 키워드 15개 모두 아직 노출되지 않았습니다.", "다음 달",
+    ))
+    stored = {"summary.key_lines[0]": "AE가 쓴 잘된 점.", "summary.key_lines[1]": "AE가 쓴 보완할 점."}
+    kept, dropped = _competitor_refresh_carry(stored, old_base, new_base, ["경쟁병원"])
+    assert kept == stored and dropped == {}
+
+
+def test_template_refresh_postcheck_compares_policy_normalized_talking_points(monkeypatch):
+    """옛 0건 문장을 품은 판의 핵심 3줄은 숫자가 다른 문장으로 바뀐다 — 사후 확인은 옛 판도 같은 규칙을 거친 줄과 비교한다(Codex 2차 P2)."""
+    from app.services.doctor_report_v4 import apply_report_copy_policy
+    from app.services.monthly_report_snapshot import freeze_doctor_view
+    from app.services.monthly_template_refresh import number_tokens
+    from app.utils.monthly_template_refresh import _copy_policy_changes, _copy_policy_talking_points
+
+    legacy = _zero_month_view(key_lines=(
+        "측정 키워드 15개 중 0개에서 노출됐습니다.",
+        "'경산 내과 병원 어디가 좋은지 비교해줘' 등 15개 키워드는 아직 노출되지 않았습니다.",
+        "'내과' 키워드 대응 콘텐츠 4편을 우선 발행합니다.",
+    ))
+    from types import SimpleNamespace
+
+    from app.utils import monthly_template_refresh as cli
+
+    # 스냅샷 전체 스키마 대신 얼린 원장 뷰만 돌려준다 — 여기서 보는 것은 핵심 3줄 정규화다.
+    frozen = freeze_doctor_view(legacy)
+    monkeypatch.setattr(cli, "report_render_inputs", lambda _content: SimpleNamespace(doctor_view=frozen))
+    monkeypatch.setattr(cli, "stored_doctor_view_is_v4", lambda _content: True)
+    content = {"report_snapshot": {}}
+    assert _copy_policy_changes(content)
+    refreshed = apply_report_copy_policy(legacy).talking_points
+    normalized = _copy_policy_talking_points(content)
+    assert normalized == list(refreshed)
+    assert number_tokens(normalized) == number_tokens(list(refreshed))
+    assert number_tokens(list(legacy.talking_points)) != number_tokens(list(refreshed))  # 정규화 없이는 막혔다
