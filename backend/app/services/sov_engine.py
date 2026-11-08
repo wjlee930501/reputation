@@ -1318,19 +1318,18 @@ async def _parse_mention(
     if not mention_identity.needs_second_look(target, response_text, resolution):
         return _not_matched()
     second = await _second_look(target, response_text)
-    quoted = mention_identity.normalize(second.get("matched_text"))
-    if (
-        second["verdict"] == VERDICT_MATCHED
-        and quoted
-        and quoted in mention_identity.normalize(response_text)
-    ):
-        # 규칙은 아니라고 했는데 보조 판정이 언급이라고 한다 — 확정하지 않고 보류로 둔다.
+    if second["verdict"] != VERDICT_NOT_MATCHED:
+        # 규칙은 아니라고 했는데 보조 판정이 언급(또는 판단 불가)이라고 한다 — 확정하지 않고 보류로 둔다.
+        # 인용이 없거나 답변에 없는 인용이어도 '미언급'으로 확정하지 않는다(분모에 넣지 않는다).
         # 쌓이면 규칙에 새 표기를 더한다(경고 로그가 그 목록이다).
+        quoted = mention_identity.normalize(second.get("matched_text"))
         logger.warning(
-            "mention second look disagrees with resolver: hospital=%s status=%s quote=%r",
+            "mention second look disagrees with resolver: hospital=%s status=%s verdict=%s quote=%r verified=%s",
             target.name,
             resolution.status,
+            second["verdict"],
             second.get("matched_text"),
+            bool(quoted) and quoted in mention_identity.normalize(response_text),
         )
         return {
             "verdict": VERDICT_AMBIGUOUS,

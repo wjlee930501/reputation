@@ -150,3 +150,65 @@ def test_identity_material_changes_with_every_judgment_input():
     assert base["resolver"] == mi.RESOLVER_VERSION
     assert base["phone"] == "027118538"
     assert base != _identity("마포성모탑정형외과", address=MAPO.address, phone=None, region=MAPO.region_terms).material()
+
+
+# ── 2026-11-09 Codex 검토에서 나온 경계 사례 ──
+
+
+def test_same_city_but_another_district_is_not_ours():
+    answer = "* **장편한외과의원** (수원시 영통구 하동)"
+
+    resolution = mi.resolve(JANG, answer)
+
+    assert resolution.status == mi.OTHER_LOCATION
+    assert not mi.resolve(MAPO, "* **성모탑정형외과의원** (서울 강남구 역삼동)").matched
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "* **서울W내과의원** 성남점 (성남시 중원구)",
+        "서울W내과의원(성남점)은 검진이 가능합니다.",
+        "서울W내과의원 성남점은 검진이 가능합니다.",
+    ],
+)
+def test_another_branch_after_markdown_parentheses_or_particles_is_not_ours(answer):
+    assert not mi.resolve(SEOUL_W, answer).matched
+
+
+def test_own_branch_in_parentheses_is_ours():
+    assert mi.resolve(SEOUL_W, "서울W내과의원(위례점)은 하남시 학암동에 있습니다.").matched
+
+
+def test_plain_bullets_do_not_borrow_the_next_items_location():
+    answer = "- 장편한외과의원 (부산 해운대구)\n- 다른내과의원 (수원시 팔달구)"
+
+    assert not mi.resolve(JANG, answer).matched
+
+
+def test_sub_bullets_under_a_heading_still_belong_to_the_item():
+    answer = "### 1. **장편한외과의원** (광교/우만동 인근)\n* **위치:** 경기도 수원시 팔달구 중부대로 247"
+
+    resolution = mi.resolve(JANG, answer)
+
+    assert resolution.matched and resolution.evidence == mi.EVIDENCE_ROAD
+
+
+def test_phone_with_another_area_code_is_not_ours():
+    assert not mi.resolve(JANG, "부산 다른내과의원 연락처는 051-8067-8114입니다.").matched
+    assert mi.resolve(JANG, "문의: +82-31-8067-8114").matched
+
+
+def test_hangul_registered_name_matches_the_latin_spelling():
+    identity = _identity("서울더블유내과의원", region=("하남시", "위례"))
+
+    assert mi.resolve(identity, "**서울W내과의원** (하남시 학암동)").matched
+    assert "울w내" in mi.name_fragments(identity)
+
+
+def test_frozen_identity_material_round_trips():
+    restored = mi.MentionIdentity.from_material(SEOUL_W.material())
+
+    assert restored is not None
+    assert restored.material() == SEOUL_W.material()
+    assert mi.MentionIdentity.from_material({"name": ""}) is None

@@ -676,7 +676,7 @@ async def test_matched_without_the_full_name_in_the_quote_is_downgraded(monkeypa
 
 @pytest.mark.asyncio
 async def test_matched_with_a_fabricated_quote_is_not_counted(monkeypatch):
-    """보조 판정이 답변에 없는 문자열을 근거랍시고 지어내면 근거가 아니다 — 규칙의 판정(미언급)이 남는다."""
+    """보조 판정이 답변에 없는 문자열을 근거로 들면 확정할 근거가 없다 — 언급으로도 미언급으로도 세지 않는다."""
     monkeypatch.setattr(
         sov_engine.openai_client.chat,
         "completions",
@@ -685,8 +685,26 @@ async def test_matched_with_a_fabricated_quote_is_not_counted(monkeypatch):
 
     parsed = await sov_engine._parse_mention("행복한의원", "행복한 진료를 위해 노력합니다.")
 
-    assert parsed["verdict"] == "NOT_MATCHED"
-    assert parsed["is_mentioned"] is False
+    assert parsed["verdict"] == "AMBIGUOUS"
+    assert parsed["is_mentioned"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("payload", [{"verdict": "MATCHED"}, {"verdict": "MATCHED", "matched_text": ""}, {"verdict": "AMBIGUOUS", "matched_text": None}])
+async def test_incomplete_positive_second_look_is_not_a_confirmed_negative(monkeypatch, payload):
+    class _Positive:
+        async def create(self, **_kwargs):
+            return SimpleNamespace(
+                choices=[_FakeChoice(json.dumps(payload))],
+                usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1),
+            )
+
+    monkeypatch.setattr(sov_engine.openai_client.chat, "completions", _Positive())
+
+    parsed = await sov_engine._parse_mention("뉴플랜여성의원", "여성 질환은 **뉴플랜의원**도 선택지입니다.", "부산 남구")
+
+    assert parsed["verdict"] == "AMBIGUOUS"
+    assert parsed["is_mentioned"] is None
 
 
 @pytest.mark.asyncio

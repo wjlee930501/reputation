@@ -287,7 +287,8 @@ def test_judgment_retry_reuses_answer_and_settles_each_stage(pg_engine, monkeypa
             fetches.append((query_text, platform, kwargs["attempt_id"]))
             return {
                 "measurement_status": "SUCCESS",
-                "raw_response": f"{hospital.name}을 추천합니다.",
+                # 이름 조각만 있는 답변 — 규칙 대조가 확정하지 못해 판정 단계마다 보조 판정 1회를 예약한다.
+                "raw_response": "판정재개 진료가 가능한 곳을 안내합니다.",
                 "answer_model": "answer-test",
                 "measurement_method": "TEST",
                 "search_calls": 1,

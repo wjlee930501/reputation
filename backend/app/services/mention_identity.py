@@ -142,6 +142,26 @@ class MentionIdentity:
             compatible_terms=compatible,
         )
 
+    @classmethod
+    def from_material(cls, material: object) -> MentionIdentity | None:
+        """`material()`로 고정해 둔 신원을 되살린다. 형식이 깨졌으면 None."""
+        if not isinstance(material, dict):
+            return None
+        name = material.get("name")
+        terms = material.get("region_terms")
+        address = material.get("address")
+        phone = material.get("phone")
+        if (
+            not isinstance(name, str)
+            or not name.strip()
+            or not isinstance(terms, list)
+            or any(not isinstance(term, str) for term in terms)
+            or not isinstance(address, str)
+            or not isinstance(phone, str)
+        ):
+            return None
+        return cls.build(name, address=address or None, phone=phone or None, region_terms=terms)
+
     def for_competitor(self, competitor_name: str) -> MentionIdentity:
         """경쟁 병원은 이름만 안다 — 생활권은 우리 병원과 같다고 본다(같은 지역 경쟁)."""
         return MentionIdentity(
@@ -208,17 +228,27 @@ def _core(name: str) -> str:
 
 
 def _latin_variants(value: str) -> set[str]:
-    if not re.search(r"[A-Za-z]", value):
-        return set()
-    spelled = value
-    with_paren = value
-    for latin in sorted(set(re.findall(r"[A-Za-z]", value))):
-        hangul = _LATIN_NAMES.get(latin.upper())
-        if not hangul:
-            return set()
-        spelled = spelled.replace(latin, hangul)
-        with_paren = with_paren.replace(latin, f"{hangul}({latin.upper()})")
-    return {spelled, with_paren}
+    """로마자 ↔ 한글 표기 변형. 'W'로 등록한 이름의 '더블유'·'더블유(W)', '더블유'로 등록한 이름의 'W'."""
+    variants: set[str] = set()
+    if re.search(r"[A-Za-z]", value):
+        spelled = value
+        with_paren = value
+        convertible = True
+        for latin in sorted(set(re.findall(r"[A-Za-z]", value))):
+            hangul = _LATIN_NAMES.get(latin.upper())
+            if not hangul:
+                convertible = False
+                break
+            spelled = spelled.replace(latin, hangul)
+            with_paren = with_paren.replace(latin, f"{hangul}({latin.upper()})")
+        if convertible:
+            variants |= {spelled, with_paren}
+    for latin, hangul in _LATIN_NAMES.items():
+        # 한 음절 이름('비'·'이'·'지')은 평범한 낱말과 겹쳐 되돌리지 않는다.
+        if len(hangul) >= 2 and hangul in value:
+            variants.add(value.replace(hangul, latin))
+            variants.add(value.replace(hangul, f"{hangul}({latin})"))
+    return variants
 
 
 def name_variants(identity: MentionIdentity) -> dict[str, str]:
@@ -251,25 +281,65 @@ def _pattern(variant: str) -> re.Pattern[str]:
     return re.compile(body + tail, re.IGNORECASE)
 
 
-# 항목의 시작 — 문단·제목·표 행·맨 앞 목록 기호(번호 목록 포함). 들여 쓴 하위 목록은 같은 항목이다.
-_ITEM_START = re.compile(r"\n(?:\n|#|\||[*\-]\s|\d+[.)]\s)")
-# 다음 항목의 시작 — 하위 줄("  * **위치:**")은 이어서 읽는다.
-_ITEM_END = re.compile(r"\n(?:#|\n|\||[*\-]\s+\*\*|\d+[.)]\s)")
+_BULLET = re.compile(r"^(?:[*\-•]|\d+[.)])\s")
+
+
+def _indent(line: str) -> int:
+    return len(line) - len(line.lstrip(" \t"))
 
 
 def _item_context(text: str, start: int, end: int) -> str:
-    """이름이 속한 항목(목록 한 줄과 딸린 하위 줄·표 한 행·문단)."""
-    window_start = max(0, start - _CONTEXT_BEFORE)
-    heads = [match.start() for match in _ITEM_START.finditer(text, window_start, start)]
-    head = heads[-1] if heads else window_start
-    following = _ITEM_END.search(text, end, end + _CONTEXT_AFTER)
-    tail = following.start() if following else min(len(text), end + _CONTEXT_AFTER)
-    return text[head:tail]
+    """이름이 속한 항목 — 그 줄과 딸린 줄들.
+
+    목록 항목이면 더 깊이 들여 쓴 하위 줄("  * **위치:**")까지, 같은 깊이의 다음 항목 앞에서 끊는다(굵게
+    쓰지 않은 목록·번호 목록도 같다). 제목 줄이면 그 아래 목록을 빈 줄 전까지 읽는다. 표는 그 행만 읽는다.
+    옆 항목의 위치를 빌려 오면 다른 지역 병원이 우리 병원으로 읽힌다.
+    """
+    line_start = text.rfind("\n", 0, start) + 1
+    head = max(line_start, start - _CONTEXT_BEFORE)
+    limit = min(len(text), end + _CONTEXT_AFTER)
+    line_end = text.find("\n", end)
+    if line_end == -1 or line_end >= limit:
+        return text[head:limit]
+    first = text[line_start:line_end]
+    stripped_first = first.strip()
+    if stripped_first.startswith("|"):
+        return text[head:line_end]
+    base_indent = _indent(first)
+    is_bullet = _BULLET.match(stripped_first) is not None
+    is_heading = stripped_first.startswith("#")
+    tail = line_end
+    while tail < limit:
+        following = text.find("\n", tail + 1)
+        if following == -1:
+            following = len(text)
+        line = text[tail + 1:following]
+        stripped = line.strip()
+        if not stripped or stripped.startswith(("#", "|", "---")):
+            break
+        if _BULLET.match(stripped) and not is_heading:
+            if is_bullet and _indent(line) <= base_indent:
+                break
+            if not is_bullet and _indent(line) == 0:
+                break
+        tail = following
+    return text[head:min(tail, limit)]
 
 
-def _phone_digits(phone: str | None) -> str | None:
+def _phone_digits(phone: str | None) -> tuple[str, ...]:
+    """전화번호 전체(지역번호 포함)와 국가번호 표기(+82, 앞 0 생략). 뒷자리만 맞는 다른 지역 번호는 아니다."""
     digits = re.sub(r"\D", "", phone or "")
-    return digits[-8:] if len(digits) >= 9 else None
+    if len(digits) < 9:
+        return ()
+    forms = {digits}
+    if digits.startswith("0"):
+        forms.add("82" + digits[1:])
+    return tuple(sorted(forms))
+
+
+def _has_phone(text: str, forms: tuple[str, ...]) -> bool:
+    digits = re.sub(r"\D", "", text)
+    return any(form in digits for form in forms)
 
 
 def _road(address: str | None) -> tuple[str, str] | None:
@@ -290,7 +360,12 @@ def _rank(text: str, start: int) -> int:
 
 
 def _branch_after(rest: str) -> str | None:
-    match = re.match(r"\s?([가-힣0-9A-Za-z]{1,6}점)(?![가-힣])", rest)
+    """이름 바로 뒤의 지점명 — 굵게 표시·괄호·조사가 사이에 있어도 읽는다("**서울W내과의원** 성남점은")."""
+    match = re.match(
+        r"[\s*_)\]]*[(\[]?\s?([가-힣0-9A-Za-z]{1,6}점)"
+        r"(?=$|[^가-힣]|(?:은|는|이|가|을|를|의|에서|에|도|과|와|으로|로)(?![가-힣]))",
+        rest,
+    )
     if match is None or match.group(1) in _NOT_BRANCH:
         return None
     return match.group(1)
@@ -311,6 +386,52 @@ def _tail_is_boundary(text: str, end: int, own_branch: str | None) -> bool:
         branch = _branch_after(after)
         return branch is None or own_branch is None or branch == own_branch
     return _PARTICLE.match(rest) is not None
+
+
+def _places(context: str) -> set[str]:
+    return {
+        normalize(match.group(1))
+        for match in _MUNICIPALITY.finditer(context)
+        if not _NOT_PLACE.search(match.group(1))
+    }
+
+
+def _is_compatible(place: str, compatible: frozenset[str]) -> bool:
+    return any(
+        place in token or token in place or normalize(_stem(place)) in token for token in compatible
+    )
+
+
+def _own_places(identity: MentionIdentity, level: str) -> frozenset[str]:
+    """이 병원의 시(level='si') 또는 구·군(level='gu') — 지역어·주소에서 읽는다."""
+    suffix = ("시",) if level == "si" else ("구", "군")
+    return frozenset(
+        normalize(word) for word in identity.locality_words() if word.endswith(suffix)
+    )
+
+
+def _names_another_place(
+    context: str, identity: MentionIdentity, compatible: frozenset[str], ours_here: bool
+) -> bool:
+    """항목이 다른 시·군·구를 가리키는가.
+
+    우리 생활권 말이 없으면 낯선 시·군·구 하나로 충분하다. 우리 생활권 말이 있어도("수원시") 우리 구가
+    빠진 채 다른 구가 적혔으면("수원시 영통구") 다른 곳이다 — 같은 시 안의 다른 지점일 수 있다.
+    """
+    places = _places(context)
+    foreign = {place for place in places if not _is_compatible(place, compatible)}
+    if not ours_here:
+        return bool(foreign)
+    for level, suffix in (("gu", ("구", "군")), ("si", ("시",))):
+        own = _own_places(identity, level)
+        if not own:
+            continue
+        here = {place for place in places if place.endswith(suffix)}
+        if here & own:
+            continue
+        if any(place.endswith(suffix) for place in foreign):
+            return True
+    return False
 
 
 def resolve(identity: MentionIdentity, text: str | None) -> Resolution:
@@ -339,12 +460,10 @@ def resolve(identity: MentionIdentity, text: str | None) -> Resolution:
                 matched_kind = "brand"
             context = _item_context(answer, start, end)
             ncontext = normalize(context)
-            if phone and phone in re.sub(r"\D", "", context):
+            if _has_phone(context, phone):
                 status, evidence = MATCHED, EVIDENCE_PHONE
             elif _has_road(context, road):
                 status, evidence = MATCHED, EVIDENCE_ROAD
-            elif any(token in ncontext for token in locality):
-                status, evidence = MATCHED, EVIDENCE_LOCALITY
             elif not compatible:
                 # 이 병원의 생활권을 모른다(지역어·주소 없음) — 다른 지점인지 가릴 수 없어 이름으로만 본다.
                 status, evidence = (
@@ -353,21 +472,11 @@ def resolve(identity: MentionIdentity, text: str | None) -> Resolution:
                     else (MATCHED, EVIDENCE_NAME)
                 )
             else:
-                elsewhere = {
-                    normalize(match.group(1))
-                    for match in _MUNICIPALITY.finditer(context)
-                    if not _NOT_PLACE.search(match.group(1))
-                }
-                elsewhere = {
-                    place
-                    for place in elsewhere
-                    if not any(
-                        place in token or token in place or normalize(_stem(place)) in token
-                        for token in compatible
-                    )
-                }
-                if elsewhere:
+                ours_here = any(token in ncontext for token in locality)
+                if _names_another_place(context, identity, compatible, ours_here):
                     status, evidence = OTHER_LOCATION, None
+                elif ours_here:
+                    status, evidence = MATCHED, EVIDENCE_LOCALITY
                 elif matched_kind == "brand":
                     status, evidence = BRAND_UNCONFIRMED, None
                 else:
@@ -384,16 +493,19 @@ def resolve(identity: MentionIdentity, text: str | None) -> Resolution:
                 best = (score[0], score[1], candidate)
     if best is not None and best[2].matched:
         return best[2]
-    if phone and phone in re.sub(r"\D", "", answer):
-        # 이름은 못 알아봤지만 우리 전화번호가 적혀 있다 — 전화번호는 병원마다 하나다.
+    if _has_phone(answer, phone):
+        # 이름은 못 알아봤지만 우리 전화번호(지역번호까지)가 적혀 있다 — 전화번호는 병원마다 하나다.
         return Resolution(MATCHED, evidence=EVIDENCE_PHONE)
     return best[2] if best is not None else Resolution(NOT_FOUND)
 
 
 def name_fragments(identity: MentionIdentity) -> frozenset[str]:
     """이름의 3글자 조각 — 규칙이 놓쳤을 수 있는 답변을 고르는 데만 쓴다(판정 근거 아님)."""
-    core = normalize(_core(identity.name))
-    fragments = {core[index:index + 3] for index in range(max(0, len(core) - 2))}
+    base = _core(identity.name)
+    fragments: set[str] = set()
+    for value in {base, *_latin_variants(base)}:
+        core = normalize(value)
+        fragments |= {core[index:index + 3] for index in range(max(0, len(core) - 2))}
     # 숫자만 든 조각("365")은 '365일 진료' 같은 말에 흔하다.
     return frozenset(
         fragment

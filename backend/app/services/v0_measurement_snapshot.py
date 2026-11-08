@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from app.models.hospital import Hospital
 from app.models.monthly_control import MeasurementObservationSlot
 from app.models.sov import MeasurementRun, QueryMatrix
-from app.services import sov_engine
+from app.services import mention_identity, sov_engine
 
 
 def v0_query_snapshot(queries: Iterable[QueryMatrix]) -> list[dict[str, str]]:
@@ -32,12 +32,31 @@ def v0_query_snapshot(queries: Iterable[QueryMatrix]) -> list[dict[str, str]]:
 
 def v0_judgment_context(hospital: Hospital) -> dict[str, Any]:
     """Freeze every hospital field that can change a saved answer's verdict."""
+    region = str((hospital.region or [""])[0])
     return {
         "hospital_identity": str(hospital.id),
         "hospital_name": hospital.name,
-        "region": str((hospital.region or [""])[0]),
+        "region": region,
         "competitors": [str(name) for name in (hospital.competitors or [])],
+        # 규칙 대조(`mention_identity`)는 주소·전화·지역어 전체로 판정한다 — 실행 도중 병원 정보가
+        # 바뀌어도 같은 실행의 판정이 섞이지 않게 함께 고정한다.
+        "identity": judgment_identity(hospital, hospital.name, region).material(),
     }
+
+
+def judgment_identity(
+    hospital: Hospital, hospital_name: str, region: str | None
+) -> mention_identity.MentionIdentity:
+    """측정 판정에 쓰는 병원 신원 — 이름·주소·전화·지역어."""
+    terms = [str(term) for term in (getattr(hospital, "region", None) or []) if str(term or "").strip()]
+    if region and region not in terms:
+        terms.insert(0, region)
+    return mention_identity.MentionIdentity.build(
+        hospital_name,
+        address=getattr(hospital, "address", None),
+        phone=getattr(hospital, "phone", None),
+        region_terms=terms,
+    )
 
 
 def parse_v0_judgment_context(value: object, *, hospital_id: uuid.UUID) -> dict[str, Any] | None:
@@ -56,12 +75,16 @@ def parse_v0_judgment_context(value: object, *, hospital_id: uuid.UUID) -> dict[
         or any(not isinstance(name, str) for name in competitors)
     ):
         return None
-    return {
+    context: dict[str, Any] = {
         "hospital_identity": identity,
         "hospital_name": hospital_name,
         "region": region,
         "competitors": list(competitors),
     }
+    # 2026-11-09 이전에 고정한 문맥에는 신원이 없다 — 그런 실행은 측정 기준 변경으로 막힌다.
+    if mention_identity.MentionIdentity.from_material(value.get("identity")) is not None:
+        context["identity"] = value["identity"]
+    return context
 
 
 def v0_platforms_from_run(run: MeasurementRun) -> list[str] | None:

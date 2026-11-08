@@ -533,6 +533,7 @@ from app.services.v0_measurement_snapshot import (
 from app.services.v0_measurement_snapshot import (
     v0_judgment_context as _v0_judgment_context,  # noqa: F401 -- stable legacy worker import
 )
+from app.services.v0_measurement_snapshot import judgment_identity as v0_judgment_identity
 from app.services.v0_measurement_snapshot import (
     v0_platforms_from_run as _v0_platforms_from_run,  # noqa: F401 -- stable legacy worker import
 )
@@ -5325,6 +5326,9 @@ def trigger_v0_report(self, hospital_id: str, failure_retry_count: int = 0):
                             hospital=hospital,
                             hospital_name=judgment_context["hospital_name"],
                             region=judgment_context["region"],
+                            identity=mention_identity.MentionIdentity.from_material(
+                                judgment_context.get("identity")
+                            ),
                             query_text=q.query_text,
                             competitors=competitors,
                             protocol=protocol,
@@ -9332,6 +9336,7 @@ def run_sov_for_hospital(
             if slotted_execution and not isinstance(run_protocol, dict):
                 raise RuntimeError("measurement run protocol is missing")
             slots_by_cell: dict[uuid.UUID, list[MeasurementObservationSlot]] = {}
+            manifest_identity = _frozen_manifest_identity(manifest, hospital)
             if slotted_execution:
                 for spec in measurement_specs:
                     slots_by_cell[spec["manifest_cell"].id] = ensure_monthly_slots(
@@ -9477,6 +9482,7 @@ def run_sov_for_hospital(
                             db,
                             slot=slot,
                             hospital=hospital,
+                            identity=manifest_identity,
                             query_text=spec["query_text"],
                             competitors=competitors,
                             protocol=run_protocol,
@@ -10423,15 +10429,27 @@ def _judgment_identity(
     hospital: Hospital, hospital_name: str, region: str | None
 ) -> mention_identity.MentionIdentity:
     """정기 측정의 자사 신원 — 이름·주소·전화·지역어로 규칙 대조한다(`mention_identity`)."""
-    terms = [str(term) for term in (hospital.region or []) if str(term or "").strip()]
-    if region and region not in terms:
-        terms.insert(0, region)
-    return mention_identity.MentionIdentity.build(
-        hospital_name,
-        address=hospital.address,
-        phone=hospital.phone,
-        region_terms=terms,
-    )
+    return v0_judgment_identity(hospital, hospital_name, region)
+
+
+def _frozen_manifest_identity(
+    manifest: MonthlyMeasurementManifest, hospital: Hospital
+) -> mention_identity.MentionIdentity:
+    """그 달 측정표에 판정 신원을 고정한다 — 처음 쓰는 순간의 값을 남기고 이후 조각은 그 값을 쓴다.
+
+    월간 측정은 여러 조각으로 이어 돈다. 도중에 병원 정보(전화·주소·지역어)가 바뀌어도 한 달의 판정이
+    두 신원으로 섞이지 않게 한다. 측정 기준 비교(`measurement_protocol`)와는 따로 둔다.
+    """
+    stored = getattr(manifest, "platform_provenance", None)
+    provenance = dict(stored) if isinstance(stored, dict) else {}
+    frozen = mention_identity.MentionIdentity.from_material(provenance.get("judgment_identity"))
+    if frozen is not None:
+        return frozen
+    identity = _judgment_identity(hospital, hospital.name, None)
+    if isinstance(stored, dict):
+        provenance["judgment_identity"] = identity.material()
+        manifest.platform_provenance = provenance
+    return identity
 
 
 def _execute_paid_observation_slot(
@@ -10448,6 +10466,7 @@ def _execute_paid_observation_slot(
     variant_id: uuid.UUID | None = None,
     monthly_cell=None,
     deadline: datetime | None = None,
+    identity: mention_identity.MentionIdentity | None = None,
 ) -> dict[str, Any]:
     """Resume exactly one paid answer/judgment slot and checkpoint each stage.
 
@@ -10457,7 +10476,9 @@ def _execute_paid_observation_slot(
     """
     judgment_hospital_name = hospital_name or hospital.name
     judgment_region = region if region is not None else (hospital.region or [""])[0]
-    judgment_identity = _judgment_identity(hospital, judgment_hospital_name, judgment_region)
+    judgment_identity = identity or _judgment_identity(
+        hospital, judgment_hospital_name, judgment_region
+    )
     if slot_needs_answer(slot):
         claim = claim_slot_stage(db, slot.id, stage="ANSWER", deadline=deadline)
         if claim is None:
@@ -10567,7 +10588,19 @@ def _execute_paid_observation_slot(
         identity=judgment_identity,
     )
     if slot_is_terminal(slot):
-        if slot.judgment_input_fingerprint != fingerprint:
+        if slot.judgment_input_fingerprint != fingerprint and (
+            slot.judgment_input_fingerprint
+            != judgment_input_fingerprint(
+                hospital_identity=str(hospital.id),
+                hospital_name=judgment_hospital_name,
+                response_text=slot.raw_response or "",
+                region=judgment_region,
+                competitors=competitors,
+                policy=protocol,
+            )
+        ):
+            # 2026-11-09 이전에 끝난 슬롯은 병원 신원(주소·전화·지역어) 없이 지문을 만들었다 — 그 지문도
+            # 같은 입력으로 본다. 끝난 슬롯은 다시 판정하지 않고 저장된 결과만 읽는다.
             raise RuntimeError("measurement slot judgment input changed")
         record = db.get(SovRecord, slot.sov_record_id) if slot.sov_record_id else None
         if record is None:

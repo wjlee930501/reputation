@@ -124,6 +124,12 @@ def precheck_hospital(db, hospital: Hospital, anchor) -> HospitalResult:
     verdict = RefreshVerdict()
     if not rejudge.registered_names:
         verdict.add("BLOCKER", "NO_REGISTERED_COMPETITORS", "병원 정보 탭에 경쟁 병원을 먼저 등록")
+    if rejudge.records_total and not rejudge.judge_policy_current:
+        verdict.add(
+            "BLOCKER",
+            "JUDGE_POLICY_CHANGED",
+            "이 달은 이전 언급 판정 방식으로 측정 — 경쟁 병원만 새 방식으로 판정하면 기준이 섞인다",
+        )
     plan = build_monthly_template_refresh_plan(
         db, hospital, anchor, observed_now=datetime.now(UTC), competitor_refresh=True
     )

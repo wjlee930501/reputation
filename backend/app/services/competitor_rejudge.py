@@ -320,6 +320,9 @@ class RejudgePlan:
     report_version: int | None
     records_total: int
     targets: tuple[RejudgeTarget, ...]
+    # 그 달을 지금과 같은 판정 방식으로 쟀는가. 2026-11-09 규칙 대조 이전에 잰 달은 자사·경쟁사 판정이
+    # 옛 방식이라, 새로 등록한 경쟁사만 새 방식으로 판정하면 한 보고서에 두 판정 기준이 섞인다.
+    judge_policy_current: bool = True
 
     @property
     def pending_records(self) -> int:
@@ -343,7 +346,21 @@ class RejudgePlan:
             "report_id": str(self.report_id) if self.report_id else None,
             "report_version": self.report_version,
             "manifest_id": str(self.manifest_id) if self.manifest_id else None,
+            "judge_policy_current": self.judge_policy_current,
         }
+
+
+def month_judge_policy_is_current(manifest: MonthlyMeasurementManifest | None) -> bool:
+    """그 달 측정표가 지금과 같은 판정 정책(규칙 대조 판·보조 판정 문구)으로 고정됐는가."""
+    if manifest is None:
+        return False
+    provenance = manifest.platform_provenance if isinstance(manifest.platform_provenance, dict) else {}
+    protocol = provenance.get("measurement_protocol")
+    if not isinstance(protocol, dict):
+        return False
+    return protocol.get("judge_prompt_fingerprint") == sov_engine.measurement_protocol().get(
+        "judge_prompt_fingerprint"
+    )
 
 
 def build_rejudge_plan(
@@ -354,10 +371,13 @@ def build_rejudge_plan(
     report = latest_monthly_report(db, hospital.id, year, month)
     manifest, records = frozen_month_records(db, hospital, year, month, report=report, now=now)
     candidates = rejudge_target_records(records)
+    policy_current = month_judge_policy_is_current(manifest)
     targets = tuple(
         RejudgeTarget(record.id, tuple(pending))
         for record in candidates
-        if registered and (pending := pending_competitor_names(record.competitor_mentions, registered))
+        if policy_current
+        and registered
+        and (pending := pending_competitor_names(record.competitor_mentions, registered))
     )
     return RejudgePlan(
         hospital_id=hospital.id,
@@ -369,6 +389,7 @@ def build_rejudge_plan(
         report_version=report.version if report is not None else None,
         records_total=len(candidates),
         targets=targets,
+        judge_policy_current=policy_current,
     )
 
 
