@@ -251,8 +251,12 @@ _METRO_PATTERNS = {
 _BARE_GWANGJU = re.compile(r"(?<![가-힣])광주\s*(?:동구|서구|남구|북구|광산구)" + _METRO_PARTICLE)
 # 환자가 오는 곳("서울에서 KTX로", "서울에서 오시는")·사는 곳("서울 주민")은 병원 위치가 아니다 — 바로 뒤 말만 본다.
 _METRO_ORIGIN = re.compile(
-    r"^(?:에서\s*(?:오시|오는|오셔|와서|올라오|내려오|찾아오|원정|KTX|기차|버스|차로)|\s*(?:주민|거주|사는|사시는))"
+    r"^(?:에서(?:도|는|만)?\s*(?:오시|오는|오셔|와서|올라오|내려오|찾아오|원정|KTX|기차|버스|차로)|\s*(?:주민|거주|사는|사시는))"
 )
+
+
+# 원장 경력("서울 소재 대학병원 출신")의 지명도 병원 위치가 아니다.
+_METRO_BACKGROUND = re.compile(r"^[^.\n,·—]{0,20}출신")
 
 
 def _metro_positions(text: str) -> list[tuple[int, str]]:
@@ -263,8 +267,9 @@ def _metro_positions(text: str) -> list[tuple[int, str]]:
         for match in pattern.finditer(text):
             head = forms.match(match.group(0))
             tail = text[match.start() + (head.end() if head else 0):]
-            if not _METRO_ORIGIN.match(tail):
-                found.append((match.start(), key))
+            if _METRO_ORIGIN.match(tail) or _METRO_BACKGROUND.match(tail):
+                continue
+            found.append((match.start(), key))
     found.extend((match.start(), "광주") for match in _BARE_GWANGJU.finditer(text))
     return sorted(found)
 
@@ -506,7 +511,7 @@ def _tail_is_boundary(text: str, end: int, own_branch: str | None) -> bool:
     if own_branch:
         # 띄어 쓰거나 괄호로 뗀 낱말만 지점이다("프라임세종365의원"의 '세종'은 아니다). 이름 뒤 조사도 받는다.
         bare = re.match(
-            r"(?:[은는이가의]\s+|[\s*_)\]]+[(\[]?\s?|[(\[]\s?)([가-힣]{2,5}?)" + _METRO_PARTICLE + r"(?![0-9A-Za-z])",
+            r"(?:[*_)\]]*[은는이가의]\s+|[\s*_)\]]+[(\[]?\s?|[(\[]\s?)([가-힣]{2,5}?)" + _METRO_PARTICLE + r"(?![0-9A-Za-z])",
             rest,
         )
         if bare and bare.group(1) == own_branch[:-1]:
