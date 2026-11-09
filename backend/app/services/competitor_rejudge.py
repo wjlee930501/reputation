@@ -350,12 +350,24 @@ class RejudgePlan:
         }
 
 
-def month_judge_policy_is_current(manifest: MonthlyMeasurementManifest | None) -> bool:
-    """그 달 측정표가 지금과 같은 판정 정책(규칙 대조 판·보조 판정 문구)으로 고정됐는가."""
+def month_judge_policy_is_current(
+    manifest: MonthlyMeasurementManifest | None, db=None
+) -> bool:
+    """그 달을 지금과 같은 판정 정책(규칙 대조 판·보조 판정 문구)으로 판정했는가.
+
+    측정표의 동결 기준이거나, 저장 답변을 지금 규칙으로 다시 판정한 기록(`month_mention_rejudge`)이 기준이다.
+    """
     if manifest is None:
         return False
-    provenance = manifest.platform_provenance if isinstance(manifest.platform_provenance, dict) else {}
-    protocol = provenance.get("measurement_protocol")
+    if db is not None:
+        from app.services.month_mention_rejudge import effective_measurement_protocol
+
+        protocol = effective_measurement_protocol(db, manifest)
+    else:
+        provenance = (
+            manifest.platform_provenance if isinstance(manifest.platform_provenance, dict) else {}
+        )
+        protocol = provenance.get("measurement_protocol")
     if not isinstance(protocol, dict):
         return False
     return protocol.get("judge_prompt_fingerprint") == sov_engine.measurement_protocol().get(
@@ -371,7 +383,7 @@ def build_rejudge_plan(
     report = latest_monthly_report(db, hospital.id, year, month)
     manifest, records = frozen_month_records(db, hospital, year, month, report=report, now=now)
     candidates = rejudge_target_records(records)
-    policy_current = month_judge_policy_is_current(manifest)
+    policy_current = month_judge_policy_is_current(manifest, db)
     targets = tuple(
         RejudgeTarget(record.id, tuple(pending))
         for record in candidates

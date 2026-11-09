@@ -350,6 +350,7 @@ from app.services.measurement_slots import (
     slots_for_run,
     summarize_observation_slots,
 )
+from app.services.month_mention_rejudge import effective_measurement_protocol
 from app.services.monthly_content_operations import (
     build_monthly_content_operations_snapshot,
 )
@@ -12825,16 +12826,10 @@ def _build_monthly_report_for_hospital(
         ),
         # 동결 시점의 측정 정책 스냅샷. 두 달의 정책이 다르면(v1↔v2 경계 등)
         # 비교가 NON_COMPARABLE로 떨어진다 — 측정 기준 변경을 성과로 팔지 않는다.
-        current_protocol=(
-            (manifest.platform_provenance or {}).get("measurement_protocol")
-            if manifest is not None
-            else None
-        ),
-        prior_protocol=(
-            (prior_manifest.platform_provenance or {}).get("measurement_protocol")
-            if prior_manifest is not None
-            else None
-        ),
+        # 저장 답변을 지금 판정 규칙으로 다시 판정한 달은 판정 정책만 지금 것이다
+        # (`month_mention_rejudge`) — 측정표의 동결 기준은 고칠 수 없으므로 실제 기준을 따로 읽는다.
+        current_protocol=effective_measurement_protocol(db, manifest),
+        prior_protocol=effective_measurement_protocol(db, prior_manifest),
     )
     # 타깃별 언급 빈도는 성공 측정 **전부**로 센다. 대표 1건(evidence용)은 언급된
     # 시도를 먼저 고르므로 비율 계산에 쓰면 위로 편향된다.
