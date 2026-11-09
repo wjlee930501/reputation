@@ -525,6 +525,9 @@ from app.services.sov_tracking_set import (
 )
 from app.services.v0_claim import v0_claim_is_alive_sync
 from app.services.v0_measurement_snapshot import (
+    judgment_identity as _judgment_identity,  # 정기 측정·V0가 같은 판정 신원 규칙을 쓴다
+)
+from app.services.v0_measurement_snapshot import (
     local_v0_query_texts as _local_v0_query_texts,  # noqa: F401 -- stable legacy worker import
 )
 from app.services.v0_measurement_snapshot import (
@@ -532,9 +535,6 @@ from app.services.v0_measurement_snapshot import (
 )
 from app.services.v0_measurement_snapshot import (
     v0_judgment_context as _v0_judgment_context,  # noqa: F401 -- stable legacy worker import
-)
-from app.services.v0_measurement_snapshot import (
-    judgment_identity as _judgment_identity,  # 정기 측정·V0가 같은 판정 신원 규칙을 쓴다
 )
 from app.services.v0_measurement_snapshot import (
     v0_platforms_from_run as _v0_platforms_from_run,  # noqa: F401 -- stable legacy worker import

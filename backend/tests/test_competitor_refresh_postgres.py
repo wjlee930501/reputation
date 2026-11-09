@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import uuid
 from datetime import date, datetime, timedelta, timezone
-from types import SimpleNamespace
 
 import arrow
 import pytest
