@@ -416,6 +416,8 @@ def _reset_values(
     )
     return {
         "query_target_id": target_id,
+        # 주력 주제 표시는 옛 질문의 것이다 — 다음 브리프 준비가 새 질문으로 다시 정한다.
+        "content_focus_topic": None,
         "exposure_action_id": None,
         "content_brief": _carried_brief(item),
         "brief_status": None,
