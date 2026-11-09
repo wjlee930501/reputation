@@ -123,11 +123,10 @@ def test_other_location_with_the_same_name_gets_a_second_look():
 
 
 def test_numbered_list_items_do_not_borrow_the_previous_items_location():
-    home = _identity("우리의원", region=("수원시 팔달구",))
-    answer = "1. **경쟁병원** (팔달구)\n2. **멀리내과의원** (부산 해운대구)"
+    answer = "1. **장편한외과의원** (부산 해운대구)\n2. **다른내과의원** (수원시 팔달구)"
 
-    assert not mi.resolve(home.for_competitor("멀리내과의원"), answer).matched
-    assert mi.resolve(home.for_competitor("경쟁병원"), answer).matched
+    # 우리 병원 판정은 옆 항목의 위치를 빌려 오지 않는다.
+    assert not mi.resolve(JANG, answer).matched
 
 
 def test_short_names_are_matched_with_their_suffix_only():
@@ -282,3 +281,126 @@ def test_prose_after_a_list_does_not_borrow_the_lists_location():
     answer = "* 다른외과의원 (수원시 팔달구)\n장편한외과의원은 부산 해운대구에 있습니다."
 
     assert mi.resolve(JANG, answer).status == mi.OTHER_LOCATION
+
+
+# ── 2026-11-09 경쟁 병원 재판정에서 나온 사례(v2) ──
+
+HOME_SEJONG = _identity("세종다온신경과의원", region=("세종시", "나성동", "보람동"))
+HOME_BUSAN = _identity("뉴플랜여성의원", address="부산광역시 남구 유엔평화로 4", region=("부산 남구", "광안동"))
+
+
+def test_competitor_written_with_a_locality_prefix_is_matched():
+    answer = "* **세종두미소신경과의원** (세종 보람동/나성동 인근)"
+
+    assert mi.resolve(HOME_SEJONG.for_competitor("두미소신경과의원"), answer).matched
+
+
+def test_branch_registered_without_jeom_is_matched_with_or_without_it():
+    identity = HOME_SEJONG.for_competitor("화인마취통증의학과의원 세종")
+
+    assert mi.resolve(identity, "* **화인마취통증의학과의원 세종점** — 나성동").matched
+    assert mi.resolve(identity, "화인마취통증의학과의원 세종에서 상담하세요.").matched
+    assert not mi.resolve(identity, "화인마취통증의학과의원 대전점이 있습니다.").matched
+
+
+def test_competitors_in_a_neighbouring_district_are_still_mentions():
+    answer = "* **광안자모병원** (수영구 광안동)\n  * 여성성형 클리닉 운영"
+
+    assert mi.resolve(HOME_BUSAN.for_competitor("광안자모병원"), answer).matched
+
+
+def test_locality_prefix_does_not_open_longer_unrelated_names():
+    # '세종'이 앞에 붙은 것은 받지만, 다른 글자가 붙은 더 긴 이름은 여전히 다른 병원이다.
+    assert not mi.resolve(HOME_SEJONG.for_competitor("두미소신경과의원"), "* **새두미소신경과의원**").matched
+
+
+def test_city_prefix_is_only_for_competitors_and_city_level_names():
+    # 우리 병원은 앞에 지명이 붙은 더 긴 이름을 받지 않는다.
+    assert not mi.resolve(_identity("바른내과의원", region=("마포구",)), "* **마포바른내과의원** (마포구)").matched
+    # 경쟁 병원도 동·역·구 이름 접두어는 받지 않는다.
+    home = _identity("우리의원", region=("대구 동구", "신기역", "마포구"))
+    assert not mi.resolve(home.for_competitor("연세내과의원"), "* **신기연세내과의원**").matched
+    assert not mi.resolve(home.for_competitor("바른내과의원"), "* **마포바른내과의원**").matched
+
+
+def test_bare_branch_rejects_another_city_and_ignores_non_place_words():
+    identity = HOME_SEJONG.for_competitor("화인마취통증의학과의원 세종")
+    assert not mi.resolve(identity, "* **화인마취통증의학과의원 대전** — 둔산동").matched
+    # 시 단위가 아닌 끝 낱말은 지점이 아니라 이름의 일부다.
+    assert not mi.resolve(HOME_SEJONG.for_competitor("프라임의원 메디컬"), "프라임의원을 추천합니다.").matched
+
+
+def test_competitor_in_another_metro_is_another_place_but_names_and_origins_are_not():
+    gyeonggi = _identity("우리의원", region=("경기도 하남시", "위례"))
+    # 이름 자체의 '서울'은 위치가 아니다.
+    assert mi.resolve(gyeonggi.for_competitor("서울W내과의원 위례점"), "* **서울W내과의원 위례점** (하남시)").matched
+    # 우리 시·도를 모르면 우리 생활권 말이 있는 한 다른 곳이 아니다.
+    suwon = _identity("우리의원", region=("수원시 팔달구",))
+    assert mi.resolve(suwon.for_competitor("경쟁내과의원"), "* **경쟁내과의원** (경기도 수원시 장안구)").matched
+    assert not mi.resolve(suwon.for_competitor("멀리내과의원"), "* **멀리내과의원** (부산 해운대구)").matched
+    # 광주 광역시 구와 조사가 붙은 시·도.
+    daegu = _identity("우리의원", region=("대구 동구",))
+    assert not mi.resolve(daegu.for_competitor("멀리내과의원"), "* **멀리내과의원** — 광주 북구").matched
+    assert not mi.resolve(daegu.for_competitor("멀리내과의원"), "* **멀리내과의원**: 부산에서만 진료").matched
+    # 환자가 오는 곳은 병원 위치가 아니다.
+    assert mi.resolve(daegu.for_competitor("가까운내과의원"), "* **가까운내과의원** — 서울에서 KTX로 오시는 분도 많습니다.").matched
+
+
+def test_competitor_spelling_differences_marketers_register():
+    # 등록은 '김외과의원', 답변은 생활권 시 이름을 붙인 '수원김외과의원'.
+    assert mi.resolve(JANG.for_competitor("김외과의원"), "* **수원김외과의원**\n  * **위치:** 경기도 수원시 팔달구").matched
+    # '마취통증의학과' ↔ '통증의학과'.
+    assert mi.resolve(
+        HOME_SEJONG.for_competitor("화인마취통증의학과의원 세종"), "* **화인통증의학과의원 세종점** (나성동)"
+    ).matched
+    # '내과' ↔ '속내과'.
+    daegu = _identity("우리내과의원", region=("대구 수성구", "신매동"))
+    assert mi.resolve(daegu.for_competitor("서울아산내과의원"), "### 2. 서울아산속내과의원\n* **위치**: 대구광역시 수성구").matched
+    # 우리 병원 판정에는 쓰지 않는다.
+    assert not mi.resolve(_identity("서울아산내과의원", region=("대구 수성구",)), "서울아산속내과의원 (수성구)").matched
+
+
+def test_codex_round4_cases():
+    # 우리 병원 이름의 '점' 없는 지명은 떼지 않는다 — 다른 시의 같은 이름을 우리 병원으로 읽지 않는다.
+    self_sejong = _identity("화인마취통증의학과의원 세종", region=("세종시",))
+    assert not mi.resolve(self_sejong, "* **화인마취통증의학과의원** — 대전 둔산동").matched
+    # 줄인 이름으로 찾아도 이름 앞 지명은 이름의 일부다 — 다른 시·도 표기를 지우지 않는다.
+    gangnam = _identity("우리의원", region=("서울 강남구",))
+    assert not mi.resolve(gangnam.for_competitor("서울아산내과의원"), "* **서울아산내과의원** (부산 해운대구)").matched
+    # '오랜'은 환자 출발지 표현이 아니다.
+    daegu = _identity("우리의원", region=("대구 동구",))
+    assert not mi.resolve(daegu.for_competitor("바른내과의원"), "* **바른내과의원** — 부산에서 오랜 기간 진료해 온 내과입니다.").matched
+    # 조사가 붙은 다른 시 지점.
+    suwon = _identity("우리의원", region=("경기도 수원시",))
+    assert not mi.resolve(suwon.for_competitor("프라임의원 수원시"), "프라임의원 성남시에서 진료합니다.").matched
+    assert mi.resolve(suwon.for_competitor("프라임의원 수원시"), "프라임의원 수원시에서 진료합니다.").matched
+
+
+def test_codex_round5_cases():
+    self_branch = _identity("프라임의원 세종점", region=("세종시",))
+    assert not mi.resolve(self_branch, "* **프라임세종365의원** (세종시 나성동)").matched
+    suwon = _identity("우리의원", region=("경기도 수원시",))
+    assert not mi.resolve(suwon.for_competitor("프라임의원 수원시"), "프라임의원은 성남시에서 진료합니다.").matched
+    daegu = _identity("우리의원", region=("대구 동구",))
+    assert not mi.resolve(daegu.for_competitor("바른내과의원"), "* **바른내과의원** — 광주 북구에 위치합니다.").matched
+    assert not mi.resolve(
+        daegu.for_competitor("바른내과의원"), "* **바른내과의원** — 부산광역시에서 20년간 진료하며 찾아오는 환자가 많습니다."
+    ).matched
+    gangnam = _identity("우리의원", region=("서울 강남구",))
+    assert not mi.resolve(
+        gangnam.for_competitor("바른내과의원"), "* **바른내과의원** (부산 해운대구) — 서울 소재 대학병원 출신 내과 전문의가 진료합니다."
+    ).matched
+    # 우리 시·도가 이름 바로 뒤에 적혔으면 같은 곳이다.
+    assert mi.resolve(gangnam.for_competitor("바른내과의원"), "* **바른내과의원** (서울 강남구) — 부산 출신 원장").matched
+
+
+def test_codex_round6_cases():
+    gangnam = _identity("우리의원", region=("서울 강남구",))
+    assert not mi.resolve(
+        gangnam.for_competitor("바른내과의원"), "부산 해운대구에 위치한 바른내과의원은 서울 소재 대학병원 출신 내과 전문의가 진료합니다."
+    ).matched
+    assert mi.resolve(
+        gangnam.for_competitor("바른내과의원"), "* **바른내과의원** — 부산에서도 오시는 분들이 많으며 서울 강남구에 위치합니다."
+    ).matched
+    suwon = _identity("우리의원", region=("경기도 수원시",))
+    assert not mi.resolve(suwon.for_competitor("프라임의원 수원시"), "* **프라임의원**은 성남시에서 진료합니다.").matched
