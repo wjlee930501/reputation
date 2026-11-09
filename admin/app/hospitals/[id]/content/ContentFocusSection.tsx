@@ -76,17 +76,24 @@ export function ContentFocusSection({ hospitalId }: { hospitalId: string }) {
   // 주제를 바꾸면 맞는 환자 질문 수를 다시 센다(저장하지 않는다).
   const topicsKey = draft.topics.join('\u0001')
   useEffect(() => {
+    // 주제가 바뀔 때마다 앞선 미리보기 응답을 무효로 한다(캐시로 끝나는 경우도).
+    const seq = ++previewSeq.current
     if (loading || loadError) return
     const known = new Set(matches.map((match) => match.topic))
     if (draft.topics.every((topic) => known.has(topic))) return
-    const seq = ++previewSeq.current
     const timer = setTimeout(() => {
       fetchAPI<{ topic_matches: ContentFocusTopicMatch[] }>(
         `/admin/hospitals/${hospitalId}/content-focus/preview`,
         { method: 'POST', body: JSON.stringify({ topics: draft.topics }) },
       )
         .then((value) => {
-          if (seq === previewSeq.current && value) setMatches(value.topic_matches)
+          if (seq !== previewSeq.current || !value) return
+          // 이미 아는 주제의 결과는 지우지 않고 합친다.
+          setMatches((current) => {
+            const merged = new Map(current.map((match) => [match.topic, match]))
+            for (const match of value.topic_matches) merged.set(match.topic, match)
+            return [...merged.values()]
+          })
         })
         .catch((e: unknown) => {
           if (!isExpectedOperatorRequestFailure(e)) throw e
@@ -174,7 +181,8 @@ export function ContentFocusSection({ hospitalId }: { hospitalId: string }) {
         )}
 
         {!loading && !loadError && (
-          <>
+          // 저장하는 동안은 입력을 막는다 — 응답이 그 사이 고친 값을 덮지 않게.
+          <fieldset disabled={saving} className="min-w-0 space-y-5 disabled:opacity-70">
             {/* 1. 주력 주제 */}
             <section>
               <h3 className="text-sm font-semibold text-slate-800">1. {ADMIN_COPY.contentFocus.topicsHeading}</h3>
@@ -189,7 +197,8 @@ export function ContentFocusSection({ hospitalId }: { hospitalId: string }) {
                     setInputProblem(null)
                   }}
                   onKeyDown={(e) => {
-                    if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+                    // 한글 조합을 끝내는 Enter(Safari는 keyCode 229)는 주제를 더하지 않는다.
+                    if (e.key === 'Enter' && !e.nativeEvent.isComposing && e.keyCode !== 229) {
                       e.preventDefault()
                       addTopic()
                     }
@@ -389,7 +398,7 @@ export function ContentFocusSection({ hospitalId }: { hospitalId: string }) {
                 {saving ? '저장 중…' : ADMIN_COPY.contentFocus.save}
               </button>
             </div>
-          </>
+          </fieldset>
         )}
       </div>
     </details>

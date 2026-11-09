@@ -98,7 +98,7 @@ async def test_save_stores_versioned_focus_and_writes_audit():
         _target("간질환 진료 병원", condition_or_symptom="간질환"),
     ]
     november = [
-        SimpleNamespace(content_focus_topic="내시경", status=ContentStatus.PUBLISHED, title="t", body="b",
+        SimpleNamespace(content_focus_topic="내시경 검사", status=ContentStatus.PUBLISHED, title="t", body="b",
                         query_target_id=uuid.uuid4(), scheduled_date=date(2026, 11, 2)),
         SimpleNamespace(content_focus_topic=None, status=ContentStatus.DRAFT, title=None, body=None,
                         query_target_id=None, scheduled_date=date(2026, 11, 20)),

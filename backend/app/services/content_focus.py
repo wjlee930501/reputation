@@ -226,8 +226,13 @@ def target_subject_is_region(target: Any, hospital: Any = None) -> bool:
     subject = getattr(target, "treatment", None) or getattr(target, "condition_or_symptom", None)
     if not subject:
         return False
-    subject_key = topic_match_key(str(subject))
-    subject_key = _region_key(subject_key)
+    subject_word = topic_match_key(str(subject))
+    # 템플릿이 진료 항목 자리에 그 말을 넣은 모양("하남 진료…", "송파 치료…")일 때만 본다.
+    # "초산과 경산의 분만 차이"처럼 같은 글자의 의학 용어는 이 모양이 아니다.
+    name_key = _match_key(getattr(target, "name", None))
+    if not any(f"{subject_word}{word}" in name_key for word in ("진료", "치료")):
+        return False
+    subject_key = _region_key(subject_word)
     if len(subject_key) < 2:
         return False
     regions = list(getattr(target, "region_terms", None) or [])

@@ -126,7 +126,8 @@ async def _month_summaries(db: AsyncSession, hospital: Hospital, focus: ContentF
             .all()
         )
         total = len(items)
-        focused = sum(1 for item in items if item.content_focus_topic)
+        topics = set(focus.active_topics(key))
+        focused = sum(1 for item in items if item.content_focus_topic in topics)
         open_slots = sum(
             1
             for item in items

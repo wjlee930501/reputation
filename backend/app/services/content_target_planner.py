@@ -216,9 +216,6 @@ def _choose_target(
         .all()
         if str(target.id) not in excluded and target_fits_hospital(target, hospital)
     ]
-    # 진료 항목 자리에 지역명이 들어간 엉성한 질문("하남 진료를 받으려는데…")으로는 글을 쓸 수 없다.
-    # 측정 세트는 그대로 두고 글 주제 후보에서만 뺀다.
-    targets = [target for target in targets if not target_subject_is_region(target, hospital)]
     if not targets:
         return None
 
@@ -227,6 +224,12 @@ def _choose_target(
     # 결정적이며 빈 필드만 채우므로 재실행해도 결과가 같다.
     for target in targets:
         apply_structure_to_target(target)
+
+    # 진료 항목 자리에 지역명이 들어간 엉성한 질문("하남 진료를 받으려는데…")으로는 글을 쓸 수 없다.
+    # 측정 세트는 그대로 두고 글 주제 후보에서만 뺀다. 구조를 채운 뒤에 본다(옛 질문도 걸리게).
+    targets = [target for target in targets if not target_subject_is_region(target, hospital)]
+    if not targets:
+        return None
 
     slot_date = item.scheduled_date or date.today()
     month_start = slot_date.replace(day=1)
@@ -276,7 +279,7 @@ def _choose_target(
         targets,
         key=lambda target: (
             _content_type_affinity(target, item.content_type) == AFFINITY_MISMATCH,
-            0 if focus_topics and matching_topic(target, focus_topics) else 1,
+            _focus_rank(target, item.content_type, focus_topics),
             _content_type_affinity(target, item.content_type),
             usage[str(target.id)] > 0,
             0 if str(target.id) in action_target_ids else 1,
@@ -321,10 +324,18 @@ def _focus_topics_needed(
         )
     ).all()
     month_total = len({row[0] for row in rows} | {item.id})
-    focused = sum(1 for row in rows if row[0] != item.id and row[1])
+    # 지금 주력 주제로 쓰인 글만 센다 — 주제를 바꾸면 옛 주제 글은 새 목표를 채우지 않는다.
+    focused = sum(1 for row in rows if row[0] != item.id and row[1] in topics)
     if focused >= focus_quota(focus.share, month_total):
         return ()
     return topics
+
+
+def _focus_rank(target: Any, content_type: Any, focus_topics: tuple[str, ...]) -> int:
+    """주력 주제 질문이면 0. 유형과 안 맞는 질문은 주력 주제여도 1이다(유형 불일치끼리 승부를 가르지 않는다)."""
+    if not focus_topics or _content_type_affinity(target, content_type) == AFFINITY_MISMATCH:
+        return 1
+    return 0 if matching_topic(target, focus_topics) else 1
 
 
 def _record_focus_topic(item: ContentItem, target: Any, hospital: Any) -> None:

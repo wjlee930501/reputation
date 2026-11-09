@@ -302,3 +302,67 @@ def test_record_focus_topic_marks_the_item():
     october = SimpleNamespace(scheduled_date=date(2026, 10, 30), content_focus_topic=None)
     _record_focus_topic(october, _scope(), _hospital(_FOCUS))
     assert october.content_focus_topic is None
+
+
+# ── Codex 검토 반영 ───────────────────────────────────────────────────────
+
+
+def test_medical_words_that_look_like_regions_are_kept():
+    """'경산'(출산 경험)·'수정'은 의학 용어다 — 템플릿이 진료 항목 자리에 넣은 모양일 때만 지역명으로 본다."""
+    hospital = SimpleNamespace(region=["경산시", "성남 수정구"])
+    assert not target_subject_is_region(
+        _target(name="초산과 경산의 분만 차이를 알려줘", treatment=None, condition_or_symptom="경산", region_terms=[]),
+        hospital,
+    )
+    assert not target_subject_is_region(
+        _target(name="시험관 수정 과정이 궁금해", treatment="수정", region_terms=[]), hospital
+    )
+    assert target_subject_is_region(
+        _target(name="경산에서 경산 치료하는 병원 알려줘", treatment=None, condition_or_symptom="경산"), hospital
+    )
+
+
+def test_legacy_region_question_is_filtered_after_structure_restoration(monkeypatch):
+    """구조 필드가 빈 옛 질문도 구조를 채운 뒤 걸러진다 — 처음 고를 때 새지 않는다."""
+    monkeypatch.setattr("app.services.content_target_planner._lock_target_planning", lambda *_: None)
+    legacy = _target(
+        name="하남 진료를 받으려는데 하남시 어느 병원으로 가야 해?",
+        treatment=None,
+        condition_or_symptom=None,
+        region_terms=[],
+    )
+    assert _choose(_PlannerDB(targets=[legacy]), _hospital()) is None
+
+
+def test_previous_topic_articles_do_not_fill_the_new_quota(monkeypatch):
+    monkeypatch.setattr("app.services.content_target_planner._lock_target_planning", lambda *_: None)
+    liver, scope = _liver(), _scope()
+    month_rows = [(uuid.uuid4(), "도수치료") for _ in range(6)] + [(uuid.uuid4(), None) for _ in range(5)]
+    chosen = _choose(_PlannerDB(targets=[liver, scope], month_rows=month_rows), _hospital(_FOCUS))
+    assert chosen is scope
+
+
+def test_focus_does_not_decide_between_mismatched_candidates(monkeypatch):
+    """NOTICE 슬롯처럼 모든 후보가 유형 불일치면 주력 주제가 승부를 가르지 않는다(주력 주제 없을 때와 같다)."""
+    monkeypatch.setattr("app.services.content_target_planner._lock_target_planning", lambda *_: None)
+    liver, scope = _liver(), _scope()
+    month_rows = [(uuid.uuid4(), None) for _ in range(11)]
+    chosen = _choose(
+        _PlannerDB(targets=[liver, scope], month_rows=month_rows), _hospital(_FOCUS), content_type=ContentType.NOTICE
+    )
+    assert chosen is liver
+
+
+def test_topic_swap_clears_the_old_focus_label():
+    from app.workers.topic_swap_fallback import _reset_values
+
+    item = SimpleNamespace(
+        query_target_id=uuid.uuid4(),
+        topic_swap_history=[],
+        content_brief={},
+        generation_attempt=None,
+        hospital_id=uuid.uuid4(),
+        content_focus_topic="내시경",
+    )
+    values = _reset_values(item, uuid.uuid4(), {"reason": "test"}, attempt={"renewal": True})
+    assert values["content_focus_topic"] is None
