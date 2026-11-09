@@ -189,7 +189,7 @@ async def create_inquiry_diagnosis(
         requested_models={
             "openai": settings.OPENAI_MODEL_QUERY,
             "gemini": settings.GEMINI_MODEL,
-            "judge": settings.OPENAI_MODEL_PARSE,
+            "judge": sov_engine.judge_disclosure(),
         },
         measurement_config=sov_engine.measurement_protocol(),
         repeat_count=settings.LEADGEN_REPEAT_COUNT,

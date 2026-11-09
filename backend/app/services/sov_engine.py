@@ -17,7 +17,7 @@ from billiard.exceptions import SoftTimeLimitExceeded
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from app.core.config import settings
-from app.services import openrouter, query_mapper
+from app.services import mention_identity, openrouter, query_mapper
 from app.services.keyword_analysis import KeywordClass, analyze_keyword, clinic_phrase
 from app.services.question_wellformed import question_is_wellformed
 
@@ -463,54 +463,56 @@ def classify_query_intent(query_text: str) -> str:
             return QUERY_INTENT_INFO
     return QUERY_INTENT_LOCAL
 
-# 자사·경쟁사 판정에 동일하게 들어가는 동일성 기준. 두 프롬프트가 서로 다른 기준을 쓰면
-# "우리 병원 vs 경쟁 병원" 비교가 사과와 오렌지가 된다 — 원장 보고서의 핵심 지표이므로
-# 문구를 한 곳에서 정의해 양쪽에 주입한다.
-_IDENTITY_RULE = """\
-띄어쓰기·의원/병원 접미사 차이처럼 동일 기관임이 명확한 표기 변형만 인정한다.
-흔한 앞글자 2~3자가 같거나 다른 지역의 동명 기관인 것만으로는 동일 병원으로 간주하지 않는다."""
-
 # 판정 3값 (PRD F3-7). 이진 판정은 "확정할 수 없음"을 표현할 자리가 없어
-# 경계 사례를 전부 true/false 중 하나로 접는다. 판정기는 애매하면 true로 기울고,
-# 그 편향이 그대로 언급률이 된다 — 그래서 "모르겠다"를 1급 결과로 둔다.
+# 경계 사례를 전부 true/false 중 하나로 접는다 — 그래서 "모르겠다"를 1급 결과로 둔다.
 VERDICT_MATCHED = "MATCHED"
 VERDICT_NOT_MATCHED = "NOT_MATCHED"
 VERDICT_AMBIGUOUS = "AMBIGUOUS"
 _VERDICTS = (VERDICT_MATCHED, VERDICT_NOT_MATCHED, VERDICT_AMBIGUOUS)
 
-PARSE_PROMPT = f"""\
-다음 AI 답변이 "{{hospital_name}}"(소재 지역: {{region}})을 언급했는지 판정하라.
-{_IDENTITY_RULE}
+# 자사·경쟁사 언급은 `mention_identity`의 규칙 대조(이름·위치 증거)가 판정한다(2026-11-09).
+# 옛 판정(이름 사전 필터 + gpt-4o-mini)은 실제 언급의 40~47%를 놓쳤다 — 정답표·검증 표본 비교는
+# `mention_identity` 모듈 설명을 본다. 모델은 규칙이 '아니다'라고 했는데 이름 조각이 있는 답변에만
+# 한 번 더 묻는 보조 판정(두 번째 눈)으로 쓴다. 보조 판정만 '언급'이라고 하면 확정하지 않고 보류
+# (AMBIGUOUS — 분모·분자 모두에서 빠진다)로 두고 경고를 남긴다 — 규칙이 모르는 새 표기를 찾는 신호다.
+SECOND_LOOK_PROMPT = """\
+아래 AI 답변이 [대상 병원]을 언급했는지 판정하라.
 
-판정값은 셋 중 하나다:
-- MATCHED: 답변에 이 병원을 가리키는 표현이 있고, 정식 명칭이거나 명확한 표기 변형이며,
-  지역 정보가 충돌하지 않는다.
-- NOT_MATCHED: 후보 표현이 없거나, 다른 기관임이 분명하다.
-- AMBIGUOUS: 동명 기관일 수 있거나, 타지역 기관일 수 있거나, 접미사를 뗀 흔한 표현만
-  등장하거나, 이름 일부만 나와 동일 기관인지 확정할 수 없다.
+[대상 병원]
+- 이름: {name}
+- 주소: {address}
+- 전화: {phone}
+- 지역: {region}
 
-진료과 이름·일반 형용사·흔한 접두어만 겹치는 것으로 MATCHED를 주지 마라.
-확신이 서지 않으면 추측하지 말고 반드시 AMBIGUOUS를 골라라.
-matched_text에는 답변에서 **그대로 잘라낸** 표현만 넣는다. 지어내지 마라.
+판정 규칙:
+1. 답변에 적힌 병원 이름이 대상 병원 이름과 같으면 같은 이름이다. 띄어쓰기, 의원·연합의원·병원 같은 접미사, 이름 앞에 붙은 지역명(예: "마포성모탑정형외과" ↔ "성모탑정형외과의원"), "연합"의 유무, 지점명의 위치, 영문·한글 표기(W ↔ 더블유)만 다른 것도 같은 이름이다.
+2. 더 긴 다른 병원 이름의 일부로만 겹치면 다른 병원이다(예: 대상 "노원탑365의원"에 대해 "모두탑365정형외과").
+3. 같은 이름이어도 답변이 그 병원을 대상 병원과 다른 시·군·구·동에 있다고 적었다면 다른 지점이다.
+4. 전화번호나 도로명 주소가 대상 병원과 일치하면 같은 병원이다(같은 건물의 다른 이름 병원은 제외).
+5. 지나가듯 이름만 나열해도("예: A, B 등") 언급이다.
+
+판정값:
+- MATCHED: 대상 병원이 언급됐다.
+- NOT_MATCHED: 언급되지 않았거나 다른 병원·다른 지점이다.
+- AMBIGUOUS: 이름은 같지만 같은 병원인지 판단할 근거가 정말로 없다.
+
+matched_text에는 답변에서 그대로 잘라낸 병원 이름만 넣는다. 지어내지 마라.
 
 [답변]
-{{response}}
+{answer}
 
 반드시 아래 JSON만 출력:
-{{{{"verdict": "MATCHED"/"NOT_MATCHED"/"AMBIGUOUS", "matched_text": "답변에서 인용한 표현 또는 null", "mention_rank": null 또는 정수, "sentiment": "positive"/"neutral"/"negative"/null, "mention_context": "언급 문장 또는 null"}}}}"""
+{{"verdict": "MATCHED"|"NOT_MATCHED"|"AMBIGUOUS", "matched_text": "답변 속 병원 이름 또는 null", "evidence": "판단 근거 문구 또는 null"}}"""
 
-COMPETITOR_PARSE_PROMPT = f"""\
-다음 AI 답변에서 아래 병원들이 각각 언급되었는지 분석하라.
-{_IDENTITY_RULE}
+# 측정 기준 지문에 들어가는 판정 정책 — 규칙 판과 보조 판정 문구가 바뀌면 지문이 바뀐다.
+JUDGE_POLICY_MATERIAL = f"{mention_identity.RESOLVER_VERSION}\n{SECOND_LOOK_PROMPT}"
+# 보조 판정은 생각하는 데 토큰을 쓰는 모델이라 출력 한도를 넉넉히 둔다 — 400으로는 응답이 잘렸다.
+SECOND_LOOK_MAX_TOKENS = 3000
 
-[분석 대상 병원 목록]
-{{competitor_names}}
 
-[답변]
-{{response}}
-
-반드시 아래 JSON 객체만 출력:
-{{{{"competitors": [{{{{"name": "병원명", "is_mentioned": true/false, "mention_rank": null 또는 정수}}}}]}}}}"""
+def judge_disclosure() -> str:
+    """리드 진단 보고서 등에 공개하는 판정 방식 한 줄."""
+    return f"이름·위치 대조 (보조 {settings.MENTION_SECOND_LOOK_MODEL})"
 
 
 def generate_query_matrix(
@@ -692,11 +694,12 @@ def measurement_protocol(
         # 같은 지시문도 전달 역할이 다르면 다른 측정이다.
         "prompt_delivery": PROMPT_DELIVERY,
         "prompt_fingerprint": _fingerprint(SYSTEM_PROMPT_SOV),
-        "judge_prompt_fingerprint": _fingerprint(PARSE_PROMPT),
-        # 판정 모델도 결과를 바꾼다. 답변 모델은 접수 시점 핀(requested_models)이
-        # 별도로 지키지만, 판정 모델은 실행 시점 전역값을 쓰므로 여기 없으면
-        # 모델 교체 배포 창에서 리포트가 공개한 판정 모델과 실제가 어긋난다.
-        "judge_model": settings.OPENAI_MODEL_PARSE,
+        # 판정 정책(규칙 대조 판 + 보조 판정 문구). 이름은 옛 키를 그대로 둔다 — 값이 바뀌므로
+        # 2026-11-09 이전 측정과는 같은 판정 기준으로 보지 않는다.
+        "judge_prompt_fingerprint": _fingerprint(JUDGE_POLICY_MATERIAL),
+        # 보조 판정 모델도 결과를 바꾼다(보류로 빠지는 답변). 실행 시점 전역값을 쓰므로 여기 없으면
+        # 모델 교체 배포 창에서 공개한 판정 조건과 실제가 어긋난다.
+        "judge_model": settings.MENTION_SECOND_LOOK_MODEL,
         # 질의 설계. 실행을 막지는 않지만(저장된 질의로 잴 수 있다) 기간 비교는 막는다.
         **query_mapper.query_design(),
     }
@@ -1181,38 +1184,6 @@ def _not_matched(verdict: str = VERDICT_NOT_MATCHED) -> dict:
     }
 
 
-def _corroborates(hospital_name: str, matched_text: str | None, response_text: str) -> bool:
-    """판정기가 MATCHED의 근거로 든 표현이 실제 언급 증거인가.
-
-    사전 필터는 접미사를 뗀 핵심의 substring 일치라 느슨하다 — "행복한의원"의 핵심
-    "행복한"은 "행복한 진료를 위해" 같은 평범한 문장에도 걸린다. 필터를 통과한 뒤
-    판정기가 그 조각을 근거로 MATCHED를 주면 오탐이 그대로 언급으로 계상된다.
-
-    승인 기준은 동일성 규칙(_IDENTITY_RULE)이 명시한 그대로다: 병원명 전체, 또는
-    **법적 접미사(의원/병원/클리닉)만 뗀 상호**. AI 답변은 "군자성모정형외과의원"을
-    "군자성모정형외과"로 부르는 게 보통이라, 전체 명칭만 요구하면 정상 언급이 대량으로
-    보류에 떨어진다 — 실측에서 플랫폼당 3~4건이 그렇게 빠져 하한 미달까지 갔다.
-
-    인용이 핵심(접두 상호)에도 못 미치는 조각이면 승인하지 않는다. 미언급으로
-    내리지도 않는다 — 둘 다 틀릴 수 있는 자리에서는 '확정 불가'가 사실이다.
-    """
-    quoted = _normalize_for_prefilter(matched_text or "")
-    if not quoted:
-        return False
-    # 지어낸 인용은 근거가 아니다.
-    if quoted not in _normalize_for_prefilter(response_text):
-        return False
-    normalized_name = _normalize_for_prefilter(hospital_name)
-    if normalized_name in quoted:
-        return True
-    # 접미사만 뗀 상호와의 **동등** 비교. 포함(in)으로 풀면 "행복한의원"의 핵심
-    # "행복한"이 "행복한 진료" 같은 인용에 다시 걸린다 — 판정 프롬프트가 인용을
-    # "언급 표현 그대로"로 요구하므로, 약칭 언급이면 인용 자체가 핵심과 일치한다.
-    # 핵심이 3글자 미만이면 접미사 포함 전체를 요구한다 (prefilter_key와 같은 하한).
-    core = re.sub(r"(의원|병원|클리닉)$", "", normalized_name)
-    return len(core) >= 3 and quoted == core
-
-
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(min=1, max=5),
@@ -1224,21 +1195,26 @@ async def _request_judge_completion(
     messages: list[dict[str, str]],
     max_tokens: int,
     logical_call_id: str,
+    model: str | None = None,
 ) -> Any:
     """Issue one explicitly retried judge request and meter every HTTP attempt."""
+    judge_model = model or settings.MENTION_SECOND_LOOK_MODEL
+    kwargs: dict[str, Any] = {
+        "model": judge_model,
+        "messages": messages,
+        "temperature": 0,
+        "max_tokens": max_tokens,
+    }
+    # Anthropic 모델은 OpenRouter의 json_object 형식 강제를 받지 않는다 — 응답에서 JSON을 꺼내 읽는다.
+    if not judge_model.startswith("anthropic/"):
+        kwargs["response_format"] = {"type": "json_object"}
     await _begin_provider_http_attempt()
     try:
-        result = await openai_client.chat.completions.create(
-            model=settings.OPENAI_MODEL_PARSE,
-            messages=messages,
-            temperature=0,
-            max_tokens=max_tokens,
-            response_format={"type": "json_object"},
-        )
+        result = await openai_client.chat.completions.create(**kwargs)
     except Exception:
         await _record_provider_attempt(
             provider="openrouter",
-            model=settings.OPENAI_MODEL_PARSE,
+            model=judge_model,
             logical_call_id=logical_call_id,
         )
         raise
@@ -1247,7 +1223,7 @@ async def _request_judge_completion(
     output_tokens = _field(usage, "completion_tokens")
     await _record_provider_attempt(
         provider="openrouter",
-        model=_field(result, "model") or settings.OPENAI_MODEL_PARSE,
+        model=_field(result, "model") or judge_model,
         logical_call_id=logical_call_id,
         response=result,
         usage=usage,
@@ -1257,151 +1233,140 @@ async def _request_judge_completion(
     return result
 
 
-async def _parse_mention(hospital_name: str, response_text: str, region: str = "") -> dict:
-    if not response_text.strip():
-        return _not_matched()
-    # 빠른 사전 필터 — 경쟁사 판정과 동일한 키를 쓴다(prefilter_key).
-    normalized_response = _normalize_for_prefilter(response_text)
-    prefilter_name = prefilter_key(hospital_name)
-    if prefilter_name and prefilter_name not in normalized_response:
-        logger.debug("prefilter skip (mention): hospital=%s", hospital_name)
-        return _not_matched()
-
-    result = await _request_judge_completion(
-        messages=[
-            {
-                "role": "user",
-                "content": PARSE_PROMPT.format(
-                    response=response_text[:3000],
-                    hospital_name=hospital_name,
-                    region=region or "미상",
-                ),
-            }
-        ],
-        max_tokens=300,
-        logical_call_id="judgment:self",
+def mention_identity_for(
+    hospital_name: str,
+    region: str = "",
+    identity: mention_identity.MentionIdentity | None = None,
+) -> mention_identity.MentionIdentity:
+    """판정에 쓸 병원 신원. 주소·전화를 모르는 호출(리드 진단 등)은 이름과 지역어만으로 대조한다."""
+    if identity is not None:
+        return identity
+    return mention_identity.MentionIdentity.build(
+        hospital_name, region_terms=[region] if region else []
     )
+
+
+def _context_excerpt(context: str | None) -> str | None:
+    if not context:
+        return None
+    text = " ".join(context.split())
+    return text[:400]
+
+
+def _second_look_payload(raw: str) -> dict[str, Any]:
+    match = re.search(r"\{.*\}", raw or "", re.S)
+    if match is None:
+        raise ValueError("mention_parse_failed")
     try:
-        parsed = json.loads(result.choices[0].message.content or "{}")
+        parsed = json.loads(match.group(0))
     except (json.JSONDecodeError, TypeError):
         raise ValueError("mention_parse_failed") from None
-    if not isinstance(parsed, dict):
-        raise ValueError("mention_parse_failed")
-
-    verdict = parsed.get("verdict")
-    if not isinstance(verdict, str) or verdict not in _VERDICTS:
+    if not isinstance(parsed, dict) or parsed.get("verdict") not in _VERDICTS:
         raise ValueError("mention_parse_failed")
     matched_text = parsed.get("matched_text")
-    mention_context = parsed.get("mention_context")
-    mention_rank = parsed.get("mention_rank")
-    sentiment = parsed.get("sentiment")
-    if (
-        (matched_text is not None and not isinstance(matched_text, str))
-        or (mention_context is not None and not isinstance(mention_context, str))
-        or (
-            mention_rank is not None
-            and (
-                isinstance(mention_rank, bool)
-                or not isinstance(mention_rank, int)
-                or mention_rank <= 0
-            )
-        )
-        or (
-            sentiment is not None
-            and (
-                not isinstance(sentiment, str)
-                or sentiment not in {"positive", "neutral", "negative"}
-            )
-        )
+    evidence = parsed.get("evidence")
+    if (matched_text is not None and not isinstance(matched_text, str)) or (
+        evidence is not None and not isinstance(evidence, str)
     ):
         raise ValueError("mention_parse_failed")
-
-    if verdict == VERDICT_MATCHED and not _corroborates(
-        hospital_name, matched_text, response_text
-    ):
-        # 판정기가 근거를 대지 못한 MATCHED는 승격시키지 않는다. 미언급으로도
-        # 내리지 않는다 — 둘 다 틀릴 수 있는 자리에서는 '확정 불가'가 사실이다.
-        logger.debug(
-            "mention verdict downgraded to AMBIGUOUS: hospital=%s quote=%r",
-            hospital_name,
-            matched_text,
-        )
-        verdict = VERDICT_AMBIGUOUS
-
-    return {
-        "verdict": verdict,
-        # AMBIGUOUS는 참도 거짓도 아니다. None으로 두어 집계가 분모·분자 양쪽에서
-        # 빼도록 강제한다 — False로 접으면 조용히 하향 편향이 된다.
-        "is_mentioned": (
-            True if verdict == VERDICT_MATCHED
-            else (False if verdict == VERDICT_NOT_MATCHED else None)
-        ),
-        "matched_text": matched_text,
-        "mention_rank": mention_rank,
-        "sentiment": sentiment,
-        "mention_context": mention_context,
-    }
+    return parsed
 
 
-async def _parse_competitors(competitors: list[str], response_text: str) -> list[dict]:
-    if not competitors or not response_text.strip():
-        return []
-    # 빠른 사전 필터 — 자사 판정과 **동일한** 키를 쓴다(prefilter_key).
-    # 과거에는 앞 2글자만 맞으면 통과시켜 경쟁사 언급이 구조적으로 부풀려졌다.
-    normalized_response = _normalize_for_prefilter(response_text)
-    if not any(
-        (key := prefilter_key(c)) and key in normalized_response for c in competitors
-    ):
-        logger.debug("prefilter skip (competitors): count=%d", len(competitors))
-        return [{"name": c, "is_mentioned": False, "mention_rank": None} for c in competitors]
-
+async def _second_look(
+    identity: mention_identity.MentionIdentity, response_text: str
+) -> dict[str, Any]:
     result = await _request_judge_completion(
         messages=[
             {
                 "role": "user",
-                "content": COMPETITOR_PARSE_PROMPT.format(
-                    response=response_text[:3000],
-                    competitor_names="\n".join(f"- {c}" for c in competitors),
+                "content": SECOND_LOOK_PROMPT.format(
+                    name=identity.name,
+                    address=identity.address or "모름",
+                    phone=identity.phone or "모름",
+                    region=", ".join(identity.region_terms) or "모름",
+                    answer=response_text,
                 ),
             }
         ],
-        max_tokens=500,
-        logical_call_id="judgment:competitors",
+        max_tokens=SECOND_LOOK_MAX_TOKENS,
+        logical_call_id="judgment:self",
+        model=settings.MENTION_SECOND_LOOK_MODEL,
     )
-    # 판정기 장애를 "미언급"으로 삼키지 않는다. 자사 판정(_parse_mention)은 파싱 실패 시
-    # ValueError를 던져 측정이 FAILED로 분모에서 빠지는데, 경쟁사만 조용히 전부 False를
-    # 돌려주면 **같은 장애가 자사는 분모 제외, 경쟁사는 미언급으로 집계**된다. 방향이
-    # 한쪽으로 몰린 편향이므로 자사와 동일하게 실패로 올린다.
-    #
-    # 사전 필터에서 걸러 all-false를 돌려주는 경로(위)는 실패가 아니라 판정 결과다.
-    try:
-        parsed = json.loads(result.choices[0].message.content or "{}")
-    except (json.JSONDecodeError, TypeError):
-        raise ValueError("competitor_parse_failed") from None
-    if isinstance(parsed, dict) and "competitors" in parsed:
-        parsed = parsed["competitors"]
-    if not isinstance(parsed, list):
-        raise ValueError("competitor_parse_failed")
-    for item in parsed:
-        if not isinstance(item, dict):
-            raise ValueError("competitor_parse_failed")
-        name = item.get("name")
-        mention_rank = item.get("mention_rank")
-        if (
-            not isinstance(name, str)
-            or not name.strip()
-            or not isinstance(item.get("is_mentioned"), bool)
-            or (
-                mention_rank is not None
-                and (
-                    isinstance(mention_rank, bool)
-                    or not isinstance(mention_rank, int)
-                    or mention_rank <= 0
-                )
-            )
-        ):
-            raise ValueError("competitor_parse_failed")
-    return parsed
+    return _second_look_payload(result.choices[0].message.content or "")
+
+
+async def _parse_mention(
+    hospital_name: str,
+    response_text: str,
+    region: str = "",
+    identity: mention_identity.MentionIdentity | None = None,
+) -> dict:
+    """자사 언급 판정 — 규칙 대조가 정하고, 규칙이 놓쳤을 수 있는 답변만 보조 판정에 묻는다."""
+    if not response_text.strip():
+        return _not_matched()
+    target = mention_identity_for(hospital_name, region, identity)
+    resolution = mention_identity.resolve(target, response_text)
+    if resolution.matched:
+        return {
+            "verdict": VERDICT_MATCHED,
+            "is_mentioned": True,
+            "matched_text": resolution.matched_text,
+            "mention_rank": resolution.rank,
+            "sentiment": None,
+            "mention_context": _context_excerpt(resolution.context),
+        }
+    if not mention_identity.needs_second_look(target, response_text, resolution):
+        return _not_matched()
+    second = await _second_look(target, response_text)
+    if second["verdict"] != VERDICT_NOT_MATCHED:
+        # 규칙은 아니라고 했는데 보조 판정이 언급(또는 판단 불가)이라고 한다 — 확정하지 않고 보류로 둔다.
+        # 인용이 없거나 답변에 없는 인용이어도 '미언급'으로 확정하지 않는다(분모에 넣지 않는다).
+        # 쌓이면 규칙에 새 표기를 더한다(경고 로그가 그 목록이다).
+        quoted = mention_identity.normalize(second.get("matched_text"))
+        logger.warning(
+            "mention second look disagrees with resolver: hospital=%s status=%s verdict=%s quote=%r verified=%s",
+            target.name,
+            resolution.status,
+            second["verdict"],
+            second.get("matched_text"),
+            bool(quoted) and quoted in mention_identity.normalize(response_text),
+        )
+        return {
+            "verdict": VERDICT_AMBIGUOUS,
+            "is_mentioned": None,
+            "matched_text": second.get("matched_text"),
+            "mention_rank": None,
+            "sentiment": None,
+            "mention_context": _context_excerpt(second.get("evidence")),
+        }
+    return _not_matched()
+
+
+async def _parse_competitors(
+    competitors: list[str],
+    response_text: str,
+    home_identity: mention_identity.MentionIdentity | None = None,
+) -> list[dict]:
+    """경쟁 병원 언급 — 자사와 **같은 규칙 대조**로 정한다(모델 호출 없음).
+
+    경쟁 병원은 이름만 안다. 생활권은 우리 병원과 같다고 보고(같은 지역 경쟁), 다른 시·군·구로 적힌
+    같은 이름은 다른 지점으로 뺀다. 자사만 넓게 잡고 경쟁사를 좁게 잡으면 '우리 vs 경쟁 병원' 비교가
+    기운다 — 그래서 한 규칙을 쓴다.
+    """
+    if not competitors or not response_text.strip():
+        return []
+    home = home_identity or mention_identity.MentionIdentity.build("")
+    out: list[dict] = []
+    for name in competitors:
+        resolution = mention_identity.resolve(home.for_competitor(name), response_text)
+        out.append(
+            {
+                "name": name,
+                "is_mentioned": resolution.matched,
+                "mention_rank": resolution.rank if resolution.matched else None,
+            }
+        )
+    return out
 
 
 async def run_single_query(
@@ -1464,9 +1429,12 @@ async def run_single_query(
                     "failure_reason": "empty_raw_response",
                 }
             try:
-                parsed = await _parse_mention(hospital_name, raw, region)
+                home = mention_identity_for(hospital_name, region)
+                parsed = await _parse_mention(hospital_name, raw, region, identity=home)
                 comp_mentions = (
-                    await _parse_competitors(competitors or [], raw) if competitors else []
+                    await _parse_competitors(competitors or [], raw, home)
+                    if competitors
+                    else []
                 )
                 return {
                     **parsed,
@@ -1619,7 +1587,12 @@ async def fetch_answer(
     }
 
 
-async def judge_mention(hospital_name: str, response_text: str, region: str = "") -> dict:
+async def judge_mention(
+    hospital_name: str,
+    response_text: str,
+    region: str = "",
+    identity: mention_identity.MentionIdentity | None = None,
+) -> dict:
     """이 답변이 그 병원을 언급했는가.
 
     캐시된 답변에도 **반드시 다시 실행한다** — 답변은 병원과 무관하지만 판정은 아니다.
@@ -1627,7 +1600,7 @@ async def judge_mention(hospital_name: str, response_text: str, region: str = ""
     `region`은 동명 기관을 가르는 유일한 단서다. 넘기지 않으면 판정기는 "서울내과"가
     이 병원인지 다른 동네 같은 이름인지 알 방법이 없고, 그 불확실성이 MATCHED로 접힌다.
     """
-    return await _parse_mention(hospital_name, response_text, region)
+    return await _parse_mention(hospital_name, response_text, region, identity=identity)
 
 
 def answer_hash(response_text: str) -> str:
@@ -1643,10 +1616,11 @@ def judgment_input_fingerprint(
     region: str = "",
     competitors: list[str] | tuple[str, ...] | None = None,
     policy: dict[str, Any] | None = None,
+    identity: mention_identity.MentionIdentity | None = None,
 ) -> str:
     """Bind judgment reuse to every input that can change the verdict."""
     active_policy = policy or measurement_protocol()
-    material = {
+    material: dict[str, Any] = {
         "hospital_identity": str(hospital_identity),
         "hospital_name": " ".join((hospital_name or "").split()),
         "region": " ".join((region or "").split()),
@@ -1655,6 +1629,10 @@ def judgment_input_fingerprint(
         "judge_model": active_policy.get("judge_model"),
         "judge_prompt_fingerprint": active_policy.get("judge_prompt_fingerprint"),
     }
+    # 주소·전화·지역어도 규칙 대조의 입력이다. 넘긴 호출(정기 측정)만 지문에 넣어, 신원을 모르는
+    # 옛 호출(리드 진단 등)의 지문은 그대로 둔다.
+    if identity is not None:
+        material["identity"] = identity.material()
     encoded = json.dumps(material, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode()).hexdigest()
 
@@ -1663,24 +1641,33 @@ def _judgment_provider_call_plan(
     hospital_name: str,
     response_text: str,
     competitors: list[str] | tuple[str, ...] | None = None,
+    identity: mention_identity.MentionIdentity | None = None,
+    region: str = "",
 ) -> tuple[bool, bool]:
-    normalized = _normalize_for_prefilter(response_text)
-    own_key = prefilter_key(hospital_name)
-    own_call = bool(own_key and own_key in normalized)
-    competitor_call = bool(
-        competitors
-        and any((key := prefilter_key(name)) and key in normalized for name in competitors)
-    )
-    return own_call, competitor_call
+    """(자사 보조 판정 호출 여부, 경쟁사 호출 여부). 경쟁사는 규칙 대조만 쓰므로 언제나 False.
+
+    실제 판정(`_parse_mention`)과 **같은 신원·같은 지역어**로 계산해야 예약 수가 실제 호출 수와 같다.
+    """
+    if not (response_text or "").strip():
+        return False, False
+    target = mention_identity_for(hospital_name, region, identity)
+    resolution = mention_identity.resolve(target, response_text)
+    return mention_identity.needs_second_look(target, response_text, resolution), False
 
 
 def estimate_judgment_provider_calls(
     hospital_name: str,
     response_text: str,
     competitors: list[str] | tuple[str, ...] | None = None,
+    identity: mention_identity.MentionIdentity | None = None,
+    region: str = "",
 ) -> int:
     """Exact pre-call reservation units for the self and competitor judgment batches."""
-    return sum(_judgment_provider_call_plan(hospital_name, response_text, competitors))
+    return sum(
+        _judgment_provider_call_plan(
+            hospital_name, response_text, competitors, identity, region
+        )
+    )
 
 
 async def judge_answer(
@@ -1698,6 +1685,7 @@ async def judge_answer(
     item_id: str | None = None,
     attempt_id: str | None = None,
     policy: dict[str, Any] | None = None,
+    identity: mention_identity.MentionIdentity | None = None,
 ) -> dict[str, Any]:
     """Judge one saved answer without buying another answer.
 
@@ -1712,6 +1700,7 @@ async def judge_answer(
         region=region,
         competitors=competitors,
         policy=policy,
+        identity=identity,
     )
     with provider_execution_context(
         pool=pool,
@@ -1724,7 +1713,10 @@ async def judge_answer(
     ):
         async with _get_semaphore(f"{pool}:openai-judge"):
             try:
-                parsed = await _parse_mention(hospital_name, response_text, region)
+                target = mention_identity_for(hospital_name, region, identity)
+                parsed = await _parse_mention(
+                    hospital_name, response_text, region, identity=target
+                )
             except SoftTimeLimitExceeded:
                 raise
             except Exception as exc:  # noqa: BLE001 - preserve answer and retry judgment only.
@@ -1737,7 +1729,9 @@ async def judge_answer(
                 }
             try:
                 competitor_mentions = (
-                    await _parse_competitors(competitors, response_text) if competitors else []
+                    await _parse_competitors(competitors, response_text, target)
+                    if competitors
+                    else []
                 )
             except SoftTimeLimitExceeded:
                 raise

@@ -287,7 +287,8 @@ def test_judgment_retry_reuses_answer_and_settles_each_stage(pg_engine, monkeypa
             fetches.append((query_text, platform, kwargs["attempt_id"]))
             return {
                 "measurement_status": "SUCCESS",
-                "raw_response": f"{hospital.name}을 추천합니다.",
+                # 이름 조각만 있는 답변 — 규칙 대조가 확정하지 못해 판정 단계마다 보조 판정 1회를 예약한다.
+                "raw_response": "판정재개 진료가 가능한 곳을 안내합니다.",
                 "answer_model": "answer-test",
                 "measurement_method": "TEST",
                 "search_calls": 1,
@@ -623,6 +624,9 @@ def test_late_provider_answer_settles_but_is_never_checkpointed(pg_engine, monke
             _cleanup_hospital(db, hospital_id)
 
 
+LATE_JUDGMENT_ANSWER = "마감교차 진료가 가능한 곳을 안내합니다."
+
+
 def test_late_judgment_return_settles_but_writes_no_verdict(pg_engine, monkeypatch):
     """Case B: 판정 호출이 마감을 넘겨 돌아오면 예약은 정산하고 verdict·레코드는 안 쓴다."""
     suffix = uuid.uuid4().hex[:12]
@@ -633,7 +637,8 @@ def test_late_judgment_return_settles_but_writes_no_verdict(pg_engine, monkeypat
     async def fetch_answer(query_text, platform, **kwargs):
         return {
             "measurement_status": "SUCCESS",
-            "raw_response": f"{hospital.name}을 추천합니다.",
+            # 이름 조각만 있는 답변 — 규칙 대조가 확정하지 못해 보조 판정 1회를 예약한다.
+            "raw_response": LATE_JUDGMENT_ANSWER,
             "answer_model": "answer-test",
             "measurement_method": "TEST",
             "source_urls": [],
@@ -695,7 +700,7 @@ def test_late_judgment_return_settles_but_writes_no_verdict(pg_engine, monkeypat
         assert settlements[-1][1] == 1
         with Session(pg_engine) as db:
             fresh = db.get(MeasurementObservationSlot, slot_id)
-            assert fresh.raw_response == f"{hospital.name}을 추천합니다."  # 산 답변은 그대로다.
+            assert fresh.raw_response == LATE_JUDGMENT_ANSWER  # 산 답변은 그대로다.
             assert fresh.judgment_status != "CONFIRMED"
             # 늦은 판정은 새 레코드·verdict를 쓰지 않는다 — 첫 호출의 실패 기록만 남는다.
             assert (

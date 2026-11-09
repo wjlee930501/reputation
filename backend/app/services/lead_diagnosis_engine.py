@@ -274,6 +274,7 @@ async def _judge_one(diagnosis: LeadDiagnosis, measurement: _Measurement) -> _Me
     provider_calls = sov_engine.estimate_judgment_provider_calls(
         diagnosis.subject_hospital_name,
         measurement.raw_response,
+        region=diagnosis.subject_region or "",
     )
     try:
         with sov_engine.provider_execution_context(
@@ -667,6 +668,7 @@ async def run_diagnosis_measurements(db: AsyncSession, diagnosis: LeadDiagnosis)
         sov_engine.estimate_judgment_provider_calls(
             diagnosis.subject_hospital_name,
             measurement.raw_response,
+            region=diagnosis.subject_region or "",
         )
         for measurement in planned
         if measurement.raw_response and not measurement.judgment_reused

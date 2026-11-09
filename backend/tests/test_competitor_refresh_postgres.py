@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import uuid
 from datetime import date, datetime, timedelta, timezone
-from types import SimpleNamespace
 
 import arrow
 import pytest
@@ -236,30 +235,24 @@ def test_rejudge_merges_only_missing_names_and_is_idempotent(pg_session, quiet_r
     assert third.pending_records == 0 and len(budget["reserve"]) == 2
 
 
-def test_rejudge_uses_the_measurement_judgment_and_its_prefilter(pg_session, quiet_renders, budget, monkeypatch):  # noqa: F811 - pytest fixture
-    """기본 판정기는 측정과 같은 `_parse_competitors`다 — 이름이 원문에 없는 기록은 호출 없이 미언급, 있으면 1회 호출."""
+def test_rejudge_uses_the_measurement_resolver_without_provider_calls(pg_session, quiet_renders, budget, monkeypatch):  # noqa: F811 - pytest fixture
+    """기본 판정기는 측정과 같은 `_parse_competitors`(규칙 대조)다 — 공급자를 부르지 않는다."""
     hospital, records, _first = _first_version(pg_session)
     _register(pg_session, hospital, [RIVAL])
-    created: list[dict] = []
 
-    class _Completions:
-        async def create(self, **kwargs):
-            created.append(kwargs)
-            content = f'{{"competitors": [{{"name": "{RIVAL}", "is_mentioned": true, "mention_rank": 2}}]}}'
-            return SimpleNamespace(
-                choices=[SimpleNamespace(message=SimpleNamespace(content=content))],
-                usage=SimpleNamespace(prompt_tokens=10, completion_tokens=5), model="judge", id="r1",
-            )
+    class _Unexpected:
+        async def create(self, **_kwargs):
+            raise AssertionError("경쟁 병원 재판정은 공급자를 부르지 않는다")
 
-    monkeypatch.setattr(sov_engine.openai_client.chat, "completions", _Completions())
+    monkeypatch.setattr(sov_engine.openai_client.chat, "completions", _Unexpected())
 
     outcome = cr.execute_rejudge(pg_session, hospital, 2026, 7, run_id=uuid.uuid4())
 
-    assert len(created) == 1 and RIVAL in created[0]["messages"][0]["content"]
-    assert (outcome.judged_records, outcome.unresolved_records, outcome.provider_calls) == (2, 0, 1)
-    assert budget["settle"][0][1] == 1
+    assert (outcome.judged_records, outcome.unresolved_records, outcome.provider_calls) == (2, 0, 0)
+    assert budget["settle"][0][1] == 0
     pg_session.expire_all()
-    assert pg_session.get(SovRecord, records[0].id).competitor_mentions[0]["mention_rank"] == 2
+    mentioned = pg_session.get(SovRecord, records[0].id).competitor_mentions[0]
+    assert mentioned["is_mentioned"] is True and mentioned["mention_rank"] == 1
     assert pg_session.get(SovRecord, records[1].id).competitor_mentions[0]["is_mentioned"] is False
 
 

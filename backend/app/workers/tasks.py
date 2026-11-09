@@ -78,6 +78,7 @@ from app.models.sov import (
 from app.services import (
     cost_guard,
     indexnow,
+    mention_identity,
     notifier,
     openrouter_key_limit,
     operation_run_payloads,
@@ -523,6 +524,9 @@ from app.services.sov_tracking_set import (
     tracking_set_members,
 )
 from app.services.v0_claim import v0_claim_is_alive_sync
+from app.services.v0_measurement_snapshot import (
+    judgment_identity as _judgment_identity,  # 정기 측정·V0가 같은 판정 신원 규칙을 쓴다
+)
 from app.services.v0_measurement_snapshot import (
     local_v0_query_texts as _local_v0_query_texts,  # noqa: F401 -- stable legacy worker import
 )
@@ -5324,6 +5328,9 @@ def trigger_v0_report(self, hospital_id: str, failure_retry_count: int = 0):
                             hospital=hospital,
                             hospital_name=judgment_context["hospital_name"],
                             region=judgment_context["region"],
+                            identity=mention_identity.MentionIdentity.from_material(
+                                judgment_context.get("identity")
+                            ),
                             query_text=q.query_text,
                             competitors=competitors,
                             protocol=protocol,
@@ -9202,6 +9209,7 @@ def run_sov_for_hospital(
                     frozen_specs,
                     gemini_configured=bool(settings.OPENROUTER_API_KEY),
                     measurement_protocol_kwargs=protocol_kwargs,
+                    judgment_identity=_judgment_identity(hospital, hospital.name, None).material(),
                 )
             except ManifestPolicyDrift as exc:
                 logger.warning(
@@ -9331,6 +9339,7 @@ def run_sov_for_hospital(
             if slotted_execution and not isinstance(run_protocol, dict):
                 raise RuntimeError("measurement run protocol is missing")
             slots_by_cell: dict[uuid.UUID, list[MeasurementObservationSlot]] = {}
+            manifest_identity = _frozen_manifest_identity(manifest, hospital)
             if slotted_execution:
                 for spec in measurement_specs:
                     slots_by_cell[spec["manifest_cell"].id] = ensure_monthly_slots(
@@ -9476,6 +9485,7 @@ def run_sov_for_hospital(
                             db,
                             slot=slot,
                             hospital=hospital,
+                            identity=manifest_identity,
                             query_text=spec["query_text"],
                             competitors=competitors,
                             protocol=run_protocol,
@@ -10418,6 +10428,21 @@ def _result_from_sov_record(record: SovRecord) -> dict[str, Any]:
     }
 
 
+def _frozen_manifest_identity(
+    manifest: MonthlyMeasurementManifest, hospital: Hospital
+) -> mention_identity.MentionIdentity:
+    """그 달 측정표를 만들 때 고정한 판정 신원. 고정 이전에 만든 측정표는 지금 병원 정보로 판정한다.
+
+    측정표는 만든 뒤 고칠 수 없다(DB 트리거) — 신원은 `freeze_dispatch_manifest`가 만들 때 남긴다.
+    """
+    stored = getattr(manifest, "platform_provenance", None)
+    if isinstance(stored, dict):
+        frozen = mention_identity.MentionIdentity.from_material(stored.get("judgment_identity"))
+        if frozen is not None:
+            return frozen
+    return _judgment_identity(hospital, hospital.name, None)
+
+
 def _execute_paid_observation_slot(
     db,
     *,
@@ -10432,6 +10457,7 @@ def _execute_paid_observation_slot(
     variant_id: uuid.UUID | None = None,
     monthly_cell=None,
     deadline: datetime | None = None,
+    identity: mention_identity.MentionIdentity | None = None,
 ) -> dict[str, Any]:
     """Resume exactly one paid answer/judgment slot and checkpoint each stage.
 
@@ -10439,8 +10465,19 @@ def _execute_paid_observation_slot(
     it, a late answer must not trigger a judgment call, and a discarded late
     response still settles its already-issued reservation normally.
     """
-    judgment_hospital_name = hospital_name or hospital.name
-    judgment_region = region if region is not None else (hospital.region or [""])[0]
+    if identity is not None:
+        # 고정한 신원이 있으면 이름·대표 지역어도 거기서 읽는다 — 이어 돌 때 지금 병원 정보가 바뀌어도
+        # 끝난 슬롯의 판정 지문이 그대로 맞는다.
+        judgment_hospital_name = hospital_name or identity.name
+        judgment_region = (
+            region if region is not None else (identity.region_terms[0] if identity.region_terms else "")
+        )
+    else:
+        judgment_hospital_name = hospital_name or hospital.name
+        judgment_region = region if region is not None else (hospital.region or [""])[0]
+    judgment_identity = identity or _judgment_identity(
+        hospital, judgment_hospital_name, judgment_region
+    )
     if slot_needs_answer(slot):
         claim = claim_slot_stage(db, slot.id, stage="ANSWER", deadline=deadline)
         if claim is None:
@@ -10547,9 +10584,22 @@ def _execute_paid_observation_slot(
         region=judgment_region,
         competitors=competitors,
         policy=protocol,
+        identity=judgment_identity,
     )
     if slot_is_terminal(slot):
-        if slot.judgment_input_fingerprint != fingerprint:
+        if slot.judgment_input_fingerprint != fingerprint and (
+            slot.judgment_input_fingerprint
+            != judgment_input_fingerprint(
+                hospital_identity=str(hospital.id),
+                hospital_name=judgment_hospital_name,
+                response_text=slot.raw_response or "",
+                region=judgment_region,
+                competitors=competitors,
+                policy=protocol,
+            )
+        ):
+            # 2026-11-09 이전에 끝난 슬롯은 병원 신원(주소·전화·지역어) 없이 지문을 만들었다 — 그 지문도
+            # 같은 입력으로 본다. 끝난 슬롯은 다시 판정하지 않고 저장된 결과만 읽는다.
             raise RuntimeError("measurement slot judgment input changed")
         record = db.get(SovRecord, slot.sov_record_id) if slot.sov_record_id else None
         if record is None:
@@ -10566,6 +10616,7 @@ def _execute_paid_observation_slot(
         judgment_hospital_name,
         slot.raw_response or "",
         competitors=competitors,
+        identity=judgment_identity,
     )
     claim = claim_slot_stage(db, slot.id, stage="JUDGMENT", deadline=deadline)
     if claim is None:
@@ -10631,6 +10682,7 @@ def _execute_paid_observation_slot(
                     item_id=str(slot.id),
                     attempt_id=str(judgment_attempt),
                     policy=protocol,
+                    identity=judgment_identity,
                 )
             )
         except SoftTimeLimitExceeded:

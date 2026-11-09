@@ -200,9 +200,10 @@ class TestCallBudget:
         diagnosis = await _seed_diagnosis(pg_async_session)
         await lead_diagnosis_engine.run_diagnosis_measurements(pg_async_session, diagnosis)
 
-        # 답변과 병원별 판정을 각각 checkpoint 경계에서 예약한다.
-        assert guard.reservations == [("leadgen", 18), ("leadgen", 18)]
-        assert guard.leadgen_count == 36
+        # 답변과 병원별 판정을 각각 checkpoint 경계에서 예약한다. 이름이 그대로 적힌 답변은
+        # 규칙 대조가 확정하므로 판정 예약은 0이다(보조 판정이 필요한 답변만 센다).
+        assert guard.reservations == [("leadgen", 18), ("leadgen", 0)]
+        assert guard.leadgen_count == 18
 
     async def test_cache_hits_are_not_charged(self, pg_async_session, spy, monkeypatch):
         """캐시에서 온 답변은 돈을 쓰지 않는다 — 예산에도 그렇게 반영돼야 한다.
@@ -376,6 +377,8 @@ class TestCallBudget:
 
         monkeypatch.setattr(cost_guard, "reserve", allow_answer_then_block_judgment)
         monkeypatch.setattr(sov_engine, "judge_mention", judge)
+        # 같은 이름이 다른 지역으로 적힌 답변 — 규칙 대조가 확정하지 못해 보조 판정 예산이 필요하다.
+        spy.text = "부산 해운대구의 장편한외과의원이 있습니다."
         monkeypatch.setattr(lead_diagnosis_engine, "open_ops_incident", _noop_alert)
         monkeypatch.setattr(lead_diagnosis_engine, "recover_ops_incident", _noop_alert)
         diagnosis = await _seed_diagnosis(pg_async_session)

@@ -467,7 +467,7 @@ async def create_diagnosis(
         requested_models={
             "openai": settings.OPENAI_MODEL_QUERY,
             "gemini": settings.GEMINI_MODEL,
-            "judge": settings.OPENAI_MODEL_PARSE,
+            "judge": sov_engine.judge_disclosure(),
         },
         # 접수 시점의 측정 조건을 고정한다 — 리포트가 공개하는 지시문은 이 스냅샷이지
         # 렌더 시점의 전역 상수가 아니다.

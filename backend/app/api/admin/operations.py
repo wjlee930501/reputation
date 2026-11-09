@@ -1191,6 +1191,17 @@ async def request_competitor_refresh(
                 "message": "이 달의 보고서가 아직 없습니다. 먼저 보고서를 만든 뒤 경쟁 병원을 반영해 주세요.",
             },
         )
+    if plan.records_total and not plan.judge_policy_current:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "JUDGE_POLICY_CHANGED",
+                "message": (
+                    "이 달은 이전 언급 판정 방식으로 측정해 경쟁 병원만 따로 반영할 수 없습니다. "
+                    "새 판정 방식으로 측정한 달부터 경쟁 병원 반영을 쓸 수 있습니다."
+                ),
+            },
+        )
     if plan.records_total == 0:
         raise HTTPException(
             status_code=409,
