@@ -314,9 +314,9 @@ def execute(db, hospital: Hospital, year: int, month: int, *, now: datetime | No
             hospital_id=hospital.id,
             operation_type=OPERATION_TYPE,
             state="SUCCEEDED",
-            idempotency_key=(
-                f"{OPERATION_TYPE}:{plan.manifest_id}:{policy['judge_prompt_fingerprint']}:{policy['judge_model']}"
-            ),
+            # 실행마다 고유한 키 — 같은 달을 겹쳐 고치는 것은 측정표 advisory lock과 already_current가 막는다.
+            # 판정 정책을 A → B → A로 되돌려도 다시 판정할 수 있어야 한다(정책만 넣은 키는 영구 충돌한다).
+            idempotency_key=f"{OPERATION_TYPE}:{plan.manifest_id}:{uuid.uuid4().hex}",
             total_count=plan.confirmed_records,
             success_count=len(plan.changes),
             skipped_count=0,

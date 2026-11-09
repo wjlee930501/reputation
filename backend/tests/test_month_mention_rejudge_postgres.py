@@ -156,13 +156,22 @@ def test_duplicate_and_unregistered_competitor_entries_are_rejudged(pg_session, 
     ]
 
 
-def test_idempotency_key_carries_the_whole_judge_policy(pg_session, monkeypatch):  # noqa: F811
-    hospital, _manifest, _missed, _ambiguous = _seed(pg_session, monkeypatch)
+def test_rejudge_can_return_to_a_previous_judge_policy(pg_session, monkeypatch):  # noqa: F811
+    hospital, manifest, _missed, _ambiguous = _seed(pg_session, monkeypatch)
+    month_mention_rejudge.execute(pg_session, hospital, 2026, 10)
+    pg_session.flush()
+    original = month_mention_rejudge.current_judge_policy()
+    other = {**original, "judge_model": "anthropic/other-model"}
+
+    monkeypatch.setattr(month_mention_rejudge, "current_judge_policy", lambda: other)
+    month_mention_rejudge.execute(pg_session, hospital, 2026, 10)
+    pg_session.flush()
+    monkeypatch.setattr(month_mention_rejudge, "current_judge_policy", lambda: original)
     month_mention_rejudge.execute(pg_session, hospital, 2026, 10)
     pg_session.flush()
 
-    run = pg_session.execute(
+    runs = pg_session.execute(
         select(OperationRun).where(OperationRun.operation_type == month_mention_rejudge.OPERATION_TYPE)
-    ).scalar_one()
-    policy = month_mention_rejudge.current_judge_policy()
-    assert run.idempotency_key.endswith(f"{policy['judge_prompt_fingerprint']}:{policy['judge_model']}")
+    ).scalars().all()
+    assert len(runs) == 3
+    assert month_mention_rejudge.month_judge_policy(pg_session, manifest) == original
