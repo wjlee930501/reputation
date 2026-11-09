@@ -11,7 +11,7 @@ import arrow
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
-from app.models.content import ContentItem, ContentType
+from app.models.content import ContentItem, ContentStatus, ContentType
 from app.models.essence import HospitalContentPhilosophy
 from app.models.hospital import Hospital
 from app.models.sov import AIQueryTarget, ExposureAction, ExposureGap
@@ -20,6 +20,13 @@ from app.services.content_brief import (
     PLANNING_REASON_KEY,
     build_content_brief,
     content_brief_matches_inputs,
+)
+from app.services.content_focus import (
+    ContentFocus,
+    focus_quota,
+    matching_topic,
+    parse_content_focus,
+    target_subject_is_region,
 )
 from app.services.exposure_content_linker import BRIEF_CAPABLE_ACTION_TYPES
 from app.services.query_target_structure import (
@@ -101,6 +108,7 @@ def prepare_automatic_content_brief_sync(
     if target is None:
         target = _choose_target(db, item=item, hospital_id=hospital.id, hospital=hospital)
         item.query_target_id = target.id if target is not None else None
+    _record_focus_topic(item, target, hospital)
 
     action = _load_or_choose_action(db, item=item, target=target, hospital_id=hospital.id)
     if hasattr(item, "exposure_action_id"):
@@ -208,6 +216,9 @@ def _choose_target(
         .all()
         if str(target.id) not in excluded and target_fits_hospital(target, hospital)
     ]
+    # 진료 항목 자리에 지역명이 들어간 엉성한 질문("하남 진료를 받으려는데…")으로는 글을 쓸 수 없다.
+    # 측정 세트는 그대로 두고 글 주제 후보에서만 뺀다.
+    targets = [target for target in targets if not target_subject_is_region(target, hospital)]
     if not targets:
         return None
 
@@ -248,11 +259,24 @@ def _choose_target(
     )
     gap_rank = _mention_gap_rank(db, hospital_id=hospital_id)
     slot_month = slot_date.strftime("%Y-%m")
+    focus_topics = _focus_topics_needed(
+        db,
+        item=item,
+        hospital=hospital,
+        hospital_id=hospital_id,
+        month_start=month_start,
+        month_end=month_end,
+        slot_month=slot_month,
+    )
     # 적합한 질문 안에서는 이번 달 아직 다루지 않은 질문부터 답한다.
     # 격차/우선순위를 사용 횟수보다 먼저 두면 한 HIGH 질문을 모든 글에 반복한다.
+    # 마케터가 정한 주력 주제가 그 달 목표 편수에 못 미치면 주력 주제 질문을 먼저 고른다 —
+    # 유형과 전혀 안 맞는 질문(AFFINITY_MISMATCH)보다 앞서지는 않는다.
     return min(
         targets,
         key=lambda target: (
+            _content_type_affinity(target, item.content_type) == AFFINITY_MISMATCH,
+            0 if focus_topics and matching_topic(target, focus_topics) else 1,
             _content_type_affinity(target, item.content_type),
             usage[str(target.id)] > 0,
             0 if str(target.id) in action_target_ids else 1,
@@ -264,6 +288,54 @@ def _choose_target(
             str(target.id),
         ),
     )
+
+
+def _hospital_focus(hospital: Any) -> ContentFocus:
+    return parse_content_focus(getattr(hospital, "content_focus_topics", None) if hospital is not None else None)
+
+
+def _focus_topics_needed(
+    db: Any,
+    *,
+    item: ContentItem,
+    hospital: Any,
+    hospital_id: Any,
+    month_start: date,
+    month_end: date,
+    slot_month: str,
+) -> tuple[str, ...]:
+    """이 슬롯이 주력 주제로 가야 하면 그 주제들. 목표 편수를 채웠거나 설정이 없으면 빈 튜플.
+
+    목표 편수 = 그 달 살아 있는 글(취소 제외) 수 × 비중. 이미 주력 주제로 쓰인 다른 글을 센다.
+    """
+    focus = _hospital_focus(hospital)
+    topics = focus.active_topics(slot_month)
+    if not topics or not hasattr(ContentItem, "content_focus_topic"):
+        return ()
+    rows = db.execute(
+        select(ContentItem.id, ContentItem.content_focus_topic).where(
+            ContentItem.hospital_id == hospital_id,
+            ContentItem.scheduled_date >= month_start,
+            ContentItem.scheduled_date <= month_end,
+            ContentItem.status != ContentStatus.CANCELLED,
+        )
+    ).all()
+    month_total = len({row[0] for row in rows} | {item.id})
+    focused = sum(1 for row in rows if row[0] != item.id and row[1])
+    if focused >= focus_quota(focus.share, month_total):
+        return ()
+    return topics
+
+
+def _record_focus_topic(item: ContentItem, target: Any, hospital: Any) -> None:
+    """이 글이 주력 주제 글인지 남긴다 — 그 달 목표 편수를 셀 때와 화면에 보일 때 쓴다."""
+    if not hasattr(item, "content_focus_topic"):
+        return
+    scheduled = getattr(item, "scheduled_date", None)
+    month = scheduled.strftime("%Y-%m") if scheduled else None
+    topics = _hospital_focus(hospital).active_topics(month) if month else ()
+    topic = matching_topic(target, topics) if topics else None
+    item.content_focus_topic = topic[:40] if topic else None
 
 
 def _mention_gap_rank(db: Any, *, hospital_id: Any) -> dict[str, int]:

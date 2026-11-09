@@ -39,6 +39,7 @@ import { fetchCurrentAccount } from '@/lib/current-account'
 import { resolveAuditActorName } from '@/lib/publishing'
 import { ContentItem, ContentReference, TYPE_LABELS } from '@/types'
 import { useHospitalHeader } from '../hospital-context'
+import { ContentFocusSection } from './ContentFocusSection'
 import { ReadOnlySignals } from './ReadOnlySignals'
 import { ScheduleSection } from './ScheduleSection'
 
@@ -647,6 +648,9 @@ export default function ContentPage() {
             void refetchHeader()
           }}
         />
+
+        {/* 주력 주제 — 원장님이 원하는 진료 항목으로 다음 글의 주제를 기운다. */}
+        <ContentFocusSection hospitalId={id} />
 
         {/* 카드는 공개 사이트와 같은 판정을 그대로 센다 — 화면이 따로 묶지 않는다. */}
         <div className="mt-5 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
