@@ -282,3 +282,34 @@ def test_prose_after_a_list_does_not_borrow_the_lists_location():
     answer = "* 다른외과의원 (수원시 팔달구)\n장편한외과의원은 부산 해운대구에 있습니다."
 
     assert mi.resolve(JANG, answer).status == mi.OTHER_LOCATION
+
+
+# ── 2026-11-09 경쟁 병원 재판정에서 나온 사례(v2) ──
+
+HOME_SEJONG = _identity("세종다온신경과의원", region=("세종시", "나성동", "보람동"))
+HOME_BUSAN = _identity("뉴플랜여성의원", address="부산광역시 남구 유엔평화로 4", region=("부산 남구", "광안동"))
+
+
+def test_competitor_written_with_a_locality_prefix_is_matched():
+    answer = "* **세종두미소신경과의원** (세종 보람동/나성동 인근)"
+
+    assert mi.resolve(HOME_SEJONG.for_competitor("두미소신경과의원"), answer).matched
+
+
+def test_branch_registered_without_jeom_is_matched_with_or_without_it():
+    identity = HOME_SEJONG.for_competitor("화인마취통증의학과의원 세종")
+
+    assert mi.resolve(identity, "* **화인마취통증의학과의원 세종점** — 나성동").matched
+    assert mi.resolve(identity, "화인마취통증의학과의원 세종에서 상담하세요.").matched
+    assert not mi.resolve(identity, "화인마취통증의학과의원 대전점이 있습니다.").matched
+
+
+def test_competitors_in_a_neighbouring_district_are_still_mentions():
+    answer = "* **광안자모병원** (수영구 광안동)\n  * 여성성형 클리닉 운영"
+
+    assert mi.resolve(HOME_BUSAN.for_competitor("광안자모병원"), answer).matched
+
+
+def test_locality_prefix_does_not_open_longer_unrelated_names():
+    # '세종'이 앞에 붙은 것은 받지만, 다른 글자가 붙은 더 긴 이름은 여전히 다른 병원이다.
+    assert not mi.resolve(HOME_SEJONG.for_competitor("두미소신경과의원"), "* **새두미소신경과의원**").matched

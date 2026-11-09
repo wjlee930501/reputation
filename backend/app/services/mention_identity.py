@@ -30,7 +30,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 
 # 판정 규칙이 바뀌면 올린다 — 측정 기준 지문(`sov_engine.measurement_protocol`)에 들어간다.
-RESOLVER_VERSION = "identity-resolver-v1"
+RESOLVER_VERSION = "identity-resolver-v2"
 
 MATCHED = "MATCHED"
 NOT_FOUND = "NOT_FOUND"
@@ -120,6 +120,9 @@ class MentionIdentity:
     region_terms: tuple[str, ...] = ()
     # 생활권 증거로 쓰지 않고 '같은 지역'으로만 보는 상위 지명(시·도). 다른 지점 판정에서 빼려고 둔다.
     compatible_terms: tuple[str, ...] = field(default=())
+    # 경쟁 병원처럼 위치를 모르는 병원 — 이름으로만 판정하고 다른 지역·다른 구로 빼지 않는다(경쟁 병원은 옆 구에
+    # 있을 수 있다). 지역어는 이름 앞에 붙은 생활권 접두어("세종두미소신경과의원")를 알아보는 데만 쓴다.
+    location_free: bool = False
 
     @classmethod
     def build(
@@ -164,13 +167,14 @@ class MentionIdentity:
         return cls.build(name, address=address or None, phone=phone or None, region_terms=terms)
 
     def for_competitor(self, competitor_name: str) -> MentionIdentity:
-        """경쟁 병원은 이름만 안다 — 생활권은 우리 병원과 같다고 본다(같은 지역 경쟁)."""
+        """경쟁 병원은 이름만 안다 — 이름으로 판정하고, 우리 생활권 지역어는 이름 앞 접두어를 알아보는 데만 쓴다."""
         return MentionIdentity(
             name=" ".join(str(competitor_name or "").split()),
             address=None,
             phone=None,
             region_terms=self.locality_words(),
             compatible_terms=self.compatible_terms,
+            location_free=True,
         )
 
     def locality_words(self) -> tuple[str, ...]:
@@ -218,13 +222,49 @@ def _compatible(identity: MentionIdentity, locality: frozenset[str]) -> frozense
     return frozenset(locality | {term for term in extra if len(term) >= 2})
 
 
+# 광역시·도 — 위치를 모르는 경쟁 병원이라도 다른 광역시·도에 있다고 적혔으면 같은 이름의 다른 병원이다.
+_METRO_NAMES = {
+    "서울": ("서울", "서울시", "서울특별시"), "부산": ("부산", "부산시", "부산광역시"),
+    "대구": ("대구", "대구시", "대구광역시"), "인천": ("인천", "인천시", "인천광역시"),
+    "광주": ("광주광역시",), "대전": ("대전", "대전시", "대전광역시"), "울산": ("울산", "울산시", "울산광역시"),
+    "세종": ("세종", "세종시", "세종특별자치시"), "경기": ("경기", "경기도"), "강원": ("강원", "강원도", "강원특별자치도"),
+    "충북": ("충북", "충청북도"), "충남": ("충남", "충청남도"), "전북": ("전북", "전라북도", "전북특별자치도"),
+    "전남": ("전남", "전라남도"), "경북": ("경북", "경상북도"), "경남": ("경남", "경상남도"),
+    "제주": ("제주", "제주도", "제주특별자치도"),
+}
+
+
+def _metros_in(text: str) -> set[str]:
+    found: set[str] = set()
+    for key, forms in _METRO_NAMES.items():
+        for form in forms:
+            if re.search(r"(?<![가-힣])" + re.escape(form) + r"(?![가-힣])", text) or re.search(
+                r"(?<![가-힣])" + re.escape(form) + r"(?=(?:의|에서|에|은|는|이|가)(?![가-힣]))", text
+            ):
+                found.add(key)
+                break
+    return found
+
+
+# '점' 없이 등록한 지점("화인마취통증의학과의원 세종") — 병원 접미사 뒤에 띄어 쓴 짧은 지명.
+_BARE_BRANCH = re.compile(r"(?:의원|병원|클리닉)\s+([가-힣]{2,5})$")
+
+
 def _branch(name: str) -> str | None:
-    match = _BRANCH.search(name.strip())
-    return match.group(1) if match else None
+    stripped = name.strip()
+    match = _BRANCH.search(stripped)
+    if match:
+        return match.group(1)
+    bare = _BARE_BRANCH.search(stripped)
+    return f"{bare.group(1)}점" if bare else None
 
 
 def _core(name: str) -> str:
-    without_branch = _BRANCH.sub("", name.strip())
+    stripped = name.strip()
+    without_branch = _BRANCH.sub("", stripped)
+    bare = _BARE_BRANCH.search(without_branch)
+    if bare:
+        without_branch = without_branch[: bare.start(1)].rstrip()
     return _LEGAL_SUFFIX.sub("", re.sub(r"\s+", "", without_branch))
 
 
@@ -409,6 +449,8 @@ def _tail_is_boundary(text: str, end: int, own_branch: str | None) -> bool:
     if branch is not None:
         # 지점명이 붙었다 — 우리 지점이 정해져 있으면 같은 지점이어야 한다("서울W내과 성남점"은 다른 병원).
         return own_branch is None or branch == own_branch
+    if own_branch and re.match(r"[\s*_)\]]*[(\[]?\s?" + re.escape(own_branch[:-1]) + r"(?![가-힣])", rest):
+        return True  # '점' 없이 적은 우리 지점("화인마취통증의학과의원 세종")
     if not rest or not _WORD.match(rest[0]):
         return True
     continuation = _CONTINUATION.match(rest)
@@ -493,6 +535,17 @@ def _names_another_place(
     return False
 
 
+def _locality_prefix(text: str, start: int, locality: frozenset[str]) -> bool:
+    """이름 바로 앞이 생활권 지역명이고 그 앞은 단어 경계인가("세종두미소신경과의원"의 '세종')."""
+    for token in sorted(locality, key=len, reverse=True):
+        head = start - len(token)
+        if head < 0 or normalize(text[head:start]) != token:
+            continue
+        if head == 0 or not _WORD.match(text[head - 1]):
+            return True
+    return False
+
+
 def resolve(identity: MentionIdentity, text: str | None) -> Resolution:
     """답변이 이 병원을 언급했는가. 가장 강한 증거의 언급 하나를 돌려준다."""
     answer = text or ""
@@ -509,8 +562,8 @@ def resolve(identity: MentionIdentity, text: str | None) -> Resolution:
     for variant, kind in variants:
         for found in _pattern(variant).finditer(answer):
             start, end = found.span()
-            if start > 0 and _WORD.match(answer[start - 1]):
-                continue  # 더 긴 다른 이름의 일부
+            if start > 0 and _WORD.match(answer[start - 1]) and not _locality_prefix(answer, start, locality):
+                continue  # 더 긴 다른 이름의 일부(앞에 붙은 생활권 지역명은 예외 — "세종두미소신경과의원")
             if not _tail_is_boundary(answer, end, own_branch):
                 continue
             matched_kind = kind
@@ -523,6 +576,17 @@ def resolve(identity: MentionIdentity, text: str | None) -> Resolution:
                 status, evidence = MATCHED, EVIDENCE_PHONE
             elif _has_road(context, road):
                 status, evidence = MATCHED, EVIDENCE_ROAD
+            elif identity.location_free:
+                # 위치를 모르는 경쟁 병원 — 이름으로 판정한다. 옆 구는 같은 병원일 수 있지만, 우리와 다른 광역시·도로
+                # 적혔으면 같은 이름의 다른 병원이다. 맨 브랜드명은 우리 생활권 말이 있을 때만 인정한다.
+                home_metros = _metros_in(" ".join((*identity.locality_words(), *identity.compatible_terms)))
+                foreign_metros = _metros_in(context) - home_metros
+                if foreign_metros and not (_metros_in(context) & home_metros):
+                    status, evidence = OTHER_LOCATION, None
+                elif matched_kind == "brand" and not any(token in ncontext for token in locality):
+                    status, evidence = BRAND_UNCONFIRMED, None
+                else:
+                    status, evidence = MATCHED, EVIDENCE_NAME
             elif not compatible:
                 # 이 병원의 생활권을 모른다(지역어·주소 없음) — 다른 지점인지 가릴 수 없어 이름으로만 본다.
                 status, evidence = (
