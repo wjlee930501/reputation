@@ -156,6 +156,7 @@ def _replace_manifest_freeze(
     cells: list[MonthlyMeasurementCell],
     platforms: list[str],
     protocol: dict,
+    judgment_identity: dict | None = None,
 ) -> MonthlyMeasurementManifest:
     if manifest.closed_at is not None:
         raise ManifestPolicyDrift("closed monthly manifest cannot be superseded")
@@ -198,6 +199,8 @@ def _replace_manifest_freeze(
         "measurement_protocol": protocol,
         "observation_slots": _observation_slot_contract(),
     }
+    if judgment_identity is not None:
+        manifest.platform_provenance["judgment_identity"] = judgment_identity
     manifest.frozen_at = datetime.now(timezone.utc)
     manifest.closes_at = _month_close(year, month)
     manifest.cells = cells
@@ -217,6 +220,7 @@ def freeze_monthly_manifest(
     gemini_configured: bool,
     existing: MonthlyMeasurementManifest | None = None,
     measurement_protocol_kwargs: dict | None = None,
+    judgment_identity: dict | None = None,
 ) -> MonthlyMeasurementManifest:
     if not specs:
         if existing is not None:
@@ -244,6 +248,7 @@ def freeze_monthly_manifest(
             cells=cells,
             platforms=platforms,
             protocol=protocol,
+            judgment_identity=judgment_identity,
         )
     platform_provenance = {
         "chatgpt": "ALWAYS",
@@ -253,6 +258,11 @@ def freeze_monthly_manifest(
         # 성립한다 — 정책이 바뀐 달을 성과 변화로 붙여 팔 수 없다.
         "measurement_protocol": protocol,
     }
+    # 언급 판정에 쓰는 병원 신원(이름·주소·전화·지역어). 측정표는 만든 뒤 고칠 수 없으므로(DB 트리거)
+    # 만들 때 함께 남긴다 — 측정 도중 병원 정보가 바뀌어도 한 달의 판정이 섞이지 않는다. 비교 기준
+    # (`measurement_protocol`)과는 따로 둔다.
+    if judgment_identity is not None:
+        platform_provenance["judgment_identity"] = judgment_identity
     # Observation slots belong to the authoritative month-end measurement freeze.
     # Weekly manifests remain on their historical lineage so a weekly result cannot
     # accidentally become the terminal repeat for the monthly contract.
@@ -281,6 +291,7 @@ def freeze_dispatch_manifest(
     *,
     gemini_configured: bool,
     measurement_protocol_kwargs: dict | None = None,
+    judgment_identity: dict | None = None,
 ) -> MonthlyMeasurementManifest:
     existing = session.execute(
         select(MonthlyMeasurementManifest).where(
@@ -314,6 +325,7 @@ def freeze_dispatch_manifest(
         gemini_configured=gemini_configured,
         existing=existing,
         measurement_protocol_kwargs=measurement_protocol_kwargs,
+        judgment_identity=judgment_identity,
     )
 
 

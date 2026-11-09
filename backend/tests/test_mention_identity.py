@@ -212,3 +212,52 @@ def test_frozen_identity_material_round_trips():
     assert restored is not None
     assert restored.material() == SEOUL_W.material()
     assert mi.MentionIdentity.from_material({"name": ""}) is None
+
+
+# ── 2026-11-09 Codex 2차 검토 사례 ──
+
+
+def test_location_on_the_previous_line_of_the_same_paragraph_counts():
+    assert mi.resolve(JANG, "부산 해운대구 우동에 위치한\n장편한외과의원을 추천합니다.").status == mi.OTHER_LOCATION
+
+
+def test_parent_bullet_location_counts():
+    answer = "* 부산 해운대구\n  * 장편한외과의원 — 치질 수술"
+
+    assert mi.resolve(JANG, answer).status == mi.OTHER_LOCATION
+
+
+def test_residents_of_another_district_do_not_move_the_clinic():
+    answer = "성모탑정형외과의원은 마포역 인근으로 용산구 주민도 이용하기 편리합니다."
+
+    assert mi.resolve(MAPO, answer).matched
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "서울W내과의원 성남점에서는 검진이 가능합니다.",
+        "서울W내과의원은 성남점에서 검진을 합니다.",
+    ],
+)
+def test_compound_particles_do_not_hide_another_branch(answer):
+    assert not mi.resolve(SEOUL_W, answer).matched
+
+
+def test_generic_branch_word_is_not_another_branch():
+    assert mi.resolve(SEOUL_W, "**서울W내과의원** 지점은 위례(하남시 학암동)에 있습니다.").matched
+
+
+def test_daegu_is_a_city_not_a_district():
+    assert not mi.resolve(SINGI, "* **신기한속내과의원** (대구 북구 복현동)").matched
+    assert mi.resolve(SINGI, "* **신기한속내과의원** (대구 동구 신기역 인근)").matched
+
+
+def test_metropolitan_city_names_are_places():
+    assert not mi.resolve(SINGI, "* **신기한속내과의원** (부산광역시 동구 초량동)").matched
+
+
+def test_multi_letter_latin_spelling_of_a_hangul_registered_name():
+    identity = _identity("에스케이정형외과의원", region=("수원시 팔달구",))
+
+    assert mi.resolve(identity, "* **SK정형외과의원** (수원시 팔달구)").matched

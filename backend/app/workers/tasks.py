@@ -533,7 +533,9 @@ from app.services.v0_measurement_snapshot import (
 from app.services.v0_measurement_snapshot import (
     v0_judgment_context as _v0_judgment_context,  # noqa: F401 -- stable legacy worker import
 )
-from app.services.v0_measurement_snapshot import judgment_identity as v0_judgment_identity
+from app.services.v0_measurement_snapshot import (
+    judgment_identity as _judgment_identity,  # 정기 측정·V0가 같은 판정 신원 규칙을 쓴다
+)
 from app.services.v0_measurement_snapshot import (
     v0_platforms_from_run as _v0_platforms_from_run,  # noqa: F401 -- stable legacy worker import
 )
@@ -9207,6 +9209,7 @@ def run_sov_for_hospital(
                     frozen_specs,
                     gemini_configured=bool(settings.OPENROUTER_API_KEY),
                     measurement_protocol_kwargs=protocol_kwargs,
+                    judgment_identity=_judgment_identity(hospital, hospital.name, None).material(),
                 )
             except ManifestPolicyDrift as exc:
                 logger.warning(
@@ -10425,31 +10428,19 @@ def _result_from_sov_record(record: SovRecord) -> dict[str, Any]:
     }
 
 
-def _judgment_identity(
-    hospital: Hospital, hospital_name: str, region: str | None
-) -> mention_identity.MentionIdentity:
-    """정기 측정의 자사 신원 — 이름·주소·전화·지역어로 규칙 대조한다(`mention_identity`)."""
-    return v0_judgment_identity(hospital, hospital_name, region)
-
-
 def _frozen_manifest_identity(
     manifest: MonthlyMeasurementManifest, hospital: Hospital
 ) -> mention_identity.MentionIdentity:
-    """그 달 측정표에 판정 신원을 고정한다 — 처음 쓰는 순간의 값을 남기고 이후 조각은 그 값을 쓴다.
+    """그 달 측정표를 만들 때 고정한 판정 신원. 고정 이전에 만든 측정표는 지금 병원 정보로 판정한다.
 
-    월간 측정은 여러 조각으로 이어 돈다. 도중에 병원 정보(전화·주소·지역어)가 바뀌어도 한 달의 판정이
-    두 신원으로 섞이지 않게 한다. 측정 기준 비교(`measurement_protocol`)와는 따로 둔다.
+    측정표는 만든 뒤 고칠 수 없다(DB 트리거) — 신원은 `freeze_dispatch_manifest`가 만들 때 남긴다.
     """
     stored = getattr(manifest, "platform_provenance", None)
-    provenance = dict(stored) if isinstance(stored, dict) else {}
-    frozen = mention_identity.MentionIdentity.from_material(provenance.get("judgment_identity"))
-    if frozen is not None:
-        return frozen
-    identity = _judgment_identity(hospital, hospital.name, None)
     if isinstance(stored, dict):
-        provenance["judgment_identity"] = identity.material()
-        manifest.platform_provenance = provenance
-    return identity
+        frozen = mention_identity.MentionIdentity.from_material(stored.get("judgment_identity"))
+        if frozen is not None:
+            return frozen
+    return _judgment_identity(hospital, hospital.name, None)
 
 
 def _execute_paid_observation_slot(
@@ -10474,8 +10465,16 @@ def _execute_paid_observation_slot(
     it, a late answer must not trigger a judgment call, and a discarded late
     response still settles its already-issued reservation normally.
     """
-    judgment_hospital_name = hospital_name or hospital.name
-    judgment_region = region if region is not None else (hospital.region or [""])[0]
+    if identity is not None:
+        # 고정한 신원이 있으면 이름·대표 지역어도 거기서 읽는다 — 이어 돌 때 지금 병원 정보가 바뀌어도
+        # 끝난 슬롯의 판정 지문이 그대로 맞는다.
+        judgment_hospital_name = hospital_name or identity.name
+        judgment_region = (
+            region if region is not None else (identity.region_terms[0] if identity.region_terms else "")
+        )
+    else:
+        judgment_hospital_name = hospital_name or hospital.name
+        judgment_region = region if region is not None else (hospital.region or [""])[0]
     judgment_identity = identity or _judgment_identity(
         hospital, judgment_hospital_name, judgment_region
     )

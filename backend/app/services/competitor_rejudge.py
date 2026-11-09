@@ -465,9 +465,18 @@ def execute_rejudge(
     빠진 이름을 다시 계산하므로 같은 병원을 두 실행이 겹쳐 돌아도 같은 이름을 두 번 묻지 않고, 나중 쓰기가
     먼저 쓴 bool 판정을 덮지 않는다. 다시 돌리면 미확정으로 남은 이름만 다시 묻는다(멱등).
     """
+    judged_at = now or datetime.now(UTC)
+    plan = build_rejudge_plan(db, hospital, year, month, now=judged_at)
     if judge is None:
         # 측정 때와 같은 규칙 대조 — 경쟁 병원의 생활권은 이 병원과 같다고 본다(`sov_engine._parse_competitors`).
-        home = mention_identity.MentionIdentity.build(
+        # 그 달 측정표가 고정한 신원을 쓴다(측정 뒤 바뀐 병원 정보로 판정하지 않는다).
+        manifest = db.get(MonthlyMeasurementManifest, plan.manifest_id) if plan.manifest_id else None
+        provenance = getattr(manifest, "platform_provenance", None)
+        home = (
+            mention_identity.MentionIdentity.from_material(provenance.get("judgment_identity"))
+            if isinstance(provenance, dict)
+            else None
+        ) or mention_identity.MentionIdentity.build(
             hospital.name,
             address=hospital.address,
             phone=hospital.phone,
@@ -477,8 +486,6 @@ def execute_rejudge(
         async def judge(names: list[str], raw: str) -> list[dict[str, Any]]:
             return await sov_engine._parse_competitors(names, raw, home)
 
-    judged_at = now or datetime.now(UTC)
-    plan = build_rejudge_plan(db, hospital, year, month, now=judged_at)
     outcome = RejudgeOutcome(
         records_total=plan.records_total,
         pending_records=plan.pending_records,

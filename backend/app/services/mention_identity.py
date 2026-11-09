@@ -85,7 +85,8 @@ _CONTINUATION = re.compile(r"^(내과|외과|정형외과|신경과|여성|의�
 # '점'으로 끝나지만 지점명이 아닌 말.
 _NOT_BRANCH = frozenset(
     {"장점", "단점", "공통점", "차이점", "문제점", "시점", "관점", "강점", "약점", "중점", "초점", "요점",
-     "쟁점", "유의점", "주의점", "특장점", "출발점", "기준점", "접점", "허점", "만점", "득점", "논점"}
+     "쟁점", "유의점", "주의점", "특장점", "출발점", "기준점", "접점", "허점", "만점", "득점", "논점",
+     "지점", "본점", "분점", "각 지점", "전 지점", "매장점"}
 )
 _LATIN_NAMES = {
     "A": "에이", "B": "비", "C": "씨", "D": "디", "E": "이", "F": "에프", "G": "지", "H": "에이치",
@@ -243,11 +244,17 @@ def _latin_variants(value: str) -> set[str]:
             with_paren = with_paren.replace(latin, f"{hangul}({latin.upper()})")
         if convertible:
             variants |= {spelled, with_paren}
-    for latin, hangul in _LATIN_NAMES.items():
-        # 한 음절 이름('비'·'이'·'지')은 평범한 낱말과 겹쳐 되돌리지 않는다.
+    combined = value
+    combined_paren = value
+    # 한 음절 이름('비'·'이'·'지')은 평범한 낱말과 겹쳐 되돌리지 않는다. 긴 이름부터 바꿔 겹침을 막는다.
+    for latin, hangul in sorted(_LATIN_NAMES.items(), key=lambda item: len(item[1]), reverse=True):
         if len(hangul) >= 2 and hangul in value:
             variants.add(value.replace(hangul, latin))
             variants.add(value.replace(hangul, f"{hangul}({latin})"))
+            combined = combined.replace(hangul, latin)
+            combined_paren = combined_paren.replace(hangul, f"{hangul}({latin})")
+    if combined != value:
+        variants |= {combined, combined_paren}
     return variants
 
 
@@ -297,6 +304,28 @@ def _item_context(text: str, start: int, end: int) -> str:
     """
     line_start = text.rfind("\n", 0, start) + 1
     head = max(line_start, start - _CONTEXT_BEFORE)
+    first_line_end = text.find("\n", start)
+    first_line = text[line_start:first_line_end if first_line_end != -1 else len(text)]
+    match_indent = _indent(first_line)
+    match_is_bullet = _BULLET.match(first_line.strip()) is not None
+    # 위로 올라가며 같은 문단의 앞줄과 상위 목록 줄을 함께 읽는다("부산 해운대구에 위치한\n장편한외과의원",
+    # "* 부산 해운대구\n  * 장편한외과의원"). 같은 깊이의 앞 항목·제목·빈 줄에서 멈춘다.
+    cursor = line_start
+    while cursor > 0 and start - cursor < _CONTEXT_BEFORE:
+        previous_start = text.rfind("\n", 0, cursor - 1) + 1
+        previous = text[previous_start:cursor - 1]
+        stripped = previous.strip()
+        if not stripped or stripped.startswith(("#", "|", "---")):
+            break
+        previous_is_bullet = _BULLET.match(stripped) is not None
+        if previous_is_bullet and _indent(previous) >= match_indent and match_is_bullet:
+            break  # 같은 깊이(또는 더 깊은) 앞 항목 — 옆 항목이다
+        if not previous_is_bullet and match_is_bullet:
+            break  # 목록 앞의 문단은 목록 전체의 머리말일 수 있어 항목 근거로 쓰지 않는다
+        head = previous_start
+        cursor = previous_start
+        if previous_is_bullet:
+            break  # 상위 목록 줄까지만
     limit = min(len(text), end + _CONTEXT_AFTER)
     line_end = text.find("\n", end)
     if line_end == -1 or line_end >= limit:
@@ -362,8 +391,9 @@ def _rank(text: str, start: int) -> int:
 def _branch_after(rest: str) -> str | None:
     """이름 바로 뒤의 지점명 — 굵게 표시·괄호·조사가 사이에 있어도 읽는다("**서울W내과의원** 성남점은")."""
     match = re.match(
-        r"[\s*_)\]]*[(\[]?\s?([가-힣0-9A-Za-z]{1,6}점)"
-        r"(?=$|[^가-힣]|(?:은|는|이|가|을|를|의|에서|에|도|과|와|으로|로)(?![가-힣]))",
+        r"(?:은|는|이|가|의)?[\s*_)\]]*[(\[]?\s?([가-힣0-9A-Za-z]{1,6}점)"
+        r"(?=$|[^가-힣]|(?:은|는|이|가|을|를|의|에서는|에서도|에서|에는|에도|에|도|과|와|으로|로|이며|이고)"
+        r"(?![가-힣]))",
         rest,
     )
     if match is None or match.group(1) in _NOT_BRANCH:
@@ -388,12 +418,35 @@ def _tail_is_boundary(text: str, end: int, own_branch: str | None) -> bool:
     return _PARTICLE.match(rest) is not None
 
 
+# 그 지역 '주민'·'거주자'처럼 병원 위치가 아니라 오는 사람을 말하는 지명("용산구 주민도 이용하기 편리").
+_RESIDENTS_AFTER = re.compile(r"^\s?(?:주민|거주|에서도|에서 오|에서 가|쪽에서|방면에서|권역 주민|근처 주민|인근 주민)")
+_METRO = ("특별자치시", "광역시", "특별시")
+
+
+def _not_place(token: str) -> bool:
+    return not token.endswith(_METRO) and _NOT_PLACE.search(token) is not None
+
+
 def _places(context: str) -> set[str]:
-    return {
-        normalize(match.group(1))
-        for match in _MUNICIPALITY.finditer(context)
-        if not _NOT_PLACE.search(match.group(1))
-    }
+    places: set[str] = set()
+    for match in _MUNICIPALITY.finditer(context):
+        token = match.group(1)
+        if _not_place(token) or _RESIDENTS_AFTER.match(context[match.end():]):
+            continue
+        places.add(normalize(token))
+    return places
+
+
+# 이름이 '구'로 끝나지만 광역시인 곳 — 구·군 단위로 읽으면 같은 시 안의 다른 구 판정이 깨진다.
+_CITY_NAMES_ENDING_IN_GU = frozenset({"대구"})
+
+
+def _place_level(place: str) -> str:
+    if place in _CITY_NAMES_ENDING_IN_GU or place.endswith(("시",) + _METRO):
+        return "si"
+    if place.endswith(("구", "군")):
+        return "gu"
+    return "other"
 
 
 def _is_compatible(place: str, compatible: frozenset[str]) -> bool:
@@ -404,9 +457,10 @@ def _is_compatible(place: str, compatible: frozenset[str]) -> bool:
 
 def _own_places(identity: MentionIdentity, level: str) -> frozenset[str]:
     """이 병원의 시(level='si') 또는 구·군(level='gu') — 지역어·주소에서 읽는다."""
-    suffix = ("시",) if level == "si" else ("구", "군")
     return frozenset(
-        normalize(word) for word in identity.locality_words() if word.endswith(suffix)
+        normalize(word)
+        for word in identity.locality_words()
+        if _place_level(normalize(word)) == level
     )
 
 
@@ -422,14 +476,14 @@ def _names_another_place(
     foreign = {place for place in places if not _is_compatible(place, compatible)}
     if not ours_here:
         return bool(foreign)
-    for level, suffix in (("gu", ("구", "군")), ("si", ("시",))):
+    for level in ("gu", "si"):
         own = _own_places(identity, level)
         if not own:
             continue
-        here = {place for place in places if place.endswith(suffix)}
+        here = {place for place in places if _place_level(place) == level}
         if here & own:
             continue
-        if any(place.endswith(suffix) for place in foreign):
+        if any(_place_level(place) == level for place in foreign):
             return True
     return False
 
