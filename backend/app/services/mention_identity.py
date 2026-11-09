@@ -248,25 +248,29 @@ _METRO_PATTERNS = {
     key: re.compile(r"(?<![가-힣])(?:" + "|".join(re.escape(form) for form in forms) + r")" + _METRO_PARTICLE)
     for key, forms in _METRO_NAMES.items()
 }
-_BARE_GWANGJU = re.compile(r"(?<![가-힣])광주\s*(?:동구|서구|남구|북구|광산구)(?![가-힣])")
-# 환자가 오는 곳("서울에서 KTX로 오시는")·사는 곳("서울 주민")은 병원 위치가 아니다.
-_METRO_ORIGIN = re.compile(r"^(?:에서\S*\s*(?:\S+\s*){0,2}?(?:오시|오는|오셔|와서|올라오|내려오|찾아오|찾아|방문|원정|KTX|기차|버스|차로)|\s*(?:주민|거주|사는|사시는|분들))")
+_BARE_GWANGJU = re.compile(r"(?<![가-힣])광주\s*(?:동구|서구|남구|북구|광산구)" + _METRO_PARTICLE)
+# 환자가 오는 곳("서울에서 KTX로", "서울에서 오시는")·사는 곳("서울 주민")은 병원 위치가 아니다 — 바로 뒤 말만 본다.
+_METRO_ORIGIN = re.compile(
+    r"^(?:에서\s*(?:오시|오는|오셔|와서|올라오|내려오|찾아오|원정|KTX|기차|버스|차로)|\s*(?:주민|거주|사는|사시는))"
+)
+
+
+def _metro_positions(text: str) -> list[tuple[int, str]]:
+    """글에 적힌 광역시·도와 그 위치(환자가 오는 곳·사는 곳은 빼고)."""
+    found: list[tuple[int, str]] = []
+    for key, pattern in _METRO_PATTERNS.items():
+        forms = re.compile(r"(?:" + "|".join(re.escape(form) for form in _METRO_NAMES[key]) + r")")
+        for match in pattern.finditer(text):
+            head = forms.match(match.group(0))
+            tail = text[match.start() + (head.end() if head else 0):]
+            if not _METRO_ORIGIN.match(tail):
+                found.append((match.start(), key))
+    found.extend((match.start(), "광주") for match in _BARE_GWANGJU.finditer(text))
+    return sorted(found)
 
 
 def _metros_in(text: str) -> set[str]:
-    """글에 적힌 광역시·도(환자가 오는 곳·사는 곳은 빼고)."""
-    found: set[str] = set()
-    for key, pattern in _METRO_PATTERNS.items():
-        for match in pattern.finditer(text):
-            head = re.match(r"(?:" + "|".join(re.escape(form) for form in _METRO_NAMES[key]) + r")", match.group(0))
-            tail = text[match.start() + (head.end() if head else 0):]
-            if _METRO_ORIGIN.match(tail):
-                continue
-            found.add(key)
-            break
-    if _BARE_GWANGJU.search(text):
-        found.add("광주")
-    return found
+    return {key for _, key in _metro_positions(text)}
 
 
 # '점' 없이 등록한 지점("화인마취통증의학과의원 세종") — 병원 접미사 뒤에 띄어 쓴 시 단위 지명만.
@@ -500,7 +504,11 @@ def _tail_is_boundary(text: str, end: int, own_branch: str | None) -> bool:
         # 지점명이 붙었다 — 우리 지점이 정해져 있으면 같은 지점이어야 한다("서울W내과 성남점"은 다른 병원).
         return own_branch is None or branch == own_branch
     if own_branch:
-        bare = re.match(r"[\s*_)\]]*[(\[]?\s?([가-힣]{2,5}?)" + _METRO_PARTICLE, rest)
+        # 띄어 쓰거나 괄호로 뗀 낱말만 지점이다("프라임세종365의원"의 '세종'은 아니다). 이름 뒤 조사도 받는다.
+        bare = re.match(
+            r"(?:[은는이가의]\s+|[\s*_)\]]+[(\[]?\s?|[(\[]\s?)([가-힣]{2,5}?)" + _METRO_PARTICLE + r"(?![0-9A-Za-z])",
+            rest,
+        )
         if bare and bare.group(1) == own_branch[:-1]:
             return True  # '점' 없이 적은 우리 지점("화인마취통증의학과의원 세종")
         if bare and _city_level(bare.group(1)):
@@ -600,13 +608,15 @@ def _in_another_metro(
     if not (0 <= start <= end <= len(context)):
         return False
     outside = context[:start] + " " * (end - start) + context[end:]
-    here = _metros_in(outside)
+    positions = _metro_positions(outside)
     home = _metros_in(" ".join((*identity.locality_words(), *identity.compatible_terms)))
-    foreign = here - home
-    if not foreign:
+    if not any(key not in home for _, key in positions):
         return False
     if home:
-        return not (here & home)
+        # 이름 바로 뒤에 적힌 시·도가 병원 위치다("(부산 해운대구) — 서울 소재 대학병원 출신"의 '서울'은 아니다).
+        after = [key for position, key in positions if position >= end]
+        nearest = after[0] if after else positions[-1][1]
+        return nearest not in home
     noutside = normalize(outside)
     return not any(token in noutside for token in locality)
 
