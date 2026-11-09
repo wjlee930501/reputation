@@ -1,6 +1,10 @@
 # Re:putation — 현재 프로젝트 개발 안내
 
-## 최신 운영 배포 — 2026-11-09 새벽 발행 귀속·노출 0건 핵심 줄
+## 최신 운영 배포 — 2026-11-09 오전 언급 판정 규칙 대조
+
+main `d123f37b`(PR #299)를 10:40~10:50 KST에 Backend에 배포했다(같은 날 두 번째 릴리스, `--override-reason`). **현재 리비전은 api `00284-z7v`, worker `00274-pwk`, beat `00269-qdp`**, Admin·Site·DB head 그대로. 자사·경쟁사 언급 판정이 규칙 대조(`services/mention_identity.py`) + Haiku 5.5 보조 판정으로 바뀌었다(정답표·검증 표본 재현율 0.53~0.60 → 1.00). 판정 정책 지문이 바뀌어 이전 달과는 같은 판정 기준이 아니고, 이전 방식으로 잰 달의 경쟁 병원 반영은 막힌다. 마감된 달 재판정·같은 기준 비교는 다음 PR이다. 롤백 좌표 `.omo/rollback-judge/backend`. 상세는 [배포 기록](docs/releases/2026-11-09-mention-identity-production.md).
+
+## 이전 운영 배포 — 2026-11-09 새벽 발행 귀속·노출 0건 핵심 줄
 
 main `d293c5e4`(PR #296 원장 보고서 발행 글을 한 달에만 싣기 + PR #297 노출 0건 달 1면 '잘된 점')를 02:27~02:45 KST에 Backend에 배포했다(그날 첫 릴리스).
 **현재 리비전은 api `00283-hnr`, worker `00273-7cn`, beat `00268-9qb`**, Admin·Site·DB head 그대로(마이그레이션 없음). 롤백 좌표 `.omo/rollback-month/backend`.
