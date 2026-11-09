@@ -250,7 +250,7 @@ _METRO_PATTERNS = {
 }
 _BARE_GWANGJU = re.compile(r"(?<![가-힣])광주\s*(?:동구|서구|남구|북구|광산구)(?![가-힣])")
 # 환자가 오는 곳("서울에서 KTX로 오시는")·사는 곳("서울 주민")은 병원 위치가 아니다.
-_METRO_ORIGIN = re.compile(r"^(?:에서\S*\s*(?:\S+\s*){0,2}?(?:오|올라|내려|찾|방문|원정|KTX|기차|버스|차로)|\s*(?:주민|거주|사는|사시는|분들))")
+_METRO_ORIGIN = re.compile(r"^(?:에서\S*\s*(?:\S+\s*){0,2}?(?:오시|오는|오셔|와서|올라오|내려오|찾아오|찾아|방문|원정|KTX|기차|버스|차로)|\s*(?:주민|거주|사는|사시는|분들))")
 
 
 def _metros_in(text: str) -> set[str]:
@@ -273,19 +273,23 @@ def _metros_in(text: str) -> set[str]:
 _BARE_BRANCH = re.compile(r"(?:의원|병원|클리닉)\s+([가-힣]{2,5})$")
 
 
-def _branch(name: str) -> str | None:
+def _branch(name: str, *, bare_branch: bool = False) -> str | None:
+    """등록명의 지점("위례점"). '점' 없이 띄어 쓴 시 단위 지명은 경쟁 병원(bare_branch)에서만 지점으로 본다 —
+    우리 병원 이름에서 떼면 다른 시의 같은 이름이 우리 병원으로 읽힐 수 있다."""
     stripped = name.strip()
     match = _BRANCH.search(stripped)
     if match:
         return match.group(1)
+    if not bare_branch:
+        return None
     bare = _BARE_BRANCH.search(stripped)
     return f"{bare.group(1)}점" if bare and _city_level(bare.group(1)) else None
 
 
-def _core(name: str) -> str:
+def _core(name: str, *, bare_branch: bool = False) -> str:
     stripped = name.strip()
     without_branch = _BRANCH.sub("", stripped)
-    bare = _BARE_BRANCH.search(without_branch)
+    bare = _BARE_BRANCH.search(without_branch) if bare_branch else None
     if bare and _city_level(bare.group(1)):
         without_branch = without_branch[: bare.start(1)].rstrip()
     return _LEGAL_SUFFIX.sub("", re.sub(r"\s+", "", without_branch))
@@ -337,7 +341,7 @@ def _specialty_spellings(value: str) -> set[str]:
 
 def name_variants(identity: MentionIdentity) -> dict[str, str]:
     """{표기: 종류} — 종류는 'full'(이름만으로 인정) 또는 'brand'(위치 증거가 있어야 인정)."""
-    core = _core(identity.name)
+    core = _core(identity.name, bare_branch=identity.location_free)
     if len(core) < 3:
         # 접미사를 떼면 너무 짧은 이름("가나의원" → "가나")은 접미사까지 붙인 이름 전체로만 알아본다 —
         # 두 글자 조각은 다른 낱말에 흔하다.
@@ -496,7 +500,7 @@ def _tail_is_boundary(text: str, end: int, own_branch: str | None) -> bool:
         # 지점명이 붙었다 — 우리 지점이 정해져 있으면 같은 지점이어야 한다("서울W내과 성남점"은 다른 병원).
         return own_branch is None or branch == own_branch
     if own_branch:
-        bare = re.match(r"[\s*_)\]]*[(\[]?\s?([가-힣]{2,5})(?![가-힣])", rest)
+        bare = re.match(r"[\s*_)\]]*[(\[]?\s?([가-힣]{2,5}?)" + _METRO_PARTICLE, rest)
         if bare and bare.group(1) == own_branch[:-1]:
             return True  # '점' 없이 적은 우리 지점("화인마취통증의학과의원 세종")
         if bare and _city_level(bare.group(1)):
@@ -607,7 +611,7 @@ def _in_another_metro(
     return not any(token in noutside for token in locality)
 
 
-def _locality_prefix(text: str, start: int, locality: frozenset[str]) -> bool:
+def _locality_prefix(text: str, start: int, locality: frozenset[str]) -> int | None:
     """이름 바로 앞이 생활권의 시 단위 지명이고 그 앞은 단어 경계인가("세종두미소신경과의원"의 '세종').
 
     경쟁 병원에만 쓴다 — 동·역·구 이름('마포', '신기')은 다른 병원 이름의 앞 글자와 겹쳐 받지 않는다.
@@ -619,8 +623,8 @@ def _locality_prefix(text: str, start: int, locality: frozenset[str]) -> bool:
         if head < 0 or normalize(text[head:start]) != token:
             continue
         if head == 0 or not _WORD.match(text[head - 1]):
-            return True
-    return False
+            return head  # 지명까지 이름으로 본다 — 이름 속 지명을 위치 증거로 읽지 않게
+    return None
 
 
 def resolve(identity: MentionIdentity, text: str | None) -> Resolution:
@@ -632,19 +636,18 @@ def resolve(identity: MentionIdentity, text: str | None) -> Resolution:
     road = _road(identity.address)
     locality = _locality(identity)
     compatible = _compatible(identity, locality)
-    own_branch = _branch(identity.name)
+    own_branch = _branch(identity.name, bare_branch=identity.location_free)
     strength = {MATCHED: 3, BRAND_UNCONFIRMED: 2, OTHER_LOCATION: 1}
     best: tuple[int, int, Resolution] | None = None
     variants = sorted(name_variants(identity).items(), key=lambda item: len(item[0]), reverse=True)
     for variant, kind in variants:
         for found in _pattern(variant).finditer(answer):
             start, end = found.span()
-            if (
-                start > 0
-                and _WORD.match(answer[start - 1])
-                and not (identity.location_free and _locality_prefix(answer, start, locality))
-            ):
-                continue  # 더 긴 다른 이름의 일부(앞에 붙은 생활권 지역명은 예외 — "세종두미소신경과의원")
+            if start > 0 and _WORD.match(answer[start - 1]):
+                prefix = _locality_prefix(answer, start, locality) if identity.location_free else None
+                if prefix is None:
+                    continue  # 더 긴 다른 이름의 일부(앞에 붙은 생활권 지역명은 예외 — "세종두미소신경과의원")
+                start = prefix
             if not _tail_is_boundary(answer, end, own_branch):
                 continue
             matched_kind = kind
@@ -704,7 +707,7 @@ def resolve(identity: MentionIdentity, text: str | None) -> Resolution:
 
 def name_fragments(identity: MentionIdentity) -> frozenset[str]:
     """이름의 3글자 조각 — 규칙이 놓쳤을 수 있는 답변을 고르는 데만 쓴다(판정 근거 아님)."""
-    base = _core(identity.name)
+    base = _core(identity.name, bare_branch=identity.location_free)
     fragments: set[str] = set()
     for value in {base, *_latin_variants(base)}:
         core = normalize(value)
