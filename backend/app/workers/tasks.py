@@ -350,6 +350,12 @@ from app.services.measurement_slots import (
     slots_for_run,
     summarize_observation_slots,
 )
+from app.services.month_mention_rejudge import (
+    effective_measurement_protocol,
+    month_judge_policy,
+    month_judge_policy_for,
+    month_rejudged_at,
+)
 from app.services.monthly_content_operations import (
     build_monthly_content_operations_snapshot,
 )
@@ -12507,6 +12513,31 @@ def _stored_comparison_is_matched(sov_summary) -> bool:
     )
 
 
+def _trend_edge_uses_policy(
+    db,
+    hospital_id,
+    summary: Mapping[str, Any],
+    source: tuple[int, int],
+    point: tuple[int, int],
+    current_judge: Mapping[str, Any] | None,
+) -> bool:
+    """`summary`(source 달 보고서)가 point 달과 비교해 센 값을 지금 판정 정책의 추이로 이어도 되는가.
+
+    요약에 판정 정책이 남아 있으면(2026-11-09 이후 계산) 그것이 이번 달과 같아야 한다. 남아 있지 않은 옛 요약은
+    두 달 모두 이번 달과 같은 판정 정책이고 어느 쪽도 다시 판정하지 않았을 때만 잇는다 — 재판정 전에 센 값을
+    재판정 뒤의 값과 잇지 않는다(요약을 그대로 옮긴 템플릿 갱신 행도 같다).
+    """
+    stored = summary.get("judge_policy") if isinstance(summary, Mapping) else None
+    if isinstance(stored, Mapping):
+        return current_judge is not None and dict(stored) == dict(current_judge)
+    for year, month in (source, point):
+        if month_judge_policy_for(db, hospital_id, year, month) != current_judge:
+            return False
+        if month_rejudged_at(db, hospital_id, year, month) is not None:
+            return False
+    return True
+
+
 def _comparable_trend_points(
     db, hospital_id, now: arrow.Arrow, monthly_sov_payload
 ) -> list[tuple[str, float]]:
@@ -12521,14 +12552,22 @@ def _comparable_trend_points(
     points: list[tuple[str, float]] = []
     anchor = now
     summary = monthly_sov_payload
+    # 저장된 비교 값은 그 보고서를 계산할 때의 판정으로 센 것이다 — 모든 점이 이번 달과 같은 판정 정책으로 센
+    # 값이어야 잇는다(`_trend_edge_uses_policy`). 판정 기준이 바뀐 것만으로 생긴 증감을 추이로 보이지 않는다.
+    current_judge = month_judge_policy_for(db, hospital_id, now.year, now.month)
+    source = (now.year, now.month)
     for _ in range(TREND_MAX_PRIOR_MONTHS):
         if not _stored_comparison_is_matched(summary):
             break
         prior_value = (summary.get("comparison") or {}).get("prior_sov_pct")
         if not isinstance(prior_value, (int, float)) or isinstance(prior_value, bool):
             break
-        anchor = anchor.shift(months=-1)
+        point = anchor.shift(months=-1)
+        if not _trend_edge_uses_policy(db, hospital_id, summary, source, (point.year, point.month), current_judge):
+            break
+        anchor = point
         points.append((f"{anchor.year:04d}-{anchor.month:02d}", float(prior_value)))
+        source = (anchor.year, anchor.month)
         summary = db.execute(
             select(MonthlyReport.sov_summary)
             .where(
@@ -12825,16 +12864,10 @@ def _build_monthly_report_for_hospital(
         ),
         # 동결 시점의 측정 정책 스냅샷. 두 달의 정책이 다르면(v1↔v2 경계 등)
         # 비교가 NON_COMPARABLE로 떨어진다 — 측정 기준 변경을 성과로 팔지 않는다.
-        current_protocol=(
-            (manifest.platform_provenance or {}).get("measurement_protocol")
-            if manifest is not None
-            else None
-        ),
-        prior_protocol=(
-            (prior_manifest.platform_provenance or {}).get("measurement_protocol")
-            if prior_manifest is not None
-            else None
-        ),
+        # 저장 답변을 지금 판정 규칙으로 다시 판정한 달은 판정 정책만 지금 것이다
+        # (`month_mention_rejudge`) — 측정표의 동결 기준은 고칠 수 없으므로 실제 기준을 따로 읽는다.
+        current_protocol=effective_measurement_protocol(db, manifest),
+        prior_protocol=effective_measurement_protocol(db, prior_manifest),
     )
     # 타깃별 언급 빈도는 성공 측정 **전부**로 센다. 대표 1건(evidence용)은 언급된
     # 시도를 먼저 고르므로 비율 계산에 쓰면 위로 편향된다.
@@ -13019,6 +13052,11 @@ def _build_monthly_report_for_hospital(
         monthly_sov.to_payload(),
         current_loaded.cells if current_loaded is not None else (),
     )
+    # 이 요약의 숫자·비교를 센 판정 정책. 추이 그래프가 판정 기준이 같은 값끼리만 잇는 데 쓴다 — 템플릿 갱신·AE
+    # 수정 판은 요약을 그대로 옮기므로 정책도 함께 옮겨진다.
+    judge_policy = month_judge_policy(db, manifest)
+    if judge_policy is not None:
+        monthly_sov_payload["judge_policy"] = dict(judge_policy)
     if manifest is None:
         # D38: 그 달 고정 측정이 없던 첫 달 — 측정 숫자 없이 '기준 설정' 보고서로 전달한다.
         # 측정한 AI 서비스가 없으므로 서비스별 집계 행도 없다(빈 목록은 합계 검증을 깨뜨린다).
@@ -13044,11 +13082,8 @@ def _build_monthly_report_for_hospital(
             if cell.query_intent == "LOCAL"
         ],
         current_platforms=tuple(report_platforms or ()),
-        current_protocol=(
-            (manifest.platform_provenance or {}).get("measurement_protocol")
-            if manifest is not None
-            else None
-        ),
+        # 재판정한 달은 판정 정책이 지금 것이다 — V0(옛 판정)와 같은 기준으로 잘못 비교하지 않게 실제 기준을 쓴다.
+        current_protocol=effective_measurement_protocol(db, manifest),
         current_cells=current_loaded.cells if current_loaded is not None else (),
     )
     # 원장용 첫 장의 "지금까지 올린 글" 칸. 최초 공개 사실은 철회돼도 지워지지 않으므로
