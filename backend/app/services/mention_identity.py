@@ -222,31 +222,54 @@ def _compatible(identity: MentionIdentity, locality: frozenset[str]) -> frozense
     return frozenset(locality | {term for term in extra if len(term) >= 2})
 
 
-# 광역시·도 — 위치를 모르는 경쟁 병원이라도 다른 광역시·도에 있다고 적혔으면 같은 이름의 다른 병원이다.
+# 지점·접두어로 받는 시 단위 지명 — 광역시·도와 '…시'. 동·역·구 이름은 다른 병원 이름의 앞 글자와 겹치기 쉽다.
+_CITY_LEVEL = re.compile(
+    r"^(서울|부산|대구|인천|광주|대전|울산|세종|경기|강원|충북|충남|전북|전남|경북|경남|제주|[가-힣]{1,4}시)$"
+)
+
+
+def _city_level(word: str) -> bool:
+    return _CITY_LEVEL.match(word) is not None
+
+
+# 광역시·도 — 위치를 모르는 경쟁 병원이 다른 시·도로 적혔는지 본다. '광주'만은 경기 광주시와 겹쳐 광역시 구가
+# 뒤따를 때만 받는다.
 _METRO_NAMES = {
-    "서울": ("서울", "서울시", "서울특별시"), "부산": ("부산", "부산시", "부산광역시"),
-    "대구": ("대구", "대구시", "대구광역시"), "인천": ("인천", "인천시", "인천광역시"),
-    "광주": ("광주광역시",), "대전": ("대전", "대전시", "대전광역시"), "울산": ("울산", "울산시", "울산광역시"),
-    "세종": ("세종", "세종시", "세종특별자치시"), "경기": ("경기", "경기도"), "강원": ("강원", "강원도", "강원특별자치도"),
-    "충북": ("충북", "충청북도"), "충남": ("충남", "충청남도"), "전북": ("전북", "전라북도", "전북특별자치도"),
-    "전남": ("전남", "전라남도"), "경북": ("경북", "경상북도"), "경남": ("경남", "경상남도"),
-    "제주": ("제주", "제주도", "제주특별자치도"),
+    "서울": ("서울특별시", "서울시", "서울"), "부산": ("부산광역시", "부산시", "부산"),
+    "대구": ("대구광역시", "대구시", "대구"), "인천": ("인천광역시", "인천시", "인천"),
+    "광주": ("광주광역시",), "대전": ("대전광역시", "대전시", "대전"), "울산": ("울산광역시", "울산시", "울산"),
+    "세종": ("세종특별자치시", "세종시", "세종"), "경기": ("경기도", "경기"),
+    "강원": ("강원특별자치도", "강원도", "강원"), "충북": ("충청북도", "충북"), "충남": ("충청남도", "충남"),
+    "전북": ("전북특별자치도", "전라북도", "전북"), "전남": ("전라남도", "전남"), "경북": ("경상북도", "경북"),
+    "경남": ("경상남도", "경남"), "제주": ("제주특별자치도", "제주도", "제주"),
 }
+_METRO_PARTICLE = r"(?:에서만|에서는|에서도|에서|에는|에도|에|의|은|는|이|가|도|만|과|와|으로|로)?(?![가-힣])"
+_METRO_PATTERNS = {
+    key: re.compile(r"(?<![가-힣])(?:" + "|".join(re.escape(form) for form in forms) + r")" + _METRO_PARTICLE)
+    for key, forms in _METRO_NAMES.items()
+}
+_BARE_GWANGJU = re.compile(r"(?<![가-힣])광주\s*(?:동구|서구|남구|북구|광산구)(?![가-힣])")
+# 환자가 오는 곳("서울에서 KTX로 오시는")·사는 곳("서울 주민")은 병원 위치가 아니다.
+_METRO_ORIGIN = re.compile(r"^(?:에서\S*\s*(?:\S+\s*){0,2}?(?:오|올라|내려|찾|방문|원정|KTX|기차|버스|차로)|\s*(?:주민|거주|사는|사시는|분들))")
 
 
 def _metros_in(text: str) -> set[str]:
+    """글에 적힌 광역시·도(환자가 오는 곳·사는 곳은 빼고)."""
     found: set[str] = set()
-    for key, forms in _METRO_NAMES.items():
-        for form in forms:
-            if re.search(r"(?<![가-힣])" + re.escape(form) + r"(?![가-힣])", text) or re.search(
-                r"(?<![가-힣])" + re.escape(form) + r"(?=(?:의|에서|에|은|는|이|가)(?![가-힣]))", text
-            ):
-                found.add(key)
-                break
+    for key, pattern in _METRO_PATTERNS.items():
+        for match in pattern.finditer(text):
+            head = re.match(r"(?:" + "|".join(re.escape(form) for form in _METRO_NAMES[key]) + r")", match.group(0))
+            tail = text[match.start() + (head.end() if head else 0):]
+            if _METRO_ORIGIN.match(tail):
+                continue
+            found.add(key)
+            break
+    if _BARE_GWANGJU.search(text):
+        found.add("광주")
     return found
 
 
-# '점' 없이 등록한 지점("화인마취통증의학과의원 세종") — 병원 접미사 뒤에 띄어 쓴 짧은 지명.
+# '점' 없이 등록한 지점("화인마취통증의학과의원 세종") — 병원 접미사 뒤에 띄어 쓴 시 단위 지명만.
 _BARE_BRANCH = re.compile(r"(?:의원|병원|클리닉)\s+([가-힣]{2,5})$")
 
 
@@ -256,14 +279,14 @@ def _branch(name: str) -> str | None:
     if match:
         return match.group(1)
     bare = _BARE_BRANCH.search(stripped)
-    return f"{bare.group(1)}점" if bare else None
+    return f"{bare.group(1)}점" if bare and _city_level(bare.group(1)) else None
 
 
 def _core(name: str) -> str:
     stripped = name.strip()
     without_branch = _BRANCH.sub("", stripped)
     bare = _BARE_BRANCH.search(without_branch)
-    if bare:
+    if bare and _city_level(bare.group(1)):
         without_branch = without_branch[: bare.start(1)].rstrip()
     return _LEGAL_SUFFIX.sub("", re.sub(r"\s+", "", without_branch))
 
@@ -298,6 +321,20 @@ def _latin_variants(value: str) -> set[str]:
     return variants
 
 
+def _specialty_spellings(value: str) -> set[str]:
+    """같은 진료과의 다른 표기 — '마취통증의학과' ↔ '통증의학과', '내과' ↔ '속내과'."""
+    out: set[str] = set()
+    if "마취통증의학과" in value:
+        out.add(value.replace("마취통증의학과", "통증의학과"))
+    elif "통증의학과" in value:
+        out.add(value.replace("통증의학과", "마취통증의학과"))
+    if value.endswith("속내과"):
+        out.add(value[: -len("속내과")] + "내과")
+    elif value.endswith("내과") and len(value) > len("내과"):
+        out.add(value[: -len("내과")] + "속내과")
+    return {item for item in out if len(item) >= 3}
+
+
 def name_variants(identity: MentionIdentity) -> dict[str, str]:
     """{표기: 종류} — 종류는 'full'(이름만으로 인정) 또는 'brand'(위치 증거가 있어야 인정)."""
     core = _core(identity.name)
@@ -312,6 +349,10 @@ def name_variants(identity: MentionIdentity) -> dict[str, str]:
         for value in list(full):
             if value.startswith(token) and len(value) - len(token) >= 4:
                 full.add(value[len(token):])
+    if identity.location_free:
+        # 경쟁 병원은 마케터가 줄여 적은 이름으로 등록한다 — 답변이 흔히 쓰는 진료과 표기 차이를 받는다.
+        for value in list(full):
+            full |= _specialty_spellings(value)
     brand: set[str] = set()
     for value in full:
         stripped = _SPECIALTY_TAIL.sub("", value)
@@ -335,7 +376,7 @@ def _indent(line: str) -> int:
     return len(line) - len(line.lstrip(" \t"))
 
 
-def _item_context(text: str, start: int, end: int) -> str:
+def _item_span(text: str, start: int, end: int) -> tuple[int, int]:
     """이름이 속한 항목 — 그 줄과 딸린 줄들.
 
     목록 항목이면 더 깊이 들여 쓴 하위 줄("  * **위치:**")까지, 같은 깊이의 다음 항목 앞에서 끊는다(굵게
@@ -371,11 +412,11 @@ def _item_context(text: str, start: int, end: int) -> str:
     limit = min(len(text), end + _CONTEXT_AFTER)
     line_end = text.find("\n", end)
     if line_end == -1 or line_end >= limit:
-        return text[head:limit]
+        return head, limit
     first = text[line_start:line_end]
     stripped_first = first.strip()
     if stripped_first.startswith("|"):
-        return text[head:line_end]
+        return head, line_end
     base_indent = _indent(first)
     is_bullet = _BULLET.match(stripped_first) is not None
     is_heading = stripped_first.startswith("#")
@@ -394,7 +435,12 @@ def _item_context(text: str, start: int, end: int) -> str:
             if not is_bullet and _indent(line) == 0:
                 break
         tail = following
-    return text[head:min(tail, limit)]
+    return head, min(tail, limit)
+
+
+def _item_context(text: str, start: int, end: int) -> str:
+    head, tail = _item_span(text, start, end)
+    return text[head:tail]
 
 
 def _phone_digits(phone: str | None) -> tuple[str, ...]:
@@ -449,8 +495,12 @@ def _tail_is_boundary(text: str, end: int, own_branch: str | None) -> bool:
     if branch is not None:
         # 지점명이 붙었다 — 우리 지점이 정해져 있으면 같은 지점이어야 한다("서울W내과 성남점"은 다른 병원).
         return own_branch is None or branch == own_branch
-    if own_branch and re.match(r"[\s*_)\]]*[(\[]?\s?" + re.escape(own_branch[:-1]) + r"(?![가-힣])", rest):
-        return True  # '점' 없이 적은 우리 지점("화인마취통증의학과의원 세종")
+    if own_branch:
+        bare = re.match(r"[\s*_)\]]*[(\[]?\s?([가-힣]{2,5})(?![가-힣])", rest)
+        if bare and bare.group(1) == own_branch[:-1]:
+            return True  # '점' 없이 적은 우리 지점("화인마취통증의학과의원 세종")
+        if bare and _city_level(bare.group(1)):
+            return False  # '점' 없이 적은 다른 지점("화인마취통증의학과의원 대전")
     if not rest or not _WORD.match(rest[0]):
         return True
     continuation = _CONTINUATION.match(rest)
@@ -535,9 +585,36 @@ def _names_another_place(
     return False
 
 
+def _in_another_metro(
+    context: str, start: int, end: int, identity: MentionIdentity, locality: frozenset[str]
+) -> bool:
+    """경쟁 병원 항목이 다른 광역시·도로 적혔는가 — 이름 자체("서울W내과의원")의 지명은 보지 않는다.
+
+    우리 시·도를 알면 그 시·도가 빠지고 다른 시·도가 적혔을 때, 모르면 다른 시·도가 적히고 우리 생활권 말이
+    하나도 없을 때만 다른 곳이다.
+    """
+    if not (0 <= start <= end <= len(context)):
+        return False
+    outside = context[:start] + " " * (end - start) + context[end:]
+    here = _metros_in(outside)
+    home = _metros_in(" ".join((*identity.locality_words(), *identity.compatible_terms)))
+    foreign = here - home
+    if not foreign:
+        return False
+    if home:
+        return not (here & home)
+    noutside = normalize(outside)
+    return not any(token in noutside for token in locality)
+
+
 def _locality_prefix(text: str, start: int, locality: frozenset[str]) -> bool:
-    """이름 바로 앞이 생활권 지역명이고 그 앞은 단어 경계인가("세종두미소신경과의원"의 '세종')."""
+    """이름 바로 앞이 생활권의 시 단위 지명이고 그 앞은 단어 경계인가("세종두미소신경과의원"의 '세종').
+
+    경쟁 병원에만 쓴다 — 동·역·구 이름('마포', '신기')은 다른 병원 이름의 앞 글자와 겹쳐 받지 않는다.
+    """
     for token in sorted(locality, key=len, reverse=True):
+        if not (_city_level(token) or f"{token}시" in locality):
+            continue  # '수원시'가 생활권이면 '수원'도 시 단위다
         head = start - len(token)
         if head < 0 or normalize(text[head:start]) != token:
             continue
@@ -562,7 +639,11 @@ def resolve(identity: MentionIdentity, text: str | None) -> Resolution:
     for variant, kind in variants:
         for found in _pattern(variant).finditer(answer):
             start, end = found.span()
-            if start > 0 and _WORD.match(answer[start - 1]) and not _locality_prefix(answer, start, locality):
+            if (
+                start > 0
+                and _WORD.match(answer[start - 1])
+                and not (identity.location_free and _locality_prefix(answer, start, locality))
+            ):
                 continue  # 더 긴 다른 이름의 일부(앞에 붙은 생활권 지역명은 예외 — "세종두미소신경과의원")
             if not _tail_is_boundary(answer, end, own_branch):
                 continue
@@ -570,18 +651,17 @@ def resolve(identity: MentionIdentity, text: str | None) -> Resolution:
             if kind == "full" and not _MEDICAL_ENDING.search(normalize(answer[start:end])):
                 # 접미사·진료과 없이 맨 이름만 나왔다("행복한 진료") — 흔한 낱말일 수 있어 위치 증거를 요구한다.
                 matched_kind = "brand"
-            context = _item_context(answer, start, end)
+            context_start, context_end = _item_span(answer, start, end)
+            context = answer[context_start:context_end]
             ncontext = normalize(context)
             if _has_phone(context, phone):
                 status, evidence = MATCHED, EVIDENCE_PHONE
             elif _has_road(context, road):
                 status, evidence = MATCHED, EVIDENCE_ROAD
             elif identity.location_free:
-                # 위치를 모르는 경쟁 병원 — 이름으로 판정한다. 옆 구는 같은 병원일 수 있지만, 우리와 다른 광역시·도로
-                # 적혔으면 같은 이름의 다른 병원이다. 맨 브랜드명은 우리 생활권 말이 있을 때만 인정한다.
-                home_metros = _metros_in(" ".join((*identity.locality_words(), *identity.compatible_terms)))
-                foreign_metros = _metros_in(context) - home_metros
-                if foreign_metros and not (_metros_in(context) & home_metros):
+                # 위치를 모르는 경쟁 병원 — 이름으로 판정한다(옆 구에 있을 수 있어 구는 보지 않는다). 다른 시·도로
+                # 적혔을 때만 다른 곳이다. 맨 브랜드명은 우리 생활권 말이 있을 때만 인정한다.
+                if _in_another_metro(context, start - context_start, end - context_start, identity, locality):
                     status, evidence = OTHER_LOCATION, None
                 elif matched_kind == "brand" and not any(token in ncontext for token in locality):
                     status, evidence = BRAND_UNCONFIRMED, None
