@@ -350,7 +350,11 @@ from app.services.measurement_slots import (
     slots_for_run,
     summarize_observation_slots,
 )
-from app.services.month_mention_rejudge import effective_measurement_protocol
+from app.services.month_mention_rejudge import (
+    effective_measurement_protocol,
+    month_judge_policy_for,
+    month_rejudged_at,
+)
 from app.services.monthly_content_operations import (
     build_monthly_content_operations_snapshot,
 )
@@ -12522,16 +12526,32 @@ def _comparable_trend_points(
     points: list[tuple[str, float]] = []
     anchor = now
     summary = monthly_sov_payload
+    # 저장된 비교 값은 그 보고서를 만들 때의 판정으로 센 것이다. 달을 다시 판정(`month_mention_rejudge`)했으면
+    # 그 뒤에 만든 보고서의 값만 쓰고, 모든 점이 이번 달과 같은 판정 정책이어야 잇는다 — 판정 기준이 바뀐
+    # 것만으로 생긴 증감을 추이로 보이지 않는다.
+    current_judge = month_judge_policy_for(db, hospital_id, now.year, now.month)
+    source_created_at = None
     for _ in range(TREND_MAX_PRIOR_MONTHS):
         if not _stored_comparison_is_matched(summary):
             break
         prior_value = (summary.get("comparison") or {}).get("prior_sov_pct")
         if not isinstance(prior_value, (int, float)) or isinstance(prior_value, bool):
             break
-        anchor = anchor.shift(months=-1)
+        point = anchor.shift(months=-1)
+        if month_judge_policy_for(db, hospital_id, point.year, point.month) != current_judge:
+            break
+        if source_created_at is not None and any(
+            rejudged is not None and rejudged > source_created_at
+            for rejudged in (
+                month_rejudged_at(db, hospital_id, anchor.year, anchor.month),
+                month_rejudged_at(db, hospital_id, point.year, point.month),
+            )
+        ):
+            break
+        anchor = point
         points.append((f"{anchor.year:04d}-{anchor.month:02d}", float(prior_value)))
-        summary = db.execute(
-            select(MonthlyReport.sov_summary)
+        row = db.execute(
+            select(MonthlyReport.sov_summary, MonthlyReport.created_at)
             .where(
                 MonthlyReport.hospital_id == hospital_id,
                 MonthlyReport.period_year == anchor.year,
@@ -12540,7 +12560,9 @@ def _comparable_trend_points(
             )
             .order_by(MonthlyReport.version.desc())
             .limit(1)
-        ).scalar_one_or_none()
+        ).first()
+        summary = row[0] if row is not None else None
+        source_created_at = row[1] if row is not None else None
         if not isinstance(summary, dict):
             break
     points.reverse()
@@ -13039,11 +13061,8 @@ def _build_monthly_report_for_hospital(
             if cell.query_intent == "LOCAL"
         ],
         current_platforms=tuple(report_platforms or ()),
-        current_protocol=(
-            (manifest.platform_provenance or {}).get("measurement_protocol")
-            if manifest is not None
-            else None
-        ),
+        # 재판정한 달은 판정 정책이 지금 것이다 — V0(옛 판정)와 같은 기준으로 잘못 비교하지 않게 실제 기준을 쓴다.
+        current_protocol=effective_measurement_protocol(db, manifest),
         current_cells=current_loaded.cells if current_loaded is not None else (),
     )
     # 원장용 첫 장의 "지금까지 올린 글" 칸. 최초 공개 사실은 철회돼도 지워지지 않으므로

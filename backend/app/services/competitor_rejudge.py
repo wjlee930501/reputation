@@ -360,9 +360,9 @@ def month_judge_policy_is_current(
     if manifest is None:
         return False
     if db is not None:
-        from app.services.month_mention_rejudge import effective_measurement_protocol
+        from app.services.month_mention_rejudge import month_judge_policy
 
-        protocol = effective_measurement_protocol(db, manifest)
+        protocol = month_judge_policy(db, manifest)
     else:
         provenance = (
             manifest.platform_provenance if isinstance(manifest.platform_provenance, dict) else {}

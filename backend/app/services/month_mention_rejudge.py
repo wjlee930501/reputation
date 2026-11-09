@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from app.models.hospital import Hospital
 from app.models.monthly_control import (
@@ -81,6 +81,39 @@ def latest_rejudge_run(db, manifest_id: uuid.UUID) -> OperationRun | None:
     )
 
 
+def _run_policy(run: OperationRun | None) -> dict[str, str] | None:
+    summary = run.result_summary if run is not None and isinstance(run.result_summary, dict) else None
+    policy = summary.get("judge_policy") if summary is not None else None
+    if not isinstance(policy, Mapping) or any(not isinstance(policy.get(key), str) for key in _JUDGE_KEYS):
+        return None
+    return {key: policy[key] for key in _JUDGE_KEYS}
+
+
+def month_judge_policy(db, manifest: MonthlyMeasurementManifest | None) -> dict[str, Any] | None:
+    """그 달의 실제 판정 정책 — 재판정 기록이 있으면 그것, 없으면 측정표의 동결 기준."""
+    if manifest is None:
+        return None
+    policy = _run_policy(latest_rejudge_run(db, manifest.id))
+    if policy is not None:
+        return policy
+    provenance = manifest.platform_provenance if isinstance(manifest.platform_provenance, dict) else {}
+    protocol = provenance.get("measurement_protocol")
+    if not isinstance(protocol, dict):
+        return None
+    return {key: protocol.get(key) for key in _JUDGE_KEYS}
+
+
+def month_judge_policy_for(db, hospital_id: uuid.UUID, year: int, month: int) -> dict[str, Any] | None:
+    return month_judge_policy(db, month_manifest(db, hospital_id, year, month))
+
+
+def month_rejudged_at(db, hospital_id: uuid.UUID, year: int, month: int) -> datetime | None:
+    """그 달을 마지막으로 다시 판정한 시각(없으면 None)."""
+    manifest = month_manifest(db, hospital_id, year, month)
+    run = latest_rejudge_run(db, manifest.id) if manifest is not None else None
+    return (run.completed_at or run.created_at) if run is not None else None
+
+
 def effective_measurement_protocol(db, manifest: MonthlyMeasurementManifest | None) -> dict | None:
     """그 달 측정의 실제 기준 — 측정표의 동결 기준에, 재판정했다면 그 판정 정책을 덮어쓴 것.
 
@@ -93,14 +126,8 @@ def effective_measurement_protocol(db, manifest: MonthlyMeasurementManifest | No
     protocol = provenance.get("measurement_protocol")
     if not isinstance(protocol, dict):
         return None
-    run = latest_rejudge_run(db, manifest.id)
-    summary = run.result_summary if run is not None and isinstance(run.result_summary, dict) else None
-    if summary is None:
-        return dict(protocol)
-    policy = summary.get("judge_policy")
-    if not isinstance(policy, Mapping) or any(not isinstance(policy.get(key), str) for key in _JUDGE_KEYS):
-        return dict(protocol)
-    return {**protocol, **{key: policy[key] for key in _JUDGE_KEYS}}
+    policy = _run_policy(latest_rejudge_run(db, manifest.id))
+    return {**protocol, **policy} if policy is not None else dict(protocol)
 
 
 def month_identity(manifest: MonthlyMeasurementManifest, hospital: Hospital) -> mention_identity.MentionIdentity:
@@ -192,28 +219,17 @@ def _merged_competitors(
     return merged
 
 
-def _competitor_signature(entries: Iterable[Any] | None, keys: set[str]) -> dict[str, Any]:
-    out: dict[str, Any] = {}
-    for entry in entries or []:
-        if isinstance(entry, dict):
-            key = competitor_key(str(entry.get("name") or ""))
-            if key in keys:
-                out[key] = (entry.get("is_mentioned"), entry.get("mention_rank"))
-    return out
-
-
 def build_plan(db, hospital: Hospital, year: int, month: int) -> MonthRejudgePlan:
     """읽기 전용 — 무엇이 바뀌는지. 공급자 호출·쓰기 없음."""
     manifest = month_manifest(db, hospital.id, year, month)
     plan = MonthRejudgePlan(hospital.id, hospital.name, year, month, manifest.id if manifest else None)
     if manifest is None:
         return plan
-    effective = effective_measurement_protocol(db, manifest) or {}
+    effective = month_judge_policy(db, manifest) or {}
     current = current_judge_policy()
     plan.already_current = all(effective.get(key) == current[key] for key in _JUDGE_KEYS)
     identity = month_identity(manifest, hospital)
     registered = registered_competitor_names(hospital)
-    registered_keys = {competitor_key(name) for name in registered}
     records = manifest_records(db, manifest)
     plan.records_total = len(records)
     for record in records:
@@ -224,19 +240,27 @@ def build_plan(db, hospital: Hospital, year: int, month: int) -> MonthRejudgePla
         resolution = mention_identity.resolve(identity, raw)
         to_matched = resolution.matched and record.is_mentioned is not True
         competitors = None
-        if registered:
+        # 등록 경쟁사와 이 기록에 이미 판정이 있는 이름 전부를 같은 규칙으로 다시 판정한다 — 등록에서 빠졌던
+        # 이름이 다시 등록돼도 옛 판정이 되살아나지 않게(한 달 안에 두 판정 기준이 섞이지 않게).
+        names = list(registered)
+        for entry in record.competitor_mentions or []:
+            if isinstance(entry, dict) and str(entry.get("name") or "").strip():
+                name = str(entry["name"]).strip()
+                if competitor_key(name) not in {competitor_key(known) for known in names}:
+                    names.append(name)
+        if names:
             judged = [
                 {
                     "name": name,
                     "is_mentioned": (found := mention_identity.resolve(identity.for_competitor(name), raw)).matched,
                     "mention_rank": found.rank if found.matched else None,
                 }
-                for name in registered
+                for name in names
             ]
             merged = _merged_competitors(record.competitor_mentions, judged)
-            if _competitor_signature(merged, registered_keys) != _competitor_signature(
-                record.competitor_mentions, registered_keys
-            ):
+            # 중복 항목까지 정리한 목록과 통째로 비교한다 — 보고서는 같은 이름의 첫 확정 항목을 쓰므로
+            # 마지막 항목만 비교하면 옛 판정이 남는다.
+            if merged != [dict(entry) for entry in (record.competitor_mentions or []) if isinstance(entry, dict)]:
                 competitors = merged
         if to_matched or competitors is not None:
             plan.changes.append(
@@ -259,6 +283,13 @@ def execute(db, hospital: Hospital, year: int, month: int, *, now: datetime | No
 
     이미 지금 판정 정책으로 다시 판정한 달은 아무것도 하지 않는다(멱등).
     """
+    manifest = month_manifest(db, hospital.id, year, month)
+    if manifest is not None and getattr(db.get_bind().dialect, "name", None) == "postgresql":
+        # 같은 측정표를 두 실행이 겹쳐 고치지 않게 — 기다린 뒤 다시 계획하면 앞선 실행이 남긴 기록을 보고 멈춘다.
+        db.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
+            {"key": f"month-mention-rejudge:{manifest.id}"},
+        )
     plan = build_plan(db, hospital, year, month)
     if plan.manifest_id is None or plan.already_current:
         return plan
@@ -283,7 +314,9 @@ def execute(db, hospital: Hospital, year: int, month: int, *, now: datetime | No
             hospital_id=hospital.id,
             operation_type=OPERATION_TYPE,
             state="SUCCEEDED",
-            idempotency_key=f"{OPERATION_TYPE}:{plan.manifest_id}:{policy['judge_prompt_fingerprint']}",
+            idempotency_key=(
+                f"{OPERATION_TYPE}:{plan.manifest_id}:{policy['judge_prompt_fingerprint']}:{policy['judge_model']}"
+            ),
             total_count=plan.confirmed_records,
             success_count=len(plan.changes),
             skipped_count=0,

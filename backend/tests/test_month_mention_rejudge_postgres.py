@@ -131,3 +131,38 @@ def test_months_without_a_rejudge_keep_their_frozen_protocol(pg_session, monkeyp
 
     assert effective["judge_prompt_fingerprint"] == OLD_POLICY["judge_prompt_fingerprint"]
     assert month_mention_rejudge.effective_measurement_protocol(pg_session, None) is None
+
+
+def test_duplicate_and_unregistered_competitor_entries_are_rejudged(pg_session, monkeypatch):  # noqa: F811
+    hospital, manifest, missed, _ambiguous = _seed(pg_session, monkeypatch)
+    # 같은 이름의 중복 항목(보고서는 첫 확정 항목을 쓴다)과 지금은 등록에서 빠진 이름의 옛 판정.
+    missed.competitor_mentions = [
+        {"name": RIVAL, "is_mentioned": True, "mention_rank": 1},
+        {"name": RIVAL, "is_mentioned": False, "mention_rank": None},
+        {"name": "가상멀리내과의원", "is_mentioned": True, "mention_rank": 3},
+    ]
+    hospital.competitors = [RIVAL]
+    pg_session.flush()
+
+    month_mention_rejudge.execute(pg_session, hospital, 2026, 10)
+    pg_session.flush()
+    pg_session.expire_all()
+
+    entries = pg_session.get(SovRecord, missed.id).competitor_mentions
+    assert entries == [
+        {"name": RIVAL, "is_mentioned": True, "mention_rank": 2},
+        # 등록에서 빠진 이름도 같은 규칙으로 다시 판정해 둔다 — 다시 등록돼도 옛 판정이 되살아나지 않는다.
+        {"name": "가상멀리내과의원", "is_mentioned": False, "mention_rank": None},
+    ]
+
+
+def test_idempotency_key_carries_the_whole_judge_policy(pg_session, monkeypatch):  # noqa: F811
+    hospital, _manifest, _missed, _ambiguous = _seed(pg_session, monkeypatch)
+    month_mention_rejudge.execute(pg_session, hospital, 2026, 10)
+    pg_session.flush()
+
+    run = pg_session.execute(
+        select(OperationRun).where(OperationRun.operation_type == month_mention_rejudge.OPERATION_TYPE)
+    ).scalar_one()
+    policy = month_mention_rejudge.current_judge_policy()
+    assert run.idempotency_key.endswith(f"{policy['judge_prompt_fingerprint']}:{policy['judge_model']}")

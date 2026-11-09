@@ -45,6 +45,7 @@ def run(command: str, year: int, month: int, hospital_ids: Sequence[str], *, con
         print(f"BLOCKED {exc}")
         return 1
     apply = command == "execute" and confirm
+    failed = False
     with SyncSessionLocal() as db:
         hospitals = _hospitals(db, hospital_ids)
         ids = [hospital.id for hospital in hospitals]
@@ -52,8 +53,14 @@ def run(command: str, year: int, month: int, hospital_ids: Sequence[str], *, con
         with SyncSessionLocal() as db:
             hospital = db.get(Hospital, hospital_id)
             if apply:
-                plan = month_mention_rejudge.execute(db, hospital, year, month)
-                db.commit()
+                try:
+                    plan = month_mention_rejudge.execute(db, hospital, year, month)
+                    db.commit()
+                except Exception as exc:  # noqa: BLE001 — 한 병원의 실패가 나머지를 막지 않는다
+                    db.rollback()
+                    print("FAILED", json.dumps({"hospital_id": str(hospital_id), "error": type(exc).__name__}))
+                    failed = True
+                    continue
                 status = "APPLIED"
             else:
                 plan = month_mention_rejudge.build_plan(db, hospital, year, month)
@@ -64,7 +71,7 @@ def run(command: str, year: int, month: int, hospital_ids: Sequence[str], *, con
             if plan.already_current:
                 status = "ALREADY_CURRENT"
             print(status, json.dumps(plan.summary(), ensure_ascii=False))
-    return 0
+    return 1 if failed else 0
 
 
 def main(argv: Sequence[str] | None = None) -> int:
