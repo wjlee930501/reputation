@@ -261,3 +261,24 @@ def test_multi_letter_latin_spelling_of_a_hangul_registered_name():
     identity = _identity("에스케이정형외과의원", region=("수원시 팔달구",))
 
     assert mi.resolve(identity, "* **SK정형외과의원** (수원시 팔달구)").matched
+
+
+# ── 2026-11-09 Codex 3차 검토 사례 ──
+
+
+def test_a_new_heading_does_not_borrow_the_previous_items_location():
+    answer = "### 1. 다른외과의원\n* 위치: 수원시 팔달구\n### 2. 장편한외과의원 (부산 해운대구)"
+
+    assert mi.resolve(JANG, answer).status == mi.OTHER_LOCATION
+
+
+def test_superlatives_after_a_place_are_still_the_clinics_location():
+    answer = "부산 해운대구에서 가장 유명한 장편한외과의원을 추천합니다."
+
+    assert mi.resolve(JANG, answer).status == mi.OTHER_LOCATION
+
+
+def test_prose_after_a_list_does_not_borrow_the_lists_location():
+    answer = "* 다른외과의원 (수원시 팔달구)\n장편한외과의원은 부산 해운대구에 있습니다."
+
+    assert mi.resolve(JANG, answer).status == mi.OTHER_LOCATION

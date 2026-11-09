@@ -311,21 +311,23 @@ def _item_context(text: str, start: int, end: int) -> str:
     # 위로 올라가며 같은 문단의 앞줄과 상위 목록 줄을 함께 읽는다("부산 해운대구에 위치한\n장편한외과의원",
     # "* 부산 해운대구\n  * 장편한외과의원"). 같은 깊이의 앞 항목·제목·빈 줄에서 멈춘다.
     cursor = line_start
-    while cursor > 0 and start - cursor < _CONTEXT_BEFORE:
+    # 제목 줄은 새 단락의 시작이다 — 위 항목의 위치를 빌려 오지 않는다.
+    while not first_line.strip().startswith("#") and cursor > 0 and start - cursor < _CONTEXT_BEFORE:
         previous_start = text.rfind("\n", 0, cursor - 1) + 1
         previous = text[previous_start:cursor - 1]
         stripped = previous.strip()
         if not stripped or stripped.startswith(("#", "|", "---")):
             break
-        previous_is_bullet = _BULLET.match(stripped) is not None
-        if previous_is_bullet and _indent(previous) >= match_indent and match_is_bullet:
-            break  # 같은 깊이(또는 더 깊은) 앞 항목 — 옆 항목이다
-        if not previous_is_bullet and match_is_bullet:
+        if _BULLET.match(stripped) is not None:
+            # 목록 줄은 이 항목의 진짜 상위 항목(덜 들여 쓴 줄)일 때만 읽는다. 같은 깊이의 앞 항목이나
+            # 목록 뒤에 이어진 문단의 앞 목록은 옆 항목이다.
+            if match_is_bullet and _indent(previous) < match_indent:
+                head = previous_start
+            break
+        if match_is_bullet:
             break  # 목록 앞의 문단은 목록 전체의 머리말일 수 있어 항목 근거로 쓰지 않는다
         head = previous_start
         cursor = previous_start
-        if previous_is_bullet:
-            break  # 상위 목록 줄까지만
     limit = min(len(text), end + _CONTEXT_AFTER)
     line_end = text.find("\n", end)
     if line_end == -1 or line_end >= limit:
@@ -419,7 +421,10 @@ def _tail_is_boundary(text: str, end: int, own_branch: str | None) -> bool:
 
 
 # 그 지역 '주민'·'거주자'처럼 병원 위치가 아니라 오는 사람을 말하는 지명("용산구 주민도 이용하기 편리").
-_RESIDENTS_AFTER = re.compile(r"^\s?(?:주민|거주|에서도|에서 오|에서 가|쪽에서|방면에서|권역 주민|근처 주민|인근 주민)")
+_RESIDENTS_AFTER = re.compile(
+    r"^\s?(?:주민|거주|에 사는|에서도 (?:오|찾|방문|이용|다니)|에서 오(?:시|는|기)|에서 다니|쪽에서 오|방면에서 오|"
+    r"권역 주민|근처 주민|인근 주민)"
+)
 _METRO = ("특별자치시", "광역시", "특별시")
 
 
