@@ -1040,6 +1040,33 @@ def test_keyword_only_service_is_excluded_from_topic_selection():
     assert target_fits_hospital(bone, _gangsimjang(keywords=["마산 내과"]))
 
 
+def test_object_shaped_treatments_count_as_offered_services():
+    """운영 진료 항목은 `{"name", "description"}` 객체다 — 이름을 읽어야 한다(2026-11-10)."""
+
+    def _objects(*names):
+        return [{"name": name, "description": f"{name} 설명"} for name in names]
+
+    endoscopy = SimpleNamespace(name="인천 부평구에서 위내시경 받을 수 있는 병원 알려줘", treatment="위내시경", specialty=None)
+    colon = SimpleNamespace(name="청천동 대장내시경 가능한 병원 추천해줘", treatment="대장내시경", specialty=None)
+    ultrasound = SimpleNamespace(name="청천동 복부초음파 가능한 병원 추천해줘", treatment="복부초음파", specialty=None)
+    bone = SimpleNamespace(name="마산 골밀도검사 가능한 병원 찾기", treatment=None, specialty=None)
+    hospital = SimpleNamespace(
+        name="장이편한내과의원",
+        specialties=["내과", "소화기내과"],
+        treatments=_objects("위내시경", "대장내시경·대장용종절제술", "복부초음파 (상복부)", "만성질환 관리"),
+        keywords=["청천동내과", "위내시경", "대장내시경", "복부초음파", "골밀도검사"],
+    )
+
+    assert target_fits_hospital(endoscopy, hospital)
+    assert target_fits_hospital(colon, hospital)
+    assert target_fits_hospital(ultrasound, hospital)
+    # 객체 진료 항목에도 없는 키워드 검사는 여전히 빠진다.
+    assert target_names_unoffered_service(bone, hospital)
+    # 이름이 없거나 모양이 깨진 칸은 건너뛴다 — 진료 항목으로 세지 않으므로 키워드 검사는 빠진다.
+    broken = SimpleNamespace(**{**vars(hospital), "treatments": [{"description": "이름 없음"}, None, 3]})
+    assert target_names_unoffered_service(endoscopy, broken)
+
+
 def test_topic_swap_never_picks_a_keyword_only_service(monkeypatch):
     from app.services import content_target_planner
 

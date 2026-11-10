@@ -186,6 +186,21 @@ def _offered_matches(term: str, service: str) -> bool:
     return stem.endswith(_SERVICE_SUFFIXES) and _offered_matches(stem, service)
 
 
+def _offered_name(item: object) -> str | None:
+    """진료 항목 한 칸의 이름. 저장 모양은 `{"name": …, "description": …}`이고 옛 값·테스트는 문자열이다.
+
+    2026-11-10 전에는 문자열만 읽어, 객체로 저장된 진료 항목 전부를 빈 것으로 봤다 — 키워드에 있는
+    `위내시경`·`복부초음파`가 진료 항목에 있어도 "키워드에만 있는 검사"로 글 주제 후보에서 빠졌다.
+    """
+
+    if isinstance(item, str):
+        return item
+    if isinstance(item, Mapping):
+        name = item.get("name")
+        return name if isinstance(name, str) else None
+    return None
+
+
 def target_names_unoffered_service(target: Any, hospital: object) -> bool:
     """질문의 검사·시술이 병원 키워드에만 있고 승인 프로필 진료 항목에는 없는가.
 
@@ -202,8 +217,8 @@ def target_names_unoffered_service(target: Any, hospital: object) -> bool:
     offered = [
         _normalize(value)
         for field in ("treatments", "specialties", "hero_specialties")
-        for value in (getattr(hospital, field, None) or [])
-        if isinstance(value, str)
+        for value in (_offered_name(item) for item in (getattr(hospital, field, None) or []))
+        if value
     ]
     offered = [value for value in offered if len(value) >= 2]
     if not keywords or not offered:
