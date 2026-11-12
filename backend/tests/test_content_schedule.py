@@ -58,7 +58,7 @@ class _FakeDB:
 
     async def execute(self, statement):
         if str(statement).startswith(
-            ("SELECT content_schedules.plan", "SELECT admin_audit_logs.detail")
+            ("SELECT content_schedules.plan", "SELECT admin_audit_logs.detail", "SELECT admin_audit_logs.created_at", "SELECT min(content_schedules.active_from)")
         ):
             # 요금제 조회·첫 일정 감사행(안분 근거) — 이 더블에는 없다(요금제 편수 그대로).
             return _ExecuteResult(hospital=None)

@@ -59,7 +59,11 @@ from app.services.content_engine import (
     FORBIDDEN_CHECK_FIELDS,
     _normalize_references,
 )
-from app.services.content_month_target import month_content_target
+from app.services.content_month_target import (
+    month_content_target,
+    month_is_voided,
+    schedule_change_records_stmt,
+)
 from app.services.content_publication import (
     PUBLICATION_CHECK_FIELDS,
     apply_publication_assessment,
@@ -133,6 +137,8 @@ from app.services.reference_verification import (
     reason_label,
 )
 from app.services.schedule_reconciliation import (
+    DEFERRED_START_KEY,
+    defer_unstarted_contract,
     month_items_query,
     remaining_month_slots,
     retime_open_allocations,
@@ -367,6 +373,11 @@ async def set_schedule(
     for old in old_schedules:
         if old not in future_heads:
             old.is_active = False
+    # 계약 시작 전(어떤 일정도 시작 전·공개 0편) 병원이면 새 시작 달 앞 슬롯을 종료하고
+    # 그 달 약속을 0편으로 남긴다(시작일을 뒤 달로 미룬 경우).
+    deferred_start = await defer_unstarted_contract(
+        db, hospital_id, new_start=body.active_from, today=today_kst
+    )
     # Preserve all identities, publications, claims and generated/human work.
     # A replacement only fills the unallocated hospital/month obligation.
     target_month = arrow.get(body.active_from).floor("month")
@@ -384,7 +395,24 @@ async def set_schedule(
     ).scalar_one_or_none() or body.plan
     # 그 달 약속 편수. 시스템이 안분한 첫 계약 월은 그 편수다(content_month_target) — 사람이
     # 같은 달에 요일·시작일을 바꿔 교체해도 요금제 편수로 다시 채우지 않는다(0편 달 포함).
-    month_target = await month_content_target(db, hospital_id, target_month, period_plan)
+    # 시작일을 미뤄 0편으로 둔 달 안이나 앞으로 다시 당기면 그 달은 다시 약속 달이다 — 미룰 때
+    # 종료한 슬롯(공개된 적 없는 CANCELLED)은 배정으로 세지 않고 새 슬롯으로 채운다.
+    reopening_voided_month = month_is_voided(
+        (await db.execute(schedule_change_records_stmt(hospital_id))).all(), target_month
+    )
+    if reopening_voided_month:
+        existing_rows = [
+            row
+            for row in existing_rows
+            if not (
+                row.status == ContentStatus.CANCELLED
+                and row.first_published_at is None
+                and row.published_at is None
+            )
+        ]
+    month_target = await month_content_target(
+        db, hospital_id, target_month, period_plan, ignore_void=reopening_voided_month
+    )
 
     schedule = ContentSchedule(
         hospital_id=hospital_id,
@@ -492,6 +520,10 @@ async def set_schedule(
             "slots_created": len(created_items),
             "slots_rescheduled": rescheduled_count,
             "future_contract_preserved": bool(future_heads),
+            "slots_cancelled_before_start": len(deferred_start["cancelled_ids"])
+            if deferred_start
+            else 0,
+            DEFERRED_START_KEY: deferred_start,
             "old_schedule_ids": [str(sid) for sid in old_schedule_ids],
             # 이 엔드포인트가 병원 상태를 바꿀 수 있으므로 변경 전후를 남긴다.
             # 남기지 않으면 재활성화가 감사 추적에 전혀 드러나지 않는다.
@@ -553,6 +585,8 @@ async def set_schedule(
         "slots_created": len(created_items),
         "slots_rescheduled": rescheduled_count,
         "future_contract_preserved": bool(future_heads),
+        "slots_cancelled_before_start": len(deferred_start["cancelled_ids"]) if deferred_start else 0,
+        "slots_kept_before_start": len(deferred_start["kept_human_edited_ids"]) if deferred_start else 0,
         "first_publish_date": str(created_items[0].scheduled_date) if created_items else None,
     }
 

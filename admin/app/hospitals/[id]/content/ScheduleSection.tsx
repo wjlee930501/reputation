@@ -40,7 +40,7 @@ export function ScheduleSection({
   const [refreshWarning, setRefreshWarning] = useState<string | null>(null)
   // 슬롯이 하나도 만들어지지 않으면 backend가 first_publish_date를 null로 내려준다
   // (api/admin/content.py). 타입이 string이면 화면은 없는 날짜를 있다고 말한다(M-22).
-  const [result, setResult] = useState<{ slots_created: number; first_publish_date: string | null } | null>(null)
+  const [result, setResult] = useState<{ slots_created: number; first_publish_date: string | null; slots_cancelled_before_start?: number; slots_kept_before_start?: number } | null>(null)
   const [confirmingReplacement, setConfirmingReplacement] = useState(false)
 
   // 현재 운영 중인 발행 일정 — 404는 "아직 발행 일정 없음"으로 처리
@@ -164,7 +164,7 @@ export function ScheduleSection({
     setLoading(true)
     setError(null)
     try {
-      const data = await fetchAPI<{ plan: ScheduleInfo['plan']; slots_created: number; first_publish_date: string | null; publish_days: number[] }>(
+      const data = await fetchAPI<{ plan: ScheduleInfo['plan']; slots_created: number; first_publish_date: string | null; publish_days: number[]; slots_cancelled_before_start?: number; slots_kept_before_start?: number }>(
         `/admin/hospitals/${hospitalId}/schedule`,
         {
           method: 'POST',
@@ -272,8 +272,16 @@ export function ScheduleSection({
           <div className="rounded-xl border border-green-200 bg-green-50 p-4 sm:p-6">
             <p className="text-base font-medium text-green-800">발행 일정 설정 완료</p>
             <p className="mt-2 text-sm text-green-700">
-              {result.slots_created}개의 콘텐츠 항목을 추가했습니다. 기존 원고는 유지합니다.
+              {result.slots_created}개의 콘텐츠 항목을 추가했습니다.
+              {result.slots_cancelled_before_start
+                ? ` 새 시작일 이전 달의 미발행 항목 ${result.slots_cancelled_before_start}개는 종료했습니다(자동 생성·발행 제외).`
+                : ' 기존 원고는 유지합니다.'}
             </p>
+            {result.slots_kept_before_start ? (
+              <p className="mt-1 text-sm text-amber-700">
+                직접 고친 원고 {result.slots_kept_before_start}개는 종료하지 않았습니다. 필요하면 콘텐츠 목록에서 종료해 주세요.
+              </p>
+            ) : null}
             <p className="mt-1 text-sm text-green-700">
               추가 항목 첫 예정일: <strong>{result.first_publish_date ?? '추가 항목 없음'}</strong>
             </p>

@@ -42,10 +42,11 @@ from tests.publication_test_support import verified_reference_checks
 pytestmark = pytest.mark.asyncio
 
 # 병원 1 + 콘텐츠 준비 묶음 3(승인·자료·노이즈) + 인시던트 2 + 이번 달 콘텐츠 1 +
-# 공개 기준 묶음 2 + 주간 언급률 1. 인시던트·콘텐츠·남은 초안이 몇 건이든 이 수는 그대로여야
+# 공개 기준 묶음 2 + 주간 언급률 1 + 일정 저장 기록 1(첫 발행 전 시작일을 미룬 달의 0편 판정 —
+# JSON 배열 포함 판정이 SQLite에서 돌지 않아 따로 읽는다, 병원당 몇 행). 인시던트·콘텐츠·남은 초안이 몇 건이든 이 수는 그대로여야
 # 한다 — 남은 보류 초안은 Phase 4(D33)부터 읽지 않고, 당월 유효 약정은 콘텐츠 조회에 scalar subquery로
 # 결합한다. 다음 달 요금제 변경이나 발행 글 0건도 별도 왕복 조회를 추가하지 않는다.
-_OVERVIEW_STATEMENT_BUDGET = 10
+_OVERVIEW_STATEMENT_BUDGET = 11
 
 
 async def _hospital(
