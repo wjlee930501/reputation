@@ -198,14 +198,23 @@ def month_content_target_sync(
 
 
 async def month_content_target(
-    db: AsyncSession, hospital_id: uuid.UUID, month: arrow.Arrow, plan: object
+    db: AsyncSession,
+    hospital_id: uuid.UUID,
+    month: arrow.Arrow,
+    plan: object,
+    *,
+    ignore_void: bool = False,
 ) -> int | None:
-    """`month_content_target_sync`의 async 판. 사람의 일정 교체 경로가 쓴다."""
+    """`month_content_target_sync`의 async 판. 사람의 일정 교체 경로가 쓴다.
+
+    `ignore_void`는 미룬 달 안이나 앞으로 시작일을 다시 당기는 일정 저장이 쓴다 — 그 저장의
+    감사행이 미룬 기록을 풀기 전에 그 달 약속을 계산하기 때문이다.
+    """
 
     quota = monthly_quota_for_plan(plan)
     if quota is None:
         return None
-    if month_is_voided(
+    if not ignore_void and month_is_voided(
         (await db.execute(schedule_change_records_stmt(hospital_id))).all(), month
     ):
         allocated = (

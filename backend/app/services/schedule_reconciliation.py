@@ -126,8 +126,8 @@ async def retime_open_allocations(db, existing, planned, *, today):
 # 아직 어떤 일정도 시작하지 않았고 한 편도 공개한 적 없는 병원의 일정을 저장하면, 새 시작일의
 # 달보다 앞 달에 남은 슬롯은 계약 시작 전 슬롯이다(2026-11-12 365서귀포삼성정형외과: 11/13
 # 시작을 12/1로 옮겼는데 11월 슬롯 8개가 남아 그대로 생성·발행될 뻔했다). 이때 그 앞 달의
-# 미발행 슬롯을 종료(CANCELLED)하고, 살아 있는 슬롯이 남지 않은 달은 약속 0편으로 기록한다
-# (`content_month_target.month_is_voided`가 이 기록을 읽는다). 사람이 고친 원고는 종료하지 않는다.
+# 미발행 슬롯을 종료(CANCELLED)하고, 그 앞 달들을 미룬 달로 기록해 약속을 살아 있는 슬롯 수(보통
+# 0편)로 둔다(`content_month_target.month_is_voided`가 읽는다). 사람이 고친 원고는 종료하지 않는다.
 # 한 일정이라도 이미 시작했거나(시작일 ≤ 오늘) 공개한 글이 있으면 대상이 아니다 — 그때 늦은
 # 시작일은 "그날부터 새 조건"이고 그 사이 달의 약속은 옛 조건 그대로다.
 
@@ -146,7 +146,6 @@ async def defer_unstarted_contract(db, hospital_id, *, new_start, today):
     import arrow
 
     from app.models.content import ContentSchedule
-    from app.services.content_month_target import month_allocation_count_stmt
 
     earliest_start = (
         await db.execute(
@@ -222,21 +221,19 @@ async def defer_unstarted_contract(db, hospital_id, *, new_start, today):
         else:
             kept.append(str(row.id))
 
-    # 종료한 슬롯의 달 중 살아 있는 슬롯이 남지 않은 달은 약속 0편이다.
-    months = sorted(
-        {
-            arrow.get(row.carried_over_from or row.scheduled_date).floor("month")
-            for row in rows
-            if (row.carried_over_from or row.scheduled_date) is not None
-        }
-    )
+    # 계약 시작 전의 모든 달(가장 이른 일정 시작 달 ~ 새 시작 달 앞)을 미룬 달로 기록한다 — 슬롯이
+    # 없던 달도 넣어야 당월 조정이 옛 일정으로 그 달 슬롯을 새로 만들지 않는다. 미룬 달의 약속은
+    # 살아 있는 슬롯 수(사람이 고쳐 남긴 원고)까지다(`content_month_target.resolve_month_target`).
+    contract_dates = [
+        row.carried_over_from or row.scheduled_date
+        for row in rows
+        if (row.carried_over_from or row.scheduled_date) is not None
+    ]
+    month = arrow.get(min([earliest_start, *contract_dates])).floor("month")
     voided: list[str] = []
-    for month in months:
-        live = (
-            await db.execute(month_allocation_count_stmt(hospital_id, month))
-        ).scalar_one_or_none() or 0
-        if live == 0:
-            voided.append(month.format("YYYY-MM"))
+    while month.date() < new_month:
+        voided.append(month.format("YYYY-MM"))
+        month = month.shift(months=1)
     return {
         "earliest_schedule_start": str(earliest_start),
         "new_start": str(new_start),

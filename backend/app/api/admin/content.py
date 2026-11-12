@@ -59,7 +59,11 @@ from app.services.content_engine import (
     FORBIDDEN_CHECK_FIELDS,
     _normalize_references,
 )
-from app.services.content_month_target import month_content_target
+from app.services.content_month_target import (
+    month_content_target,
+    month_is_voided,
+    schedule_change_records_stmt,
+)
 from app.services.content_publication import (
     PUBLICATION_CHECK_FIELDS,
     apply_publication_assessment,
@@ -391,7 +395,24 @@ async def set_schedule(
     ).scalar_one_or_none() or body.plan
     # 그 달 약속 편수. 시스템이 안분한 첫 계약 월은 그 편수다(content_month_target) — 사람이
     # 같은 달에 요일·시작일을 바꿔 교체해도 요금제 편수로 다시 채우지 않는다(0편 달 포함).
-    month_target = await month_content_target(db, hospital_id, target_month, period_plan)
+    # 시작일을 미뤄 0편으로 둔 달 안이나 앞으로 다시 당기면 그 달은 다시 약속 달이다 — 미룰 때
+    # 종료한 슬롯(공개된 적 없는 CANCELLED)은 배정으로 세지 않고 새 슬롯으로 채운다.
+    reopening_voided_month = month_is_voided(
+        (await db.execute(schedule_change_records_stmt(hospital_id))).all(), target_month
+    )
+    if reopening_voided_month:
+        existing_rows = [
+            row
+            for row in existing_rows
+            if not (
+                row.status == ContentStatus.CANCELLED
+                and row.first_published_at is None
+                and row.published_at is None
+            )
+        ]
+    month_target = await month_content_target(
+        db, hospital_id, target_month, period_plan, ignore_void=reopening_voided_month
+    )
 
     schedule = ContentSchedule(
         hospital_id=hospital_id,

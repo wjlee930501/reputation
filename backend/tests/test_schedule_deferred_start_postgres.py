@@ -148,14 +148,46 @@ async def test_moving_an_unstarted_start_to_next_month_cancels_old_slots(frozen_
             assert await month_content_target(db, hospital_id, NOV, "PLAN_12") == 0
             assert await month_content_target(db, hospital_id, DEC, "PLAN_12") == 12
 
-        # 다시 11월 시작으로 저장하면 11월은 다시 약속 달이다(0편 기록이 풀린다).
+        # 다시 11월 시작으로 저장하면 11월은 다시 약속 달이고 새 슬롯이 생긴다(0편 기록이 풀린다).
         async with AsyncSession(engine, expire_on_commit=False) as db:
             body = content_api.ScheduleCreate(
-                plan="PLAN_12", publish_days=[0, 2, 4], active_from=date(2026, 11, 20)
+                plan="PLAN_12", publish_days=[0, 2, 4], active_from=date(2026, 11, 13)
+            )
+            reopened = await content_api.set_schedule(hospital_id, body, db=db)
+        assert reopened["slots_created"] == 8
+        async with AsyncSession(engine, expire_on_commit=False) as db:
+            target = await month_content_target(db, hospital_id, NOV, "PLAN_12")
+            assert target == 8
+            rows = await _statuses(db, hospital_id)
+            live = [d for d, s in rows if d.month == 11 and s != ContentStatus.CANCELLED]
+            assert len(live) == reopened["slots_created"]
+            assert min(live) >= date(2026, 11, 13)
+    finally:
+        if hospital_id is not None:
+            await _cleanup(engine, hospital_id)
+        await engine.dispose()
+
+
+async def test_two_month_deferral_voids_the_month_in_between(frozen_today):
+    """11/13 → 2027-01-01이면 슬롯이 없던 12월도 0편이다 — 당월 조정이 옛 일정으로 12월을 채우지 않는다."""
+    engine = _engine()
+    hospital_id = None
+    try:
+        async with AsyncSession(engine, expire_on_commit=False) as db:
+            hospital, _schedule, _items = await _seed(db)
+            hospital_id = hospital.id
+        async with AsyncSession(engine, expire_on_commit=False) as db:
+            body = content_api.ScheduleCreate(
+                plan="PLAN_12", publish_days=[0, 2, 4], active_from=date(2027, 1, 1)
             )
             await content_api.set_schedule(hospital_id, body, db=db)
         async with AsyncSession(engine, expire_on_commit=False) as db:
-            assert await month_content_target(db, hospital_id, NOV, "PLAN_12") != 0
+            assert await month_content_target(db, hospital_id, NOV, "PLAN_12") == 0
+            assert await month_content_target(db, hospital_id, DEC, "PLAN_12") == 0
+            assert (
+                await month_content_target(db, hospital_id, arrow.get("2027-01-01"), "PLAN_12")
+                == 12
+            )
     finally:
         if hospital_id is not None:
             await _cleanup(engine, hospital_id)
@@ -259,8 +291,8 @@ async def test_human_edited_slot_is_kept_and_its_month_stays_promised(frozen_tod
         async with AsyncSession(engine, expire_on_commit=False) as db:
             edited = await db.get(ContentItem, edited_id)
             assert edited.status == ContentStatus.DRAFT
-            # 살아 있는 슬롯이 남은 달은 0편으로 기록하지 않는다.
-            assert await month_content_target(db, hospital_id, NOV, "PLAN_12") == 8
+            # 미룬 달의 약속은 살아 있는 슬롯 수(사람이 고쳐 남긴 원고 1편)다.
+            assert await month_content_target(db, hospital_id, NOV, "PLAN_12") == 1
     finally:
         if hospital_id is not None:
             await _cleanup(engine, hospital_id)
