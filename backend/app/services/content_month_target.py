@@ -117,8 +117,52 @@ def month_allocation_count_stmt(hospital_id: uuid.UUID, month: arrow.Arrow):
     )
 
 
+def schedule_change_records_stmt(hospital_id: uuid.UUID):
+    """병원의 일정 저장 감사행(시각·detail) — 시작일 미루기가 0편으로 둔 달을 가린다."""
+
+    return (
+        select(AdminAuditLog.created_at, AdminAuditLog.detail)
+        .where(
+            AdminAuditLog.hospital_id == hospital_id,
+            AdminAuditLog.action == "set_schedule",
+        )
+        .order_by(AdminAuditLog.created_at, AdminAuditLog.id)
+    )
+
+
+def month_is_voided(records, month: arrow.Arrow) -> bool:
+    """첫 발행 전 시작일 미루기가 그 달을 약속 0편으로 기록했고, 그 뒤 그 달을 다시 연 일정이 없는가.
+
+    기록은 사람의 일정 교체 감사행(`set_schedule`)의 `deferred_start.voided_months`다
+    (`schedule_reconciliation.defer_unstarted_contract`). 그 뒤에 시작일이 그 달 안이나 앞인
+    일정을 다시 저장했으면 그 달은 다시 약속 달이다. `records`는 시각 순서의 (시각, detail).
+    """
+
+    key = month.floor("month").format("YYYY-MM")
+    month_end = month.ceil("month").date()
+    voided = False
+    for _created_at, detail in records:
+        if not isinstance(detail, dict):
+            continue
+        deferred = detail.get("deferred_start")
+        if isinstance(deferred, dict) and key in (deferred.get("voided_months") or []):
+            voided = True
+            continue
+        try:
+            start = date.fromisoformat(str(detail.get("active_from")))
+        except ValueError:
+            continue
+        if start <= month_end:
+            voided = False
+    return voided
+
+
 def resolve_month_target(
-    quota: int | None, first_month_target: int | None, allocated: int = 0
+    quota: int | None,
+    first_month_target: int | None,
+    allocated: int = 0,
+    *,
+    voided: bool = False,
 ) -> int | None:
     """요금제 편수와 첫 일정이 기록한 첫 달 약속 편수로 그 달 약속 편수를 정한다.
 
@@ -128,6 +172,9 @@ def resolve_month_target(
 
     if quota is None:
         return None
+    if voided:
+        # 시작을 뒤 달로 미룬 달 — 그 뒤에 살아 있는 슬롯이 생겼으면 그 수까지만 약속이다.
+        return min(quota, allocated)
     if first_month_target is not None and first_month_target < quota:
         return min(quota, max(first_month_target, allocated))
     return quota
@@ -139,6 +186,9 @@ def month_content_target_sync(
     quota = monthly_quota_for_plan(plan)
     if quota is None:
         return None
+    if month_is_voided(db.execute(schedule_change_records_stmt(hospital_id)).all(), month):
+        allocated = db.scalar(month_allocation_count_stmt(hospital_id, month)) or 0
+        return resolve_month_target(quota, None, allocated, voided=True)
     detail = db.scalar(initial_schedule_record_stmt(hospital_id))
     recorded = recorded_first_month_target(detail, month)
     if recorded is None or recorded >= quota:
@@ -155,6 +205,13 @@ async def month_content_target(
     quota = monthly_quota_for_plan(plan)
     if quota is None:
         return None
+    if month_is_voided(
+        (await db.execute(schedule_change_records_stmt(hospital_id))).all(), month
+    ):
+        allocated = (
+            await db.execute(month_allocation_count_stmt(hospital_id, month))
+        ).scalar_one_or_none() or 0
+        return resolve_month_target(quota, None, allocated, voided=True)
     detail = (await db.execute(initial_schedule_record_stmt(hospital_id))).scalar_one_or_none()
     recorded = recorded_first_month_target(detail, month)
     if recorded is None or recorded >= quota:

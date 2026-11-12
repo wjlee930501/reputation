@@ -133,6 +133,8 @@ from app.services.reference_verification import (
     reason_label,
 )
 from app.services.schedule_reconciliation import (
+    DEFERRED_START_KEY,
+    defer_unstarted_contract,
     month_items_query,
     remaining_month_slots,
     retime_open_allocations,
@@ -367,6 +369,11 @@ async def set_schedule(
     for old in old_schedules:
         if old not in future_heads:
             old.is_active = False
+    # 계약 시작 전(어떤 일정도 시작 전·공개 0편) 병원이면 새 시작 달 앞 슬롯을 종료하고
+    # 그 달 약속을 0편으로 남긴다(시작일을 뒤 달로 미룬 경우).
+    deferred_start = await defer_unstarted_contract(
+        db, hospital_id, new_start=body.active_from, today=today_kst
+    )
     # Preserve all identities, publications, claims and generated/human work.
     # A replacement only fills the unallocated hospital/month obligation.
     target_month = arrow.get(body.active_from).floor("month")
@@ -492,6 +499,10 @@ async def set_schedule(
             "slots_created": len(created_items),
             "slots_rescheduled": rescheduled_count,
             "future_contract_preserved": bool(future_heads),
+            "slots_cancelled_before_start": len(deferred_start["cancelled_ids"])
+            if deferred_start
+            else 0,
+            DEFERRED_START_KEY: deferred_start,
             "old_schedule_ids": [str(sid) for sid in old_schedule_ids],
             # 이 엔드포인트가 병원 상태를 바꿀 수 있으므로 변경 전후를 남긴다.
             # 남기지 않으면 재활성화가 감사 추적에 전혀 드러나지 않는다.
@@ -553,6 +564,8 @@ async def set_schedule(
         "slots_created": len(created_items),
         "slots_rescheduled": rescheduled_count,
         "future_contract_preserved": bool(future_heads),
+        "slots_cancelled_before_start": len(deferred_start["cancelled_ids"]) if deferred_start else 0,
+        "slots_kept_before_start": len(deferred_start["kept_human_edited_ids"]) if deferred_start else 0,
         "first_publish_date": str(created_items[0].scheduled_date) if created_items else None,
     }
 
