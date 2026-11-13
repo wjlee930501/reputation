@@ -245,6 +245,12 @@ def _province_key(token: str) -> str | None:
     return stem if stem in _PROVINCES else None
 
 
+def province_key(token: str) -> str | None:
+    """주소 토큰 하나의 시·도 짧은 이름("대구광역시" → "대구"). 시·도가 아니면 None."""
+
+    return _province_key(token)
+
+
 def _local_keys(token: str) -> set[str]:
     """시·군·구·읍·면·동 토큰의 비교 키 — 이름 그대로와(두 글자 이상이면) 단위를 뺀 이름."""
 

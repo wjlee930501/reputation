@@ -163,7 +163,7 @@ def test_0094_restores_schema_and_existing_production_shape_upgrades_to_0093() -
         rerun = _alembic("upgrade", _OPERATING)
         assert rerun.returncode == 0, rerun.stderr
 
-        head = _alembic("upgrade", "head")
+        head = _alembic("upgrade", _HEAD)
         assert head.returncode == 0, head.stderr
         with engine.connect() as connection:
             assert _version(connection) == _HEAD

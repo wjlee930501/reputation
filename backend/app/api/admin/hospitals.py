@@ -60,6 +60,7 @@ from app.services import (
     profile_completion,
     profile_facts_source,
     profile_provenance,
+    site_layout,
 )
 from app.services.asset_storage import store_asset_bytes
 from app.services.audit_log import default_actor, write_audit_log
@@ -244,6 +245,8 @@ class HospitalProfileUpdate(BaseModel):
     hero_description: str | None = Field(None, max_length=320)
     image_style_direction: str | None = Field(None, max_length=600)
     site_access_mode: Literal["urgent", "appointment", "specialist"] | None = None
+    # 공개 사이트 레이아웃 — 마케터가 고른 A/B/C. 비우면 레이아웃 도입 전 화면으로 돌아간다.
+    site_layout: Literal["A", "B", "C"] | None = None
 
     # 진료 항목
     treatments: list[TreatmentItem] | None = None
@@ -287,7 +290,7 @@ class HospitalProfileUpdate(BaseModel):
     # 운영 화면의 '자동 선택' 항목은 빈 문자열을 보낸다. 이를 Literal 위반으로 거부하면
     # 프로파일 전체를 한 번에 PATCH하는 화면에서 요청 전체가 422가 되어, 같이 보낸
     # 대표색·첫 화면 카피·이미지 방향까지 저장되지 않는다.
-    @field_validator("hero_media_kind", "site_access_mode", mode="before")
+    @field_validator("hero_media_kind", "site_access_mode", "site_layout", mode="before")
     @classmethod
     def blank_selection_clears_field(cls, value: object) -> object:
         if isinstance(value, str) and not value.strip():
@@ -481,6 +484,7 @@ PUBLIC_PROFILE_FIELDS = {
     "hero_description",
     "image_style_direction",
     "site_access_mode",
+    "site_layout",
     "treatments",
 }
 
@@ -767,6 +771,26 @@ async def _ae_owners(
     }
 
 
+@router.get("/site-layout-distribution")
+async def get_site_layout_distribution(
+    address: str | None = Query(default=None, max_length=300),
+    region: list[str] | None = Query(default=None),
+    exclude_hospital_id: uuid.UUID | None = None,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """레이아웃 고르는 화면용 — 같은 시·도 공개 병원이 쓰는 레이아웃 수.
+
+    시·도는 주소 첫 토큰에서, 주소가 없으면(계약 등록) 지역 입력에서 읽는다. 읽히지
+    않으면 province=None과 0을 돌려준다.
+    """
+
+    province = site_layout.province_of(address, region)
+    hospitals = (await db.execute(select(Hospital))).scalars().all() if province else []
+    return site_layout.layout_distribution(
+        hospitals, province=province, exclude_hospital_id=exclude_hospital_id
+    ).as_dict()
+
+
 @router.get("/{hospital_id}", response_model=HospitalDetail)
 async def get_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     h = await _get_or_404(db, hospital_id)
@@ -862,6 +886,7 @@ async def update_profile(
         "hero_description",
         "image_style_direction",
         "site_access_mode",
+        "site_layout",
         "treatments",
     }
     # exclude_unset: 보내지 않은 필드는 유지하되, 명시적 null/빈 문자열은 '비우기'로
@@ -896,6 +921,7 @@ async def update_profile(
         "hero_description",
         "image_style_direction",
         "site_access_mode",
+        "site_layout",
     }
     update_data = body.model_dump(exclude_unset=True)
     submitted_address = update_data.get("address")
@@ -1764,6 +1790,7 @@ def serialize_hospital_detail(h: Hospital) -> dict:
         "hero_description": getattr(h, "hero_description", None),
         "image_style_direction": getattr(h, "image_style_direction", None),
         "site_access_mode": getattr(h, "site_access_mode", None),
+        "site_layout": getattr(h, "site_layout", None),
         "treatments": h.treatments,
         # 필드별 출처(마케터 입력·자동 입력·출처 모름)와 자동 수집 값과의 충돌. 정보 화면의
         # "자동 입력" 배지와 회색 충돌 줄이 이 값을 그린다 — 사람의 일이 아니다.

@@ -1,4 +1,5 @@
 from datetime import date, datetime
+from typing import Literal
 from uuid import UUID
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator
@@ -29,6 +30,10 @@ class ContractRegistration(BaseModel):
     plan: Plan
     ae_owner_id: UUID
     sales_owner_id: UUID | None = None
+    # 공개 사이트 레이아웃 A/B/C — 계약 등록 화면은 반드시 하나를 고르게 한다. API가
+    # 비어 온 요청을 받아 주는 것은 배포 순서(api → admin) 동안 옛 화면의 등록을 막지
+    # 않기 위해서다. 비어 있으면 레이아웃 도입 전 화면이고, 병원 정보 탭에서 고를 수 있다.
+    site_layout: Literal["A", "B", "C"] | None = None
 
     @field_validator("name", "contract_reference")
     @classmethod

@@ -143,6 +143,7 @@ def test_serialize_hospital_covers_every_visual_field_the_site_contract_declares
         "hero_description",
         "image_style_direction",
         "site_access_mode",
+        "site_layout",
     ):
         assert field in serialized, field
     assert serialized["image_style_direction"] == "차분한 청록 톤"

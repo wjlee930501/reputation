@@ -62,9 +62,10 @@ PROFILE_PROVENANCE = "0091_add_profile_provenance_and_essence_metadata"
 PUBLISH_WITHOUT_REFERENCES_OR_VERDICT = "0092_publish_without_references_or_verdict"
 HOSPITAL_OPERATING_CHANGES = "0094_add_hospital_operating_changes"
 HOSPITAL_SEARCH_VERIFICATION = "0093_add_hospital_search_verification"
+HOSPITAL_SITE_LAYOUT = "0095_add_hospital_site_layout"
 
 PRODUCTION_STAMP = CONTENT_CUSTOMIZATION
-HEAD = HOSPITAL_SEARCH_VERIFICATION
+HEAD = HOSPITAL_SITE_LAYOUT
 
 
 def _script_directory() -> ScriptDirectory:
@@ -149,6 +150,7 @@ def test_hardening_revisions_keep_their_recovered_parents() -> None:
         PUBLISH_WITHOUT_REFERENCES_OR_VERDICT,
         HOSPITAL_OPERATING_CHANGES,
         HOSPITAL_SEARCH_VERIFICATION,
+        HOSPITAL_SITE_LAYOUT,
     )
     parents = {
         revision: script.get_revision(revision).down_revision for revision in recovered
@@ -197,6 +199,7 @@ def test_hardening_revisions_keep_their_recovered_parents() -> None:
         PUBLISH_WITHOUT_REFERENCES_OR_VERDICT: PROFILE_PROVENANCE,
         HOSPITAL_OPERATING_CHANGES: PUBLISH_WITHOUT_REFERENCES_OR_VERDICT,
         HOSPITAL_SEARCH_VERIFICATION: HOSPITAL_OPERATING_CHANGES,
+        HOSPITAL_SITE_LAYOUT: HOSPITAL_SEARCH_VERIFICATION,
     }
 
 
@@ -208,6 +211,7 @@ def test_upgrade_from_the_production_stamp_runs_the_linear_tail() -> None:
     ]
 
     assert pending == [
+        HOSPITAL_SITE_LAYOUT,
         HOSPITAL_SEARCH_VERIFICATION,
         HOSPITAL_OPERATING_CHANGES,
         PUBLISH_WITHOUT_REFERENCES_OR_VERDICT,
@@ -259,7 +263,7 @@ def test_fresh_database_applies_the_whole_chain_in_order() -> None:
     ]
 
     assert len(applied) == len(set(applied))
-    assert applied[-43:] == [
+    assert applied[-44:] == [
         PHOTO_PROVENANCE,
         IMAGE_POLICY,
         CONTENT_CUSTOMIZATION,
@@ -303,4 +307,5 @@ def test_fresh_database_applies_the_whole_chain_in_order() -> None:
         PUBLISH_WITHOUT_REFERENCES_OR_VERDICT,
         HOSPITAL_OPERATING_CHANGES,
         HOSPITAL_SEARCH_VERIFICATION,
+        HOSPITAL_SITE_LAYOUT,
     ]

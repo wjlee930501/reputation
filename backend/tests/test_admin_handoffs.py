@@ -1084,3 +1084,32 @@ async def test_register_contract_queues_the_profile_autofill_after_commit(
     hospital = next(row for row in db.added if isinstance(row, Hospital))
     assert db.committed is True
     assert _no_autofill_dispatch == [hospital.id]
+
+
+async def test_register_contract_records_the_chosen_site_layout(_verified_actor) -> None:
+    """계약 등록에서 고른 레이아웃이 병원 행과 생성 감사에 남는다."""
+    from app.schemas.handoff import ContractRegistration
+
+    ae = _account("OPERATOR")
+    db = _RegisterDB([ae])
+    body = ContractRegistration(
+        name="다올연합의원", plan=Plan.PLAN_16, ae_owner_id=ae.id, site_layout="C"
+    )
+
+    await handoffs_api.register_contract(body, db=db, actor=ae)
+
+    hospital = next(row for row in db.added if isinstance(row, Hospital))
+    assert hospital.site_layout == "C"
+    created = next(row for row in db.added if getattr(row, "action", None) == "create_hospital")
+    assert created.detail["site_layout"] == "C"
+
+
+def test_contract_registration_rejects_an_unknown_site_layout() -> None:
+    from pydantic import ValidationError
+
+    from app.schemas.handoff import ContractRegistration
+
+    with pytest.raises(ValidationError):
+        ContractRegistration(
+            name="다올연합의원", plan=Plan.PLAN_16, ae_owner_id=uuid.uuid4(), site_layout="D"
+        )

@@ -136,6 +136,7 @@ class HospitalDetail(HospitalItemBase):
     hero_description: Optional[str] = None
     image_style_direction: Optional[str] = None
     site_access_mode: Optional[str] = None
+    site_layout: Optional[str] = None
     director_credentials: Optional[Any] = None
     treatments: list
     # 필드별 출처 원장(0091) — {field: {"origin": "OPERATOR"|"AUTOFILL"|"LEGACY", ...,
