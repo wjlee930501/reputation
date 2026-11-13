@@ -1,6 +1,15 @@
 # Re:putation — 현재 프로젝트 개발 안내
 
-## 최신 운영 배포 — 2026-11-09 오전 언급 판정 규칙 대조
+## 최신 운영 배포 — 2026-11-13 저녁 병원 사이트 레이아웃 A/B/C
+
+main `ccd4b37c`(PR #306)를 19:44~20:06 KST에 5개 서비스 전부에 배포했다(`deploy.sh all`, 그날 첫 릴리스). 배포 전 운영은 이미 main `6c21141d`(PR #305)였다 —
+아래 11-09 절 이후의 PR #300~#305는 그 사이 이미 운영에 올라가 있었다. **현재 리비전은 api `00290-xrp`, worker `00282-hxd`, beat `00277-x9p`, site `00150-26b`,
+admin `00122-2dr`**, **DB head `0095_add_hospital_site_layout`**(`hospitals.site_layout` A/B/C, NULL = 도입 전 화면). 마케터가 계약 등록에서 레이아웃을 필수로 고르고
+병원 정보에서 바꾼다. 기존 공개 병원은 모두 NULL이라 화면이 바뀌지 않았다(공개 13곳 `site_layout: null`, 홈에 레이아웃 클래스 없음 확인). readiness 통과, release 일치.
+옛 Beat(`00276`, 퇴역)가 다시 잠금을 쥐고 남아 새 Beat가 `/live` 재시작 ERROR를 남겼다(11-09와 같은 현상, 작업 누락 없음). Admin 화면 실조작은 로그인 필요로 남았다.
+롤백 좌표 `.omo/rollback-layout/all`. 상세는 [배포 기록](docs/releases/2026-11-13-clinic-layout-production.md), 설계는 [계획](docs/plans/2026-11-13-clinic-site-layouts-abc.md).
+
+## 이전 운영 배포 — 2026-11-09 오전 언급 판정 규칙 대조
 
 main `d123f37b`(PR #299)를 10:40~10:50 KST에 Backend에 배포했다(같은 날 두 번째 릴리스, `--override-reason`). **현재 리비전은 api `00284-z7v`, worker `00274-pwk`, beat `00269-qdp`**, Admin·Site·DB head 그대로. 자사·경쟁사 언급 판정이 규칙 대조(`services/mention_identity.py`) + Haiku 5.5 보조 판정으로 바뀌었다(정답표·검증 표본 재현율 0.53~0.60 → 1.00). 판정 정책 지문이 바뀌어 이전 달과는 같은 판정 기준이 아니고, 이전 방식으로 잰 달의 경쟁 병원 반영은 막힌다. 마감된 달 재판정·같은 기준 비교는 다음 PR이다. 롤백 좌표 `.omo/rollback-judge/backend`. 상세는 [배포 기록](docs/releases/2026-11-09-mention-identity-production.md).
 
