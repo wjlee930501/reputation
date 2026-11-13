@@ -383,6 +383,15 @@
   letter-spacing: -0.03em;
 }
 
+.bandTitleNote {
+  display: block;
+  margin-top: 8px;
+  font-family: var(--font-pretendard), sans-serif;
+  font-size: clamp(17px, 1.6vw, 22px);
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
 .bandNote {
   margin: 16px 0 0;
   font-size: 17px;
@@ -555,6 +564,17 @@
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr));
   gap: 24px;
+}
+
+/* 사진이 4장이면 3칸 줄에 한 장이 혼자 남는다 — 4칸(좁으면 2칸)으로 맞춘다. */
+.gallery:has(> :nth-child(4):last-child) {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+@media (max-width: 900px) {
+  .gallery:has(> :nth-child(4):last-child) {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 .galleryItem {

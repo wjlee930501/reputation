@@ -12,6 +12,7 @@ import {
   questionText,
   seoulToday,
   selectAnswerQuestions,
+  splitHoursNote,
   todayHours,
   WEEK_DAY_KEYS,
 } from '@/lib/clinic-layout'
@@ -175,7 +176,17 @@ export function HomeLayoutA({ model }: { model: ClinicHomeModel }) {
       {todays ? (
         <section className={s.band} aria-label="오늘 진료">
           <h2 className={s.bandTitle}>
-            {todays.closed ? `오늘(${today.label})은 휴진입니다` : `오늘(${today.label}) ${todays.time} 진료`}
+            {todays.closed ? (
+              `오늘(${today.label})은 휴진입니다`
+            ) : (
+              <>
+                {`오늘(${today.label}) ${splitHoursNote(todays.time).main} 진료`}
+                {/* 점심·접수 마감 같은 괄호 메모는 둘째 줄로 내려 큰 제목 중간에서 끊기지 않게 한다. */}
+                {splitHoursNote(todays.time).note ? (
+                  <span className={s.bandTitleNote}> {splitHoursNote(todays.time).note}</span>
+                ) : null}
+              </>
+            )}
           </h2>
           <p className={s.bandNote}>요일별 진료시간은 아래 기본 정보에서 확인할 수 있습니다.</p>
           <a className={s.bandButton} href={`tel:${hospital.phone}`}>

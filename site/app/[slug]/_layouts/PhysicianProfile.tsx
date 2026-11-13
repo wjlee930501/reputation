@@ -65,7 +65,7 @@ export function PhysicianProfile({
         wrapperClassName={photoClassName}
         sizes={CLINIC_IMAGE_SIZES.portraitSolo}
         priority={priority}
-        fallback={<span aria-hidden="true">{physician.name.slice(0, 1) || '醫'}</span>}
+        fallback={<span key="monogram" aria-hidden="true">{physician.name.slice(0, 1) || '醫'}</span>}
       />
       <div className={bodyClassName}>
         {eyebrow ? <p data-role="eyebrow">{eyebrow}</p> : null}

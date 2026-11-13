@@ -50,8 +50,8 @@ export const BRAND_PATCH_FIELDS = [
   'hero_description',
   'image_style_direction',
   'site_access_mode',
-  // 레이아웃은 브랜드 섹션의 '사이트 레이아웃'이 자기 값만 따로 저장한다.
-  'site_layout',
+  // `site_layout`은 여기 없다 — 브랜드 섹션의 '사이트 레이아웃'이 자기 값만 따로 저장한다.
+  // 스냅샷 PATCH에 실리면 공개 중인 병원에 옛 레이아웃을 되돌려 보낼 수 있다.
 ] as const
 
 function pick(profile: object, fields: readonly string[]): Record<string, unknown> {
