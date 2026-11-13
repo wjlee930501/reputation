@@ -18,6 +18,8 @@ import { ClinicHeader } from '../_components/ClinicHeader'
 import { ContentCard } from '../_components/ContentCard'
 import { DoctorIntro } from '../_components/DoctorIntro'
 import { JsonLd } from '../_components/JsonLd'
+import { resolveClinicLayout } from '@/lib/clinic-layout'
+import { clinicLayoutShellClass } from '../_layouts/shell'
 
 interface Props {
   params: Promise<{ slug: string }>
@@ -121,7 +123,10 @@ export default async function DoctorPage({ params: paramsPromise }: Props) {
   return (
     <>
       <JsonLd data={[...physicianJsonLd, buildBreadcrumbJsonLd(breadcrumbItems, hospitalRootUrl)]} />
-      <div className="clinic-shell clinic-shell--editorial" style={buildClinicThemeStyle(hospital)}>
+      <div
+        className={`clinic-shell clinic-shell--editorial ${clinicLayoutShellClass(resolveClinicLayout(hospital.site_layout))}`}
+        style={buildClinicThemeStyle(hospital)}
+      >
         <ClinicHeader
           hospitalName={hospital.name}
           hospitalRootUrl={hospitalRootUrl}

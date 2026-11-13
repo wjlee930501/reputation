@@ -19,6 +19,7 @@ import {
   selectClinicHeroImage,
 } from '@/lib/clinic-theme'
 import { getApiBase } from '@/lib/config'
+import { resolveClinicLayout } from '@/lib/clinic-layout'
 import { REVALIDATE_SECONDS } from '@/lib/fetch-policy'
 import { buildFaqPageJsonLd, buildPhysicianNode, selectFaqEntries } from '@/lib/schema'
 import { canonicalBase, canonicalHospitalUrl } from '@/lib/site-url'
@@ -38,6 +39,10 @@ import { FeaturedContent } from './_components/FeaturedContent'
 import { HospitalFacts } from './_components/HospitalFacts'
 import { JsonLd } from './_components/JsonLd'
 import { TreatmentGrid } from './_components/TreatmentGrid'
+import { HomeLayoutA } from './_layouts/HomeLayoutA'
+import { HomeLayoutC } from './_layouts/HomeLayoutC'
+import type { ClinicHomeModel } from './_layouts/model'
+import { clinicLayoutShellClass } from './_layouts/shell'
 
 interface Props {
   params: Promise<{ slug: string }>
@@ -252,11 +257,30 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
     hasLogo: Boolean(hospital.logo_url),
   })
 
+  // 마케터가 고른 레이아웃(A/B/C). 비어 있으면 레이아웃 도입 전 화면이다 — 배포만으로 운영 중인
+  // 병원의 화면이 바뀌지 않는다. 데이터·구조화 데이터는 위에서 한 번만 만들고, 레이아웃은
+  // 같은 값을 그리기만 한다(FAQ 항목 = FAQPage, 질문 목록 = FAQ를 뺀 글).
+  const layout = resolveClinicLayout(hospital.site_layout)
+  const homeModel: ClinicHomeModel = {
+    hospital,
+    hospitalRootUrl,
+    physicians,
+    faqEntries,
+    clusterContents,
+    contents,
+    contentDensity,
+    composition,
+    heroPhotoUrl,
+    mediaMode,
+    accessMode,
+    factLinks,
+  }
+
   return (
     <>
       <JsonLd data={pageJsonLd} />
       <div
-        className={`clinic-shell clinic-shell--editorial clinic-shell--density-${contentDensity}`}
+        className={`clinic-shell clinic-shell--editorial clinic-shell--density-${contentDensity} ${clinicLayoutShellClass(layout)}`}
         style={buildClinicThemeStyle(hospital)}
       >
         <ClinicHeader
@@ -270,7 +294,14 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
           currentSection="home"
           googleMapsUrl={hospital.google_maps_url}
         />
+        {layout === 'A' ? (
+          <HomeLayoutA model={homeModel} />
+        ) : layout === 'C' ? (
+          <HomeLayoutC model={homeModel} />
+        ) : (
         <main id="main-content">
+          {/* 레이아웃 도입 전 화면이자 레이아웃 B(As-is 발전형)의 구성. B는 같은 섹션·순서를
+              쓰고 생김새만 바꾼다(_layouts/layout-b.module.css). */}
           {/* One shared hospital composition. Optional sections and their index links
               follow available approved data; no placeholder content is fabricated. */}
           <ClinicHero
@@ -317,6 +348,7 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
             specialties={hospital.specialties}
             region={hospital.region}
             publicAbout={publicAbout}
+            showLede={layout !== 'B'}
           />
 
           <div id="contents" className="clinic-anchor-target">
@@ -380,9 +412,11 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
             region={hospital.region}
             websiteUrl={hospital.website_url}
             hoursHref={visitHoursHref(hospitalRootUrl, false)}
+            showVisitChecks={layout !== 'B'}
           />
           </div>
         </main>
+        )}
         <ClinicFooter
           hospitalName={hospital.name}
           directorName={hospital.director_name}

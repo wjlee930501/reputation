@@ -12,6 +12,8 @@ import { ClinicHeader } from '../_components/ClinicHeader'
 import { JsonLd } from '../_components/JsonLd'
 import { ContentsFeed } from './_components/ContentsFeed'
 import { ContentsFeedView } from './_components/ContentsFeedView'
+import { resolveClinicLayout } from '@/lib/clinic-layout'
+import { clinicLayoutShellClass } from '../_layouts/shell'
 
 interface Props {
   params: Promise<{ slug: string }>
@@ -90,7 +92,10 @@ export default async function ContentsLibraryPage({ params: paramsPromise }: Pro
   return (
     <>
       <JsonLd data={pageJsonLd} />
-      <div className="clinic-shell clinic-shell--editorial" style={buildClinicThemeStyle(hospital)}>
+      <div
+        className={`clinic-shell clinic-shell--editorial ${clinicLayoutShellClass(resolveClinicLayout(hospital.site_layout))}`}
+        style={buildClinicThemeStyle(hospital)}
+      >
         <ClinicHeader
           hospitalName={hospital.name}
           hospitalRootUrl={hospitalRootUrl}

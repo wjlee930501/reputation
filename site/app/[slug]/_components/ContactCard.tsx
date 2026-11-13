@@ -22,6 +22,11 @@ interface Props {
   websiteUrl: string | null
   /** 진료시간 표가 있는 곳. /visit에서는 같은 페이지 앵커가 된다. */
   hoursHref: string
+  /**
+   * 일반 방문 팁(주차는 전화로 확인 등)을 그릴지. 레이아웃 B는 끈다 — 병원이 직접 적은
+   * 사실(예: "무료 주차가 가능합니다")과 같은 페이지에서 엇갈리는 일반 문장이 됐다.
+   */
+  showVisitChecks?: boolean
 }
 
 function hostOf(url: string): string {
@@ -56,6 +61,7 @@ export function ContactCard({
   region,
   websiteUrl,
   hoursHref,
+  showVisitChecks = true,
 }: Props) {
   const visibleLinks = links.filter((link) => Boolean(link.url))
   const regionText = region.filter(Boolean).join(' ')
@@ -123,14 +129,16 @@ export function ContactCard({
             )}
           </div>
 
-          <ul className="clinic-visit-checks" aria-label="방문 전 확인">
-            {VISIT_CHECKS.map((check) => (
-              <li key={check.title} className="clinic-visit-check">
-                <span className="clinic-visit-check-title">{check.title}</span>
-                <span className="clinic-visit-check-body">{check.body}</span>
-              </li>
-            ))}
-          </ul>
+          {showVisitChecks ? (
+            <ul className="clinic-visit-checks" aria-label="방문 전 확인">
+              {VISIT_CHECKS.map((check) => (
+                <li key={check.title} className="clinic-visit-check">
+                  <span className="clinic-visit-check-title">{check.title}</span>
+                  <span className="clinic-visit-check-body">{check.body}</span>
+                </li>
+              ))}
+            </ul>
+          ) : null}
         </div>
 
         {(visibleLinks.length > 0 || websiteUrl) && (

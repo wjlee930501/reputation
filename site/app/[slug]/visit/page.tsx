@@ -16,6 +16,8 @@ import { ContactCard } from '../_components/ContactCard'
 import { JsonLd } from '../_components/JsonLd'
 import { VisitGallery } from '../_components/VisitGallery'
 import { VisitHoursTable } from '../_components/VisitHoursTable'
+import { resolveClinicLayout } from '@/lib/clinic-layout'
+import { clinicLayoutShellClass } from '../_layouts/shell'
 
 interface Props {
   params: Promise<{ slug: string }>
@@ -109,7 +111,10 @@ export default async function VisitPage({ params: paramsPromise }: Props) {
   return (
     <>
       <JsonLd data={[visitJsonLd, buildBreadcrumbJsonLd(breadcrumbItems, hospitalRootUrl)]} />
-      <div className="clinic-shell clinic-shell--editorial" style={buildClinicThemeStyle(hospital)}>
+      <div
+        className={`clinic-shell clinic-shell--editorial ${clinicLayoutShellClass(resolveClinicLayout(hospital.site_layout))}`}
+        style={buildClinicThemeStyle(hospital)}
+      >
         <ClinicHeader
           hospitalName={hospital.name}
           hospitalRootUrl={hospitalRootUrl}

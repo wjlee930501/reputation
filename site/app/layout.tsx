@@ -3,6 +3,9 @@ import { platformSiteUrl } from "@/lib/site-url";
 import Analytics from "./_components/Analytics";
 import { ReactDevTools } from "./ReactDevTools";
 import "./fonts/pretendard-subset.css";
+/* 병원 사이트 레이아웃 A·B의 명조 제목. @font-face 선언뿐이라 명조를 쓰지 않는 페이지는
+   글꼴 파일을 받지 않는다(scripts/build_serif_subsets.py). */
+import "./fonts/clinic-serif-subset.css";
 import "./globals.css";
 /* Re:putation 표면(홈과 하위 페이지)의 시각 레이어. `.landing-edge` 셸 안에서만 켜지므로
    병원 공개 페이지(`.clinic-shell`)에는 닿지 않는다. globals 뒤에 둬야 같은 특이성에서 이긴다. */

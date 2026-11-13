@@ -1,6 +1,7 @@
 import Link from 'next/link'
 
 import { TYPE_LABELS, type ContentSummary } from '@/lib/api'
+import { selectAnswerQuestions } from '@/lib/clinic-layout'
 import { categoryTagClass } from '@/lib/content-meta'
 
 import { ChevronRightIcon, MessageIcon } from './icons'
@@ -13,21 +14,8 @@ interface Props {
   specialties: string[]
 }
 
-// 환자가 실제로 던지는 질문 형태를 우선 노출한다(질문이 주인공). FAQ를 먼저,
-// 이후 질환·치료·건강 정보 순으로 채워 "큰 활자 질문 리스트"를 구성한다.
-const QUESTION_PRIORITY = ['FAQ', 'DISEASE', 'TREATMENT', 'HEALTH', 'LOCAL', 'COLUMN', 'NOTICE']
-
-function selectQuestions(contents: ContentSummary[], limit: number): ContentSummary[] {
-  const byPriority = [...contents].sort((a, b) => {
-    const ai = QUESTION_PRIORITY.indexOf(a.content_type)
-    const bi = QUESTION_PRIORITY.indexOf(b.content_type)
-    return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi)
-  })
-  return byPriority.slice(0, limit)
-}
-
 export function AnswerClusters({ contents, hospitalRootUrl, treatments, region, specialties }: Props) {
-  const questions = selectQuestions(contents, 6)
+  const questions = selectAnswerQuestions(contents, 6)
   if (questions.length === 0) return null
 
   const regionText = region.length > 0 ? region.join(' ') : '내원 지역'

@@ -68,6 +68,8 @@ export interface Hospital {
   hero_description: string | null
   image_style_direction: string | null
   site_access_mode: 'urgent' | 'appointment' | 'specialist' | null
+  /** 마케터가 고른 공개 사이트 레이아웃. null이면 레이아웃 도입 전 화면이다. */
+  site_layout: 'A' | 'B' | 'C' | null
   updated_at: string | null
   director_credentials: DirectorCredentials | null
   treatments: Array<{ name: string; description: string }>
@@ -297,6 +299,7 @@ function isHospitalPayload(value: unknown): value is HospitalPayload {
     (value.hero_description === undefined || isNullableString(value.hero_description)) &&
     (value.image_style_direction === undefined || isNullableString(value.image_style_direction)) &&
     (value.site_access_mode === undefined || isNullableString(value.site_access_mode)) &&
+    (value.site_layout === undefined || isNullableString(value.site_layout)) &&
     (value.updated_at === undefined || isNullableString(value.updated_at)) &&
     isDirectorCredentials(value.director_credentials) &&
     Array.isArray(value.treatments) &&
@@ -346,6 +349,11 @@ function normalizeHospitalPayload(hospital: HospitalPayload): Hospital {
       hospital.site_access_mode === 'appointment' ||
       hospital.site_access_mode === 'specialist'
         ? hospital.site_access_mode
+        : null,
+    // 모르는 값(옛 응답·새 레이아웃 이름)은 레이아웃 도입 전 화면으로 떨어진다 — 화면을 깨지 않는다.
+    site_layout:
+      hospital.site_layout === 'A' || hospital.site_layout === 'B' || hospital.site_layout === 'C'
+        ? hospital.site_layout
         : null,
     updated_at: hospital.updated_at ?? null,
   }
