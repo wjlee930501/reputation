@@ -32,6 +32,9 @@ export function SiteLayoutSection({
 }) {
   const saved = isSiteLayout(hospital?.site_layout) ? hospital.site_layout : null
   const [choice, setChoice] = useState<SiteLayout | null>(saved)
+  // 사람이 고른 뒤로는 서버 값으로 덮지 않는다 — 저장 직후 헤더 재조회가 늦게 오면 그 사이에
+  // 고른 새 값이 옛 값으로 되돌아간다. 저장이 끝나면 다시 서버 값을 따른다.
+  const [dirty, setDirty] = useState(false)
   const [distribution, setDistribution] = useState<SiteLayoutDistribution | null>(null)
   const [distributionError, setDistributionError] = useState(false)
   const [confirming, setConfirming] = useState(false)
@@ -39,16 +42,17 @@ export function SiteLayoutSection({
   const [feedback, setFeedback] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
-  // 다른 저장 뒤 헤더가 새 값을 받아 오면, 고르는 중이 아닐 때만 따라간다.
+  // 다른 저장 뒤 헤더가 새 값을 받아 오면, 사람이 고르는 중이 아닐 때만 따라간다.
   useEffect(() => {
-    if (!confirming && !saving) setChoice(saved)
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- 서버 값이 바뀔 때만 따라간다
-  }, [saved])
+    if (!dirty) setChoice(saved)
+  }, [saved, dirty])
 
   const address = hospital?.address ?? null
   const regionKey = JSON.stringify(hospital?.region ?? [])
   useEffect(() => {
     let cancelled = false
+    // 지역이 바뀌면 옛 분포를 지운다 — 새 조회가 실패했을 때 다른 지역 수를 보이지 않게.
+    setDistribution(null)
     setDistributionError(false)
     fetchAPI<unknown>(
       layoutDistributionPath({ address, region: JSON.parse(regionKey) as string[], excludeHospitalId: hospitalId }),
@@ -82,6 +86,7 @@ export function SiteLayoutSection({
         body: JSON.stringify({ site_layout: choice }),
       })
       setConfirming(false)
+      setDirty(false)
       setFeedback(COPY.saved)
       onSaved()
     } catch (cause: unknown) {
@@ -108,6 +113,7 @@ export function SiteLayoutSection({
         name={`site-layout-${hospitalId}`}
         value={choice}
         onChange={(layout) => {
+          setDirty(true)
           setChoice(layout)
           setConfirming(false)
           setFeedback(null)

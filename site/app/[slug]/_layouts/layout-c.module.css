@@ -79,12 +79,14 @@
   );
 }
 
+/* 휴대폰에서는 위쪽 140px만 사진이 비친다. 글자는 안쪽 위 여백(160px) 아래에서 시작하므로
+   문구가 길어 첫 화면이 늘어나도 언제나 불투명한 영역 위에 놓인다. */
 @media (max-width: 900px) {
   .heroVeil {
     background: linear-gradient(
       0deg,
       var(--clinic-brand-strong) 0,
-      var(--clinic-brand-strong) 72%,
+      var(--clinic-brand-strong) calc(100% - 140px),
       color-mix(in srgb, var(--clinic-brand-strong) 40%, transparent) 100%
     );
   }
@@ -101,6 +103,12 @@
   align-items: flex-end;
   justify-content: space-between;
   gap: 32px;
+}
+
+@media (max-width: 900px) {
+  .heroInner {
+    padding-top: 160px;
+  }
 }
 
 .heroCopy {

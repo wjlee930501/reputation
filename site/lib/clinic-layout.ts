@@ -147,10 +147,18 @@ function parseDay(value: string | undefined): DayHours | 'unknown' {
   if (mainTimes.length !== 2 || mainTimes.some(Number.isNaN)) return 'unknown'
   const [opens, closes] = mainTimes
   if (!(opens < closes)) return 'unknown'
-  const notes = [...text.matchAll(/\(([^)]*)\)/g)].map((match) => match[1]).join(' ')
-  const breakTimes = /점심|휴게|브레이크|break/i.test(notes)
-    ? [...notes.matchAll(TIME_RE)].map((match) => minutes(match[0]))
+  // 점심시간은 괄호 안에서 점심·휴게 문구가 든 구절(쉼표로 나뉜)에서만 읽는다 —
+  // '(점심 13:00 ~ 14:00, 접수 마감 18:00)'의 접수 마감 시각을 점심으로 읽지 않는다.
+  const breakClauses = [...text.matchAll(/\(([^)]*)\)/g)]
+    .flatMap((match) => match[1].split(/[,，;·]/))
+    .filter((clause) => /점심|휴게|브레이크|break/i.test(clause))
+  if (breakClauses.length > 1) return 'unknown'
+  const breakTimes = breakClauses.length === 1
+    ? [...breakClauses[0].matchAll(TIME_RE)].map((match) => minutes(match[0]))
     : []
+  // '점심시간 없음'처럼 시각이 없으면 휴게 없음이다. 시각을 하나만 또는 셋 이상 적었으면
+  // 무엇이 점심시간인지 알 수 없다 — 종일 진료로 단정하지 않고 표를 포기한다.
+  if (breakTimes.length === 1 || breakTimes.length > 2) return 'unknown'
   const hasBreak = breakTimes.length === 2
   // 점심시간을 적었는데 진료시간 안에 순서대로 들어가지 않으면 잘못 적은 값이다 — 표를 포기한다.
   if (hasBreak && !(opens < breakTimes[0] && breakTimes[0] < breakTimes[1] && breakTimes[1] < closes)) {

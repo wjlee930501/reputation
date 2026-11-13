@@ -109,6 +109,7 @@ export default function RegisterContractPage() {
       return
     }
     let cancelled = false
+    setDistribution(null)
     setDistributionError(false)
     fetchAPI<unknown>(layoutDistributionPath({ region: [leadRegion] }))
       .then((response) => {

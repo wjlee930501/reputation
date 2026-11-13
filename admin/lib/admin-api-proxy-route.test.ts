@@ -543,3 +543,35 @@ test('a deployment without BFF_ACTOR_SECRET refuses to proxy instead of sending 
     clearAdminSessionRevocationCache()
   }
 })
+
+test('repeated query parameters reach the backend unchanged', async () => {
+  clearAdminSessionRevocationCache()
+  const originalFetch = globalThis.fetch
+  let backendUrl = ''
+  globalThis.fetch = async (input) => {
+    const url = String(input)
+    if (url.includes('/api/v1/admin/auth/sessions/') && url.includes('/revocation')) {
+      return new Response(JSON.stringify({ revoked: false }), { status: 200 })
+    }
+    backendUrl = url
+    return new Response(JSON.stringify({ ok: true }), { status: 200 })
+  }
+
+  try {
+    const authorized = await buildAuthorizedRequest('GET')
+    const request = new NextRequest(
+      'https://admin.example.test/api/admin/hospitals/site-layout-distribution?region=%EC%84%9C%EC%9A%B8&region=%EA%B0%95%EB%82%A8&exclude_hospital_id=h1',
+      { method: 'GET', headers: authorized.headers },
+    )
+    const response = await handleAdminApiProxy(request, {
+      params: Promise.resolve({ path: ['hospitals', 'site-layout-distribution'] }),
+    })
+    assert.equal(response.status, 200)
+    const params = new URL(backendUrl).searchParams
+    assert.deepEqual(params.getAll('region'), ['서울', '강남'])
+    assert.equal(params.get('exclude_hospital_id'), 'h1')
+  } finally {
+    globalThis.fetch = originalFetch
+    clearAdminSessionRevocationCache()
+  }
+})

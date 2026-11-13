@@ -413,4 +413,7 @@ test('사이트 레이아웃은 브랜드 섹션에서 바꾸고, 자기 값만 
   assert.match(section, /COPY\.confirmLive/)
   // 같은 시·도 분포에서 바꾸는 병원 자신은 뺀다.
   assert.match(section, /excludeHospitalId: hospitalId/)
+  // 고른 뒤 늦게 온 서버 값이 새 선택을 덮지 않는다. 지역이 바뀌면 옛 분포를 지운다.
+  assert.match(section, /if \(!dirty\) setChoice\(saved\)/)
+  assert.match(section, /setDistribution\(null\)/)
 })

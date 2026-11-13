@@ -121,6 +121,13 @@ test('impossible times and a lunch break outside the day are not drawn', () => {
   assert.equal(buildSessionGrid({ ...CLOSED_WEEK, mon: '09:75-18:00' }), null)
   assert.equal(buildSessionGrid({ ...CLOSED_WEEK, mon: '09:00-18:00 (점심 14:00-13:00)' }), null)
   assert.equal(buildSessionGrid({ ...CLOSED_WEEK, mon: '09:00-18:00 (점심 08:00-09:30)' }), null)
+  assert.equal(buildSessionGrid({ ...CLOSED_WEEK, mon: '09:00-18:00 (점심 25:00)' }), null)
+  assert.equal(buildSessionGrid({ ...CLOSED_WEEK, mon: '09:00-18:00 (점심 13:00)' }), null)
+  assert.ok(buildSessionGrid({ ...CLOSED_WEEK, mon: '09:00-13:00 (점심시간 없음)' }))
+  // 점심 구절 밖의 시각(접수 마감)은 점심시간이 아니다.
+  const withNote = buildSessionGrid({ ...CLOSED_WEEK, mon: '08:30 ~ 18:30 (점심 13:00 ~ 14:00, 접수 마감 18:00)' })
+  assert.ok(withNote)
+  assert.deepEqual(withNote.rows.map((row) => row.label), ['오전 08:30~13:00', '오후 14:00~18:30'])
   assert.ok(buildSessionGrid({ ...CLOSED_WEEK, mon: '09:00-24:00' }))
 })
 

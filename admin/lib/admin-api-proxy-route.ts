@@ -171,7 +171,8 @@ export async function handleAdminApiProxy(
   const url = new URL(`/api/v1/admin/${path}`, backendUrl)
 
   req.nextUrl.searchParams.forEach((value, key) => {
-    url.searchParams.set(key, value)
+    // append — 같은 이름이 여러 번 오는 질의값(region=…&region=…)을 마지막 하나로 줄이지 않는다.
+    url.searchParams.append(key, value)
   })
 
   const headers: Record<string, string> = {
