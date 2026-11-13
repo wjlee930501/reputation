@@ -53,3 +53,11 @@ test('the lead list starts contract registration on the one-screen route', () =>
   // 남은 '온보딩 시작' 문자열은 더 이상 열리지 않는 전환 모달 안에만 있다(PR-1E Task 2에서 삭제).
   assert.doesNotMatch(LEADS, />\s*온보딩 시작\s*</)
 })
+
+test('contract registration requires a site layout and shows the same-region distribution', () => {
+  assert.match(PAGE, /<SiteLayoutPicker[\s\S]*?value=\{siteLayout\}[\s\S]*?distribution=\{distribution\}/)
+  assert.match(PAGE, /const form = \{ name, leadId, plan, aeOwnerId, siteLayout \}/)
+  // 상담 요청의 지역으로만 분포를 찾는다 — 지역을 모르면 분포 없이 고른다.
+  assert.match(PAGE, /layoutDistributionPath\(\{ region: \[leadRegion\] \}\)/)
+  assert.match(PAGE, /\{ADMIN_COPY\.siteLayout\.title\} <span className="text-red-500">\*<\/span>/)
+})

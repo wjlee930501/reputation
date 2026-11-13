@@ -7,6 +7,7 @@ import { brandDefaultsNotice } from '@/lib/info-sections'
 import { safeOperatorError } from '@/lib/operations-journey'
 import type { Hospital } from '@/types'
 import { ClinicVisualForm } from './ClinicVisualForm'
+import { SiteLayoutSection } from './SiteLayoutSection'
 
 interface AdvancedBrandValues {
   brand_accent_color: string
@@ -52,6 +53,8 @@ export function BrandSection({
           입력하지 않은 값은 기본값 그대로 나갑니다.
         </p>
       </div>
+
+      <SiteLayoutSection hospital={hospital} hospitalId={hospitalId} onSaved={onSaved} />
 
       <ClinicVisualForm
         hospital={hospital}

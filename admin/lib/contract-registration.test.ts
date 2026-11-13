@@ -14,6 +14,7 @@ function form(overrides: Partial<ContractRegistrationForm> = {}): ContractRegist
     leadId: 'lead-1',
     plan: 'PLAN_16',
     aeOwnerId: 'ae-1',
+    siteLayout: 'C',
     ...overrides,
   }
 }
@@ -24,6 +25,7 @@ test('the payload trims the name and leaves the server-filled contract facts out
     lead_id: 'lead-1',
     plan: 'PLAN_16',
     ae_owner_id: 'ae-1',
+    site_layout: 'C',
   })
   // 계약 번호·효력일·영업 담당은 저장만 되고 아무 동작도 바꾸지 않는다 — 서버가 채운다.
   const payload = registrationPayload(form({ leadId: null })) as Record<string, unknown>
@@ -37,6 +39,8 @@ test('the block reason names the one field that is still missing', () => {
   assert.equal(registrationBlockReason(form()), null)
   assert.match(registrationBlockReason(form({ name: '  ' })) ?? '', /병원명/)
   assert.match(registrationBlockReason(form({ aeOwnerId: '' })) ?? '', /담당 AE/)
+  // 레이아웃은 계약 등록에서 반드시 고른다 — 고르지 않은 병원은 레이아웃 도입 전 화면이 나간다.
+  assert.match(registrationBlockReason(form({ siteLayout: null })) ?? '', /사이트 레이아웃/)
 })
 
 test('only the two "already exists" codes offer the existing hospital to open', () => {

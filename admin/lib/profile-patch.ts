@@ -50,6 +50,8 @@ export const BRAND_PATCH_FIELDS = [
   'hero_description',
   'image_style_direction',
   'site_access_mode',
+  // 레이아웃은 브랜드 섹션의 '사이트 레이아웃'이 자기 값만 따로 저장한다.
+  'site_layout',
 ] as const
 
 function pick(profile: object, fields: readonly string[]): Record<string, unknown> {
