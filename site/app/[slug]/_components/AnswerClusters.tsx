@@ -5,6 +5,7 @@ import { selectAnswerQuestions } from '@/lib/clinic-layout'
 import { categoryTagClass } from '@/lib/content-meta'
 
 import { ChevronRightIcon, MessageIcon } from './icons'
+import { QUESTIONS_SECTION_TITLE } from '@/lib/clinic-template-copy'
 
 interface Props {
   contents: ContentSummary[]
@@ -31,7 +32,7 @@ export function AnswerClusters({ contents, hospitalRootUrl, treatments, region, 
         <div className="clinic-answers-layout">
           <aside className="clinic-answers-rail">
             <span className="clinic-answers-eyebrow">진료 전 확인</span>
-            <h2 className="clinic-section-title">자주 확인하는 질문</h2>
+            <h2 className="clinic-section-title">{QUESTIONS_SECTION_TITLE}</h2>
             <p className="clinic-section-note">
               {regionText}에서 {specialtyText} 진료를 찾을 때 환자분들이 자주 묻는 질문을 모았습니다.
             </p>

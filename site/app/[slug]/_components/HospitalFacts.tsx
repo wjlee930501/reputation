@@ -1,6 +1,7 @@
 import { fullClinicAddress } from '@/lib/clinic-schema'
 
 import { CalendarIcon, MapPinIcon, NavigationIcon, PhoneIcon, StethoscopeIcon } from './icons'
+import { FACTS_SECTION_NOTE, factsSectionTitle } from '@/lib/clinic-template-copy'
 
 const DAY_LABELS: Record<string, string> = {
   mon: '월',
@@ -74,10 +75,8 @@ export function HospitalFacts({
     <section id="hospital-facts" className="clinic-section clinic-section--facts">
       <div className="clinic-section-inner">
         <header className="clinic-section-head">
-          <h2 className="clinic-section-title">{hospitalName} 기본 정보</h2>
-          <p className="clinic-section-note">
-            진료시간과 연락처, 위치를 한눈에 확인할 수 있습니다.
-          </p>
+          <h2 className="clinic-section-title">{factsSectionTitle(hospitalName)}</h2>
+          <p className="clinic-section-note">{FACTS_SECTION_NOTE}</p>
         </header>
 
         {hasHours && (

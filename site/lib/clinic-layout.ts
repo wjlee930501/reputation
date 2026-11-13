@@ -123,8 +123,10 @@ interface DayHours {
 
 const TIME_RE = /(\d{1,2}):(\d{2})/g
 
+/** '08:30' → 510. 시각이 아닌 값(25:00·08:75)은 NaN — 부르는 쪽이 표를 포기한다. */
 function minutes(text: string): number {
   const [h, m] = text.split(':').map(Number)
+  if (!(h >= 0 && h <= 24 && m >= 0 && m < 60) || (h === 24 && m > 0)) return Number.NaN
   return h * 60 + m
 }
 
@@ -132,23 +134,28 @@ function clock(total: number): string {
   return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`
 }
 
-function parseDay(value: string | undefined): DayHours | null | 'unknown' {
+function parseDay(value: string | undefined): DayHours | 'unknown' {
   const text = value?.trim()
-  if (!text) return null
+  // 입력이 없는 요일은 휴진이라고 단정하지 않는다 — 표를 포기하고 요일별 목록이 말하게 한다.
+  if (!text) return 'unknown'
   if (isClosedLabel(text) && !/\d{1,2}:\d{2}/.test(text.replace(/\([^)]*\)/g, ''))) {
     return { closed: true, opens: 0, closes: 0, breakStart: null, breakEnd: null }
   }
   // 괄호 밖이 진료시간, 괄호 안이 점심·휴게시간이다("08:00 ~ 18:00 (점심 13:00 ~ 14:00)").
   const main = text.replace(/\([^)]*\)/g, ' ')
   const mainTimes = [...main.matchAll(TIME_RE)].map((match) => minutes(match[0]))
-  if (mainTimes.length !== 2) return 'unknown'
+  if (mainTimes.length !== 2 || mainTimes.some(Number.isNaN)) return 'unknown'
   const [opens, closes] = mainTimes
   if (!(opens < closes)) return 'unknown'
   const notes = [...text.matchAll(/\(([^)]*)\)/g)].map((match) => match[1]).join(' ')
   const breakTimes = /점심|휴게|브레이크|break/i.test(notes)
     ? [...notes.matchAll(TIME_RE)].map((match) => minutes(match[0]))
     : []
-  const hasBreak = breakTimes.length === 2 && opens < breakTimes[0] && breakTimes[1] < closes
+  const hasBreak = breakTimes.length === 2
+  // 점심시간을 적었는데 진료시간 안에 순서대로 들어가지 않으면 잘못 적은 값이다 — 표를 포기한다.
+  if (hasBreak && !(opens < breakTimes[0] && breakTimes[0] < breakTimes[1] && breakTimes[1] < closes)) {
+    return 'unknown'
+  }
   return {
     closed: false,
     opens,
@@ -161,7 +168,8 @@ function parseDay(value: string | undefined): DayHours | null | 'unknown' {
 /**
  * C안의 요일×시간 ●진료표. 오전·오후 칸은 가장 긴 진료일의 점심시간으로 나눈다.
  *
- * 읽을 수 없는 요일이 하나라도 있으면 null — 표를 지어내지 않고 요일별 목록으로 떨어진다.
+ * 읽을 수 없거나 비어 있는 요일이 하나라도 있으면 null — 표를 지어내지 않고 요일별 목록으로
+ * 떨어진다(빈 요일을 휴진으로, 잘못 적은 시간을 진료로 단정하지 않는다).
  * 칸과 시간이 정확히 같지 않은 날(예: 오후 진료가 일찍 끝남)은 'partial'로 표시하고,
  * 정확한 시간은 같은 페이지의 요일별 표가 말한다.
  */
@@ -169,7 +177,7 @@ export function buildSessionGrid(hours: Record<string, string> | null | undefine
   if (!hours) return null
   const days = WEEK_DAY_KEYS.map((key) => parseDay(hours[key]))
   if (days.some((day) => day === 'unknown')) return null
-  const open = days.filter((day): day is DayHours => day !== null && day !== 'unknown' && !day.closed)
+  const open = days.filter((day): day is DayHours => day !== 'unknown' && !day.closed)
   if (open.length === 0) return null
 
   const reference = [...open].sort((a, b) => b.closes - b.opens - (a.closes - a.opens))[0]
@@ -188,7 +196,7 @@ export function buildSessionGrid(hours: Record<string, string> | null | undefine
   const rows = sessions.map((session) => ({
     label: session.label,
     cells: days.map((day): SessionCell => {
-      if (day === null || day === 'unknown' || day.closed) return { state: 'closed' }
+      if (day === 'unknown' || day.closed) return { state: 'closed' }
       const overlaps = day.opens < session.to && day.closes > session.from
       if (!overlaps) return { state: 'closed' }
       const covers = day.opens <= session.from && day.closes >= session.to

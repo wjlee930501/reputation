@@ -12,6 +12,10 @@ import {
   todayHours,
 } from './clinic-layout.ts'
 
+const CLOSED_WEEK = {
+  mon: '휴진', tue: '휴진', wed: '휴진', thu: '휴진', fri: '휴진', sat: '휴진', sun: '휴진',
+}
+
 test('only A, B and C select a layout; anything else keeps the pre-layout page', () => {
   assert.equal(resolveClinicLayout('A'), 'A')
   assert.equal(resolveClinicLayout('C'), 'C')
@@ -80,6 +84,7 @@ test('the session grid splits morning and afternoon at the lunch break', () => {
 
 test('a day whose hours do not match a session is marked partial, not open', () => {
   const grid = buildSessionGrid({
+    ...CLOSED_WEEK,
     mon: '09:00-18:00 (점심 13:00-14:00)',
     tue: '09:00-16:00 (점심 13:00-14:00)',
   })
@@ -90,7 +95,7 @@ test('a day whose hours do not match a session is marked partial, not open', () 
 })
 
 test('a clinic without a lunch break gets one session row', () => {
-  const grid = buildSessionGrid({ mon: '09:00-21:00', sat: '09:00-13:00' })
+  const grid = buildSessionGrid({ ...CLOSED_WEEK, mon: '09:00-21:00', sat: '09:00-13:00' })
   assert.ok(grid)
   assert.deepEqual(grid.rows.map((row) => row.label), ['진료 09:00~21:00'])
   assert.equal(grid.rows[0].cells[0].state, 'open')
@@ -103,6 +108,20 @@ test('the grid is not invented when any day cannot be read', () => {
   assert.equal(buildSessionGrid({}), null)
   assert.equal(buildSessionGrid(null), null)
   assert.equal(buildSessionGrid({ sun: '휴진' }), null)
+})
+
+test('a day left blank is not shown as closed — the grid falls back to the list', () => {
+  // 월요일만 적고 나머지를 비우면 6일을 '진료 없음'으로 단정하게 된다.
+  assert.equal(buildSessionGrid({ mon: '09:00-18:00' }), null)
+  assert.equal(buildSessionGrid({ ...CLOSED_WEEK, mon: '09:00-18:00', tue: ' ' }), null)
+})
+
+test('impossible times and a lunch break outside the day are not drawn', () => {
+  assert.equal(buildSessionGrid({ ...CLOSED_WEEK, mon: '29:00-30:00' }), null)
+  assert.equal(buildSessionGrid({ ...CLOSED_WEEK, mon: '09:75-18:00' }), null)
+  assert.equal(buildSessionGrid({ ...CLOSED_WEEK, mon: '09:00-18:00 (점심 14:00-13:00)' }), null)
+  assert.equal(buildSessionGrid({ ...CLOSED_WEEK, mon: '09:00-18:00 (점심 08:00-09:30)' }), null)
+  assert.ok(buildSessionGrid({ ...CLOSED_WEEK, mon: '09:00-24:00' }))
 })
 
 test('splitHoursNote moves only a trailing parenthesis to its own line', () => {

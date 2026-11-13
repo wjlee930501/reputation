@@ -64,11 +64,30 @@
   min-height: 420px;
 }
 
+/* 글자가 놓이는 왼쪽(휴대폰에서는 아래쪽)은 덮개를 불투명하게 둔다 — 사진 밝기가 섞이면
+   금색처럼 밝은 대표색에서 흰 글자 대비가 4.5:1 아래로 떨어진다. 사진은 오른쪽·위쪽에서 보인다.
+   왼쪽 불투명 폭 = 본문 상자의 왼쪽 여백 + 안쪽 여백(40) + 글 칸 최대 폭(640) + 여유(40). */
 .heroVeil {
   position: absolute;
   inset: 0;
-  background: var(--clinic-brand-strong);
-  opacity: 0.78;
+  background: linear-gradient(
+    90deg,
+    var(--clinic-brand-strong) 0,
+    var(--clinic-brand-strong) calc(max(0px, (100% - 1320px) / 2) + 720px),
+    color-mix(in srgb, var(--clinic-brand-strong) 55%, transparent) calc(max(0px, (100% - 1320px) / 2) + 960px),
+    color-mix(in srgb, var(--clinic-brand-strong) 35%, transparent) 100%
+  );
+}
+
+@media (max-width: 900px) {
+  .heroVeil {
+    background: linear-gradient(
+      0deg,
+      var(--clinic-brand-strong) 0,
+      var(--clinic-brand-strong) 72%,
+      color-mix(in srgb, var(--clinic-brand-strong) 40%, transparent) 100%
+    );
+  }
 }
 
 .heroInner {
@@ -86,6 +105,7 @@
 
 .heroCopy {
   flex: 1 1 560px;
+  max-width: 640px;
   min-width: 0;
   color: var(--clinic-on-brand-strong);
 }
@@ -208,6 +228,7 @@
 
 .label {
   display: block;
+  margin: 0 0 4px;
   font-size: 13px;
   font-weight: 700;
   letter-spacing: 0.12em;

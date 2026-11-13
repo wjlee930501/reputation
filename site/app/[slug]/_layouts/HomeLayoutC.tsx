@@ -1,5 +1,6 @@
 import Image from 'next/image'
 import Link from 'next/link'
+import type { ReactNode } from 'react'
 
 import { resolveAssetUrl, TYPE_LABELS } from '@/lib/api'
 import { clinicGalleryPolicy, displayClinicLabels, selectClinicGalleryPhotos } from '@/lib/clinic-design'
@@ -23,6 +24,15 @@ import {
   CARE_PRINCIPLES,
   CARE_PRINCIPLES_TITLE,
   CARE_STEPS,
+  DOCTOR_SECTION_TITLE,
+  FACTS_SECTION_NOTE,
+  FAQ_SECTION_NOTE,
+  FAQ_SECTION_TITLE,
+  factsSectionTitle,
+  GALLERY_SECTION_TITLE,
+  QUESTIONS_SECTION_TITLE,
+  TREATMENT_SECTION_NOTE,
+  TREATMENT_SECTION_TITLE,
 } from '@/lib/clinic-template-copy'
 import { buildTreatmentSlug } from '@/lib/treatment-slug'
 
@@ -131,7 +141,7 @@ export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
         {news.length > 0 ? (
           <section id="contents" className={s.newsBlock}>
             <div className={s.blockHead}>
-              <h2 className={s.title}><span className={s.label}>NEWS</span>최근 건강 정보</h2>
+              <SectionTitle label="NEWS">최근 건강 정보</SectionTitle>
               <Link className={s.moreLink} href={`${hospitalRootUrl}/contents`}>
                 {contents.length}편 모두 보기 →
               </Link>
@@ -152,7 +162,7 @@ export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
 
         {hasHours ? (
           <section className={s.scheduleBlock} aria-label="진료시간">
-            <h2 className={s.title}><span className={s.label}>INFORMATION</span>진료시간</h2>
+            <SectionTitle label="INFORMATION">진료시간</SectionTitle>
             {grid ? (
               <div className={s.tableScroll}>
                 <table className={s.schedule}>
@@ -210,8 +220,8 @@ export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
         <section id="treatments" className={s.tintSection}>
           <div className={s.inner}>
             <div className={s.centerHead}>
-              <h2 className={s.title}><span className={s.label}>MEDICAL</span>진료 항목</h2>
-              <p className={s.note}>병원에서 진료하는 항목 {hospital.treatments.length}가지입니다.</p>
+              <SectionTitle label="MEDICAL">{TREATMENT_SECTION_TITLE}</SectionTitle>
+              <p className={s.note}>{TREATMENT_SECTION_NOTE}</p>
             </div>
             <ul className={s.tiles}>
               {hospital.treatments.map((treatment, index) => {
@@ -242,7 +252,7 @@ export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
 
       {physicians.length > 0 ? (
         <section id="doctor" className={s.section}>
-          <h2 className={s.title}><span className={s.label}>DOCTOR</span>의료진 소개</h2>
+          <SectionTitle label="DOCTOR">{DOCTOR_SECTION_TITLE}</SectionTitle>
           <div className={s.doctorList}>
             {physicians.map((physician) => (
               <PhysicianProfile
@@ -263,7 +273,7 @@ export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
 
       <section className={s.darkSection} aria-label="진료 원칙과 진료 과정">
         <div className={s.inner}>
-          <h2 className={s.title}><span className={s.label}>POLICY</span>{CARE_PRINCIPLES_TITLE}</h2>
+          <SectionTitle label="POLICY">{CARE_PRINCIPLES_TITLE}</SectionTitle>
           <div className={s.policyGrid}>
             {CARE_PRINCIPLES.map((principle, index) => (
               <div key={principle.key} className={s.policyCard}>
@@ -275,7 +285,7 @@ export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
           </div>
           {composition.showCareFlow ? (
             <>
-              <h2 className={`${s.title} ${s.flowTitle}`}><span className={s.label}>FLOW</span>{CARE_FLOW_TITLE}</h2>
+              <SectionTitle label="FLOW" className={s.flowTitle}>{CARE_FLOW_TITLE}</SectionTitle>
               <p className={s.note}>{CARE_FLOW_NOTE}</p>
               <ol className={s.flow}>
                 {CARE_STEPS.map((step) => (
@@ -294,7 +304,7 @@ export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
       {questions.length > 0 ? (
         <section className={s.section} aria-label="자주 확인하는 질문">
           <div className={s.blockHead}>
-            <h2 className={s.title}><span className={s.label}>Q&amp;A</span>자주 확인하는 질문</h2>
+            <SectionTitle label="Q&A">{QUESTIONS_SECTION_TITLE}</SectionTitle>
             <Link className={s.moreLink} href={`${hospitalRootUrl}/contents`}>건강 정보 {contents.length}편 →</Link>
           </div>
           <div className={s.qaGrid}>
@@ -314,7 +324,8 @@ export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
 
       {faqEntries.length > 0 ? (
         <section id="faq" className={s.section}>
-          <h2 className={s.title}><span className={s.label}>FAQ</span>자주 묻는 질문</h2>
+          <SectionTitle label="FAQ">{FAQ_SECTION_TITLE}</SectionTitle>
+          <p className={s.note}>{FAQ_SECTION_NOTE}</p>
           <dl className={s.faq}>
             {faqEntries.map((entry) => (
               <div key={entry.id} className={s.faqItem}>
@@ -338,7 +349,7 @@ export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
       {gallery.photos.length >= galleryPolicy.minimumPhotoCount ? (
         <section className={s.section} aria-label="병원 공간">
           <div className={s.blockHead}>
-            <h2 className={s.title}><span className={s.label}>CLINIC</span>병원 공간</h2>
+            <SectionTitle label="CLINIC">{GALLERY_SECTION_TITLE}</SectionTitle>
             <Link className={s.moreLink} href={`${hospitalRootUrl}/visit#gallery`}>사진 전체 보기 →</Link>
           </div>
           <div className={s.gallery}>
@@ -360,7 +371,8 @@ export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
 
       <div id="contact">
         <section id="facts" className={`${s.section} ${s.factsSection}`}>
-          <h2 className={s.title}><span className={s.label}>ACCESS</span>{hospital.name} 기본 정보</h2>
+          <SectionTitle label="ACCESS">{factsSectionTitle(hospital.name)}</SectionTitle>
+          <p className={s.note}>{FACTS_SECTION_NOTE}</p>
           <div className={s.factsRow}>
             <table className={s.factsTable}>
               <tbody>
@@ -410,5 +422,18 @@ export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
         </section>
       </div>
     </main>
+  )
+}
+
+/**
+ * C안의 섹션 머리. 영문 라벨(NEWS·FAQ …)은 시안의 장식이라 제목(h2) 밖에 두고 읽지 않게 한다 —
+ * 제목 글자는 레이아웃 도입 전 화면과 같아야 한다.
+ */
+function SectionTitle({ label, className, children }: { label: string; className?: string; children: ReactNode }) {
+  return (
+    <div className={className}>
+      <p className={s.label} aria-hidden="true">{label}</p>
+      <h2 className={s.title}>{children}</h2>
+    </div>
   )
 }

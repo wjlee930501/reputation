@@ -22,6 +22,15 @@ import {
   CARE_PRINCIPLES,
   CARE_PRINCIPLES_TITLE,
   CARE_STEPS,
+  DOCTOR_SECTION_TITLE,
+  FACTS_SECTION_NOTE,
+  FAQ_SECTION_NOTE,
+  FAQ_SECTION_TITLE,
+  factsSectionTitle,
+  GALLERY_SECTION_TITLE,
+  QUESTIONS_SECTION_TITLE,
+  TREATMENT_SECTION_NOTE,
+  TREATMENT_SECTION_TITLE,
 } from '@/lib/clinic-template-copy'
 import { buildTreatmentSlug } from '@/lib/treatment-slug'
 
@@ -99,8 +108,8 @@ export function HomeLayoutA({ model }: { model: ClinicHomeModel }) {
 
       {hospital.treatments.length > 0 ? (
         <section id="treatments" className={s.centerSection}>
-          <h2 className={s.bigTitle}>진료 항목 {hospital.treatments.length}가지</h2>
-          <p className={s.note}>항목을 누르면 진료 내용과 진행 방식을 볼 수 있습니다.</p>
+          <h2 className={s.bigTitle}>{TREATMENT_SECTION_TITLE}</h2>
+          <p className={s.note}>{TREATMENT_SECTION_NOTE}</p>
           <ul className={s.pillList}>
             {hospital.treatments.map((treatment) => {
               const slug = buildTreatmentSlug(treatment.name)
@@ -125,7 +134,7 @@ export function HomeLayoutA({ model }: { model: ClinicHomeModel }) {
 
       {physicians.length > 0 ? (
         <section id="doctor" className={s.section}>
-          <h2 className={`${s.bigTitle} ${s.centered}`}>진료를 담당하는 의료진</h2>
+          <h2 className={`${s.bigTitle} ${s.centered}`}>{DOCTOR_SECTION_TITLE}</h2>
           <div className={s.doctorList}>
             {physicians.map((physician, index) => (
               <PhysicianProfile
@@ -175,10 +184,13 @@ export function HomeLayoutA({ model }: { model: ClinicHomeModel }) {
         </section>
       ) : null}
 
+      {/* 글이 있으면 #contents는 언제나 있다 — 질문 목록이 꺼져도(글이 적거나 모두 FAQ로
+          쓰였을 때) 다른 섹션의 링크가 빈 곳을 가리키지 않게 FAQ까지 함께 감싼다. */}
+      <div id={contents.length > 0 ? 'contents' : undefined}>
       {questions.length > 0 ? (
-        <section id="contents" className={s.section}>
+        <section className={s.section}>
           <div className={s.sectionHead}>
-            <h2 className={s.bigTitle}>자주 확인하는 질문</h2>
+            <h2 className={s.bigTitle}>{QUESTIONS_SECTION_TITLE}</h2>
             <Link className={s.textLink} href={`${hospitalRootUrl}/contents`}>
               건강 정보 {contents.length}편 모두 보기 ›
             </Link>
@@ -213,7 +225,8 @@ export function HomeLayoutA({ model }: { model: ClinicHomeModel }) {
 
       {faqEntries.length > 0 ? (
         <section id="faq" className={s.section}>
-          <h2 className={s.bigTitle}>자주 묻는 질문</h2>
+          <h2 className={s.bigTitle}>{FAQ_SECTION_TITLE}</h2>
+          <p className={s.note}>{FAQ_SECTION_NOTE}</p>
           <dl className={s.faq}>
             {faqEntries.map((entry) => (
               <div key={entry.id} className={s.faqItem}>
@@ -225,8 +238,16 @@ export function HomeLayoutA({ model }: { model: ClinicHomeModel }) {
               </div>
             ))}
           </dl>
+          {questions.length === 0 && contents.length > 0 ? (
+            <p className={s.centered}>
+              <Link className={s.textLink} href={`${hospitalRootUrl}/contents`}>
+                건강 정보 {contents.length}편 모두 보기 ›
+              </Link>
+            </p>
+          ) : null}
         </section>
       ) : null}
+      </div>
 
       {composition.showCareFlow ? (
         <section className={s.centerSection} aria-label="진료 과정">
@@ -245,9 +266,9 @@ export function HomeLayoutA({ model }: { model: ClinicHomeModel }) {
       ) : null}
 
       {gallery.photos.length >= galleryPolicy.minimumPhotoCount ? (
-        <section className={s.section} aria-label="병원 공간">
+        <section className={s.section} aria-label={GALLERY_SECTION_TITLE}>
           <div className={s.sectionHead}>
-            <h2 className={s.bigTitle}>병원 공간</h2>
+            <h2 className={s.bigTitle}>{GALLERY_SECTION_TITLE}</h2>
             <Link className={s.textLink} href={`${hospitalRootUrl}/visit#gallery`}>
               사진 전체 보기 ›
             </Link>
@@ -271,7 +292,8 @@ export function HomeLayoutA({ model }: { model: ClinicHomeModel }) {
 
       <div id="contact" className={s.factsWrap}>
         <section id="facts" className={s.section}>
-          <h2 className={s.bigTitle}>{hospital.name} 기본 정보</h2>
+          <h2 className={s.bigTitle}>{factsSectionTitle(hospital.name)}</h2>
+          <p className={s.note}>{FACTS_SECTION_NOTE}</p>
           <div className={s.factsGrid}>
             <div>
               <dl className={s.factList}>

@@ -60,6 +60,18 @@ export const CARE_STEPS = [
   },
 ] as const
 
+/* 섹션 제목 — 레이아웃 도입 전 화면의 제목 그대로. 레이아웃이 새로 더한 칸(오늘 진료·진료표·
+   최근 건강 정보)은 원래 없던 섹션이라 여기 두지 않는다. */
+export const TREATMENT_SECTION_TITLE = '진료 영역'
+export const DOCTOR_SECTION_TITLE = '진료를 담당하는 의료진'
+export const QUESTIONS_SECTION_TITLE = '자주 확인하는 질문'
+export const FAQ_SECTION_TITLE = '자주 묻는 질문과 답변 요약'
+export const GALLERY_SECTION_TITLE = '병원 공간'
+
+export function factsSectionTitle(hospitalName: string): string {
+  return `${hospitalName} 기본 정보`
+}
+
 export const FAQ_SECTION_NOTE =
   '진료실에서 반복되는 질문에 대한 답변 요약입니다. 개인의 상태에 따라 판단이 달라질 수 있으니 자세한 내용은 진료 상담에서 확인해 주세요.'
 

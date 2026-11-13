@@ -3,6 +3,7 @@ import Link from 'next/link'
 import type { FaqEntry } from '@/lib/schema'
 
 import { ChevronRightIcon } from './icons'
+import { FAQ_SECTION_NOTE, FAQ_SECTION_TITLE } from '@/lib/clinic-template-copy'
 
 interface Props {
   entries: FaqEntry[]
@@ -24,11 +25,8 @@ export function ClinicFaq({ entries, hospitalRootUrl }: Props) {
     <section id="faq" className="clinic-section">
       <div className="clinic-section-inner">
         <header className="clinic-section-head">
-          <h2 className="clinic-section-title">자주 묻는 질문과 답변 요약</h2>
-          <p className="clinic-section-note">
-            진료실에서 반복되는 질문에 대한 답변 요약입니다. 개인의 상태에 따라 판단이
-            달라질 수 있으니 자세한 내용은 진료 상담에서 확인해 주세요.
-          </p>
+          <h2 className="clinic-section-title">{FAQ_SECTION_TITLE}</h2>
+          <p className="clinic-section-note">{FAQ_SECTION_NOTE}</p>
         </header>
 
         <dl className="clinic-faq-list">

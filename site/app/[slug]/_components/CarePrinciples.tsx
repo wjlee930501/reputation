@@ -11,8 +11,6 @@ interface Props {
   region: string[]
   // 승인·검수된 공개 서사가 있으면 리드 문장으로 사용. 없으면 프로파일 기반 사실형 문장으로 대체.
   publicAbout?: string | null
-  /** 리드 문장을 그릴지. 레이아웃 B는 지역명을 길게 나열하는 대체 문장을 쓰지 않는다. */
-  showLede?: boolean
 }
 
 // 백엔드가 오염된 public_about을 None으로 강등하기 전이라도, 내부 파이프라인 언어가
@@ -50,7 +48,6 @@ export function CarePrinciples({
   specialties,
   region,
   publicAbout,
-  showLede = true,
 }: Props) {
   const specialtyText = specialties.filter(Boolean).join(', ')
   const regionText = region.filter(Boolean).join(' ')
@@ -75,7 +72,7 @@ export function CarePrinciples({
           <header className="clinic-principles-lead">
             <span className="clinic-principles-eyebrow">진료 원칙</span>
             <h2 className="clinic-section-title">{CARE_PRINCIPLES_TITLE}</h2>
-            {showLede ? <p className="clinic-principles-statement">{lede}</p> : null}
+            <p className="clinic-principles-statement">{lede}</p>
           </header>
 
           <div className="clinic-belief-grid">

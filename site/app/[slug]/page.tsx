@@ -273,7 +273,9 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
     heroPhotoUrl,
     mediaMode,
     accessMode,
-    factLinks,
+    // 레이아웃 도입 전 화면은 블로그를 사실 패널이 아닌 연락 카드에 보였다 — A·C는 연락 카드가
+    // 없으므로 공식 채널 목록에 블로그를 더해 화면에서 빠지지 않게 한다(sameAs에도 있다).
+    factLinks: [...factLinks, { url: hospital.blog_url, label: '병원 블로그' }],
   }
 
   return (
@@ -348,7 +350,6 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
             specialties={hospital.specialties}
             region={hospital.region}
             publicAbout={publicAbout}
-            showLede={layout !== 'B'}
           />
 
           <div id="contents" className="clinic-anchor-target">
@@ -412,7 +413,6 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
             region={hospital.region}
             websiteUrl={hospital.website_url}
             hoursHref={visitHoursHref(hospitalRootUrl, false)}
-            showVisitChecks={layout !== 'B'}
           />
           </div>
         </main>

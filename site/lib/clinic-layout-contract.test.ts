@@ -73,6 +73,28 @@ for (const [name, source] of Object.entries(LAYOUTS)) {
     }
   })
 
+  test(`layout ${name} keeps #contents whenever the hospital has articles`, () => {
+    assert.match(source, /id=\{contents\.length > 0 \? 'contents' : undefined\}|<section id="contents"/)
+  })
+
+  test(`layout ${name} uses the pre-layout section titles and notes`, () => {
+    for (const constant of [
+      'TREATMENT_SECTION_TITLE',
+      'TREATMENT_SECTION_NOTE',
+      'DOCTOR_SECTION_TITLE',
+      'QUESTIONS_SECTION_TITLE',
+      'FAQ_SECTION_TITLE',
+      'FAQ_SECTION_NOTE',
+      'GALLERY_SECTION_TITLE',
+      'factsSectionTitle(hospital.name)',
+      'FACTS_SECTION_NOTE',
+    ]) {
+      assert.ok(source.includes(`{${constant}}`), `${constant}를 쓰지 않습니다`)
+    }
+    // 장식 라벨(NEWS·FAQ …)이 제목 글자에 섞이면 h2 텍스트가 바뀐다.
+    assert.doesNotMatch(source, /<h2[^>]*>\s*<span className=\{s\.label\}/)
+  })
+
   test(`layout ${name} shows the hospital facts the schema and llms.txt carry`, () => {
     for (const field of ['hospital.name', 'hospital.phone', 'hospital.hira_org_id', 'hospital.director_name']) {
       assert.ok(source.includes(field), `${field}를 그리지 않습니다`)
@@ -95,6 +117,14 @@ for (const [name, source] of Object.entries(LAYOUTS)) {
     assert.match(source, /\{headline\.emphasis\}/)
   })
 }
+
+test('layout B changes only styles — the pre-layout sections render the same content', () => {
+  assert.doesNotMatch(PAGE, /showLede|showVisitChecks/)
+})
+
+test('A and C list the official blog with the other official channels', () => {
+  assert.match(PAGE, /factLinks: \[\.\.\.factLinks, \{ url: hospital\.blog_url, label: '병원 블로그' \}\]/)
+})
 
 test('the pre-layout home keeps rendering the template copy from the shared module', () => {
   const principles = read(SLUG_DIR, '_components', 'CarePrinciples.tsx')
@@ -192,27 +222,30 @@ test('layout sections take their vertical rhythm from the shared section token',
   }
 })
 
-/** clamp(34px, …)나 22px에서 보장되는 최소 크기. */
-function minimumPx(value: string): number | null {
-  const clamp = /^clamp\(\s*([\d.]+)px/.exec(value)
-  if (clamp) return Number(clamp[1])
+/** clamp(34px, 4vw, 60px)나 22px의 그 화면 폭에서의 크기. */
+function sizeAt(value: string, viewport: number): number | null {
+  const clamp = /^clamp\(\s*([\d.]+)px\s*,\s*([\d.]+)vw\s*,\s*([\d.]+)px\s*\)$/.exec(value)
+  if (clamp) {
+    const [min, vw, max] = clamp.slice(1).map(Number)
+    return Math.min(max, Math.max(min, (vw * viewport) / 100))
+  }
   const plain = /^([\d.]+)px$/.exec(value)
   return plain ? Number(plain[1]) : null
 }
 
-function fontSize(root: postcss.Root, selector: string): number {
+function fontSize(root: postcss.Root, selector: string, viewport: number): number {
   let found: number | null = null
   root.walkRules((rule) => {
     if (rule.selector !== selector) return
     rule.walkDecls('font-size', (decl) => {
-      found = minimumPx(decl.value)
+      found = sizeAt(decl.value, viewport)
     })
   })
   assert.ok(found !== null, `${selector}의 font-size를 찾지 못했습니다`)
   return found
 }
 
-test('in every layout the h1 stays larger than h2, and h2 larger than h3, even on a phone', () => {
+test('in every layout the h1 stays larger than h2, and h2 larger than h3, at every width', () => {
   const headingClasses: Record<string, { h1: string; h2: string[]; h3: string[] }> = {
     'layout-a.module.css': {
       h1: '.heroLead',
@@ -225,13 +258,16 @@ test('in every layout the h1 stays larger than h2, and h2 larger than h3, even o
       h3: ['.doctorBody h3', '.policyCard h3', '.flow h3', '.qaTitle'],
     },
   }
-  for (const { file, root } of MODULES) {
-    const classes = headingClasses[file]
-    if (!classes) continue
-    const h1 = fontSize(root, classes.h1)
-    const h2 = Math.min(...classes.h2.map((selector) => fontSize(root, selector)))
-    const h3 = Math.max(...classes.h3.map((selector) => fontSize(root, selector)))
-    assert.ok(h1 > h2, `${file}: h1 ${h1}px ≤ h2 ${h2}px`)
-    assert.ok(h2 > h3, `${file}: h2 ${h2}px ≤ h3 ${h3}px`)
+  for (const viewport of [360, 390, 768, 1024, 1280, 1440, 1920]) {
+    for (const { file, root } of MODULES) {
+      const classes = headingClasses[file]
+      if (!classes) continue
+      const h1 = fontSize(root, classes.h1, viewport)
+      const h2 = Math.max(...classes.h2.map((selector) => fontSize(root, selector, viewport)))
+      const h3 = Math.max(...classes.h3.map((selector) => fontSize(root, selector, viewport)))
+      const h2Min = Math.min(...classes.h2.map((selector) => fontSize(root, selector, viewport)))
+      assert.ok(h1 > h2, `${file} @${viewport}px: h1 ${h1}px ≤ h2 ${h2}px`)
+      assert.ok(h2Min > h3, `${file} @${viewport}px: h2 ${h2Min}px ≤ h3 ${h3}px`)
+    }
   }
 })

@@ -9,6 +9,7 @@ const TREATMENT_GRID = readFileSync(
   join(HERE, '..', 'app', '[slug]', '_components', 'TreatmentGrid.tsx'),
   'utf8',
 )
+const TEMPLATE_COPY = readFileSync(join(HERE, 'clinic-template-copy.ts'), 'utf8')
 
 /**
  * P-A-3 — 홈의 첫 섹션 제목이 `sr-only` 헤더 안에 있었다.
@@ -24,7 +25,9 @@ test('the home treatment section title is visible, not screen-reader-only', () =
   )
   assert.ok(header.length > 0, '진료 영역 섹션 헤더를 찾지 못했습니다')
   assert.doesNotMatch(header, /sr-only/)
-  assert.match(header, /<h2 className="clinic-section-title">진료 영역<\/h2>/)
+  // 제목 글자는 레이아웃 A/B/C와 함께 쓰는 원문 상수에 있다.
+  assert.match(header, /<h2 className="clinic-section-title">\{TREATMENT_SECTION_TITLE\}<\/h2>/)
+  assert.match(TEMPLATE_COPY, /export const TREATMENT_SECTION_TITLE = '진료 영역'/)
 })
 
 test('the home treatment section says how many areas exist in total', () => {

@@ -11,6 +11,7 @@ import {
 } from '@/lib/clinic-physicians'
 
 import { ClinicAvatar } from './ClinicAvatar'
+import { DOCTOR_SECTION_TITLE } from '@/lib/clinic-template-copy'
 
 interface Props {
   /** display_order 순서로 정규화된 의료진. 비어 있으면 섹션을 그리지 않는다. */
@@ -35,7 +36,7 @@ export function DoctorIntro({
     <section id="curator" className="clinic-section clinic-section--alt">
       <div className="clinic-section-inner">
         <header className="clinic-section-head">
-          <h2 className="clinic-section-title">진료를 담당하는 의료진</h2>
+          <h2 className="clinic-section-title">{DOCTOR_SECTION_TITLE}</h2>
         </header>
 
         <div className={`clinic-curator-grid clinic-curator-grid--${layout}`}>
