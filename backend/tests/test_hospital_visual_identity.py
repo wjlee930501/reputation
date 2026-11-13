@@ -381,6 +381,33 @@ async def test_saving_the_site_layout_persists_and_can_change_later():
     assert hospital.site_layout == "C"
 
 
-def test_site_layout_change_refreshes_the_public_site():
-    """공개 병원의 레이아웃을 바꾸면 그 저장이 사이트 재검증을 부른다."""
-    assert "site_layout" in hospitals_api.PUBLIC_PROFILE_FIELDS
+@pytest.mark.parametrize(
+    ("is_public", "submitted", "expected_calls"),
+    [
+        (True, "B", 1),  # 공개 병원의 레이아웃 변경 → 재검증
+        (True, "", 1),  # 공개 병원에서 레이아웃을 비움(레이아웃 도입 전 화면) → 재검증
+        (True, "A", 0),  # 같은 값을 다시 저장 → 바뀐 것이 없으니 재검증하지 않는다
+        (False, "B", 0),  # 공개 전 병원 → 재검증할 사이트가 없다
+    ],
+)
+async def test_site_layout_change_refreshes_only_a_public_site(
+    monkeypatch, is_public, submitted, expected_calls
+):
+    hospital = _active_complete_hospital(site_layout="A")
+    db = _FakeDB(hospital)
+    calls: list[str] = []
+
+    async def _fake_revalidate(slug, *_args, **_kwargs):
+        calls.append(slug)
+        return True
+
+    monkeypatch.setattr(hospitals_api, "_has_public_site", lambda _h: is_public)
+    monkeypatch.setattr(hospitals_api, "ensure_site_revalidate_configured", lambda: None)
+    monkeypatch.setattr(hospitals_api, "trigger_hospital_site_revalidate_safe", _fake_revalidate)
+
+    await update_profile(
+        hospital.id, HospitalProfileUpdate(site_layout=submitted), BackgroundTasks(), db=db
+    )
+
+    assert len(calls) == expected_calls
+    assert hospital.site_layout == (submitted or None)
