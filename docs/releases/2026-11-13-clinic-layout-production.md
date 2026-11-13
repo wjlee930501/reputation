@@ -49,7 +49,7 @@ mkdir -p ../rollback-layout && cp .deploy-rollback ../rollback-layout/all
   - [ ] 계약 등록 화면에 카드 3장이 보이고, 고르기 전에는 등록 버튼이 막힌다(실제 등록은 하지 않는다).
   - [ ] 병원 정보 → 브랜드 섹션에 '사이트 레이아웃'과 같은 지역 분포 줄이 보인다.
   - [ ] 저장은 대표 승인 뒤 한 병원으로만 한다. 그 병원 공개 페이지가 몇 분 안에 바뀌는지 본다.
-- [ ] 새 리비전의 ERROR 로그가 30분 동안 0건이다.
+- [x] 새 리비전의 ERROR 로그가 30분 동안 0건이다 — Beat `/live` 2건 말고는 0건(아래 관찰).
 - [ ] `run_beat_entry daily-fleet-heartbeat` 또는 다음 일일 요약이 "점검 이상 없음"이다.
 
 ## 롤백
@@ -81,10 +81,10 @@ mkdir -p ../rollback-layout && cp .deploy-rollback ../rollback-layout/all
 - release `ccd4b37cfcbfb5fc7dad05c1befc394d87d348d7`, 트래픽 고정 없음.
 - 공개 병원 13곳 모두 공개 상세에 `site_layout` 키가 있고 값은 null, 홈 200, 홈 HTML에 `clinic-shell--layout-` 0건. 자기 도메인 10곳의 헬스는 hospital ID·slug·canonical host가 맞고 release가 `reputation-site-00150-26b`다. 자기 도메인이 없는 3곳(서귀포삼성·장앤김더나은속·강심장)은 헬스 대상이 아니라 홈 200만 봤다.
 - 명조 서체 조각 200(`font/woff2`), 응답 CSP `font-src 'self' data:` 안.
-- ERROR: 새 리비전에서 Beat `/live` 실패 1건(아래). 그 밖 0건.
+- ERROR(배포 뒤 30분, 20:35 KST까지): 새 리비전에서 Beat `/live` 실패 2건(11:05·11:20 UTC, 아래). API·Worker·Site·Admin은 0건.
 
 ### 관찰 — 옛 Beat가 다시 남음
-11-09에 두 번 본 것과 같다. 퇴역한 옛 Beat `00276-fx4`의 인스턴스가 배포 뒤에도 RedBeat 잠금을 쥐고 매분 같은 스케줄을 보내, 새 Beat `00277-x9p`가 기동 유예(900초) 끝에 `LIVENESS HTTP probe failed`로 재시작됐다(11:05 UTC). 이 릴리스는 Beat 스케줄을 바꾸지 않았고 옛 Beat가 같은 큐로 보내므로 빠진 작업은 없다. 옛 인스턴스가 사라질 때까지 약 15분마다 같은 ERROR가 남을 수 있다. 세 번째 재발이라 배포 절차에서 옛 Beat 인스턴스를 끝내는 방법이 따로 필요하다.
+11-09에 두 번 본 것과 같다. 퇴역한 옛 Beat `00276-fx4`의 인스턴스가 배포 뒤에도 RedBeat 잠금을 쥐고 매분 같은 스케줄을 보내, 새 Beat `00277-x9p`가 기동 유예(900초) 끝에 `LIVENESS HTTP probe failed`로 재시작됐다(11:05 UTC). 이 릴리스는 Beat 스케줄을 바꾸지 않았고 옛 Beat가 같은 큐로 보내므로 빠진 작업은 없다. 20:35 KST에도 Beat 로그는 모두 `00276-fx4`에서 나왔다(30분 동안 40줄) — 옛 인스턴스가 사라질 때까지 약 15분마다 같은 ERROR가 남는다. 세 번째 재발이라 배포 절차에서 옛 Beat 인스턴스를 끝내는 방법이 따로 필요하다.
 
 ### 남은 것
 - **Admin 실조작**: 계약 등록 카드 3장·필수 선택, 병원 정보의 레이아웃·지역 분포 줄. 로그인이 필요해 확인하지 못했다. 저장은 대표 승인 뒤 한 병원으로만.
