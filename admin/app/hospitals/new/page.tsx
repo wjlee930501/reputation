@@ -6,7 +6,14 @@ import Link from 'next/link'
 import { ApiError, fetchAPI } from '@/lib/api'
 import { OperatorIssuePanel } from '@/app/_components/OperatorIssuePanel'
 import { fetchCurrentAccount } from '@/lib/current-account'
-import { readClinicNameFromLeadContext } from '@/lib/lead-onboarding'
+import { readClinicNameFromLeadContext, readRegionFromLeadContext } from '@/lib/lead-onboarding'
+import { SiteLayoutPicker } from '@/app/_components/SiteLayoutPicker'
+import {
+  layoutDistributionPath,
+  readLayoutDistribution,
+  type SiteLayout,
+  type SiteLayoutDistribution,
+} from '@/lib/site-layout'
 import {
   registrationBlockReason,
   registrationFailure,
@@ -29,6 +36,11 @@ export default function RegisterContractPage() {
   const [name, setName] = useState('')
   const [plan, setPlan] = useState<PlanCode>('PLAN_12')
   const [aeOwnerId, setAeOwnerId] = useState('')
+  const [siteLayout, setSiteLayout] = useState<SiteLayout | null>(null)
+  // 상담 요청의 지역으로 찾은 같은 시·도 공개 병원의 레이아웃 수. 지역을 모르면 분포 없이 고른다.
+  const [leadRegion, setLeadRegion] = useState<string | null>(null)
+  const [distribution, setDistribution] = useState<SiteLayoutDistribution | null>(null)
+  const [distributionError, setDistributionError] = useState(false)
   const [accounts, setAccounts] = useState<AdminAccountSummary[]>([])
   const [loading, setLoading] = useState(false)
   const [leadLoading, setLeadLoading] = useState(false)
@@ -73,6 +85,7 @@ export default function RegisterContractPage() {
       .then((response) => {
         const clinicName = readClinicNameFromLeadContext(response)
         if (!cancelled && clinicName) setName(clinicName)
+        if (!cancelled) setLeadRegion(readRegionFromLeadContext(response))
       })
       .catch((cause: unknown) => {
         if (!isExpectedOperatorRequestFailure(cause)) throw cause
@@ -90,7 +103,31 @@ export default function RegisterContractPage() {
     }
   }, [])
 
-  const form = { name, leadId, plan, aeOwnerId }
+  useEffect(() => {
+    if (!leadRegion) {
+      setDistribution(null)
+      return
+    }
+    let cancelled = false
+    setDistribution(null)
+    setDistributionError(false)
+    fetchAPI<unknown>(layoutDistributionPath({ region: [leadRegion] }))
+      .then((response) => {
+        if (cancelled) return
+        const parsed = readLayoutDistribution(response)
+        setDistribution(parsed)
+        setDistributionError(parsed === null)
+      })
+      .catch((cause: unknown) => {
+        if (!isExpectedOperatorRequestFailure(cause)) throw cause
+        if (!cancelled) setDistributionError(true)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [leadRegion])
+
+  const form = { name, leadId, plan, aeOwnerId, siteLayout }
   const blockReason = registrationBlockReason(form)
 
   async function handleSubmit(event: React.FormEvent) {
@@ -114,7 +151,7 @@ export default function RegisterContractPage() {
   }
 
   return (
-    <div className="max-w-2xl p-8">
+    <div className="max-w-3xl p-8">
       <div className="mb-6">
         <Link href="/hospitals" className="text-sm text-slate-500 hover:text-slate-700">
           ← 목록으로
@@ -187,6 +224,20 @@ export default function RegisterContractPage() {
             이 병원에 생기는 문제와 보고서 전달을 맡는 사람입니다.
           </span>
         </label>
+
+        <fieldset className="space-y-2">
+          <legend className="text-sm font-medium text-slate-700">
+            {ADMIN_COPY.siteLayout.title} <span className="text-red-500">*</span>
+          </legend>
+          <p className="break-keep text-xs leading-5 text-slate-500">{ADMIN_COPY.siteLayout.hint}</p>
+          <SiteLayoutPicker
+            name="register-site-layout"
+            value={siteLayout}
+            onChange={setSiteLayout}
+            distribution={distribution}
+            distributionError={distributionError}
+          />
+        </fieldset>
 
         {error && (
           <OperatorIssuePanel

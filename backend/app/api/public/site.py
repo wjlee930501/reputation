@@ -580,6 +580,8 @@ def _serialize_hospital(
         # 확인할 방법이 없었다. 승인된 문장을 그대로 싣는다.
         "image_style_direction": getattr(h, "image_style_direction", None),
         "site_access_mode": getattr(h, "site_access_mode", None),
+        # 마케터가 고른 레이아웃 A/B/C. null이면 Site가 레이아웃 도입 전 화면을 그린다.
+        "site_layout": getattr(h, "site_layout", None),
         "director_credentials": _safe_credentials(getattr(h, "director_credentials", None)),
         "treatments": _safe_treatments(h.treatments),
         "photos": serialized_photos,

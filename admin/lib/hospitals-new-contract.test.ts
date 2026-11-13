@@ -12,7 +12,7 @@ test('contract registration submits once to the single-transaction endpoint', ()
   assert.doesNotMatch(PAGE, /handoffs\/|\/convert|onboarding_request_id|sessionStorage/)
 })
 
-test('the screen asks only for the hospital name, plan and AE', () => {
+test('the screen asks only for the hospital name, plan, AE and site layout', () => {
   assert.ok(PAGE.includes('병원명'))
   // 저장만 되고 아무 동작도 바꾸지 않는 값은 운영자에게 묻지 않는다 — 서버가 채운다.
   for (const label of ['계약 번호', '계약 효력일', '영업 담당']) {
@@ -52,4 +52,12 @@ test('the lead list starts contract registration on the one-screen route', () =>
   assert.match(LEADS, /href=\{getOnboardingHref\(lead\)\}[\s\S]{0,300}계약 등록/)
   // 남은 '온보딩 시작' 문자열은 더 이상 열리지 않는 전환 모달 안에만 있다(PR-1E Task 2에서 삭제).
   assert.doesNotMatch(LEADS, />\s*온보딩 시작\s*</)
+})
+
+test('contract registration requires a site layout and shows the same-region distribution', () => {
+  assert.match(PAGE, /<SiteLayoutPicker[\s\S]*?value=\{siteLayout\}[\s\S]*?distribution=\{distribution\}/)
+  assert.match(PAGE, /const form = \{ name, leadId, plan, aeOwnerId, siteLayout \}/)
+  // 상담 요청의 지역으로만 분포를 찾는다 — 지역을 모르면 분포 없이 고른다.
+  assert.match(PAGE, /layoutDistributionPath\(\{ region: \[leadRegion\] \}\)/)
+  assert.match(PAGE, /\{ADMIN_COPY\.siteLayout\.title\} <span className="text-red-500">\*<\/span>/)
 })

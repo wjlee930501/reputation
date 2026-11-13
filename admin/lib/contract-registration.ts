@@ -1,4 +1,6 @@
 import type { PlanCode } from '../types/index.ts'
+import { ADMIN_COPY } from './admin-copy.ts'
+import type { SiteLayout } from './site-layout.ts'
 
 /** 계약 등록 화면이 받는 값. 계약 번호·효력일·영업 담당은 받지 않는다 — 저장만 되고
  * 어떤 동작도 바꾸지 않아 의미 없는 기입이었다. 서버가 채운다(`ContractRegistration`). */
@@ -7,6 +9,8 @@ export type ContractRegistrationForm = {
   readonly leadId: string | null
   readonly plan: PlanCode
   readonly aeOwnerId: string
+  /** 공개 페이지 레이아웃. 계약 등록에서 반드시 고른다(2026-11-13 결정). */
+  readonly siteLayout: SiteLayout | null
 }
 
 export type ContractRegistrationPayload = {
@@ -14,6 +18,7 @@ export type ContractRegistrationPayload = {
   readonly lead_id: string | null
   readonly plan: PlanCode
   readonly ae_owner_id: string
+  readonly site_layout: SiteLayout | null
 }
 
 /** 화면 입력을 `POST /admin/hospitals/register-contract` 본문으로 옮긴다. */
@@ -23,6 +28,7 @@ export function registrationPayload(form: ContractRegistrationForm): ContractReg
     lead_id: form.leadId || null,
     plan: form.plan,
     ae_owner_id: form.aeOwnerId,
+    site_layout: form.siteLayout,
   }
 }
 
@@ -30,6 +36,7 @@ export function registrationPayload(form: ContractRegistrationForm): ContractReg
 export function registrationBlockReason(form: ContractRegistrationForm): string | null {
   if (!form.name.trim()) return '병원명을 입력해야 등록할 수 있습니다.'
   if (!form.aeOwnerId) return '담당 AE를 선택해야 등록할 수 있습니다.'
+  if (!form.siteLayout) return ADMIN_COPY.siteLayout.required
   return null
 }
 

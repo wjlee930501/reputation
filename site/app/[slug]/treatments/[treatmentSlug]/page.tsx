@@ -21,6 +21,8 @@ import { ClinicFooter } from '../../_components/ClinicFooter'
 import { ClinicHeader } from '../../_components/ClinicHeader'
 import { ContentCard } from '../../_components/ContentCard'
 import { JsonLd } from '../../_components/JsonLd'
+import { resolveClinicLayout } from '@/lib/clinic-layout'
+import { clinicLayoutShellClass } from '../../_layouts/shell'
 
 interface Props {
   params: Promise<{ slug: string; treatmentSlug: string }>
@@ -181,7 +183,10 @@ export default async function TreatmentPillarPage({ params: paramsPromise }: Pro
   return (
     <>
       <JsonLd data={[collectionJsonLd, buildBreadcrumbJsonLd(breadcrumbItems, hospitalRootUrl)]} />
-      <div className="clinic-shell clinic-shell--editorial" style={buildClinicThemeStyle(hospital)}>
+      <div
+        className={`clinic-shell clinic-shell--editorial ${clinicLayoutShellClass(resolveClinicLayout(hospital.site_layout))}`}
+        style={buildClinicThemeStyle(hospital)}
+      >
         <ClinicHeader
           hospitalName={hospital.name}
           hospitalRootUrl={hospitalRootUrl}

@@ -1,0 +1,695 @@
+/* 레이아웃 A — One Medical 결. 색은 병원 테마 토큰(--clinic-*)만 쓴다: 대표색이 금색이어도
+   글자 대비는 --clinic-brand-strong / --clinic-on-brand-strong이 보장한다. */
+
+/* 셸 — 홈과 하위 페이지(머리·꼬리·서체)가 함께 받는다. */
+.shell {
+  --layout-serif: var(--font-clinic-serif), 'Noto Serif KR', 'AppleMyungjo', 'Batang', serif;
+  word-break: keep-all;
+  overflow-wrap: break-word;
+}
+
+.shell :global(.clinic-header) {
+  border-bottom: 1px solid var(--clinic-line);
+}
+
+.shell :global(.clinic-header-cta) {
+  border-radius: var(--clinic-control-radius-pill);
+  background: var(--clinic-brand-strong);
+  color: var(--clinic-on-brand-strong);
+}
+
+.shell :global(.clinic-section-title),
+.shell :global(.clinic-subpage-title) {
+  font-family: var(--layout-serif);
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  color: var(--clinic-brand-strong);
+}
+
+/* 꼬리는 어두운 바탕이라 이름의 색은 그대로 두고 서체만 바꾼다. */
+.shell :global(.clinic-footer-name) {
+  font-family: var(--layout-serif);
+  font-weight: 700;
+  letter-spacing: -0.03em;
+}
+
+/* ── 홈 ─────────────────────────────────────────────── */
+
+.home {
+  color: var(--clinic-ink);
+  font-size: 18px;
+  line-height: 1.6;
+}
+
+.home a {
+  color: var(--clinic-brand-strong);
+}
+
+.hero {
+  background: var(--clinic-brand-tint);
+}
+
+.heroInner {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: var(--clinic-section-y-tight) clamp(20px, 4vw, 48px);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 48px 64px;
+}
+
+.heroCopy {
+  flex: 1 1 520px;
+  min-width: 0;
+}
+
+.heroTitle {
+  margin: 0;
+  font-family: var(--layout-serif);
+  font-weight: 700;
+  color: var(--clinic-brand-strong);
+  text-wrap: balance;
+}
+
+.heroLead {
+  display: block;
+  font-size: clamp(40px, 5vw, 64px);
+  line-height: 1.15;
+  letter-spacing: -0.035em;
+}
+
+.heroEmphasis {
+  display: block;
+  margin-top: 24px;
+  font-family: var(--font-pretendard), sans-serif;
+  font-size: clamp(17px, 1.5vw, 20px);
+  font-weight: 500;
+  line-height: 1.6;
+  letter-spacing: 0;
+  color: var(--clinic-ink);
+}
+
+.primaryButton,
+.secondaryButton,
+.bandButton {
+  display: inline-flex;
+  align-items: center;
+  min-height: 48px;
+  padding: 0 28px;
+  border-radius: var(--clinic-control-radius-pill);
+  font-size: 16px;
+  font-weight: var(--clinic-control-weight);
+  text-decoration: none;
+}
+
+.home .primaryButton {
+  background: var(--clinic-brand-strong);
+  color: var(--clinic-on-brand-strong);
+}
+
+.home .secondaryButton {
+  border: 1px solid var(--clinic-brand-strong);
+  color: var(--clinic-brand-strong);
+}
+
+.heroCopy .primaryButton {
+  margin-top: 36px;
+}
+
+.heroToday {
+  margin: 16px 0 0;
+  font-size: 14px;
+  color: var(--clinic-ink);
+}
+
+.heroToday a {
+  text-decoration: underline;
+}
+
+.heroPhoto {
+  position: relative;
+  flex: 1 1 500px;
+  min-width: 0;
+  aspect-ratio: 4 / 3;
+  border-radius: 24px;
+  overflow: hidden;
+}
+
+.section,
+.centerSection {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: var(--clinic-section-y) clamp(20px, 4vw, 48px) 0;
+}
+
+.centerSection {
+  max-width: 1100px;
+  text-align: center;
+}
+
+.centered {
+  text-align: center;
+}
+
+.bigTitle {
+  margin: 0;
+  font-family: var(--layout-serif);
+  font-size: clamp(32px, 3.6vw, 52px);
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: -0.03em;
+  color: var(--clinic-brand-strong);
+  text-wrap: balance;
+}
+
+.smallTitle {
+  margin: 28px 0 12px;
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--clinic-brand-strong);
+}
+
+.smallTitle:first-child {
+  margin-top: 0;
+}
+
+.note {
+  margin: 16px 0 0;
+  font-size: 17px;
+  color: var(--clinic-ink);
+  opacity: 0.82;
+}
+
+.textLink {
+  display: inline-block;
+  margin-top: 24px;
+  font-size: 16px;
+  font-weight: 600;
+  text-decoration: underline;
+}
+
+.sectionHead {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 16px;
+  margin-bottom: 40px;
+}
+
+.sectionHead .textLink {
+  margin-top: 0;
+}
+
+.pillList {
+  margin: 32px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 12px 10px;
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 18px;
+  border: 1px solid var(--clinic-line);
+  border-radius: var(--clinic-control-radius-pill);
+  font-size: 16px;
+  text-decoration: none;
+}
+
+.home .pill {
+  color: var(--clinic-ink);
+}
+
+.doctorList {
+  margin-top: 48px;
+  display: flex;
+  flex-direction: column;
+  gap: 64px;
+}
+
+.doctor {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 40px 80px;
+}
+
+.doctorPhoto {
+  position: relative;
+  flex: 1 1 420px;
+  min-width: 0;
+  max-width: 560px;
+  aspect-ratio: 4 / 3;
+  border-radius: 24px;
+  overflow: hidden;
+  background: var(--clinic-brand-soft);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--layout-serif);
+  font-size: 64px;
+  font-weight: 700;
+  color: var(--clinic-on-brand-soft);
+}
+
+/* 사진이 없으면(이름 첫 글자) 사진 칸만큼 크게 두지 않는다. */
+.doctorPhoto[data-image-state='failed'] {
+  flex-basis: 240px;
+  max-width: 240px;
+  aspect-ratio: 1 / 1;
+}
+
+.doctorBody {
+  flex: 1 1 440px;
+  min-width: 0;
+}
+
+.doctorBody h3 {
+  margin: 8px 0;
+  font-family: var(--layout-serif);
+  font-size: clamp(26px, 2.6vw, 34px);
+  font-weight: 700;
+  color: var(--clinic-brand-strong);
+}
+
+.doctorBody h3 small {
+  font-family: var(--font-pretendard), sans-serif;
+  font-size: 16px;
+  font-weight: 500;
+  color: var(--clinic-ink);
+}
+
+.doctorBody [data-role='eyebrow'],
+.doctorBody [data-role='role'] {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--clinic-accent-strong);
+}
+
+.doctorBody [data-role='chips'] {
+  margin: 12px 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.doctorBody [data-role='chips'] li {
+  padding: 4px 12px;
+  border-radius: var(--clinic-control-radius-pill);
+  background: var(--clinic-brand-tint);
+  font-size: 14px;
+}
+
+.doctorBody p,
+.doctorBody details {
+  font-size: 16px;
+  line-height: 1.75;
+}
+
+.doctorBody summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--clinic-brand-strong);
+}
+
+.principles {
+  margin-top: 56px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr));
+  gap: 48px;
+}
+
+.principle {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+}
+
+.principleIcon {
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  background: var(--clinic-brand-tint);
+  color: var(--clinic-brand-strong);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.principleIcon svg {
+  width: 36px;
+  height: 36px;
+}
+
+.principleTitle {
+  margin: 0;
+  font-size: 19px;
+  font-weight: 700;
+  color: var(--clinic-brand-strong);
+}
+
+.principleBody {
+  margin: 0;
+  max-width: 340px;
+  font-size: 16px;
+  line-height: 1.75;
+}
+
+.band {
+  margin-top: var(--clinic-section-y);
+  padding: var(--clinic-section-y) clamp(20px, 4vw, 48px);
+  background: var(--clinic-brand-strong);
+  color: var(--clinic-on-brand-strong);
+  text-align: center;
+}
+
+.bandTitle {
+  margin: 0;
+  font-family: var(--layout-serif);
+  font-size: clamp(30px, 4vw, 54px);
+  font-weight: 700;
+  line-height: 1.25;
+  letter-spacing: -0.03em;
+}
+
+.bandTitleNote {
+  display: block;
+  margin-top: 8px;
+  font-family: var(--font-pretendard), sans-serif;
+  font-size: clamp(17px, 1.6vw, 22px);
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
+.bandNote {
+  margin: 16px 0 0;
+  font-size: 17px;
+  opacity: 0.86;
+}
+
+.home .bandButton {
+  margin-top: 32px;
+  background: var(--clinic-paper);
+  color: var(--clinic-brand-strong);
+}
+
+.questionCards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr));
+  gap: 20px;
+}
+
+.questionCard {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 32px;
+  border-radius: 20px;
+  background: var(--clinic-brand-tint);
+  text-decoration: none;
+}
+
+.home .questionCard {
+  color: var(--clinic-ink);
+}
+
+.kicker {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--clinic-accent-strong);
+}
+
+.questionTitle {
+  margin: 0;
+  font-family: var(--layout-serif);
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1.45;
+  color: var(--clinic-brand-strong);
+}
+
+.questionSummary {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.75;
+}
+
+.more {
+  margin-top: auto;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--clinic-brand-strong);
+}
+
+.questionRows {
+  margin: 20px 0 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--clinic-line);
+}
+
+.questionRows li {
+  border-bottom: 1px solid var(--clinic-line);
+}
+
+.questionRows a {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 20px 4px;
+  font-size: 17px;
+  text-decoration: none;
+}
+
+.home .questionRows a {
+  color: var(--clinic-ink);
+}
+
+.faq {
+  margin: 40px 0 0;
+  border-top: 2px solid var(--clinic-brand-strong);
+}
+
+.faqItem {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 64px;
+  padding: 32px 0;
+  border-bottom: 1px solid var(--clinic-line);
+}
+
+.faqQuestion {
+  flex: 1 1 340px;
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1.5;
+  color: var(--clinic-brand-strong);
+}
+
+.faqAnswer {
+  flex: 1.4 1 460px;
+  min-width: 0;
+  margin: 0;
+}
+
+.faqAnswer p {
+  margin: 0;
+  font-size: 16px;
+  line-height: 1.85;
+}
+
+.faqAnswer .textLink {
+  margin-top: 12px;
+  font-size: 15px;
+}
+
+.flow {
+  margin: 56px 0 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 40px;
+  text-align: left;
+}
+
+/* 네 단계는 4칸 → 2칸 → 1칸으로만 접는다(3+1로 한 칸이 혼자 떨어지지 않게). */
+@media (max-width: 1080px) {
+  .flow {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 560px) {
+  .flow {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.flowStep {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 20px;
+  border-top: 2px solid var(--clinic-brand-strong);
+}
+
+.flowTitle {
+  margin: 0;
+  font-family: var(--layout-serif);
+  font-size: 23px;
+  font-weight: 700;
+  color: var(--clinic-brand-strong);
+}
+
+.flowBody {
+  margin: 0;
+  font-size: 16px;
+  line-height: 1.7;
+}
+
+.gallery {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr));
+  gap: 24px;
+}
+
+/* 사진이 4장이면 3칸 줄에 한 장이 혼자 남는다 — 4칸(좁으면 2칸)으로 맞춘다. */
+.gallery:has(> :nth-child(4):last-child) {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+@media (max-width: 900px) {
+  .gallery:has(> :nth-child(4):last-child) {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.galleryItem {
+  margin: 0;
+}
+
+.galleryImage {
+  position: relative;
+  display: block;
+  aspect-ratio: 4 / 3;
+  border-radius: 16px;
+  overflow: hidden;
+}
+
+.galleryItem figcaption {
+  padding-top: 14px;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--clinic-brand-strong);
+}
+
+.factsWrap {
+  margin-top: var(--clinic-section-y);
+  padding-bottom: var(--clinic-section-y);
+  background: var(--clinic-brand-tint);
+}
+
+.factsGrid {
+  margin-top: 48px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 48px 80px;
+}
+
+.factsGrid > div {
+  flex: 1 1 420px;
+  min-width: 0;
+}
+
+.factList {
+  margin: 0;
+  border-top: 1px solid var(--clinic-line);
+}
+
+.factList > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 24px;
+  padding: 16px 0;
+  border-bottom: 1px solid var(--clinic-line);
+}
+
+.factList dt {
+  flex: 0 0 96px;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.factList dd {
+  flex: 1 1 260px;
+  margin: 0;
+  font-size: 16px;
+  line-height: 1.7;
+}
+
+.factNote {
+  margin: 28px 0 0;
+  font-size: 16px;
+  line-height: 1.85;
+}
+
+.hours {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.hours li {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 13px 0;
+  border-bottom: 1px solid var(--clinic-line);
+  font-size: 16px;
+}
+
+.hours li[aria-current='date'] {
+  font-weight: 700;
+}
+
+.hours li span:last-child {
+  text-align: right;
+}
+
+.channels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.channels a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 20px;
+  border-radius: var(--clinic-control-radius-pill);
+  background: var(--clinic-paper);
+  font-size: 15px;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.mapButtons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 28px;
+}

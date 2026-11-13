@@ -5,6 +5,7 @@ import { countLabel } from '@/lib/clinic-counters'
 import { buildTreatmentSlug } from '@/lib/treatment-slug'
 
 import { ChevronRightIcon } from './icons'
+import { TREATMENT_SECTION_NOTE, TREATMENT_SECTION_TITLE } from '@/lib/clinic-template-copy'
 
 interface Treatment {
   name: string
@@ -39,11 +40,8 @@ export function TreatmentGrid({ treatments, hospitalRootUrl }: Props) {
         {/* P-A-3 — 이 제목은 sr-only였다. 다른 섹션은 모두 제목이 보이는데 첫
             섹션만 보이지 않아, 화면에서는 카드 네 장이 맥락 없이 시작됐다. */}
         <header className="clinic-section-head clinic-treatment-directory-head">
-          <h2 className="clinic-section-title">진료 영역</h2>
-          <p className="clinic-section-note">
-            병원에서 주로 진료하는 영역입니다. 증상과 치료 방법은 개인마다 다를 수 있으니
-            자세한 내용은 진료 상담에서 확인해 주세요.
-          </p>
+          <h2 className="clinic-section-title">{TREATMENT_SECTION_TITLE}</h2>
+          <p className="clinic-section-note">{TREATMENT_SECTION_NOTE}</p>
         </header>
 
         {/* 열 수를 항목 수에 맞춘다 — 4열로 고정하면 진료 항목이 1~3개인 병원에서

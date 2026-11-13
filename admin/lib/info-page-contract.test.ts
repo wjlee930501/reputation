@@ -18,6 +18,7 @@ const brandSources = [
   brandSection,
   infoFile('ClinicVisualForm.tsx'),
   infoFile('ClinicLogoField.tsx'),
+  infoFile('SiteLayoutSection.tsx'),
 ].join('\n')
 const hospitalLayout = readFileSync(
   new URL('../app/hospitals/[id]/layout.tsx', import.meta.url),
@@ -400,4 +401,19 @@ test('원장 인터뷰 설문 카드는 INTERVIEW로 파일 업로드와 링크�
   assert.match(sourcesSection, /source_type: 'INTERVIEW'/)
   assert.match(sourcesSection, /e\.status === 422/)
   assert.match(sourcesSection, /sourceTextUnreadable\(survey\)/)
+})
+
+test('사이트 레이아웃은 브랜드 섹션에서 바꾸고, 자기 값만 따로 저장한다', () => {
+  const section = infoFile('SiteLayoutSection.tsx')
+  assert.match(brandSection, /<SiteLayoutSection hospital=\{hospital\} hospitalId=\{hospitalId\} onSaved=\{onSaved\} \/>/)
+  // 다른 브랜드 칸 스냅샷을 함께 보내면 방금 저장한 값을 옛 값으로 덮는다.
+  assert.match(section, /body: JSON\.stringify\(\{ site_layout: choice \}\)/)
+  // 공개 중이거나 상태를 모르면 바로 바뀐다고 한 번 더 묻는다.
+  assert.match(section, /public_service_state\?\.kind !== 'not_live'/)
+  assert.match(section, /COPY\.confirmLive/)
+  // 같은 시·도 분포에서 바꾸는 병원 자신은 뺀다.
+  assert.match(section, /excludeHospitalId: hospitalId/)
+  // 고른 뒤 늦게 온 서버 값이 새 선택을 덮지 않는다. 지역이 바뀌면 옛 분포를 지운다.
+  assert.match(section, /if \(!dirty\) setChoice\(saved\)/)
+  assert.match(section, /setDistribution\(null\)/)
 })

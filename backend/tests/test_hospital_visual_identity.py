@@ -21,6 +21,7 @@ VISUAL_FIELDS = (
     "hero_description",
     "image_style_direction",
     "site_access_mode",
+    "site_layout",
 )
 
 
@@ -95,6 +96,7 @@ def test_every_visual_field_survives_the_admin_round_trip():
         hero_description="평일 09:00 ~ 21:00 진료합니다.",
         image_style_direction="차분한 청록 톤, 실제 진료 공간에 가까운 조명",
         site_access_mode="urgent",
+        site_layout="C",
     ).model_dump(exclude_unset=True)
 
     assert set(submitted) == set(VISUAL_FIELDS)
@@ -356,3 +358,56 @@ async def test_active_complete_profile_rejects_changing_logo_to_new_external_url
     }
     assert db.committed is False
     assert hospital.logo_url == "https://legacy-cdn.example/logo.png"
+
+
+def test_site_layout_accepts_only_the_three_layouts():
+    assert HospitalProfileUpdate(site_layout="B").site_layout == "B"
+    with pytest.raises(ValidationError):
+        HospitalProfileUpdate(site_layout="D")
+    # 화면이 '선택 안 함'을 빈 문자열로 보내면 레이아웃 도입 전 화면으로 되돌린다.
+    assert HospitalProfileUpdate(site_layout="").model_dump(exclude_unset=True) == {"site_layout": None}
+
+
+async def test_saving_the_site_layout_persists_and_can_change_later():
+    """마케터가 고른 레이아웃은 행에 남고, 운영 중에 다른 레이아웃으로 바꿀 수 있다."""
+    hospital = _FakeHospital(id=uuid.uuid4(), profile_complete=False)
+    db = _FakeDB(hospital)
+
+    await update_profile(hospital.id, HospitalProfileUpdate(site_layout="A"), BackgroundTasks(), db=db)
+    assert hospital.site_layout == "A"
+    assert serialize_hospital_detail(hospital)["site_layout"] == "A"
+
+    await update_profile(hospital.id, HospitalProfileUpdate(site_layout="C"), BackgroundTasks(), db=db)
+    assert hospital.site_layout == "C"
+
+
+@pytest.mark.parametrize(
+    ("is_public", "submitted", "expected_calls"),
+    [
+        (True, "B", 1),  # 공개 병원의 레이아웃 변경 → 재검증
+        (True, "", 1),  # 공개 병원에서 레이아웃을 비움(레이아웃 도입 전 화면) → 재검증
+        (True, "A", 0),  # 같은 값을 다시 저장 → 바뀐 것이 없으니 재검증하지 않는다
+        (False, "B", 0),  # 공개 전 병원 → 재검증할 사이트가 없다
+    ],
+)
+async def test_site_layout_change_refreshes_only_a_public_site(
+    monkeypatch, is_public, submitted, expected_calls
+):
+    hospital = _active_complete_hospital(site_layout="A")
+    db = _FakeDB(hospital)
+    calls: list[str] = []
+
+    async def _fake_revalidate(slug, *_args, **_kwargs):
+        calls.append(slug)
+        return True
+
+    monkeypatch.setattr(hospitals_api, "_has_public_site", lambda _h: is_public)
+    monkeypatch.setattr(hospitals_api, "ensure_site_revalidate_configured", lambda: None)
+    monkeypatch.setattr(hospitals_api, "trigger_hospital_site_revalidate_safe", _fake_revalidate)
+
+    await update_profile(
+        hospital.id, HospitalProfileUpdate(site_layout=submitted), BackgroundTasks(), db=db
+    )
+
+    assert len(calls) == expected_calls
+    assert hospital.site_layout == (submitted or None)

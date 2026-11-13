@@ -377,6 +377,31 @@ export const ADMIN_COPY = {
   },
   ackSmsFailed: '원장 안내 문자 미발송 — 직접 연락이 필요합니다.',
   ackSmsUnconfirmed: '원장 안내 문자 수신 불명(재발송 안 함) — 원장에게 직접 확인하세요.',
+  // 병원 공개 페이지 레이아웃 A/B/C (docs/plans/2026-11-13-clinic-site-layouts-abc.md).
+  siteLayout: {
+    title: '사이트 레이아웃',
+    hint: '같은 정보와 사진을 어떤 틀로 보여 줄지 고릅니다. 문구·구조화 정보는 레이아웃과 상관없이 같습니다.',
+    options: {
+      A: { name: 'A안 · 여백형', summary: '큰 명조 제목과 넓은 여백, 짙은 안내 띠 하나 — 차분한 브랜드 인상' },
+      B: { name: 'B안 · 정통형', summary: '지금 화면을 다듬은 정통 의원형 — 가운데 정렬 명조 제목과 짙은 안내 띠' },
+      C: { name: 'C안 · 안내형', summary: '사진 첫 화면 위에 오늘 진료, 진료표·새 소식이 먼저 보이는 동네 의원형' },
+    },
+    unset: '아직 고르지 않았습니다 — 지금은 레이아웃 도입 전 화면이 나갑니다.',
+    required: '사이트 레이아웃을 골라야 등록할 수 있습니다.',
+    save: '레이아웃 저장',
+    saving: '저장 중…',
+    saved: '레이아웃을 저장했습니다. 공개 페이지에는 몇 분 안에 반영됩니다.',
+    confirmLive: '이 병원 공개 페이지가 바로 새 레이아웃으로 바뀝니다. 바꿀까요?',
+    confirmYes: '바꾸기',
+    confirmNo: '취소',
+    // {province}·{total}은 layoutDistributionLine이 채운다.
+    distribution: '{province} 공개 병원 {total}곳',
+    distributionUnset: '고르기 전',
+    distributionUnknown: '지역을 읽지 못해 같은 지역 분포를 보여 줄 수 없습니다.',
+    distributionNone: '{province}에 공개 중인 다른 병원이 아직 없습니다.',
+    sameRegionCount: '{province} {count}곳 사용 중',
+    loadFailed: '같은 지역 분포를 불러오지 못했습니다. 레이아웃은 그대로 고를 수 있습니다.',
+  },
 } as const
 
 export function describeMentionRate(value: number | null): string {

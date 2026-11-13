@@ -1,0 +1,179 @@
+/* 레이아웃 B — As-is 발전형. 레이아웃 도입 전 화면의 섹션·순서·제목·컴포넌트를 그대로 쓰고
+   A4(정통 프리미엄 의원형) 시안의 생김새만 덮는다(Design 캔버스 `SetB2.dc.html`).
+
+   전역 스타일(app/globals.css)과 불러오는 순서가 보장되지 않으므로 `.shell.shell`로 한 단계
+   높은 특이성을 쓴다 — 순서와 무관하게 이 덮어쓰기가 이긴다. 색은 병원 테마 토큰만 쓴다. */
+
+.shell {
+  --layout-serif: var(--font-clinic-serif), 'Noto Serif KR', 'AppleMyungjo', 'Batang', serif;
+  word-break: keep-all;
+  overflow-wrap: break-word;
+}
+
+/* 제목 — 가운데 정렬 명조 */
+.shell.shell :global(.clinic-section-title),
+.shell.shell :global(.clinic-hero-editorial-title),
+.shell.shell :global(.clinic-curator-name),
+.shell.shell :global(.clinic-lead-title),
+.shell.shell :global(.clinic-belief-title),
+.shell.shell :global(.clinic-flow-node-title) {
+  font-family: var(--layout-serif);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.shell.shell :global(.clinic-section-head) {
+  text-align: center;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.shell.shell :global(.clinic-section-head .clinic-section-note) {
+  margin-left: auto;
+  margin-right: auto;
+}
+
+/* 첫 화면 — 연한 브랜드 바탕의 글 칸 + 사진 칸 */
+.shell.shell :global(.clinic-hero-editorial-copy) {
+  background: var(--clinic-brand-tint);
+  border-radius: var(--clinic-radius);
+  padding: clamp(28px, 4vw, 56px);
+}
+
+.shell.shell :global(.clinic-hero-editorial-title) {
+  color: var(--clinic-ink);
+}
+
+.shell.shell :global(.clinic-hero-editorial-title strong) {
+  font-family: var(--font-pretendard), sans-serif;
+  font-weight: 500;
+  color: var(--clinic-brand-strong);
+}
+
+.shell.shell :global(.clinic-hero-editorial-photo) {
+  border-radius: var(--clinic-radius);
+  overflow: hidden;
+}
+
+/* 첫 화면 아래 빠른 안내 — 짙은 브랜드 띠 */
+.shell.shell :global(.clinic-hero-fact-rail) {
+  /* 원래 띠는 투명이라 바깥 여백(--clinic-rail)을 padding으로 가졌다. 색을 입히면 그 여백이
+     본문 폭 밖으로 드러나므로, 본문 폭에 맞춘 상자로 바꾸고 칸마다 안쪽 여백을 준다. */
+  width: calc(100% - 2 * var(--clinic-rail));
+  max-width: calc(var(--clinic-shell-max) - 2 * var(--clinic-rail));
+  padding: 0;
+  background: var(--clinic-brand-strong);
+  color: var(--clinic-on-brand-strong);
+  border-radius: var(--clinic-radius);
+  overflow: hidden;
+}
+
+.shell.shell :global(.clinic-hero-fact-rail > div) {
+  padding: 22px 24px;
+  border-top: 0;
+  border-bottom: 0;
+  border-left: 0;
+}
+
+.shell.shell :global(.clinic-hero-fact-rail > div + div) {
+  border-left: 1px solid color-mix(in srgb, var(--clinic-on-brand-strong) 22%, transparent);
+}
+
+.shell.shell :global(.clinic-hero-fact-rail dt),
+.shell.shell :global(.clinic-hero-fact-rail dd),
+.shell.shell :global(.clinic-hero-fact-rail a),
+.shell.shell :global(.clinic-hero-fact-rail .clinic-icon) {
+  color: var(--clinic-on-brand-strong);
+}
+
+/* 버튼 — 알약 */
+.shell.shell :global(.clinic-btn) {
+  border-radius: var(--clinic-control-radius-pill);
+}
+
+/* 진료 영역 카드 — 테두리 카드 */
+.shell.shell :global(.clinic-tx-card) {
+  border: 1px solid var(--clinic-line);
+  border-radius: var(--clinic-radius);
+}
+
+.shell.shell :global(.clinic-tx-card-name) {
+  font-family: var(--layout-serif);
+  font-weight: 700;
+}
+
+/* 진료 원칙 — 위쪽 굵은 선 */
+.shell.shell :global(.clinic-belief-card) {
+  border: 0;
+  border-top: 2px solid var(--clinic-brand-strong);
+  border-radius: 0;
+  background: transparent;
+}
+
+/* 자주 묻는 질문 — 연한 카드 */
+.shell.shell :global(.clinic-faq-item) {
+  background: var(--clinic-brand-tint);
+  border-radius: var(--clinic-radius);
+  padding: 24px 28px;
+}
+
+.shell.shell :global(.clinic-faq-question) {
+  font-family: var(--layout-serif);
+  font-weight: 700;
+}
+
+/* 진료 4단계 — 흰 카드 */
+.shell.shell :global(.clinic-section--flow) {
+  background: var(--clinic-brand-tint);
+}
+
+.shell.shell :global(.clinic-flow-node) {
+  background: var(--clinic-paper);
+  border-radius: var(--clinic-radius);
+}
+
+/* 요일별 진료시간 — 오늘 칸 강조 */
+.shell.shell :global(.clinic-week-day.is-today) {
+  border: 1px solid var(--clinic-brand-strong);
+  background: var(--clinic-brand-tint);
+}
+
+/* 꼬리 — 짙은 브랜드 띠 */
+.shell.shell :global(.clinic-footer) {
+  background: var(--clinic-brand-strong);
+  color: var(--clinic-on-brand-strong);
+}
+
+.shell.shell :global(.clinic-footer a),
+.shell.shell :global(.clinic-footer-name),
+.shell.shell :global(.clinic-footer-meta),
+.shell.shell :global(.clinic-footer-fine),
+.shell.shell :global(.clinic-footer-copy),
+.shell.shell :global(.clinic-footer-col-label),
+.shell.shell :global(.clinic-footer-cta-copy),
+.shell.shell :global(.clinic-footer-cta-copy strong) {
+  color: var(--clinic-on-brand-strong);
+}
+
+/* 꼬리 전화 버튼은 밝은 바탕이라 글자를 대표색으로 되돌린다. */
+.shell.shell :global(.clinic-footer a.clinic-footer-cta-btn) {
+  background: var(--clinic-on-brand-strong);
+  color: var(--clinic-brand-strong);
+}
+
+/* 920px 아래에서 띠는 2칸씩 두 줄이다 — 줄 첫 칸의 세로선을 지우고 줄 사이에 가로선을 둔다. */
+@media (max-width: 920px) {
+  .shell.shell :global(.clinic-hero-fact-rail > div:nth-child(odd)) {
+    border-left: 0;
+  }
+
+  .shell.shell :global(.clinic-hero-fact-rail > div:nth-child(n + 3)) {
+    border-top: 1px solid color-mix(in srgb, var(--clinic-on-brand-strong) 22%, transparent);
+  }
+}
+
+@media (max-width: 720px) {
+  .shell.shell :global(.clinic-hero-fact-rail > div) {
+    padding: 16px;
+  }
+}

@@ -7,6 +7,7 @@ import { countLabel, previewCountLabel } from '@/lib/clinic-counters'
 import { selectClinicGalleryPhotos, type ClinicGalleryPolicy } from '@/lib/clinic-design'
 
 import { ChevronRightIcon } from './icons'
+import { GALLERY_SECTION_TITLE } from '@/lib/clinic-template-copy'
 
 interface Props {
   photos: HospitalPhoto[]
@@ -39,7 +40,7 @@ export function ClinicGallery({ photos, policy, excludeUrl = null, allPhotosHref
     <section className="clinic-section">
       <div className="clinic-section-inner">
         <header className="clinic-section-head">
-          <h2 className="clinic-section-title">병원 공간</h2>
+          <h2 className="clinic-section-title">{GALLERY_SECTION_TITLE}</h2>
         </header>
 
         <div className={`clinic-gallery-grid${visible.length < 3 ? ' clinic-gallery-grid--sparse' : ''}`}>

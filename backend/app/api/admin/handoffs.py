@@ -563,6 +563,7 @@ async def register_contract(
         plan=body.plan,
         source_lead_id=body.lead_id,
         onboarding_note="Created from admin contract registration.",
+        site_layout=body.site_layout,
         **lead_seed,
     )
     handoff = HospitalHandoff(
@@ -604,6 +605,7 @@ async def register_contract(
                 "plan": body.plan.value,
                 "source_lead_id": str(body.lead_id) if body.lead_id else None,
                 "lead_profile_seed": sorted(lead_seed),
+                "site_layout": body.site_layout,
             },
         )
         await write_audit_log(

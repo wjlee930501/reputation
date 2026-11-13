@@ -1,0 +1,948 @@
+/* 레이아웃 C — 일본 동네 내과 결. 고딕(Pretendard)만 쓰고, 색은 병원 테마 토큰만 쓴다.
+   사진 위 글자는 대표색의 짙은 판(--clinic-brand-strong)을 깔아 대비를 지킨다. */
+
+.shell {
+  word-break: keep-all;
+  overflow-wrap: break-word;
+}
+
+.shell :global(.clinic-header-cta) {
+  border-radius: var(--clinic-control-radius);
+  background: var(--clinic-brand-strong);
+  color: var(--clinic-on-brand-strong);
+}
+
+.shell :global(.clinic-section-title) {
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: var(--clinic-brand-strong);
+}
+
+.shell :global(.clinic-footer) {
+  background: var(--clinic-brand-strong);
+  color: var(--clinic-on-brand-strong);
+}
+
+.shell :global(.clinic-footer a),
+.shell :global(.clinic-footer-name),
+.shell :global(.clinic-footer-meta),
+.shell :global(.clinic-footer-fine),
+.shell :global(.clinic-footer-copy),
+.shell :global(.clinic-footer-col-label),
+.shell :global(.clinic-footer-cta-copy) {
+  color: var(--clinic-on-brand-strong);
+}
+
+/* 꼬리 전화 버튼은 밝은 바탕이라 글자를 대표색으로 되돌린다. */
+.shell :global(.clinic-footer a.clinic-footer-cta-btn) {
+  background: var(--clinic-on-brand-strong);
+  color: var(--clinic-brand-strong);
+}
+
+/* ── 홈 ─────────────────────────────────────────────── */
+
+.home {
+  color: var(--clinic-ink);
+  font-size: 16px;
+  line-height: 1.7;
+}
+
+.home a {
+  color: var(--clinic-brand-strong);
+}
+
+.hero {
+  position: relative;
+  min-height: 560px;
+  display: flex;
+  align-items: flex-end;
+  overflow: hidden;
+  background: var(--clinic-brand-strong);
+}
+
+.heroPlain {
+  min-height: 420px;
+}
+
+/* 글자가 놓이는 왼쪽(휴대폰에서는 아래쪽)은 덮개를 불투명하게 둔다 — 사진 밝기가 섞이면
+   금색처럼 밝은 대표색에서 흰 글자 대비가 4.5:1 아래로 떨어진다. 사진은 오른쪽·위쪽에서 보인다.
+   왼쪽 불투명 폭 = 본문 상자의 왼쪽 여백 + 안쪽 여백(40) + 글 칸 최대 폭(640) + 여유(40). */
+.heroVeil {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    var(--clinic-brand-strong) 0,
+    var(--clinic-brand-strong) calc(max(0px, (100% - 1320px) / 2) + 720px),
+    color-mix(in srgb, var(--clinic-brand-strong) 55%, transparent) calc(max(0px, (100% - 1320px) / 2) + 960px),
+    color-mix(in srgb, var(--clinic-brand-strong) 35%, transparent) 100%
+  );
+}
+
+/* 휴대폰에서는 위쪽 140px만 사진이 비친다. 글자는 안쪽 위 여백(160px) 아래에서 시작하므로
+   문구가 길어 첫 화면이 늘어나도 언제나 불투명한 영역 위에 놓인다. */
+@media (max-width: 900px) {
+  .heroVeil {
+    background: linear-gradient(
+      0deg,
+      var(--clinic-brand-strong) 0,
+      var(--clinic-brand-strong) calc(100% - 140px),
+      color-mix(in srgb, var(--clinic-brand-strong) 40%, transparent) 100%
+    );
+  }
+}
+
+.heroInner {
+  position: relative;
+  width: 100%;
+  max-width: 1320px;
+  margin: 0 auto;
+  padding: 96px clamp(16px, 3vw, 40px) 48px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 32px;
+}
+
+@media (max-width: 900px) {
+  .heroInner {
+    padding-top: 160px;
+  }
+}
+
+.heroCopy {
+  flex: 1 1 560px;
+  max-width: 640px;
+  min-width: 0;
+  color: var(--clinic-on-brand-strong);
+}
+
+.heroKicker {
+  margin: 0 0 16px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.heroTitle {
+  margin: 0;
+  text-wrap: balance;
+}
+
+.heroLead {
+  display: block;
+  font-size: clamp(34px, 4.4vw, 60px);
+  font-weight: 800;
+  line-height: 1.25;
+  letter-spacing: -0.035em;
+}
+
+.heroEmphasis {
+  display: block;
+  margin-top: 16px;
+  font-size: clamp(17px, 1.5vw, 20px);
+  font-weight: 500;
+  line-height: 1.6;
+}
+
+.todayWidget {
+  flex: 0 1 440px;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.3fr);
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--clinic-paper);
+  color: var(--clinic-ink);
+}
+
+.todayWidget > div {
+  padding: 18px 20px;
+}
+
+.todayWidget > div + div {
+  border-left: 1px solid var(--clinic-line);
+}
+
+.widgetLabel {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.widgetValue {
+  margin: 2px 0 0;
+  font-size: 18px;
+  font-weight: 800;
+  color: var(--clinic-brand-strong);
+}
+
+.widgetNote {
+  display: block;
+  margin-top: 2px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--clinic-ink);
+}
+
+.home .widgetCall {
+  grid-column: 1 / -1;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 20px;
+  background: var(--clinic-brand-strong);
+  color: var(--clinic-on-brand-strong);
+  font-size: 18px;
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.widgetCall span {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.inner,
+.section,
+.infoRow {
+  max-width: 1320px;
+  margin: 0 auto;
+  padding-left: clamp(16px, 3vw, 40px);
+  padding-right: clamp(16px, 3vw, 40px);
+}
+
+.section {
+  padding-top: var(--clinic-section-y);
+}
+
+.infoRow {
+  padding-top: var(--clinic-section-y);
+  padding-bottom: var(--clinic-section-y);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 48px 64px;
+}
+
+.title {
+  margin: 0;
+  font-size: clamp(26px, 2.6vw, 34px);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  line-height: 1.3;
+  color: var(--clinic-brand-strong);
+}
+
+.label {
+  display: block;
+  margin: 0 0 4px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: var(--clinic-accent-strong);
+}
+
+.note {
+  margin: 10px 0 0;
+  font-size: 16px;
+}
+
+.blockHead {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.moreLink {
+  display: inline-block;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.section > .moreLink {
+  margin-top: 20px;
+}
+
+.newsBlock {
+  flex: 1 1 520px;
+  min-width: 0;
+}
+
+.newsList {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-top: 2px solid var(--clinic-brand-strong);
+}
+
+.newsList li {
+  border-bottom: 1px solid var(--clinic-line);
+}
+
+.newsList a {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 16px;
+  padding: 16px 4px;
+  text-decoration: none;
+}
+
+.home .newsList a {
+  color: var(--clinic-ink);
+}
+
+.newsDate {
+  min-width: 92px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.badge {
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: var(--clinic-brand-tint);
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--clinic-brand-strong);
+}
+
+.newsTitle {
+  flex: 1 1 300px;
+  min-width: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.scheduleBlock {
+  flex: 1 1 440px;
+  min-width: 0;
+  padding: 28px;
+  border-radius: 12px;
+  background: var(--clinic-brand-tint);
+}
+
+.scheduleBlock .title {
+  margin-bottom: 16px;
+}
+
+.tableScroll {
+  overflow-x: auto;
+}
+
+.schedule {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--clinic-paper);
+  font-size: 15px;
+  text-align: center;
+}
+
+.schedule thead tr {
+  background: var(--clinic-brand-strong);
+  color: var(--clinic-on-brand-strong);
+}
+
+.schedule th,
+.schedule td {
+  padding: 10px 6px;
+}
+
+.schedule th:first-child {
+  text-align: left;
+  padding-left: 10px;
+  white-space: nowrap;
+}
+
+/* 휴대폰 폭에서는 '오전 08:00~12:30'을 두 줄로 접어 7일 칸이 가로 스크롤 없이 들어오게 한다. */
+@media (max-width: 560px) {
+  .scheduleBlock {
+    padding: 20px 16px;
+  }
+
+  .schedule {
+    font-size: 14px;
+  }
+
+  .schedule th,
+  .schedule td {
+    padding: 8px 3px;
+  }
+
+  .schedule th:first-child {
+    white-space: normal;
+    padding-left: 8px;
+    width: 30%;
+  }
+}
+
+.schedule thead th[aria-current='date'] {
+  text-decoration: underline;
+  text-underline-offset: 4px;
+}
+
+.schedule tbody tr {
+  border-bottom: 1px solid var(--clinic-line);
+}
+
+.schedule td {
+  font-weight: 700;
+  color: var(--clinic-brand-strong);
+}
+
+.schedule td[data-state='closed'] {
+  font-weight: 400;
+  color: var(--clinic-ink);
+  opacity: 0.6;
+}
+
+.hourList {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  background: var(--clinic-paper);
+}
+
+.hourList li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--clinic-line);
+  font-size: 15px;
+}
+
+.hourList li[aria-current='date'] {
+  font-weight: 700;
+}
+
+.scheduleNote {
+  margin: 12px 0 0;
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.scheduleActions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 20px;
+}
+
+.primaryButton,
+.secondaryButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 48px;
+  padding: 0 20px;
+  border-radius: var(--clinic-control-radius);
+  font-size: 15px;
+  font-weight: var(--clinic-control-weight);
+  text-decoration: none;
+}
+
+.home .primaryButton {
+  background: var(--clinic-brand-strong);
+  color: var(--clinic-on-brand-strong);
+}
+
+.home .secondaryButton {
+  border: 1px solid var(--clinic-brand-strong);
+  background: var(--clinic-paper);
+  color: var(--clinic-brand-strong);
+}
+
+.tintSection {
+  padding-top: var(--clinic-section-y);
+  padding-bottom: var(--clinic-section-y);
+  background: var(--clinic-brand-tint);
+}
+
+.centerHead {
+  text-align: center;
+  margin: 0 0 32px;
+}
+
+.centerHead:last-child {
+  margin: 28px 0 0;
+}
+
+.tiles {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr));
+  gap: 10px;
+}
+
+.tile {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-height: 64px;
+  padding: 14px 18px;
+  border: 1px solid var(--clinic-line);
+  border-radius: 10px;
+  background: var(--clinic-paper);
+  text-decoration: none;
+}
+
+.home .tile {
+  color: var(--clinic-ink);
+}
+
+.tileIndex {
+  flex: none;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: var(--clinic-brand-tint);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--clinic-brand-strong);
+}
+
+.tileName {
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.doctorList {
+  margin-top: 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 48px;
+}
+
+.doctor {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 32px 56px;
+}
+
+.doctorPhoto {
+  position: relative;
+  flex: 0 1 340px;
+  min-width: 0;
+  width: 100%;
+  aspect-ratio: 3 / 4;
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--clinic-brand-soft);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 64px;
+  font-weight: 800;
+  color: var(--clinic-on-brand-soft);
+}
+
+/* 사진이 없으면(이름 첫 글자) 사진 칸만큼 크게 두지 않는다. */
+.doctorPhoto[data-image-state='failed'] {
+  flex-basis: 200px;
+  max-width: 200px;
+  aspect-ratio: 1 / 1;
+}
+
+.doctorBody {
+  flex: 1 1 480px;
+  min-width: 0;
+}
+
+.doctorBody [data-role='eyebrow'],
+.doctorBody [data-role='role'] {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--clinic-accent-strong);
+}
+
+.doctorBody h3 {
+  margin: 6px 0 20px;
+  font-size: 22px;
+  font-weight: 800;
+  color: var(--clinic-brand-strong);
+}
+
+.doctorBody h3 small {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.doctorBody [data-role='chips'] {
+  margin: 0 0 16px;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.doctorBody [data-role='chips'] li {
+  padding: 2px 10px;
+  border-radius: 4px;
+  background: var(--clinic-brand-tint);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.doctorTable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 15px;
+}
+
+.doctorTable tr {
+  border-bottom: 1px solid var(--clinic-line);
+}
+
+.doctorTable tr:first-child {
+  border-top: 2px solid var(--clinic-brand-strong);
+}
+
+.doctorTable th {
+  width: 96px;
+  padding: 14px 0;
+  text-align: left;
+  vertical-align: top;
+  font-weight: 700;
+}
+
+.doctorTable td {
+  padding: 14px 0;
+}
+
+.doctorTable p {
+  margin: 0;
+}
+
+.doctorTable summary {
+  cursor: pointer;
+  font-weight: 700;
+  color: var(--clinic-brand-strong);
+}
+
+.darkSection {
+  margin-top: var(--clinic-section-y);
+  padding-top: var(--clinic-section-y);
+  padding-bottom: var(--clinic-section-y);
+  background: var(--clinic-brand-strong);
+  color: var(--clinic-on-brand-strong);
+}
+
+.darkSection .title,
+.darkSection .label,
+.darkSection .note {
+  color: var(--clinic-on-brand-strong);
+}
+
+.policyGrid {
+  margin-top: 28px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr));
+  gap: 16px;
+}
+
+.policyCard {
+  padding: 24px;
+  border: 1px solid var(--clinic-on-brand-strong);
+  border-radius: 12px;
+}
+
+.policyIndex {
+  font-size: 26px;
+  font-weight: 800;
+}
+
+.policyCard h3 {
+  margin: 8px 0;
+  font-size: 19px;
+  font-weight: 800;
+}
+
+.policyCard p {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.75;
+}
+
+.flowTitle {
+  margin-top: 64px;
+}
+
+.flow {
+  margin: 24px 0 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+@media (max-width: 1080px) {
+  .flow {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 560px) {
+  .flow {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.flow li {
+  padding: 22px;
+  border-radius: 12px;
+  background: var(--clinic-paper);
+  color: var(--clinic-ink);
+}
+
+.stepBadge {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 4px;
+  background: var(--clinic-brand-tint);
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--clinic-brand-strong);
+}
+
+.flow h3 {
+  margin: 12px 0 6px;
+  font-size: 19px;
+  font-weight: 800;
+  color: var(--clinic-brand-strong);
+}
+
+.flow p {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.7;
+}
+
+.qaGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(360px, 100%), 1fr));
+  gap: 12px;
+}
+
+.qaCard {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  padding: 20px;
+  border: 1px solid var(--clinic-line);
+  border-radius: 12px;
+  text-decoration: none;
+}
+
+.home .qaCard {
+  color: var(--clinic-ink);
+}
+
+.qMark,
+.aMark {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  font-weight: 800;
+}
+
+.qMark {
+  background: var(--clinic-brand-soft);
+  color: var(--clinic-on-brand-soft);
+}
+
+.aMark {
+  background: var(--clinic-brand-strong);
+  color: var(--clinic-on-brand-strong);
+}
+
+.qaBody {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.qaKind {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--clinic-accent-strong);
+}
+
+.qaTitle {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.55;
+}
+
+.qaSummary {
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.faq {
+  margin: 24px 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.faqItem {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 24px;
+  border-radius: 12px;
+  background: var(--clinic-brand-tint);
+}
+
+.faqItem dt,
+.faqItem dd {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  margin: 0;
+}
+
+.faqItem dt {
+  font-size: 17px;
+  font-weight: 800;
+  color: var(--clinic-brand-strong);
+}
+
+.faqItem dd {
+  font-size: 15px;
+  line-height: 1.8;
+}
+
+.faqItem dd a {
+  font-weight: 700;
+  text-decoration: underline;
+}
+
+.gallery {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr));
+  gap: 12px;
+}
+
+.gallery figure {
+  margin: 0;
+}
+
+.galleryImage {
+  position: relative;
+  display: block;
+  aspect-ratio: 4 / 3;
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.gallery figcaption {
+  padding-top: 8px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.factsSection {
+  padding-bottom: var(--clinic-section-y);
+}
+
+.factsRow {
+  margin-top: 24px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 32px 48px;
+}
+
+.factsTable {
+  flex: 1 1 560px;
+  min-width: 0;
+  border-collapse: collapse;
+  font-size: 15px;
+}
+
+.factsTable tr {
+  border-bottom: 1px solid var(--clinic-line);
+}
+
+.factsTable th {
+  width: 120px;
+  padding: 14px 12px;
+  background: var(--clinic-brand-tint);
+  text-align: left;
+  vertical-align: top;
+  font-weight: 700;
+  color: var(--clinic-brand-strong);
+}
+
+.factsTable td {
+  padding: 14px 16px;
+  line-height: 1.7;
+}
+
+.plainList {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.factsSide {
+  flex: 1 1 360px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.factsNote {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.85;
+}
+
+.sideLabel {
+  margin: 12px 0 0;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--clinic-brand-strong);
+}
+
+.channelGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.channelGrid > a:not(.primaryButton) {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  padding: 0 12px;
+  border: 1px solid var(--clinic-line);
+  border-radius: var(--clinic-control-radius);
+  font-size: 14px;
+  font-weight: 700;
+  text-decoration: none;
+}

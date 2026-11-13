@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>P2 One Medical 결 — 장보고연합내과의원</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+@font-face{font-family:'Pretendard';src:url('/_blob/cf754ea9aa2b04c36186a6885f2e2e8a') format('woff2');font-weight:45 920;font-display:swap}
+@font-face{font-family:'Nanum Myeongjo';src:url('/_blob/fd2c2e430789e351413dca3754e51a15') format('truetype');font-weight:400;font-display:swap}
+@font-face{font-family:'Nanum Myeongjo';src:url('/_blob/08cf8543b47bcb37c4e93a3eedeb24da') format('truetype');font-weight:700;font-display:swap}
+body{margin:0;background:#FFFFFF}
+*{word-break:keep-all;overflow-wrap:break-word}
+a{color:#093E4C;text-decoration:none}
+a:hover{text-decoration:underline}
+</style>
+</helmet>
+<div style="background:#FFFFFF;color:#1D3B42;font-family:Pretendard,'Apple SD Gothic Neo',sans-serif;font-size:18px;line-height:1.6">
+
+<header style="border-bottom:1px solid #E6ECED">
+<div style="max-width:1280px;margin:0 auto;padding:16px clamp(20px,4vw,48px);display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px 32px">
+<img src="/_blob/5670f107860358edd56b948efd25ee4a" alt="장보고연합내과의원" style="height:34px;width:auto;display:block">
+<div style="display:flex;flex-wrap:wrap;align-items:center;gap:4px 28px;font-size:15px">
+<a href="#p2-care" style="padding:10px 0">진료 항목</a>
+<a href="#p2-doctor" style="padding:10px 0">의료진</a>
+<a href="#p2-posts" style="padding:10px 0">건강 정보</a>
+<a href="#p2-faq" style="padding:10px 0">자주 묻는 질문</a>
+<a href="#p2-facts" style="padding:10px 0">병원 정보</a>
+<a href="tel:053-791-7585" style="background:#093E4C;color:#FFFFFF;border-radius:999px;padding:11px 20px;font-weight:600;text-decoration:none">전화 상담</a>
+</div>
+</div>
+</header>
+
+<main>
+<section aria-label="첫 화면" style="background:#F5F3EF">
+<div style="max-width:1280px;margin:0 auto;padding:72px clamp(20px,4vw,48px);display:flex;flex-wrap:wrap;align-items:center;gap:48px 64px">
+<div style="flex:1 1 520px;min-width:0">
+<h1 style="margin:0;font-family:'Nanum Myeongjo',serif;font-weight:700;font-size:clamp(40px,5vw,72px);line-height:1.15;letter-spacing:-0.035em;color:#093E4C;text-wrap:balance">시지에서 10년 넘게 한결같이 진료해 온 동네 내과</h1>
+<p style="margin:24px 0 0;font-size:clamp(17px,1.5vw,20px);color:#3D5B62">위·대장내시경과 건강검진, 만성질환 관리까지 한 곳에서</p>
+<a href="tel:053-791-7585" style="display:inline-block;margin-top:36px;background:#093E4C;color:#FFFFFF;border-radius:999px;padding:16px 30px;font-size:16px;font-weight:600;text-decoration:none">전화 상담 053-791-7585</a>
+<p style="margin:16px 0 0;font-size:14px;color:#56737A">오늘(목) 08:00 ~ 18:00 · 점심 13:00 ~ 14:00 · <a href="#p2-facts" style="text-decoration:underline">진료시간 전체 보기</a></p>
+</div>
+<img src="/_blob/06805c8ad3ec2af38d4c9c22bea9f905" alt="진료실의 조재현 대표원장" style="flex:1 1 500px;min-width:0;width:100%;aspect-ratio:4/3;object-fit:cover;border-radius:24px;display:block">
+</div>
+</section>
+
+<section id="p2-care" style="max-width:1100px;margin:0 auto;padding:112px clamp(20px,4vw,48px) 0;text-align:center">
+<h2 style="margin:0;font-family:'Nanum Myeongjo',serif;font-weight:700;font-size:clamp(34px,4.4vw,60px);line-height:1.2;letter-spacing:-0.03em;color:#093E4C">진료 항목 24가지</h2>
+<p style="margin:16px 0 0;font-size:17px;color:#56737A">항목을 누르면 진료 내용과 진행 방식을 볼 수 있습니다.</p>
+<div style="margin-top:32px;display:flex;flex-wrap:wrap;justify-content:center;gap:12px 10px">
+<sc-for list="{{care}}" as="t" hint-placeholder-count="24">
+<a href="/treatments" style="border:1px solid #CFDCDE;border-radius:999px;padding:9px 18px;font-size:16px;color:#1D3B42;text-decoration:none">{{t}}</a>
+</sc-for>
+</div>
+<a href="/treatments" style="display:inline-block;margin-top:28px;font-size:16px;font-weight:600;text-decoration:underline">진료 항목 자세히 보기 ›</a>
+</section>
+
+<section id="p2-doctor" style="max-width:1280px;margin:0 auto;padding:120px clamp(20px,4vw,48px) 0">
+<h2 style="margin:0 0 48px;text-align:center;font-family:'Nanum Myeongjo',serif;font-weight:700;font-size:clamp(34px,4.4vw,60px);line-height:1.2;letter-spacing:-0.03em;color:#093E4C">진료를 담당하는 의료진</h2>
+<article style="display:flex;flex-wrap:wrap;align-items:center;gap:40px 80px">
+<img src="/_blob/93ba1c1e48b8d0e7d4fed7ef8fe336c5" alt="내시경실의 조재현 대표원장" style="flex:1 1 460px;min-width:0;width:100%;aspect-ratio:4/3;object-fit:cover;border-radius:24px;display:block">
+<div style="flex:1 1 440px;min-width:0">
+<p style="margin:0;font-size:13px;font-weight:700;letter-spacing:0.08em;color:#087A8C">대표원장 · 내과</p>
+<h3 style="margin:10px 0 8px;font-family:'Nanum Myeongjo',serif;font-weight:700;font-size:clamp(30px,3vw,42px);letter-spacing:-0.03em;color:#093E4C">조재현</h3>
+<p style="margin:0 0 24px;font-size:17px;color:#3D5B62">내과 전문의 (2000년 취득) · 경북대학교 의과대학</p>
+<ul style="list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:12px">
+<sc-for list="{{career}}" as="c" hint-placeholder-count="4">
+<li style="display:flex;gap:12px;font-size:16px;line-height:1.6"><svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#087A8C" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="flex:none;margin-top:3px"><path d="M20 6 9 17l-5-5"></path></svg><span>{{c}}</span></li>
+</sc-for>
+</ul>
+<p style="margin:20px 0 0;font-size:14px;line-height:1.8;color:#56737A">대한내과학회 정회원 · 대한소화기내시경학회 준회원 · 대한위장내시경학회 평생회원 · 대한IMS학회 정회원 · 대한비만체형학회 정회원</p>
+<a href="/doctor" style="display:inline-block;margin-top:20px;font-size:16px;font-weight:600;text-decoration:underline">의료진 소개 전체 보기 ›</a>
+</div>
+</article>
+</section>
+
+<section aria-label="진료 원칙" style="max-width:1280px;margin:0 auto;padding:128px clamp(20px,4vw,48px) 112px;text-align:center">
+<h2 style="margin:0 auto;max-width:900px;font-family:'Nanum Myeongjo',serif;font-weight:700;font-size:clamp(34px,4.4vw,60px);line-height:1.2;letter-spacing:-0.03em;color:#093E4C">설명과 상담을 우선합니다</h2>
+<div style="margin-top:64px;display:grid;grid-template-columns:repeat(auto-fit,minmax(min(300px,100%),1fr));gap:48px">
+<sc-for list="{{principles}}" as="p" hint-placeholder-count="3">
+<div style="display:flex;flex-direction:column;align-items:center;gap:14px">
+<span aria-hidden="true" style="width:72px;height:72px;border-radius:50%;background:#E4F4F6;color:#093E4C;display:flex;align-items:center;justify-content:center">
+<svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="{{p.icon}}"></path></svg>
+</span>
+<h3 style="margin:0;font-size:19px;font-weight:700;color:#093E4C">{{p.title}}</h3>
+<p style="margin:0;font-size:16px;line-height:1.75;color:#3D5B62;max-width:340px">{{p.desc}}</p>
+</div>
+</sc-for>
+</div>
+</section>
+
+<section aria-label="오늘 진료" style="background:#093E4C;color:#FFFFFF;text-align:center">
+<div style="max-width:1000px;margin:0 auto;padding:96px clamp(20px,4vw,48px)">
+<h2 style="margin:0;font-family:'Nanum Myeongjo',serif;font-weight:700;font-size:clamp(32px,4vw,56px);line-height:1.25;letter-spacing:-0.03em">오늘(목) 08:00 ~ 18:00 진료</h2>
+<p style="margin:18px 0 0;font-size:17px;color:#C9E3E8">점심 13:00 ~ 14:00 · 수·토요일 08:00 ~ 13:00 · 일요일 휴진 (공휴일은 08:00 ~ 13:00 오전 진료)</p>
+<a href="tel:053-791-7585" style="display:inline-block;margin-top:36px;background:#0CB5D0;color:#05262F;border-radius:999px;padding:16px 32px;font-size:17px;font-weight:700;text-decoration:none">053-791-7585 전화하기</a>
+</div>
+</section>
+
+<section id="p2-posts" style="max-width:1280px;margin:0 auto;padding:120px clamp(20px,4vw,48px) 0">
+<div style="display:flex;flex-wrap:wrap;justify-content:space-between;align-items:flex-end;gap:16px;margin-bottom:40px">
+<h2 style="margin:0;font-family:'Nanum Myeongjo',serif;font-weight:700;font-size:clamp(34px,4.4vw,60px);line-height:1.2;letter-spacing:-0.03em;color:#093E4C">자주 확인하는 질문</h2>
+<a href="/contents" style="font-size:16px;font-weight:600;text-decoration:underline">건강 정보 17편 모두 보기 ›</a>
+</div>
+<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(320px,100%),1fr));gap:20px">
+<sc-for list="{{questions}}" as="q" hint-placeholder-count="3">
+<a href="/contents" style="background:#F5F3EF;border-radius:20px;padding:32px;display:flex;flex-direction:column;gap:14px;color:#1D3B42;text-decoration:none">
+<span style="font-size:13px;font-weight:700;letter-spacing:0.08em;color:#087A8C">{{q.kind}}</span>
+<h3 style="margin:0;font-family:'Nanum Myeongjo',serif;font-weight:700;font-size:22px;line-height:1.45;color:#093E4C">{{q.title}}</h3>
+<p style="margin:0;font-size:15px;line-height:1.75;color:#3D5B62">{{q.summary}}</p>
+<span style="margin-top:auto;font-size:15px;font-weight:600;color:#093E4C">답변 읽기 ›</span>
+</a>
+</sc-for>
+</div>
+<ol aria-label="추가 질문" style="list-style:none;margin:20px 0 0;padding:0;border-top:1px solid #E6ECED">
+<sc-for list="{{moreQuestions}}" as="q" hint-placeholder-count="3">
+<li style="border-bottom:1px solid #E6ECED"><a href="/contents" style="display:flex;justify-content:space-between;gap:16px;padding:20px 4px;font-size:17px;color:#1D3B42;text-decoration:none"><span><span style="font-size:13px;font-weight:700;color:#087A8C;margin-right:12px">{{q.kind}}</span>{{q.title}}</span><span aria-hidden="true">›</span></a></li>
+</sc-for>
+</ol>
+</section>
+
+<section id="p2-faq" style="max-width:1280px;margin:0 auto;padding:120px clamp(20px,4vw,48px) 0">
+<h2 style="margin:0 0 40px;font-family:'Nanum Myeongjo',serif;font-weight:700;font-size:clamp(34px,4.4vw,60px);line-height:1.2;letter-spacing:-0.03em;color:#093E4C">자주 묻는 질문</h2>
+<div style="border-top:2px solid #093E4C">
+<sc-for list="{{faqs}}" as="f" hint-placeholder-count="3">
+<div style="display:flex;flex-wrap:wrap;gap:12px 64px;padding:32px 0;border-bottom:1px solid #E6ECED">
+<h3 style="margin:0;flex:1 1 340px;font-size:20px;font-weight:700;line-height:1.5;color:#093E4C">{{f.q}}</h3>
+<div style="flex:1.4 1 460px;min-width:0">
+<p style="margin:0;font-size:16px;line-height:1.85;color:#3D5B62">{{f.a}}</p>
+<a href="/contents" style="display:inline-block;margin-top:12px;font-size:15px;font-weight:600;text-decoration:underline">자세히 보기 ›</a>
+</div>
+</div>
+</sc-for>
+</div>
+</section>
+
+<section aria-label="진료 과정" style="max-width:1280px;margin:0 auto;padding:128px clamp(20px,4vw,48px) 0;text-align:center">
+<h2 style="margin:0 auto;max-width:960px;font-family:'Nanum Myeongjo',serif;font-weight:700;font-size:clamp(32px,4vw,56px);line-height:1.25;letter-spacing:-0.03em;color:#093E4C">첫 방문부터 경과 관리까지, 진료 4단계</h2>
+<p style="margin:16px 0 0;font-size:17px;color:#56737A">상담과 진료 확인을 바탕으로 단계적으로 진행합니다.</p>
+<ol style="list-style:none;margin:56px 0 0;padding:0;display:grid;grid-template-columns:repeat(auto-fit,minmax(min(240px,100%),1fr));gap:40px;text-align:left">
+<sc-for list="{{flow}}" as="f" hint-placeholder-count="4">
+<li style="border-top:2px solid #093E4C;padding-top:20px;display:flex;flex-direction:column;gap:8px">
+<span style="font-size:13px;font-weight:700;letter-spacing:0.08em;color:#087A8C">{{f.no}} · {{f.when}}</span>
+<h3 style="margin:0;font-family:'Nanum Myeongjo',serif;font-weight:700;font-size:23px;color:#093E4C">{{f.title}}</h3>
+<p style="margin:0;font-size:16px;line-height:1.7;color:#3D5B62">{{f.desc}}</p>
+</li>
+</sc-for>
+</ol>
+</section>
+
+<section aria-label="병원 공간" style="max-width:1280px;margin:0 auto;padding:128px clamp(20px,4vw,48px) 0">
+<div style="display:flex;flex-wrap:wrap;justify-content:space-between;align-items:flex-end;gap:16px;margin-bottom:40px">
+<h2 style="margin:0;font-family:'Nanum Myeongjo',serif;font-weight:700;font-size:clamp(34px,4.4vw,60px);line-height:1.2;letter-spacing:-0.03em;color:#093E4C">병원 공간</h2>
+<a href="/visit#gallery" style="font-size:16px;font-weight:600;text-decoration:underline">사진 전체 보기 ›</a>
+</div>
+<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(320px,100%),1fr));gap:24px">
+<figure style="margin:0"><img src="/_blob/53476bcc23abbea4e5a195af1ca773c6" alt="위·대장내시경 건강검진센터 입구" style="width:100%;aspect-ratio:4/3;object-fit:cover;border-radius:16px;display:block"><figcaption style="padding-top:14px;font-size:16px;font-weight:600;color:#093E4C">위·대장내시경 건강검진센터 입구</figcaption></figure>
+<figure style="margin:0"><img src="/_blob/6df1699defdfeba50083e82477db131f" alt="검진대기실" style="width:100%;aspect-ratio:4/3;object-fit:cover;border-radius:16px;display:block"><figcaption style="padding-top:14px;font-size:16px;font-weight:600;color:#093E4C">검진대기실</figcaption></figure>
+<figure style="margin:0"><img src="/_blob/dfb08699d0e7a24c29d6192b22b00576" alt="내시경실" style="width:100%;aspect-ratio:4/3;object-fit:cover;border-radius:16px;display:block"><figcaption style="padding-top:14px;font-size:16px;font-weight:600;color:#093E4C">내시경실</figcaption></figure>
+</div>
+</section>
+
+<section id="p2-facts" style="margin-top:128px;background:#F5F3EF">
+<div style="max-width:1280px;margin:0 auto;padding:112px clamp(20px,4vw,48px)">
+<h2 style="margin:0 0 48px;font-family:'Nanum Myeongjo',serif;font-weight:700;font-size:clamp(34px,4.4vw,60px);line-height:1.2;letter-spacing:-0.03em;color:#093E4C">장보고연합내과의원 기본 정보</h2>
+<div style="display:flex;flex-wrap:wrap;gap:48px 80px">
+<div style="flex:1 1 460px;min-width:0">
+<dl style="margin:0;border-top:1px solid #D9D4C8">
+<sc-for list="{{facts}}" as="f" hint-placeholder-count="6">
+<div style="display:flex;flex-wrap:wrap;gap:4px 24px;padding:16px 0;border-bottom:1px solid #D9D4C8">
+<dt style="flex:0 0 96px;font-size:15px;font-weight:700;color:#56737A">{{f.label}}</dt>
+<dd style="margin:0;flex:1 1 260px;font-size:16px;line-height:1.7">{{f.value}}</dd>
+</div>
+</sc-for>
+</dl>
+<p style="margin:28px 0 0;font-size:16px;line-height:1.85;color:#3D5B62">월·화·목·금은 08:00~18:00(점심 13:00~14:00), 수·토요일과 공휴일은 08:00~13:00 진료하며 일요일은 휴진합니다. 공복이면 위내시경과 복부초음파는 예약 없이 당일 검사할 수 있고, 대장내시경은 사전 예약과 장 정결 준비가 필요합니다. 국가건강검진·5대 암검진 기관이며, 신매역 5번 출구에서 도보 약 5분(서해빌딩 3층), 무료 주차가 가능합니다.</p>
+</div>
+<div style="flex:1 1 400px;min-width:0">
+<h3 style="margin:0 0 12px;font-size:17px;font-weight:700;color:#093E4C">주간 진료시간</h3>
+<sc-for list="{{hours}}" as="h" hint-placeholder-count="7">
+<div style="display:flex;justify-content:space-between;gap:16px;padding:13px 0;border-bottom:1px solid #D9D4C8;font-size:16px;font-weight:{{h.weight}}"><span>{{h.day}}요일</span><span style="text-align:right">{{h.time}}</span></div>
+</sc-for>
+<h3 style="margin:36px 0 14px;font-size:17px;font-weight:700;color:#093E4C">병원 공식 채널</h3>
+<div style="display:flex;flex-wrap:wrap;gap:10px">
+<a href="https://xn--299a3b31nmwqv2k3oc5u0b.com/" style="background:#FFFFFF;border-radius:999px;padding:12px 20px;font-size:15px;font-weight:600;text-decoration:none">공식 홈페이지</a>
+<a href="https://map.naver.com/p/entry/place/37675646" style="background:#FFFFFF;border-radius:999px;padding:12px 20px;font-size:15px;font-weight:600;text-decoration:none">네이버 플레이스</a>
+<a href="https://pf.kakao.com/_PCVRn" style="background:#FFFFFF;border-radius:999px;padding:12px 20px;font-size:15px;font-weight:600;text-decoration:none">카카오톡 채널</a>
+<a href="https://blog.naver.com/cr89e8vj" style="background:#FFFFFF;border-radius:999px;padding:12px 20px;font-size:15px;font-weight:600;text-decoration:none">병원 블로그</a>
+</div>
+<div style="display:flex;flex-wrap:wrap;gap:12px;margin-top:28px">
+<a href="https://map.naver.com/p/entry/place/37675646" style="background:#093E4C;color:#FFFFFF;border-radius:999px;padding:15px 26px;font-size:16px;font-weight:600;text-decoration:none">네이버 지도로 길찾기</a>
+<a href="https://www.google.com/maps/place/%EC%9E%A5%EB%B3%B4%EA%B3%A0%EC%97%B0%ED%95%A9%EB%82%B4%EA%B3%BC/data=!4m2!3m1!1s0x35660bd88b9b4727:0x4731d5b96c1fde9b" style="border:1px solid #093E4C;border-radius:999px;padding:14px 24px;font-size:16px;font-weight:600;text-decoration:none">Google 지도</a>
+</div>
+</div>
+</div>
+</div>
+</section>
+</main>
+
+<footer style="background:#072F39;color:#C9DFE3">
+<div style="max-width:1280px;margin:0 auto;padding:48px clamp(20px,4vw,48px);display:flex;flex-wrap:wrap;justify-content:space-between;gap:16px 32px;font-size:14px;line-height:1.8">
+<span>장보고연합내과의원 · 대표원장 조재현<br>대구광역시 수성구 달구벌대로 3218 서해빌딩 3층 · 053-791-7585</span>
+<span style="display:flex;flex-wrap:wrap;gap:4px 20px;align-items:flex-start"><a href="/doctor" style="color:#FFFFFF">의료진</a><a href="/treatments" style="color:#FFFFFF">진료 항목</a><a href="/contents" style="color:#FFFFFF">건강 정보</a><a href="/visit" style="color:#FFFFFF">오시는 길</a></span>
+</div>
+</footer>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":7600}}'>
+class Component extends DCLogic {
+renderVals() {
+const care = ['위내시경', '대장내시경', '대장용종제거술', '상부소화관 이물제거술', '복부초음파', '갑상선초음파', '경동맥초음파', '국가건강검진·5대 암검진', '종합검진', '고혈압', '당뇨병', '고지혈증(이상지질혈증)', '역류성식도염', '위염·위궤양·십이지장궤양', '헬리코박터 파일로리 검사·제균치료', '복통·급성 위장염', '감기·급성기관지염·폐렴', '천식', '간기능 이상·지방간', '방광염·급성신우신염', '골밀도검사', '유방촬영', '영양수액', '예방접종'];
+const career = ['1995년 의사면허 취득, 2000년 내과 전문의 취득 (의사 경력 31년차)', '칠곡 경북대학교병원 소화기내과학교실 임상외래교수', '현) 장보고연합내과의원 대표원장 (구미에서 대구 수성구 시지로 이전 후 10년 이상 진료)', '위내시경 약 5만 건, 대장내시경 약 2만 건 시행 (위·대장내시경 경력 28년)'];
+const principles = [
+{ title: '충분히 설명합니다', desc: '검사와 진료 과정을 환자가 이해할 수 있는 언어로 설명하고, 궁금한 점을 확인한 뒤 진행합니다.', icon: 'M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z' },
+{ title: '확인된 정보만 안내합니다', desc: '이 페이지의 진료 안내와 의료 정보는 출처와 업데이트 일자를 함께 표기하며, 과장된 표현을 사용하지 않습니다.', icon: 'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6M9 15l2 2 4-4' },
+{ title: '상담으로 함께 결정합니다', desc: '치료 방향은 글이 아니라 진료실에서의 상담과 개인별 상태 확인을 거쳐 결정됩니다.', icon: 'M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75' }
+];
+const questions = [
+{ kind: '질환 정보', title: '대장용종제거 가능한 시지 병원, 용종이 생기는 이유와 진료 순서', summary: '시지에서 대장용종제거를 찾는다면 장보고연합내과의원에서 대장내시경 중 용종 제거와 조직검사를 진행합니다. 증상, 원인, 진단, 치료 순서를 정리했습니다.' },
+{ kind: '질환 정보', title: '시지건강검진, 증상 없을 때 받는 검사와 수성구 내원 기준', summary: '대구 수성구 시지건강검진은 장보고연합내과의원에서 국가건강검진과 종합검진으로 받을 수 있습니다. 항목별 준비, 진행 순서, 이상 소견 대응을 정리했습니다.' },
+{ kind: '질환 정보', title: '시지 대장용종제거, 대장내시경 중 가능한 병원과 진료 순서', summary: '시지 대장용종제거는 장보고연합내과의원에서 대장내시경 중 용종 발견 시 제거와 조직검사로 이어집니다. 증상·원인·진단·치료와 예약 안내를 정리했습니다.' }
+];
+const moreQuestions = [
+{ kind: '진료 안내', title: '시지국가건강검진, 수성구 장보고연합내과의원 진행 순서' },
+{ kind: '진료 안내', title: '대구 수성구 시지건강검진, 장보고연합내과의원에서 받는 순서' },
+{ kind: '건강 상식', title: '수성구 내과 고를 때 병원 순위보다 먼저 볼 여섯 가지' }
+];
+const faqs = [
+{ q: '대구 수성구 내과 진료비 어느 정도인가요?', a: '진료 목적, 검사 범위(내시경·초음파·혈액검사 등), 보험 적용 여부에 따라 달라 하나의 금액으로 말하기 어렵습니다. 방문 전 증상과 받을 검사를 알리고 현재 기준을 확인하시길 권합니다.' },
+{ q: '시지 시지국가건강검진 가능한 병원은 어디인가요?', a: '시지에서는 국민건강보험공단 검진기관으로 지정된 의원에서 받을 수 있고, 수성구 장보고연합내과의원도 일반검진과 5대 암검진을 시행합니다. 대상 여부와 항목은 방문 전 확인하세요.' },
+{ q: '대구 수성구 내과 전문의 추천은 어디인가요?', a: '특정 병원을 순위로 꼽기보다 내과 전문의 자격, 증상에 맞는 당일 검사 가능 여부, 결과 설명 방식, 상급병원 연계를 확인해 고르시길 권합니다.' }
+];
+const flow = [
+{ no: '01', when: '첫 방문 시', title: '상담·문진', desc: '증상과 불편한 점, 생활 습관과 병력을 충분히 듣고 확인합니다.' },
+{ no: '02', when: '진찰 후', title: '진단·원인 확인', desc: '진찰 소견을 바탕으로 필요한 검사를 안내하고 증상의 원인을 확인합니다.' },
+{ no: '03', when: '결과 확인 후', title: '치료 계획 상담', desc: '확인된 결과를 바탕으로 치료 선택지를 설명하고 함께 결정합니다.' },
+{ no: '04', when: '치료 후', title: '경과 확인·생활 관리', desc: '치료 후 경과를 확인하고 일상에서의 관리 방법을 안내합니다.' }
+];
+const facts = [
+{ label: '병원명', value: '장보고연합내과의원' },
+{ label: '대표원장', value: '조재현' },
+{ label: '진료과', value: '내과' },
+{ label: '진료 지역', value: '대구 수성구 · 시지 · 신매동 · 신매역 · 고산1동 · 고산2동 · 고산3동 · 매호동 · 욱수동 · 사월동 · 시지동 · 노변동 · 경산 중산동 · 경산 중방동' },
+{ label: '주소', value: '대구광역시 수성구 달구벌대로 3218 서해빌딩 3층' },
+{ label: '전화', value: '053-791-7585' }
+];
+const today = '목';
+const hours = [['월', '08:00 ~ 18:00 (점심 13:00 ~ 14:00)'], ['화', '08:00 ~ 18:00 (점심 13:00 ~ 14:00)'], ['수', '08:00 ~ 13:00 (점심시간 없음)'], ['목', '08:00 ~ 18:00 (점심 13:00 ~ 14:00)'], ['금', '08:00 ~ 18:00 (점심 13:00 ~ 14:00)'], ['토', '08:00 ~ 13:00 (점심시간 없음)'], ['일', '휴진 (공휴일은 08:00 ~ 13:00 오전 진료)']].map(([day, time]) => ({ day, time, weight: day === today ? '700' : '400' }));
+return { care, career, principles, questions, moreQuestions, faqs, flow, facts, hours };
+}
+}
+</script>
+</body>
+</html>
