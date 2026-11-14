@@ -108,7 +108,9 @@ const nextConfig = {
     // Keep negotiated AVIF/WebP: WebP-only increased mobile transfer in measured photos.
     formats: ['image/avif', 'image/webp'],
     imageSizes: [32, 48, 64, 96, 128, 192, 256, 320, 384],
-    deviceSizes: [640, 750, 828, 1080, 1200, 1600, 1920, 2048, 3840],
+    // 변형이 적을수록 같은 사진을 여러 크기로 따로 변환하는 일이 준다 — Site는 CPU 1개라 첫 변환
+    // (AVIF 1~2초)이 차례로 밀린다. 750·1920·3840은 바로 위·아래 크기로 대신한다(2026-11-14).
+    deviceSizes: [640, 828, 1080, 1200, 1600, 2048],
     qualities: [75, 84],
     minimumCacheTTL: 86400,
     remotePatterns: [
