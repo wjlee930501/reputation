@@ -980,6 +980,18 @@ deploy_site() {
 
   require_serving_latest reputation-site
   ok "Site 배포 완료"
+  start_site_image_warmup
+}
+
+# 새 Site 인스턴스의 사진 최적화 캐시는 비어 있다(CPU 1개, 첫 변환 1~2초). 방문자 대신 첫 요청을
+# 보내 채운다 — 배포를 기다리게 하지 않도록 뒤에서 돌리고, 실패해도 배포 결과는 그대로다.
+start_site_image_warmup() {
+  [[ "${SITE_IMAGE_WARMUP:-1}" == "1" ]] || { info "사진 캐시 미리 채우기를 건너뜁니다(SITE_IMAGE_WARMUP=0)."; return 0; }
+  local log_dir="${PROJECT_ROOT}/.omo/warmup" log_file
+  mkdir -p "$log_dir" || return 0
+  log_file="${log_dir}/site-images-$(date -u +%Y%m%dT%H%M%SZ).log"
+  nohup python3 "${SCRIPT_DIR}/warm_site_images.py" --public-domain "$PUBLIC_DOMAIN" >"$log_file" 2>&1 &
+  info "사진 캐시 미리 채우기를 뒤에서 시작했습니다(약 20분, 기록: ${log_file})."
 }
 
 deploy_admin() {
