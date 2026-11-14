@@ -1,6 +1,14 @@
 # Re:putation — 현재 프로젝트 개발 안내
 
-## 최신 운영 배포 — 2026-11-13 저녁 병원 사이트 레이아웃 A/B/C
+## 최신 운영 배포 — 2026-11-15 새벽 공개 페이지 정렬·글 이미지·사진 캐시
+
+11-14 22:35 KST에 Site만 main `c33d6764`(PR #309 정렬 보정)로 올린 뒤, 11-15 02:01~02:21 KST에 main `34f38d07`(PR #309 글 이미지 404 수정 + PR #310 사진 캐시 미리 채우기)을
+`deploy.sh all`로 5개 서비스에 배포했다(그날 첫 릴리스). **현재 리비전은 api `00291-gkq`, worker `00283-msm`, beat `00278-q9d`, site `00152-s4v`, admin `00123-p24`**, DB head `0095` 그대로.
+공개 글 이미지 경로가 `active_revision`을 싣지 않아 fail-closed 404였고(기존 결함), 이제 이미지 있는 글 36건 모두 302·화면 표지 200이다. 사진 늦음은 Site 1대·CPU 1개의 첫 요청 AVIF 변환이라
+Site 배포 직후 `scripts/warm_site_images.py`가 뒤에서 대표 화면 후보를 미리 요청한다(`SITE_IMAGE_WARMUP=0`이면 끔, 기록 `.omo/warmup/`). 옛 Beat(`00277`)가 또 잠금을 쥐고 남아 새 Beat가
+`/live` 재시작 ERROR를 남겼다(작업 누락 없음, 근본 수정 PR #308 미병합). 롤백 좌표 `.omo/rollback-fix/all`. 상세는 [배포 기록](docs/releases/2026-11-15-public-site-fixes-production.md).
+
+## 이전 운영 배포 — 2026-11-13 저녁 병원 사이트 레이아웃 A/B/C
 
 main `ccd4b37c`(PR #306)를 19:44~20:06 KST에 5개 서비스 전부에 배포했다(`deploy.sh all`, 그날 첫 릴리스). 배포 전 운영은 이미 main `6c21141d`(PR #305)였다 —
 아래 11-09 절 이후의 PR #300~#305는 그 사이 이미 운영에 올라가 있었다. **현재 리비전은 api `00290-xrp`, worker `00282-hxd`, beat `00277-x9p`, site `00150-26b`,
