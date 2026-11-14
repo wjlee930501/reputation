@@ -27,7 +27,7 @@ test('추천 글 목록의 분류 칩은 칸 너비로 늘어나지 않는다', 
 
 test('진료 영역 번호와 이름은 글자 기준선을 맞춘다', () => {
   const rule = lastRule(GLOBALS, '.clinic-tx-directory .clinic-tx-card-index,\n.clinic-tx-directory .clinic-tx-card-name')
-  assert.match(rule, /align-self:\s*baseline/)
+  assert.match(rule, /align-self:\s*baseline/) // # copy-guard: internal-only — CSS 값이지 화면 문구가 아니다
 })
 
 test('진료 원칙의 버튼 줄은 문단 바로 아래에 붙는다', () => {
