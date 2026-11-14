@@ -809,12 +809,11 @@ class _SequentialFakeDB:
 
 
 class _ImageFakeDB(_SequentialFakeDB):
-    def __init__(self, results, item):
-        super().__init__(results)
-        self.item = item
+    """병원 조회 뒤 글 조회(승인 판을 함께 싣는 select)가 이 글을 돌려준다."""
 
-    async def get(self, _model, _content_id):
-        return self.item
+    def __init__(self, results, item):
+        super().__init__([*results, _FakeResult([item])])
+        self.item = item
 
 
 def _active_hospital(slug="test-hospital"):

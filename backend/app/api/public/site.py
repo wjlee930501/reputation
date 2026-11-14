@@ -388,7 +388,16 @@ async def get_public_content_image(
     if not is_public_serving_hospital(h):
         raise HTTPException(status_code=404, detail="Content image not found")
     public_philosophy_id = await get_public_approved_philosophy_id(db, h.id)
-    item = await db.get(ContentItem, content_id)
+    # 공개 판정은 승인 판(`active_revision`)이 실려 있어야 본다 — 없으면 판정이 닫힌다.
+    # `db.get`은 그 관계를 싣지 않아 모든 공개 글 이미지가 404였다(2026-11-14 발견).
+    # 상세 경로와 같은 방식으로 읽는다.
+    item = (
+        await db.execute(
+            select(ContentItem)
+            .options(selectinload(ContentItem.active_revision))
+            .where(ContentItem.id == content_id)
+        )
+    ).scalar_one_or_none()
     if (
         not item
         or item.hospital_id != h.id
