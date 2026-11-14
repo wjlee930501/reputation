@@ -10,6 +10,8 @@
   border-radius: var(--clinic-control-radius);
   background: var(--clinic-brand-strong);
   color: var(--clinic-on-brand-strong);
+  /* 원래 화면의 전화 링크는 글자뿐이라 안쪽 여백이 0이다 — 바탕을 입히면 번호가 가장자리에 닿는다. */
+  padding: 0 18px;
 }
 
 .shell :global(.clinic-section-title) {

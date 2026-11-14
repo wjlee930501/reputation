@@ -91,10 +91,21 @@
   border-radius: var(--clinic-control-radius-pill);
 }
 
-/* 진료 영역 카드 — 테두리 카드 */
+/* 진료 영역 카드 — 테두리 카드. 원래 화면은 줄 사이를 선 하나로 나누는 목록이라 줄 간격이 0이고
+   번호가 칸 왼쪽 끝에 붙는다 — 카드로 바꾸면 카드끼리 붙고 번호가 테두리에 닿으므로 간격과
+   안쪽 여백을 함께 준다. */
+.shell.shell :global(.clinic-tx-directory) {
+  row-gap: 16px;
+  border-top: 0;
+}
+
 .shell.shell :global(.clinic-tx-card) {
   border: 1px solid var(--clinic-line);
   border-radius: var(--clinic-radius);
+}
+
+.shell.shell :global(.clinic-tx-directory .clinic-tx-card) {
+  padding: 24px 24px 24px 20px;
 }
 
 .shell.shell :global(.clinic-tx-card-name) {
@@ -110,8 +121,15 @@
   background: transparent;
 }
 
-/* 자주 묻는 질문 — 연한 카드 */
+/* 자주 묻는 질문 — 연한 카드. 원래 목록의 위·아래 선을 걷고 카드 사이를 띄운다. */
+.shell.shell :global(.clinic-faq-list) {
+  display: grid;
+  gap: 12px;
+  border-top: 0;
+}
+
 .shell.shell :global(.clinic-faq-item) {
+  border-bottom: 0;
   background: var(--clinic-brand-tint);
   border-radius: var(--clinic-radius);
   padding: 24px 28px;
@@ -122,14 +140,10 @@
   font-weight: 700;
 }
 
-/* 진료 4단계 — 흰 카드 */
+/* 진료 4단계 — 연한 바탕 띠. 단계마다 흰 카드를 깔았더니 카드끼리 붙고(간격 0) 번호 원과
+   잇는 선이 카드에 가려 끊겼다 — 원래의 번호·연결선 흐름을 그대로 둔다. */
 .shell.shell :global(.clinic-section--flow) {
   background: var(--clinic-brand-tint);
-}
-
-.shell.shell :global(.clinic-flow-node) {
-  background: var(--clinic-paper);
-  border-radius: var(--clinic-radius);
 }
 
 /* 요일별 진료시간 — 오늘 칸 강조 */
@@ -175,5 +189,13 @@
 @media (max-width: 720px) {
   .shell.shell :global(.clinic-hero-fact-rail > div) {
     padding: 16px;
+  }
+
+  .shell.shell :global(.clinic-tx-directory .clinic-tx-card) {
+    padding: 20px 16px;
+  }
+
+  .shell.shell :global(.clinic-faq-item) {
+    padding: 20px;
   }
 }

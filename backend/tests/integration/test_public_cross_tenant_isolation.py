@@ -345,6 +345,25 @@ async def test_content_list_excludes_items_misfiled_onto_the_requesting_hospital
     assert [item["id"] for item in b_items] == [str(b.content.id)]
 
 
+async def test_content_image_serves_its_own_published_item_from_a_fresh_session(
+    pg_async_session, tenants, monkeypatch
+):
+    """공개 요청은 매번 새 세션이다 — 픽스처가 세션에 올려 둔 승인 판을 지우고 읽는다.
+
+    2026-11-14 운영: 이미지 경로가 글을 `db.get`으로 읽어 승인 판(`active_revision`)이
+    실리지 않았고, 공개 판정은 판이 없으면 닫히므로 모든 공개 글 이미지가 404였다
+    (목록·상세는 판을 실어 `image_url`을 알려 주는데 그 주소가 404 → 썸네일이 장식 그림).
+    """
+    a, _ = tenants
+    image_url = a.content.image_url
+    monkeypatch.setattr(site_api, "public_asset_response", lambda ref, **_kwargs: {"ref": ref})
+    pg_async_session.expunge_all()
+
+    result = await get_public_content_image(None, a.slug, a.content.id, db=pg_async_session)
+
+    assert result == {"ref": image_url}
+
+
 async def test_content_image_under_another_hospitals_slug_is_404(pg_async_session, tenants):
     a, b = tenants
 
