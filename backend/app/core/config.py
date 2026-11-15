@@ -620,8 +620,8 @@ class Settings(BaseSettings):
     WORKER_LIVENESS_STARTUP_GRACE_SECONDS: int = 300
     # Beat 스케줄 루프(RedBeat tick, 30초 주기)가 이 시간(초) 멈추면 /live 실패 → Cloud Run이 재시작한다.
     BEAT_LIVENESS_STALE_SECONDS: int = 600
-    # 기동 직후 첫 tick 전까지 /live를 통과시키는 유예(초). 강제 종료된 옛 Beat의 RedBeat 락은
-    # TTL(300초)까지 남고 새 Beat는 그동안 락을 기다리며 tick하지 않는다 — 그 대기를 덮는다.
+    # 기동 직후 첫 tick 전까지 /live를 통과시키는 유예(초). 락 대기는 tick 안에서 하며 대기 중에도 생존
+    # 파일을 갱신하므로(`workers/beat_scheduler.py`, 2026-11-13) 이 유예는 프로세스 기동과 첫 Redis 접속만 덮는다.
     BEAT_LIVENESS_STARTUP_GRACE_SECONDS: int = 900
 
     # Cost Guard — 전역 비용 가드레일 + 킬스위치.
