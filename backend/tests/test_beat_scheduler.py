@@ -212,6 +212,54 @@ def test_superseded_beat_takes_over_when_the_announcer_never_takes_the_lock(beat
     assert old.lock.owned()
 
 
+def test_older_waiter_yields_to_a_newer_announcement_while_the_old_holder_never_steps_down(beat_env):
+    # 머지 뒤 첫 배포처럼 보유자가 물러나지 않는 동안 두 번 배포돼 새 Beat 둘이 기다리는 경우.
+    holder_lock = beat_env.client.lock(f"{beat_env.prefix}:lock", timeout=300)
+    assert holder_lock.acquire(blocking=False)
+    n1 = beat_env.make("n1")
+    n1.announce()
+    n1.tick()
+    n2 = beat_env.make("n2")
+    n2.announce()
+    n2.tick()
+    assert _senders(beat_env) == set()
+
+    holder_lock.release()  # 옛 보유자가 꺼진다
+    # 먼저 tick한 쪽이 퇴역한 n1이어도 잡지 않는다 — 잡았다면 n2의 알림이 기준이 돼 다시는 물러나지 않았다.
+    n1.tick()
+    assert _senders(beat_env) == set()
+    assert not n1.lock.owned()
+    n2.tick()
+    assert _senders(beat_env) == {"n2"}
+    for _ in range(5):
+        beat_env.clock.now += 30
+        n1.tick()
+        n2.tick()
+        assert _senders(beat_env) == {"n2"}
+
+
+def test_older_waiter_takes_over_when_the_newer_announcer_died(beat_env):
+    holder_lock = beat_env.client.lock(f"{beat_env.prefix}:lock", timeout=300)
+    assert holder_lock.acquire(blocking=False)
+    n1 = beat_env.make("n1")
+    n1.announce()
+    n1.tick()
+    ghost = beat_env.make("ghost")
+    ghost.announce()  # 알리고 죽었다
+    holder_lock.release()
+
+    n1.tick()
+    beat_env.clock.now += n1.superseded_takeover_seconds - 1
+    n1.tick()
+    assert _senders(beat_env) == set()
+    beat_env.clock.now += 2
+    n1.tick()
+    assert _senders(beat_env) == {"n1"}
+    n1.tick()
+    assert _senders(beat_env) == {"n1"}
+    assert n1.lock.owned()
+
+
 def test_missing_or_unreadable_announcement_does_not_step_down(beat_env, monkeypatch):
     holder = beat_env.make("holder")
     holder.announce()

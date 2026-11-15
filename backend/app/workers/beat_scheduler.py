@@ -18,7 +18,9 @@ ERROR). 그동안 옛 코드가 계속 스케줄을 보냈다.
 - 락이 없는 Beat는 tick 안에서 막히지 않는 시도로 락을 기다리며(5초 간격) 생존 파일을 갱신한다. 그래서 기다리는
   Beat가 `/live`로 재시작되지 않는다. 대기 루프 자체가 멈추면 파일이 오래돼 종전처럼 재시작된다.
 - 한 번 물러난 Beat는 락이 `SUPERSEDED_TAKEOVER_SECONDS` 동안 계속 비어 있을 때만 다시 잡는다(알린 Beat가 먼저 잡게
-  양보한다). 알린 Beat가 뜨다 죽었으면 그 뒤 옛 Beat가 이어 받아 스케줄이 끊기지 않는다.
+  양보한다). 알린 Beat가 뜨다 죽었으면 그 뒤 옛 Beat가 이어 받아 스케줄이 끊기지 않는다. 락을 기다리던 Beat도
+  기다리는 동안 더 새 Beat가 알렸으면 같은 규칙으로 양보한다(보유자가 물러나지 않는 사이 두 번 배포된 경우 —
+  먼저 잡은 퇴역 Beat가 새 알림을 기준으로 삼아 끝까지 보내지 않게).
 - 스케줄 정의(`setup_schedule`)는 락을 잡은 Beat만 Redis에 쓴다 — 보내는 코드와 정의가 같은 판이다.
 
 락은 여전히 유일한 발송 권한이다. 알림은 보유자가 놓게 만들 뿐, 락 없는 Beat가 보내게 하지 않는다. 알림을 읽지
@@ -160,6 +162,19 @@ class LivenessRedBeatScheduler(RedBeatScheduler):
         if self._announcement is None and not self._superseded:
             # beat_init에서 알리지 못했으면(Redis 장애) 다시 알린다.
             self.announce()
+        # 기준 알림은 시도 전에 읽는다 — 시도와 읽기 사이에 새 알림이 오면 첫 tick에 물러난다.
+        baseline = self._read_announcement()
+        if not self._superseded and baseline is not None and baseline != self._announcement:
+            # 기다리는 동안 더 새 Beat가 알렸다. 여기서 잡으면 그 알림이 기준이 돼 다시는 물러나지 않으므로
+            # (퇴역 코드가 꺼질 때까지 보낸다) 물러난 Beat처럼 양보하고, 락이 계속 비어 있을 때만 이어 받는다.
+            logger.warning(
+                "beat_superseded_while_waiting announcement=%s my_announcement=%s",
+                baseline,
+                self._announcement,
+            )
+            self._superseded = True
+            self._lock_free_since = None
+            self._wait_started = None
         if self._superseded:
             if self._client().exists(self.lock_key):
                 self._lock_free_since = None
@@ -169,8 +184,6 @@ class LivenessRedBeatScheduler(RedBeatScheduler):
                 self._lock_free_since = now
             if now - self._lock_free_since < self.superseded_takeover_seconds:
                 return False
-        # 기준 알림은 시도 전에 읽는다 — 시도와 읽기 사이에 새 알림이 오면 첫 tick에 물러난다.
-        baseline = self._read_announcement()
         if not self.lock.acquire(blocking=False):
             return False
         self._baseline = baseline
