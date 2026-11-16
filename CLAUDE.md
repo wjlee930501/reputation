@@ -1,6 +1,24 @@
 # Re:putation — 현재 프로젝트 개발 안내
 
-## 최신 운영 배포 — 2026-11-09 오전 언급 판정 규칙 대조
+## 최신 운영 배포 — 2026-11-15 새벽 공개 페이지 정렬·글 이미지·사진 캐시
+
+11-14 22:35 KST에 Site만 main `c33d6764`(PR #309 정렬 보정)로 올린 뒤, 11-15 02:01~02:21 KST에 main `34f38d07`(PR #309 글 이미지 404 수정 + PR #310 사진 캐시 미리 채우기)을
+`deploy.sh all`로 5개 서비스에 배포했다(그날 첫 릴리스). **현재 리비전은 api `00291-gkq`, worker `00283-msm`, beat `00278-q9d`, site `00152-s4v`, admin `00123-p24`**, DB head `0095` 그대로.
+공개 글 이미지 경로가 `active_revision`을 싣지 않아 fail-closed 404였고(기존 결함), 이제 이미지 있는 글 36건 모두 302·화면 표지 200이다. 사진 늦음은 Site 1대·CPU 1개의 첫 요청 AVIF 변환이라
+Site 배포 직후 `scripts/warm_site_images.py`가 뒤에서 대표 화면 후보를 미리 요청한다(`SITE_IMAGE_WARMUP=0`이면 끔, 기록 `.omo/warmup/`). 옛 Beat(`00277`)가 또 잠금을 쥐고 남아 새 Beat가
+`/live` 재시작 ERROR를 남겼다(작업 누락 없음). 근본 수정 PR #308(Beat 잠금 인계)은 이 배포 뒤 main에 병합됐고(`b064a5cb`) 다음 Backend 배포부터 적용된다 —
+그 첫 배포에서는 지금 Beat `00278`에 물러나는 코드가 없어 약 2시간 더 잠금을 쥐고, 새 Beat는 ERROR 없이 기다리며 WARNING `beat_lock_wait_long`만 남긴다. 그다음 배포부터 인계는 약 35초다. 롤백 좌표 `.omo/rollback-fix/all`. 상세는 [배포 기록](docs/releases/2026-11-15-public-site-fixes-production.md).
+
+## 이전 운영 배포 — 2026-11-13 저녁 병원 사이트 레이아웃 A/B/C
+
+main `ccd4b37c`(PR #306)를 19:44~20:06 KST에 5개 서비스 전부에 배포했다(`deploy.sh all`, 그날 첫 릴리스). 배포 전 운영은 이미 main `6c21141d`(PR #305)였다 —
+아래 11-09 절 이후의 PR #300~#305는 그 사이 이미 운영에 올라가 있었다. 이 배포의 리비전은 api `00290-xrp`, worker `00282-hxd`, beat `00277-x9p`, site `00150-26b`,
+admin `00122-2dr`(11-15 배포로 바뀜), **DB head `0095_add_hospital_site_layout`**(`hospitals.site_layout` A/B/C, NULL = 도입 전 화면). 마케터가 계약 등록에서 레이아웃을 필수로 고르고
+병원 정보에서 바꾼다. 기존 공개 병원은 모두 NULL이라 화면이 바뀌지 않았다(공개 13곳 `site_layout: null`, 홈에 레이아웃 클래스 없음 확인). readiness 통과, release 일치.
+옛 Beat(`00276`, 퇴역)가 다시 잠금을 쥐고 남아 새 Beat가 `/live` 재시작 ERROR를 남겼다(11-09와 같은 현상, 작업 누락 없음). Admin 화면 실조작은 로그인 필요로 남았다. 11-14에 대표가 장편한외과를 B안으로 직접 저장했다.
+롤백 좌표 `.omo/rollback-layout/all`. 상세는 [배포 기록](docs/releases/2026-11-13-clinic-layout-production.md), 설계는 [계획](docs/plans/2026-11-13-clinic-site-layouts-abc.md).
+
+## 이전 운영 배포 — 2026-11-09 오전 언급 판정 규칙 대조
 
 main `d123f37b`(PR #299)를 10:40~10:50 KST에 Backend에 배포했다(같은 날 두 번째 릴리스, `--override-reason`). **현재 리비전은 api `00284-z7v`, worker `00274-pwk`, beat `00269-qdp`**, Admin·Site·DB head 그대로. 자사·경쟁사 언급 판정이 규칙 대조(`services/mention_identity.py`) + Haiku 5.5 보조 판정으로 바뀌었다(정답표·검증 표본 재현율 0.53~0.60 → 1.00). 판정 정책 지문이 바뀌어 이전 달과는 같은 판정 기준이 아니고, 이전 방식으로 잰 달의 경쟁 병원 반영은 막힌다. 마감된 달 재판정·같은 기준 비교는 다음 PR이다. 롤백 좌표 `.omo/rollback-judge/backend`. 상세는 [배포 기록](docs/releases/2026-11-09-mention-identity-production.md).
 
@@ -318,7 +336,7 @@ BaseEssence의 일반 자료 추가 drift는 재합성하지 않는다. 명시�
 Site/Admin IAM 분리는 단계적으로 적용한다. 구 revision 종료 전 legacy grants를 회수하지 않는다.
 
 
-문서 버전: **2.33** · 갱신일: **2026-11-06 (Asia/Seoul)**
+문서 버전: **2.34** · 갱신일: **2026-11-16 (Asia/Seoul)**
 소스 기준선: **`4db1b69` 이후 커밋 이력 정합성 보완**
 구현 상태: **체크포인트 2(`a774851`) 운영 배포 완료. 그 뒤 main의 stable-base Essence(`8c59141`) 등 31개 커밋과 콘텐츠 수율 버전업 v2.7(`claude/system-performance-review-x6vtn4`, [계획](docs/plans/2026-09-12-content-yield-versionup-plan.md))은 미배포**
 
