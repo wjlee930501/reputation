@@ -412,6 +412,8 @@ export const ADMIN_COPY = {
     cardTitle: '제목',
     cardBody: '설명',
     cardHint: '제목과 설명을 함께 써야 그 자리에 나갑니다. 둘 다 비우면 기본 카드가 나갑니다.',
+    // {n}은 카드 번호.
+    cardPairMissing: '카드 {n}은 제목과 설명을 함께 써 주세요.',
     parking: '주차 안내',
     parkingPlaceholder: '예) 건물 뒤편 주차장 이용 가능',
     transit: '대중교통 안내',

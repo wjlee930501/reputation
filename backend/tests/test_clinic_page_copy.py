@@ -116,3 +116,48 @@ def test_director_philosophy_stays_private():
     hospital = _hospital_with_photo(None)
     hospital.director_philosophy = "꼭 필요한 치료만 정직하게 하겠습니다."
     assert _serialize_hospital(hospital)["director_philosophy"] is None
+
+
+# ── 관리자 저장 경로(update_profile) ─────────────────────────────────────────
+
+
+async def test_profile_patch_saves_page_copy_and_blank_clears_it():
+    from fastapi import BackgroundTasks
+
+    from app.api.admin.hospitals import serialize_hospital_detail, update_profile
+    from tests.test_hospital_visual_identity import _active_complete_hospital, _FakeDB
+
+    hospital = _active_complete_hospital(logo_url=None)
+    db = _FakeDB(hospital)
+    await update_profile(
+        hospital.id,
+        HospitalProfileUpdate(
+            care_principles=SEOGWIPO,
+            parking_note="건물 뒤편 주차장 이용 가능",
+            transit_note="고래왓(남) 정류장 하차 후 도보 30m",
+        ),
+        BackgroundTasks(),
+        db=db,
+    )
+    assert db.committed is True
+    detail = serialize_hospital_detail(hospital)
+    assert detail["care_principles"] == SEOGWIPO
+    assert detail["parking_note"] == "건물 뒤편 주차장 이용 가능"
+    assert _serialize_hospital(hospital)["transit_note"] == "고래왓(남) 정류장 하차 후 도보 30m"
+
+    # 화면은 빈 칸을 빈 문자열로 보낸다 — 비우기는 공통 기본 문구로 돌아가는 것이다.
+    db = _FakeDB(hospital)
+    await update_profile(
+        hospital.id,
+        HospitalProfileUpdate(
+            care_principles={"title": "", "lede": "", "cards": [{"title": "", "body": ""}] * 3},
+            parking_note="",
+            transit_note="",
+        ),
+        BackgroundTasks(),
+        db=db,
+    )
+    assert db.committed is True
+    assert hospital.care_principles is None
+    assert hospital.parking_note is None
+    assert hospital.transit_note is None

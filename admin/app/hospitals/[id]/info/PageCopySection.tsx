@@ -32,6 +32,20 @@ function draftFrom(hospital: Hospital | null): Draft {
   }
 }
 
+/** 서버 검증 문장 앞의 칸 이름·'Value error,'를 걷어 마케터가 읽을 문장만 남긴다. */
+function readableSaveError(message: string): string {
+  return message
+    .split('\n')
+    .map((line) => line.replace(/^[a-z_.0-9]+: /, '').replace(/^Value error, /, ''))
+    .join('\n')
+}
+
+/** 제목·설명 중 한쪽만 쓴 카드 번호(1부터). 서버도 같은 이유로 거절한다. */
+function unpairedCard(draft: Draft): number | null {
+  const index = draft.cards.findIndex((card) => Boolean(card.title.trim()) !== Boolean(card.body.trim()))
+  return index < 0 ? null : index + 1
+}
+
 const inputClass =
   'w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-800 focus:border-blue-500 focus:outline-none'
 
@@ -68,8 +82,13 @@ export function PageCopySection({
   }
 
   async function save() {
-    setSaving(true)
     setFeedback(null)
+    const unpaired = unpairedCard(draft)
+    if (unpaired !== null) {
+      setError(COPY.cardPairMissing.replace('{n}', String(unpaired)))
+      return
+    }
+    setSaving(true)
     setError(null)
     try {
       await fetchAPI(`/admin/hospitals/${hospitalId}/profile`, {
@@ -91,7 +110,7 @@ export function PageCopySection({
       if (!isExpectedOperatorRequestFailure(cause)) throw cause
       setError(
         cause instanceof ApiError && cause.message
-          ? cause.message
+          ? readableSaveError(cause.message)
           : safeOperatorError('onboarding', '잠시 뒤 다시 저장해 주세요.'),
       )
     } finally {
