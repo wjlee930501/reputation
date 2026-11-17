@@ -14,6 +14,7 @@ import { ContentsFeed } from './_components/ContentsFeed'
 import { ContentsFeedView } from './_components/ContentsFeedView'
 import { resolveClinicLayout } from '@/lib/clinic-layout'
 import { clinicLayoutShellClass } from '../_layouts/shell'
+import { regionSentenceLabel } from '@/lib/clinic-region'
 
 interface Props {
   params: Promise<{ slug: string }>
@@ -115,7 +116,7 @@ export default async function ContentsLibraryPage({ params: paramsPromise }: Pro
               <p className="clinic-library-hero-meta">
                 <span>{hospital.specialties.join(' · ')}</span>
                 <span className="clinic-library-divider-dot" aria-hidden="true" />
-                <span>{hospital.region.join(' ')}</span>
+                <span>{regionSentenceLabel(hospital.region)}</span>
                 <span className="clinic-library-divider-dot" aria-hidden="true" />
                 <strong>{hospital.director_name} 원장</strong>
               </p>

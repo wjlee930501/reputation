@@ -5,6 +5,7 @@ import { VISIT_HOURS_ANCHOR } from '@/lib/business-hours'
 import { displayClinicLabels } from '@/lib/clinic-design'
 
 import { CalendarIcon, ClockIcon, ExternalIcon, MapPinIcon, PhoneIcon } from './icons'
+import { regionSentenceLabel } from '@/lib/clinic-region'
 
 /** 헤더·모바일 액션바가 "지금 보고 있는 페이지"를 아는 단위. */
 export type ClinicSection = 'home' | 'treatments' | 'visit' | 'doctor' | 'contents'
@@ -36,7 +37,7 @@ export function ClinicHeader({
 }: Props) {
   // 진료과 표기는 프로파일의 specialties[]에서만 파생 — 하드코딩 금지.
   const specialtyLabel = displayClinicLabels(specialties).join('·')
-  const subline = displayClinicLabels(region).join(' ')
+  const subline = regionSentenceLabel(region)
   const brandMeta = [specialtyLabel ? `${specialtyLabel} 진료` : '진료 안내', subline]
     .filter(Boolean)
     .join(' · ')

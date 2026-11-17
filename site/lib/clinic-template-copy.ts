@@ -7,23 +7,29 @@
 
 /* 임상적 주장(치료 순서·수술 여부 등)을 만들어 원장 발언처럼 노출하지 않는다.
    안내·설명·상담 방식에 대한 비임상 운영 원칙만 다룬다. */
-export const CARE_PRINCIPLES_TITLE = '설명과 상담을 우선합니다'
+export const CARE_PRINCIPLES_TITLE = '증상의 원인부터 확인합니다'
 
+/* 승인된 공개 소개문(public_about)이 없을 때 지역·진료과 문장 뒤에 붙는 기본 리드. */
+export const CARE_PRINCIPLES_LEDE = '어디가 왜 불편한지 먼저 살피고, 검사 결과와 치료 방법을 말씀드린 뒤 치료를 시작합니다.'
+
+/* 2026-11-17 마케팅 요청으로 다시 썼다 — 옛 문구('확인된 정보만 안내합니다 — 이 페이지의 …
+   출처와 업데이트 일자를 표기')는 병원이 환자에게 하는 말로 읽히지 않았다. 진료과와 무관하게
+   읽히도록 특정 검사·치료 이름은 넣지 않는다. 병원마다 바꾸는 칸은 따로 둔다. */
 export const CARE_PRINCIPLES = [
   {
     key: 'explain',
-    title: '충분히 설명합니다',
-    body: '검사와 진료 과정을 환자가 이해할 수 있는 언어로 설명하고, 궁금한 점을 확인한 뒤 진행합니다.',
+    title: '검사 결과를 쉽게 풀어 드립니다',
+    body: '검사 결과와 치료 기간을 어려운 용어 없이 설명드립니다. 궁금한 점은 진료실에서 바로 물어보시면 됩니다.',
   },
   {
     key: 'verified',
-    title: '확인된 정보만 안내합니다',
-    body: '이 페이지의 진료 안내와 의료 정보는 출처와 업데이트 일자를 함께 표기하며, 과장된 표현을 사용하지 않습니다.',
+    title: '병원이 확인한 정보로 안내합니다',
+    body: '진료시간과 휴진일, 오시는 길은 병원이 직접 확인한 정보로 안내합니다.',
   },
   {
     key: 'decide',
-    title: '상담으로 함께 결정합니다',
-    body: '치료 방향은 글이 아니라 진료실에서의 상담과 개인별 상태 확인을 거쳐 결정됩니다.',
+    title: '치료 방법은 진찰 후 함께 정합니다',
+    body: '같은 증상이어도 나이, 증상 정도, 생활 습관에 따라 맞는 치료가 다를 수 있습니다. 진찰 후 치료 방법을 함께 정합니다.',
   },
 ] as const
 
@@ -63,7 +69,7 @@ export const CARE_STEPS = [
 /* 섹션 제목 — 레이아웃 도입 전 화면의 제목 그대로. 레이아웃이 새로 더한 칸(오늘 진료·진료표·
    최근 건강 정보)은 원래 없던 섹션이라 여기 두지 않는다. */
 export const TREATMENT_SECTION_TITLE = '진료 영역'
-export const DOCTOR_SECTION_TITLE = '진료를 담당하는 의료진'
+export const DOCTOR_SECTION_TITLE = '의료진 소개'
 export const QUESTIONS_SECTION_TITLE = '자주 확인하는 질문'
 export const FAQ_SECTION_TITLE = '자주 묻는 질문과 답변 요약'
 export const GALLERY_SECTION_TITLE = '병원 공간'
@@ -79,3 +85,6 @@ export const TREATMENT_SECTION_NOTE =
   '병원에서 주로 진료하는 영역입니다. 증상과 치료 방법은 개인마다 다를 수 있으니 자세한 내용은 진료 상담에서 확인해 주세요.'
 
 export const FACTS_SECTION_NOTE = '진료시간과 연락처, 위치를 한눈에 확인할 수 있습니다.'
+
+/* 진료 영역 목록 페이지(/treatments) 안내문 — 2026-11-17 마케팅 요청으로 짧게 고쳤다. */
+export const TREATMENTS_PAGE_NOTE = '진료 항목별로 어떤 질환을 보는지 정리했습니다. 치료 방법은 진찰 후 정합니다.'

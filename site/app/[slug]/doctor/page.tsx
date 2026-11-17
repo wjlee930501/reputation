@@ -20,6 +20,7 @@ import { DoctorIntro } from '../_components/DoctorIntro'
 import { JsonLd } from '../_components/JsonLd'
 import { resolveClinicLayout } from '@/lib/clinic-layout'
 import { clinicLayoutShellClass } from '../_layouts/shell'
+import { regionSentenceLabel } from '@/lib/clinic-region'
 
 interface Props {
   params: Promise<{ slug: string }>
@@ -148,7 +149,7 @@ export default async function DoctorPage({ params: paramsPromise }: Props) {
                 <span className="clinic-library-divider-dot" aria-hidden="true" />
                 <span>{hospital.specialties.join(' · ')}</span>
                 <span className="clinic-library-divider-dot" aria-hidden="true" />
-                <span>{hospital.region.join(' ')}</span>
+                <span>{regionSentenceLabel(hospital.region)}</span>
               </p>
             </div>
           </section>

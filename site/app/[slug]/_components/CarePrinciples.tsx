@@ -2,7 +2,8 @@ import Link from 'next/link'
 import type { ReactNode } from 'react'
 
 import { IconAftercare, IconExam, IconExplain } from '@/components/brand'
-import { CARE_PRINCIPLES, CARE_PRINCIPLES_TITLE } from '@/lib/clinic-template-copy'
+import { CARE_PRINCIPLES, CARE_PRINCIPLES_LEDE, CARE_PRINCIPLES_TITLE } from '@/lib/clinic-template-copy'
+import { regionSentenceLabel } from '@/lib/clinic-region'
 
 interface Props {
   hospitalRootUrl: string
@@ -50,7 +51,7 @@ export function CarePrinciples({
   publicAbout,
 }: Props) {
   const specialtyText = specialties.filter(Boolean).join(', ')
-  const regionText = region.filter(Boolean).join(' ')
+  const regionText = regionSentenceLabel(region)
 
   // 검수 통과한 깨끗한 서사만 리드로 사용. 오염·부재 시 프로파일 기반 사실형 문장으로 대체해
   // 이 섹션이 언제나 자연스럽게 보이도록 한다.
@@ -60,7 +61,7 @@ export function CarePrinciples({
       regionText && specialtyText
         ? `${regionText}에서 ${specialtyText} 진료를 맡고 있는 ${hospitalName}입니다.`
         : `${hospitalName}의 진료 안내입니다.`,
-      '증상의 원인을 먼저 확인하고, 검사와 치료 과정을 이해할 수 있게 설명한 뒤 진행합니다.',
+      CARE_PRINCIPLES_LEDE,
     ]
       .filter(Boolean)
       .join(' ')

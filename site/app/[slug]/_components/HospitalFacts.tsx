@@ -1,7 +1,10 @@
+import { seoulToday } from '@/lib/clinic-layout'
 import { fullClinicAddress } from '@/lib/clinic-schema'
 
-import { CalendarIcon, MapPinIcon, NavigationIcon, PhoneIcon, StethoscopeIcon } from './icons'
+import { WeekHours } from './WeekHours'
+import { MapPinIcon, NavigationIcon, PhoneIcon, StethoscopeIcon } from './icons'
 import { FACTS_SECTION_NOTE, factsSectionTitle } from '@/lib/clinic-template-copy'
+import { regionSentenceLabel } from '@/lib/clinic-region'
 
 const DAY_LABELS: Record<string, string> = {
   mon: '월',
@@ -35,12 +38,6 @@ interface Props {
   googleMapsUrl?: string | null
 }
 
-// 서버(UTC)가 아닌 한국 시간 기준 요일 키 — KST 00:00~09:00 사이 전날 표기 방지.
-function seoulDayKey(): string {
-  return new Intl.DateTimeFormat('en-US', { weekday: 'short', timeZone: 'Asia/Seoul' })
-    .format(new Date())
-    .toLowerCase()
-}
 
 function isClosed(time: string): boolean {
   return /휴진|휴무|closed/i.test(time)
@@ -58,16 +55,17 @@ export function HospitalFacts({
   links,
   googleMapsUrl,
 }: Props) {
-  const today = seoulDayKey()
+  // 서버(UTC)가 아닌 한국 시간 기준 오늘. 캐시된 HTML의 날짜는 WeekHours가 브라우저에서 바로잡는다.
+  const { key: todayKey, month, day } = seoulToday()
+  const renderedToday = { key: todayKey, month, day }
   const week = DAY_ORDER.map((key) => ({
     key,
     label: DAY_LABELS[key] ?? key,
     time: businessHours?.[key] ?? null,
-    isToday: key === today,
   }))
   const hasHours = week.some((d) => d.time)
   const visibleLinks = links.filter((link) => Boolean(link.url))
-  const location = region.length > 0 ? region.join(' ') : '지역 정보 확인 중'
+  const location = regionSentenceLabel(region) || '지역 정보 확인 중'
   const specialtyText = specialties.length > 0 ? specialties.join(', ') : '진료 영역 확인 중'
   const closedDays = week.filter((d) => d.time && isClosed(d.time)).map((d) => d.label)
 
@@ -81,28 +79,7 @@ export function HospitalFacts({
 
         {hasHours && (
           <div className="clinic-week" aria-label="주간 진료시간">
-            <div className="clinic-week-head">
-              <CalendarIcon className="clinic-icon clinic-icon--sm" aria-hidden="true" />
-              <span>주간 진료시간</span>
-              <span className="clinic-week-today-hint">오늘 {DAY_LABELS[today] ?? ''}요일</span>
-            </div>
-            <ol className="clinic-week-grid">
-              {week.map((day) => {
-                const closed = day.time ? isClosed(day.time) : false
-                return (
-                  <li
-                    key={day.key}
-                    className={`clinic-week-day${day.isToday ? ' is-today' : ''}${closed ? ' is-closed' : ''}`}
-                    aria-current={day.isToday ? 'date' : undefined}
-                  >
-                    <span className="clinic-week-day-label">{day.label}</span>
-                    <span className="clinic-week-day-time">
-                      {day.time ? (closed ? '휴진' : day.time) : '-'}
-                    </span>
-                  </li>
-                )
-              })}
-            </ol>
+            <WeekHours businessHours={businessHours} renderedToday={renderedToday} />
             {closedDays.length > 0 && (
               <p className="clinic-week-notice">
                 <span aria-hidden="true" className="clinic-week-notice-dot" />
