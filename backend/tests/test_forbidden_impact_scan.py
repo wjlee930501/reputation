@@ -59,6 +59,9 @@ def test_scan_reports_only_flagged_public_text_and_never_writes():
         hero_headline="허리 통증 전문",
         hero_description="첫 방문 무료 상담",
         treatments=["도수치료", {"name": "체외충격파", "description": "선착순 할인"}],
+        parking_note=None,
+        transit_note=None,
+        care_principles=None,
     )
     philosophy = SimpleNamespace(
         id=uuid.uuid4(), hospital_id=hospital.id,
