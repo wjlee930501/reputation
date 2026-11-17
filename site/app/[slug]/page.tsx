@@ -351,6 +351,7 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
             specialties={hospital.specialties}
             region={hospital.region}
             publicAbout={publicAbout}
+            custom={hospital.care_principles}
           />
 
           <div id="contents" className="clinic-anchor-target">
@@ -412,6 +413,8 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
             hospitalName={hospital.name}
             hospitalRootUrl={hospitalRootUrl}
             region={hospital.region}
+            parkingNote={hospital.parking_note}
+            transitNote={hospital.transit_note}
             websiteUrl={hospital.website_url}
             hoursHref={visitHoursHref(hospitalRootUrl, false)}
           />

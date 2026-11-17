@@ -91,6 +91,9 @@ def scan(db: Any, *, out: TextIO = sys.stdout) -> Counter:
             fields = {
                 "hero_headline": hospital.hero_headline or "",
                 "hero_description": hospital.hero_description or "",
+                "parking_note": hospital.parking_note or "",
+                "transit_note": hospital.transit_note or "",
+                **_care_principle_texts(hospital.care_principles),
                 **{
                     f"treatments[{index}]": _treatment_text(entry)
                     for index, entry in enumerate(hospital.treatments or [])
@@ -142,3 +145,18 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+def _care_principle_texts(value: object) -> dict[str, str]:
+    """병원마다 쓰는 진료 원칙 문구(0096)의 공개 문장들."""
+    if not isinstance(value, dict):
+        return {}
+    texts = {
+        "care_principles.title": str(value.get("title") or ""),
+        "care_principles.lede": str(value.get("lede") or ""),
+    }
+    for index, card in enumerate(value.get("cards") or []):
+        if isinstance(card, dict):
+            texts[f"care_principles.cards[{index}].title"] = str(card.get("title") or "")
+            texts[f"care_principles.cards[{index}].body"] = str(card.get("body") or "")
+    return texts

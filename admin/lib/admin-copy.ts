@@ -402,6 +402,27 @@ export const ADMIN_COPY = {
     sameRegionCount: '{province} {count}곳 사용 중',
     loadFailed: '같은 지역 분포를 불러오지 못했습니다. 레이아웃은 그대로 고를 수 있습니다.',
   },
+  pageCopy: {
+    title: '병원 페이지 문구',
+    hint: '홈의 진료 원칙과 오시는 길의 주차·대중교통 안내를 이 병원에 맞게 씁니다. 비운 칸은 공통 기본 문구가 나갑니다. 의료광고 금지 표현은 저장되지 않습니다.',
+    principlesTitle: '진료 원칙 제목',
+    principlesLede: '진료 원칙 소개 문장',
+    principlesLedeHint: '원장님 진료 철학처럼 환자에게 하는 말을 한두 문장으로 씁니다. 비우면 지역·진료과 소개 문장이 나갑니다.',
+    card: '카드 {n}',
+    cardTitle: '제목',
+    cardBody: '설명',
+    cardHint: '제목과 설명을 함께 써야 그 자리에 나갑니다. 둘 다 비우면 기본 카드가 나갑니다.',
+    // {n}은 카드 번호.
+    cardPairMissing: '카드 {n}은 제목과 설명을 함께 써 주세요.',
+    parking: '주차 안내',
+    parkingPlaceholder: '예) 건물 뒤편 주차장 이용 가능',
+    transit: '대중교통 안내',
+    transitPlaceholder: '예) ○○ 정류장 하차 후 도보 3분',
+    blankPlaceholder: '비우면 공통 기본 문구',
+    save: '문구 저장',
+    saving: '저장 중…',
+    saved: '문구를 저장했습니다. 공개 페이지에는 몇 분 안에 반영됩니다.',
+  },
 } as const
 
 export function describeMentionRate(value: number | null): string {
