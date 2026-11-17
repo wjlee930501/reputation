@@ -75,6 +75,21 @@ export function seoulToday(now: Date = new Date()): { key: string; label: string
   }
 }
 
+const DAY_FULL_LABELS: Record<string, string> = {
+  mon: '월요일',
+  tue: '화요일',
+  wed: '수요일',
+  thu: '목요일',
+  fri: '금요일',
+  sat: '토요일',
+  sun: '일요일',
+}
+
+/** '11월 17일 화요일' — 주간 진료시간 표의 오늘 표기(2026-11-17 마케팅 요청: '오늘 화요일'은 어색하다). */
+export function seoulDateLabel(today: { key: string; month: number; day: number }): string {
+  return `${today.month}월 ${today.day}일 ${DAY_FULL_LABELS[today.key] ?? ''}`.trim()
+}
+
 export function dayShortLabel(key: string): string {
   return DAY_SHORT_LABELS[key] ?? key
 }

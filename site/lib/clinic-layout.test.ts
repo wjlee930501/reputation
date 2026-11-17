@@ -142,3 +142,11 @@ test('splitHoursNote moves only a trailing parenthesis to its own line', () => {
     note: '(공휴일은 08:00 ~ 13:00 오전 진료)',
   })
 })
+
+test('주간 진료시간의 오늘 표기는 한국 시간 날짜와 요일', async () => {
+  const { seoulDateLabel, seoulToday } = await import('./clinic-layout.ts')
+  // 2026-11-16 15:30 UTC = 2026-11-17 00:30 KST(화) — 서버가 UTC여도 전날로 보이지 않는다.
+  const today = seoulToday(new Date('2026-11-16T15:30:00Z'))
+  assert.equal(seoulDateLabel(today), '11월 17일 화요일')
+  assert.equal(seoulDateLabel({ key: 'sun', month: 3, day: 1 }), '3월 1일 일요일')
+})

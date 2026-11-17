@@ -15,7 +15,7 @@ import re
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Literal
+from typing import Any, Literal
 from urllib.parse import urlparse
 
 from fastapi import (
@@ -28,7 +28,7 @@ from fastapi import (
     UploadFile,
     status,
 )
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 from slugify import slugify
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
@@ -55,6 +55,7 @@ from app.models.report import V0_REPORT_TYPE, MonthlyReport
 from app.models.sov import SovRecord
 from app.schemas.hospital import HospitalDetail, HospitalListItem
 from app.services import (
+    clinic_page_copy,
     cost_guard,
     profile_channel_sources,
     profile_completion,
@@ -247,6 +248,10 @@ class HospitalProfileUpdate(BaseModel):
     site_access_mode: Literal["urgent", "appointment", "specialist"] | None = None
     # 공개 사이트 레이아웃 — 마케터가 고른 A/B/C. 비우면 레이아웃 도입 전 화면으로 돌아간다.
     site_layout: Literal["A", "B", "C"] | None = None
+    # 병원마다 바꾸는 공개 페이지 문구 — 비우면 공통 기본 문구(services/clinic_page_copy.py).
+    care_principles: dict[str, Any] | None = None
+    parking_note: str | None = Field(None, max_length=200)
+    transit_note: str | None = Field(None, max_length=200)
 
     # 진료 항목
     treatments: list[TreatmentItem] | None = None
@@ -296,6 +301,17 @@ class HospitalProfileUpdate(BaseModel):
         if isinstance(value, str) and not value.strip():
             return None
         return value
+
+    @field_validator("care_principles")
+    @classmethod
+    def validate_care_principles(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
+        return clinic_page_copy.normalize_care_principles(value)
+
+    @field_validator("parking_note", "transit_note")
+    @classmethod
+    def validate_visit_note(cls, value: str | None, info: ValidationInfo) -> str | None:
+        label = "주차 안내" if info.field_name == "parking_note" else "대중교통 안내"
+        return clinic_page_copy.normalize_visit_note(value, label=label)
 
     @field_validator("hero_headline", "hero_description")
     @classmethod
@@ -485,6 +501,9 @@ PUBLIC_PROFILE_FIELDS = {
     "image_style_direction",
     "site_access_mode",
     "site_layout",
+    "care_principles",
+    "parking_note",
+    "transit_note",
     "treatments",
 }
 
@@ -887,6 +906,9 @@ async def update_profile(
         "image_style_direction",
         "site_access_mode",
         "site_layout",
+        "care_principles",
+        "parking_note",
+        "transit_note",
         "treatments",
     }
     # exclude_unset: 보내지 않은 필드는 유지하되, 명시적 null/빈 문자열은 '비우기'로
@@ -922,6 +944,9 @@ async def update_profile(
         "image_style_direction",
         "site_access_mode",
         "site_layout",
+        "care_principles",
+        "parking_note",
+        "transit_note",
     }
     update_data = body.model_dump(exclude_unset=True)
     submitted_address = update_data.get("address")
@@ -1791,6 +1816,9 @@ def serialize_hospital_detail(h: Hospital) -> dict:
         "image_style_direction": getattr(h, "image_style_direction", None),
         "site_access_mode": getattr(h, "site_access_mode", None),
         "site_layout": getattr(h, "site_layout", None),
+        "care_principles": getattr(h, "care_principles", None),
+        "parking_note": getattr(h, "parking_note", None),
+        "transit_note": getattr(h, "transit_note", None),
         "treatments": h.treatments,
         # 필드별 출처(마케터 입력·자동 입력·출처 모름)와 자동 수집 값과의 충돌. 정보 화면의
         # "자동 입력" 배지와 회색 충돌 줄이 이 값을 그린다 — 사람의 일이 아니다.

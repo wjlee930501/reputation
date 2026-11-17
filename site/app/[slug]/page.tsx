@@ -43,6 +43,7 @@ import { HomeLayoutA } from './_layouts/HomeLayoutA'
 import { HomeLayoutC } from './_layouts/HomeLayoutC'
 import type { ClinicHomeModel } from './_layouts/model'
 import { clinicLayoutShellClass } from './_layouts/shell'
+import { regionSentenceLabel } from '@/lib/clinic-region'
 
 interface Props {
   params: Promise<{ slug: string }>
@@ -80,7 +81,7 @@ function buildHospitalTitle(hospital: Awaited<ReturnType<typeof fetchHospital>>)
 }
 
 function buildHospitalDescription(hospital: Awaited<ReturnType<typeof fetchHospital>>): string {
-  const region = hospital.region?.join(' ') || ''
+  const region = regionSentenceLabel(hospital.region)
   const specialties = hospital.specialties?.join(', ') || ''
   const locality = [region, specialties].filter(Boolean).join(' · ')
   return locality
@@ -350,6 +351,7 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
             specialties={hospital.specialties}
             region={hospital.region}
             publicAbout={publicAbout}
+            custom={hospital.care_principles}
           />
 
           <div id="contents" className="clinic-anchor-target">
@@ -411,6 +413,8 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
             hospitalName={hospital.name}
             hospitalRootUrl={hospitalRootUrl}
             region={hospital.region}
+            parkingNote={hospital.parking_note}
+            transitNote={hospital.transit_note}
             websiteUrl={hospital.website_url}
             hoursHref={visitHoursHref(hospitalRootUrl, false)}
           />

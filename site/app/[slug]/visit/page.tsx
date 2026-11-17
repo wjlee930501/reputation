@@ -162,6 +162,8 @@ export default async function VisitPage({ params: paramsPromise }: Props) {
             hospitalName={hospital.name}
             hospitalRootUrl={hospitalRootUrl}
             region={hospital.region}
+            parkingNote={hospital.parking_note}
+            transitNote={hospital.transit_note}
             websiteUrl={hospital.website_url}
             hoursHref={visitHoursHref(hospitalRootUrl, true)}
           />

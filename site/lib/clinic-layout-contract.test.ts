@@ -129,7 +129,9 @@ test('A and C list the official blog with the other official channels', () => {
 test('the pre-layout home keeps rendering the template copy from the shared module', () => {
   const principles = read(SLUG_DIR, '_components', 'CarePrinciples.tsx')
   const flow = read(SLUG_DIR, '_components', 'CareFlow.tsx')
-  assert.match(principles, /CARE_PRINCIPLES\.map/)
+  // 병원마다 바꾼 문구(0096)도 공통 모듈의 resolveCarePrinciples가 기본 문구 위에 얹는다.
+  assert.match(principles, /resolveCarePrinciples\(custom\)/)
+  assert.match(principles, /principles\.cards\.map/)
   assert.match(flow, /CARE_STEPS\.map/)
 })
 

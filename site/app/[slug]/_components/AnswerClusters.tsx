@@ -6,6 +6,7 @@ import { categoryTagClass } from '@/lib/content-meta'
 
 import { ChevronRightIcon, MessageIcon } from './icons'
 import { QUESTIONS_SECTION_TITLE } from '@/lib/clinic-template-copy'
+import { regionSentenceLabel } from '@/lib/clinic-region'
 
 interface Props {
   contents: ContentSummary[]
@@ -19,7 +20,7 @@ export function AnswerClusters({ contents, hospitalRootUrl, treatments, region, 
   const questions = selectAnswerQuestions(contents, 6)
   if (questions.length === 0) return null
 
-  const regionText = region.length > 0 ? region.join(' ') : '내원 지역'
+  const regionText = regionSentenceLabel(region) || '내원 지역'
   const specialtyText = specialties.length > 0 ? specialties.slice(0, 3).join(', ') : '진료 영역'
 
   // 상위 3개는 답변 요약까지 크게, 나머지는 질문만 컴팩트하게(FAQ에 카테고리 데이터가 없어 탭 대신 밀도로 구분).

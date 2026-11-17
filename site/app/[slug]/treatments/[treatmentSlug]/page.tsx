@@ -23,6 +23,7 @@ import { ContentCard } from '../../_components/ContentCard'
 import { JsonLd } from '../../_components/JsonLd'
 import { resolveClinicLayout } from '@/lib/clinic-layout'
 import { clinicLayoutShellClass } from '../../_layouts/shell'
+import { regionSentenceLabel } from '@/lib/clinic-region'
 
 interface Props {
   params: Promise<{ slug: string; treatmentSlug: string }>
@@ -66,7 +67,7 @@ export async function generateMetadata({ params: paramsPromise }: Props): Promis
     const treatment = findTreatmentBySlug(hospital.treatments || [], params.treatmentSlug)
     if (!treatment) return { title: '진료 영역' }
     const treatmentSlug = normalizeTreatmentSlug(params.treatmentSlug)
-    const region = hospital.region?.join(' ') ?? ''
+    const region = regionSentenceLabel(hospital.region)
     const description = `${hospital.name} ${treatment.name} 진료 안내 — 환자가 자주 묻는 질문과 진료 단계, 회복 정보를 ${region} 의료진이 정리합니다.`
     const canonicalUrl = canonicalHospitalUrl(
       hospital,
@@ -209,7 +210,7 @@ export default async function TreatmentPillarPage({ params: paramsPromise }: Pro
                 <span className="clinic-library-divider-dot" aria-hidden="true" />
                 <span>{hospital.specialties?.join(' · ')}</span>
                 <span className="clinic-library-divider-dot" aria-hidden="true" />
-                <span>{hospital.region?.join(' ')}</span>
+                <span>{regionSentenceLabel(hospital.region)}</span>
               </p>
               {treatment.description && (
                 <p className="clinic-section-lede">

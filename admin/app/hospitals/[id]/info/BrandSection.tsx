@@ -7,6 +7,7 @@ import { brandDefaultsNotice } from '@/lib/info-sections'
 import { safeOperatorError } from '@/lib/operations-journey'
 import type { Hospital } from '@/types'
 import { ClinicVisualForm } from './ClinicVisualForm'
+import { PageCopySection } from './PageCopySection'
 import { SiteLayoutSection } from './SiteLayoutSection'
 
 interface AdvancedBrandValues {
@@ -55,6 +56,8 @@ export function BrandSection({
       </div>
 
       <SiteLayoutSection hospital={hospital} hospitalId={hospitalId} onSaved={onSaved} />
+
+      <PageCopySection hospital={hospital} hospitalId={hospitalId} onSaved={onSaved} />
 
       <ClinicVisualForm
         hospital={hospital}
