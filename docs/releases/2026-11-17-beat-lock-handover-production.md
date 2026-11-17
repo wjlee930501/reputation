@@ -35,7 +35,7 @@ Site `00152-s4v`·Admin `00123-p24`·DB head `0095` 그대로(새 마이그레�
 - 배포 뒤 공개 표면 확인 통과(배포 전 정상 병원 13곳 기준), `/api/v1/health/live` release `26e77d75`.
 - Beat: 예상대로 이번이 #308을 싣는 첫 배포라 옛 Beat `00278`에 물러나는 코드가 없어 잠금을 계속 쥐고 보낸다(13:00 이후 INFO 61줄).
   새 Beat `00279`는 13:00:31에 WARNING `beat_lock_wait_long waited_seconds=300` 한 줄만 남기고 `/live` 실패·ERROR 없이 기다린다.
-- 13:06까지 reputation 서비스의 ERROR 0건(다른 서비스 `kakaotalk-server`의 인증 오류 1건은 무관). WARNING은 smoke 요청의 접근 로그다.
+- 13:06까지 reputation 서비스의 ERROR 0건(다른 서비스 `kakaotalk-server`의 인증 오류 1건은 무관). 13:04의 WARNING 묶음은 외부 스캐너의 경로 탐색 404(`litellm.yaml`·`settings.php` 등, Site를 거쳐 api `00291`에 도달)다.
 
 ## 남은 것
 
