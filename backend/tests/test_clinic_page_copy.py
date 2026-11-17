@@ -9,7 +9,6 @@ from app.services.clinic_page_copy import (
     normalize_care_principles,
     public_care_principles,
 )
-
 from tests.test_public_site import _hospital_with_photo
 
 SEOGWIPO = {
