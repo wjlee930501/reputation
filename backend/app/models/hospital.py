@@ -204,6 +204,11 @@ class Hospital(Base):
     # 마케터가 고른 공개 사이트 레이아웃 A/B/C (migration 0095). NULL은 레이아웃 도입 전
     # 화면을 그대로 둔다 — 배포만으로 운영 중인 병원의 화면이 바뀌지 않게 한다.
     site_layout: Mapped[str | None] = mapped_column(String(1))
+    # 병원마다 바꾸는 공개 페이지 문구(migration 0096, services/clinic_page_copy.py).
+    # NULL이면 사이트가 공통 기본 문구를 쓴다.
+    care_principles: Mapped[dict | None] = mapped_column(JSON)
+    parking_note: Mapped[str | None] = mapped_column(String(200))
+    transit_note: Mapped[str | None] = mapped_column(String(200))
     # Physician schema의 hasCredential / alumniOf / memberOf 매핑용 구조화 자격 정보.
     # 형식: {
     #   "medical_school": "서울대학교 의과대학",

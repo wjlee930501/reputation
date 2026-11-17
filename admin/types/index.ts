@@ -189,6 +189,14 @@ export interface Hospital {
   site_access_mode?: 'urgent' | 'appointment' | 'specialist' | '' | null
   /** 공개 페이지 레이아웃. null은 아직 고르지 않은 병원(레이아웃 도입 전 화면). */
   site_layout?: 'A' | 'B' | 'C' | null
+  // 병원마다 바꾸는 공개 페이지 문구(0096). 비우면 공통 기본 문구가 나간다.
+  care_principles?: {
+    title: string | null
+    lede: string | null
+    cards: Array<{ title: string | null; body: string | null } | null>
+  } | null
+  parking_note?: string | null
+  transit_note?: string | null
 }
 
 export interface HospitalAeOwner {

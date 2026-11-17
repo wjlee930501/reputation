@@ -63,9 +63,10 @@ PUBLISH_WITHOUT_REFERENCES_OR_VERDICT = "0092_publish_without_references_or_verd
 HOSPITAL_OPERATING_CHANGES = "0094_add_hospital_operating_changes"
 HOSPITAL_SEARCH_VERIFICATION = "0093_add_hospital_search_verification"
 HOSPITAL_SITE_LAYOUT = "0095_add_hospital_site_layout"
+HOSPITAL_PAGE_COPY = "0096_add_hospital_page_copy"
 
 PRODUCTION_STAMP = CONTENT_CUSTOMIZATION
-HEAD = HOSPITAL_SITE_LAYOUT
+HEAD = HOSPITAL_PAGE_COPY
 
 
 def _script_directory() -> ScriptDirectory:
@@ -151,6 +152,7 @@ def test_hardening_revisions_keep_their_recovered_parents() -> None:
         HOSPITAL_OPERATING_CHANGES,
         HOSPITAL_SEARCH_VERIFICATION,
         HOSPITAL_SITE_LAYOUT,
+        HOSPITAL_PAGE_COPY,
     )
     parents = {
         revision: script.get_revision(revision).down_revision for revision in recovered
@@ -200,6 +202,7 @@ def test_hardening_revisions_keep_their_recovered_parents() -> None:
         HOSPITAL_OPERATING_CHANGES: PUBLISH_WITHOUT_REFERENCES_OR_VERDICT,
         HOSPITAL_SEARCH_VERIFICATION: HOSPITAL_OPERATING_CHANGES,
         HOSPITAL_SITE_LAYOUT: HOSPITAL_SEARCH_VERIFICATION,
+        HOSPITAL_PAGE_COPY: HOSPITAL_SITE_LAYOUT,
     }
 
 
@@ -211,6 +214,7 @@ def test_upgrade_from_the_production_stamp_runs_the_linear_tail() -> None:
     ]
 
     assert pending == [
+        HOSPITAL_PAGE_COPY,
         HOSPITAL_SITE_LAYOUT,
         HOSPITAL_SEARCH_VERIFICATION,
         HOSPITAL_OPERATING_CHANGES,
@@ -263,7 +267,7 @@ def test_fresh_database_applies_the_whole_chain_in_order() -> None:
     ]
 
     assert len(applied) == len(set(applied))
-    assert applied[-44:] == [
+    assert applied[-45:] == [
         PHOTO_PROVENANCE,
         IMAGE_POLICY,
         CONTENT_CUSTOMIZATION,
@@ -308,4 +312,5 @@ def test_fresh_database_applies_the_whole_chain_in_order() -> None:
         HOSPITAL_OPERATING_CHANGES,
         HOSPITAL_SEARCH_VERIFICATION,
         HOSPITAL_SITE_LAYOUT,
+        HOSPITAL_PAGE_COPY,
     ]

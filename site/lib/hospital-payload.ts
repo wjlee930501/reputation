@@ -70,6 +70,11 @@ export interface Hospital {
   site_access_mode: 'urgent' | 'appointment' | 'specialist' | null
   /** 마케터가 고른 공개 사이트 레이아웃. null이면 레이아웃 도입 전 화면이다. */
   site_layout: 'A' | 'B' | 'C' | null
+  /** 병원마다 바꾼 진료 원칙 문구(0096). null이면 공통 기본 문구를 쓴다. */
+  care_principles: CarePrinciplesCopy | null
+  /** 오시는 길의 주차·대중교통 안내(0096). null이면 공통 기본 문구를 쓴다. */
+  parking_note: string | null
+  transit_note: string | null
   updated_at: string | null
   director_credentials: DirectorCredentials | null
   treatments: Array<{ name: string; description: string }>
@@ -105,8 +110,44 @@ const HOSPITAL_EXTERNAL_URL_FIELDS = [
 
 type HospitalExternalUrlField = (typeof HOSPITAL_EXTERNAL_URL_FIELDS)[number]
 
+/**
+ * 병원마다 바꾼 진료 원칙 문구. 카드는 자리(1~3번)를 지키고, 빈 자리(null)는 공통 기본 카드를 쓴다.
+ * 백엔드 `services/clinic_page_copy.py`가 저장·공개 때 의료광고 필터를 건다.
+ */
+export interface CarePrinciplesCopy {
+  title: string | null
+  lede: string | null
+  cards: Array<{ title: string; body: string } | null>
+}
+
+function nonEmptyText(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const trimmed = value.trim()
+  return trimmed || null
+}
+
+/** 모양이 어긋난 값은 버린다 — 이 칸 하나 때문에 병원 페이지 전체를 404로 만들지 않는다. */
+export function normalizeCarePrinciples(value: unknown): CarePrinciplesCopy | null {
+  if (!isRecord(value)) return null
+  const rawCards = Array.isArray(value.cards) ? value.cards.slice(0, 3) : []
+  const cards = [0, 1, 2].map((index) => {
+    const card = rawCards[index]
+    if (!isRecord(card)) return null
+    const title = nonEmptyText(card.title)
+    const body = nonEmptyText(card.body)
+    return title && body ? { title, body } : null
+  })
+  const title = nonEmptyText(value.title)
+  const lede = nonEmptyText(value.lede)
+  if (!title && !lede && cards.every((card) => card === null)) return null
+  return { title, lede, cards }
+}
+
 type HospitalPayload = Omit<
   Hospital,
+  | 'care_principles'
+  | 'parking_note'
+  | 'transit_note'
   | 'address'
   | 'phone'
   | 'business_hours'
@@ -133,6 +174,10 @@ type HospitalPayload = Omit<
   naver_place_url?: string | null
   naver_site_verification?: string | null
   daum_webmaster_verification?: string | null
+  // 0096 신규 칸 — 구버전 API·ISR 캐시 응답에 없을 수 있고, 모양이 어긋나도 정규화에서 버린다.
+  care_principles?: unknown
+  parking_note?: unknown
+  transit_note?: unknown
 }
 
 const DEV_ASSETS_BACKEND_BASE = 'http://localhost:8000'
@@ -355,6 +400,9 @@ function normalizeHospitalPayload(hospital: HospitalPayload): Hospital {
       hospital.site_layout === 'A' || hospital.site_layout === 'B' || hospital.site_layout === 'C'
         ? hospital.site_layout
         : null,
+    care_principles: normalizeCarePrinciples(hospital.care_principles),
+    parking_note: nonEmptyText(hospital.parking_note),
+    transit_note: nonEmptyText(hospital.transit_note),
     updated_at: hospital.updated_at ?? null,
   }
   for (const field of HOSPITAL_EXTERNAL_URL_FIELDS) {

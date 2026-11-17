@@ -33,6 +33,30 @@ export const CARE_PRINCIPLES = [
   },
 ] as const
 
+type CarePrincipleKey = (typeof CARE_PRINCIPLES)[number]['key']
+
+/**
+ * 병원마다 바꾼 진료 원칙(관리자 '병원 페이지 문구', 백엔드 0096)을 기본 문구 위에 얹는다.
+ * 제목은 따로, 카드는 자리마다 — 비운 자리는 기본 카드 그대로다. 레이아웃 도입 전 화면과
+ * A·C가 같은 결과를 쓴다(B는 도입 전 화면의 CSS).
+ */
+export function resolveCarePrinciples(
+  custom: {
+    title: string | null
+    cards: ReadonlyArray<{ title: string; body: string } | null>
+  } | null | undefined,
+): { title: string; cards: Array<{ key: CarePrincipleKey; title: string; body: string }> } {
+  return {
+    title: custom?.title || CARE_PRINCIPLES_TITLE,
+    cards: CARE_PRINCIPLES.map((principle, index) => {
+      const card = custom?.cards[index]
+      return card
+        ? { key: principle.key, title: card.title, body: card.body }
+        : { key: principle.key, title: principle.title, body: principle.body }
+    }),
+  }
+}
+
 /* 특정 검사 장비·치료 방식(X-ray·초음파·도수치료 등)을 병원이 제공하는 것처럼
    단정하지 않는다 — 프로파일에 없는 임상 정보는 일반적인 상담·진단·치료·관리
    단계로만 안내한다. */
@@ -83,6 +107,10 @@ export const FAQ_SECTION_NOTE =
 
 export const TREATMENT_SECTION_NOTE =
   '병원에서 주로 진료하는 영역입니다. 증상과 치료 방법은 개인마다 다를 수 있으니 자세한 내용은 진료 상담에서 확인해 주세요.'
+
+/* 오시는 길의 방문 전 확인 — 병원 정보에 주차·대중교통 안내를 쓰면 그 문장이 기본 문구를 대신한다. */
+export const VISIT_PARKING_DEFAULT = '방문 전 주차 가능 여부와 인근 주차장을 전화로 확인해 주세요.'
+export const VISIT_TRANSIT_DEFAULT = '가까운 정류장과 내린 뒤 걸어오시는 길은 전화로 확인해 주세요.'
 
 export const FACTS_SECTION_NOTE = '진료시간과 연락처, 위치를 한눈에 확인할 수 있습니다.'
 

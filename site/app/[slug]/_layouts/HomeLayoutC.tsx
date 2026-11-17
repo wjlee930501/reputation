@@ -21,8 +21,7 @@ import { fullClinicAddress } from '@/lib/clinic-schema'
 import {
   CARE_FLOW_NOTE,
   CARE_FLOW_TITLE,
-  CARE_PRINCIPLES,
-  CARE_PRINCIPLES_TITLE,
+  resolveCarePrinciples,
   CARE_STEPS,
   DOCTOR_SECTION_TITLE,
   FACTS_SECTION_NOTE,
@@ -64,6 +63,7 @@ function publishedDate(value: string | null): string {
  */
 export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
   const { hospital, hospitalRootUrl, physicians, faqEntries, clusterContents, contents, composition } = model
+  const principles = resolveCarePrinciples(hospital.care_principles)
   const specialtyLabel = displayClinicLabels(hospital.specialties).join(' · ')
   const locationLabel = regionSentenceLabel(hospital.region)
   const headline = buildClinicHeroHeadline({
@@ -274,9 +274,9 @@ export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
 
       <section className={s.darkSection} aria-label="진료 원칙과 진료 과정">
         <div className={s.inner}>
-          <SectionTitle label="POLICY">{CARE_PRINCIPLES_TITLE}</SectionTitle>
+          <SectionTitle label="POLICY">{principles.title}</SectionTitle>
           <div className={s.policyGrid}>
-            {CARE_PRINCIPLES.map((principle, index) => (
+            {principles.cards.map((principle, index) => (
               <div key={principle.key} className={s.policyCard}>
                 <span className={s.policyIndex} aria-hidden="true">{String(index + 1).padStart(2, '0')}</span>
                 <h3>{principle.title}</h3>

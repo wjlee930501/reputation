@@ -20,8 +20,7 @@ import { fullClinicAddress } from '@/lib/clinic-schema'
 import {
   CARE_FLOW_NOTE,
   CARE_FLOW_TITLE,
-  CARE_PRINCIPLES,
-  CARE_PRINCIPLES_TITLE,
+  resolveCarePrinciples,
   CARE_STEPS,
   DOCTOR_SECTION_TITLE,
   FACTS_SECTION_NOTE,
@@ -48,6 +47,7 @@ const PRINCIPLE_ICONS = { explain: IconExplain, verified: IconExam, decide: Icon
  */
 export function HomeLayoutA({ model }: { model: ClinicHomeModel }) {
   const { hospital, hospitalRootUrl, physicians, faqEntries, clusterContents, contents, composition } = model
+  const principles = resolveCarePrinciples(hospital.care_principles)
   const specialtyLabel = displayClinicLabels(hospital.specialties).join(' · ')
   const headline = buildClinicHeroHeadline({
     approvedHeadline: hospital.hero_headline,
@@ -158,9 +158,9 @@ export function HomeLayoutA({ model }: { model: ClinicHomeModel }) {
       ) : null}
 
       <section className={s.centerSection} aria-label="진료 원칙">
-        <h2 className={s.bigTitle}>{CARE_PRINCIPLES_TITLE}</h2>
+        <h2 className={s.bigTitle}>{principles.title}</h2>
         <div className={s.principles}>
-          {CARE_PRINCIPLES.map((principle) => {
+          {principles.cards.map((principle) => {
             const Icon = PRINCIPLE_ICONS[principle.key]
             return (
               <div key={principle.key} className={s.principle}>
