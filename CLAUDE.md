@@ -1,11 +1,19 @@
 # Re:putation — 현재 프로젝트 개발 안내
 
-## 최신 운영 배포 — 2026-11-17 Beat 잠금 인계·병원 페이지 공통 문구
+## 최신 운영 배포 — 2026-11-17 저녁 병원 페이지 문구 칸·콘텐츠 방향 대조·readiness 점검 재발송
+
+main `9c51c7a8`(PR #313 병원별 진료 원칙·주차·대중교통 칸 — 마이그레이션 `0096_add_hospital_page_copy`, PR #314 콘텐츠 방향 질문 대조의 기호 무시,
+PR #315 readiness 대기 중 빠진 큐 점검 30초마다 재발송)을 18:58~19:07 KST에 `deploy.sh all --unpin`으로 5개 서비스에 배포했다(그날 네 번째 릴리스, `--override-reason`).
+**현재 리비전은 api `00293-l9j`, worker `00286-kq5`, beat `00281-js6`, site `00154-7bp`, admin `00124-9mv`**, **DB head `0096`**. readiness 2분 30초(재발송 5회),
+release `9c51c7a8`, smoke 통과, Beat 인계 4초, ERROR 0. 그 전 15:07 같은 내용의 배포는 교체된 옛 Worker가 남아 보고서·진단 큐의 점검을 가져가는 바람에
+readiness 시간 초과로 자동 롤백됐다(DB만 0096으로 남음) — #315가 그 원인을 고쳤다. 롤백 좌표 `.omo/rollback-nudge/all`. 상세는 [배포 기록](docs/releases/2026-11-17-beat-lock-handover-production.md)의 3·4차.
+
+## 이전 운영 배포 — 2026-11-17 Beat 잠금 인계·병원 페이지 공통 문구
 
 main `26e77d75`(PR #308 Beat 잠금 인계 `b064a5cb` + 문서 PR #307)를 12:51~13:05 KST에 `deploy.sh backend`로 배포했다(그날 첫 릴리스).
-**현재 리비전은 api `00292-j45`, worker `00284-kjf`, beat `00279-szw`**, Site `00152-s4v`·Admin `00123-p24`·DB head `0095` 그대로. readiness 통과, release `26e77d75`,
+리비전은 api `00292-j45`, worker `00284-kjf`, beat `00279-szw`(저녁 배포로 바뀜), Site `00152-s4v`·Admin `00123-p24`·DB head `0095` 그대로. readiness 통과, release `26e77d75`,
 smoke 통과, ERROR 0. #308을 싣는 첫 배포라 옛 Beat `00278`이 약 2시간 더 잠금을 쥐고 보내고, 새 Beat는 `/live` 실패 없이 WARNING `beat_lock_wait_long`만 남기며 기다린다(확인).
-다음 Backend 배포부터 인계는 약 35초다. 이어 14:01~14:03 KST에 main `116e6cb0`(PR #312, 병원 페이지 오늘 날짜·문장 속 지역·주말 칸·공통 문구 — 마케팅 요청)을 Site에만 배포했다 — **현재 Site 리비전은 `00153-tnp`**(롤백 `.omo/rollback-sitecopy/site`). 병원별 문구 칸 PR #313(0096)은 미배포. **배포 때 `CLOUDSDK_CORE_PROJECT=mso-platform-481505`도 준다** — `deploy.sh`의 Job `update` 폴백이 `--project` 없이 gcloud 기본 프로젝트를 읽어,
+다음 Backend 배포부터 인계는 약 35초다. 이어 14:01~14:03 KST에 main `116e6cb0`(PR #312, 병원 페이지 오늘 날짜·문장 속 지역·주말 칸·공통 문구 — 마케팅 요청)을 Site에만 배포했다 — Site `00153-tnp`(롤백 `.omo/rollback-sitecopy/site`). **배포 때 `CLOUDSDK_CORE_PROJECT=mso-platform-481505`도 준다** — `deploy.sh`의 Job `update` 폴백이 `--project` 없이 gcloud 기본 프로젝트를 읽어,
 다시 로그인해 기본 프로젝트가 빈 1차 시도가 운영 변경 전에 멈췄다. 롤백 좌표 `.omo/rollback-beat/backend`. 상세는 [배포 기록](docs/releases/2026-11-17-beat-lock-handover-production.md).
 
 ## 이전 운영 배포 — 2026-11-15 새벽 공개 페이지 정렬·글 이미지·사진 캐시
