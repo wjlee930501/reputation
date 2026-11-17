@@ -124,6 +124,32 @@ export function uniformWeeklyHours(
   return values.every((value) => value === first) ? first : null
 }
 
+/**
+ * 첫 화면의 주말 진료 칸. 토요일만 보여 주면 일요일에도 여는 병원이 그 사실을 말하지 못한다
+ * (2026-11-17 마케팅 요청 — 365서귀포삼성정형외과는 토·일 같은 시간에 진료한다).
+ *
+ * - 토·일 모두 진료하고 시간이 글자까지 같으면 `토·일요일 진료` 한 줄.
+ * - 둘 다 진료하지만 시간이 다르면 `토·일요일 진료`에 `토 …` / `일 …`을 함께 싣는다.
+ * - 일요일이 비었거나 휴진이면 종전처럼 `토요일 진료`와 토요일 값(휴진 표기 포함).
+ * - 토요일이 비었거나 휴진인데 일요일만 열면 `일요일 진료`.
+ * - 둘 다 비었으면 `토요일 진료`에 값 없음(null) — 호출부가 '방문 전 전화 확인'을 쓴다.
+ */
+export function weekendHoursCard(
+  hours: Record<string, string> | null | undefined,
+): { label: string; value: string | null; sunday: string | null } {
+  const sat = (hours?.sat ?? '').trim()
+  const sun = (hours?.sun ?? '').trim()
+  const satOpen = Boolean(sat) && !isClosedLabel(sat)
+  const sunOpen = Boolean(sun) && !isClosedLabel(sun)
+  if (satOpen && sunOpen) {
+    return sat === sun
+      ? { label: '토·일요일 진료', value: sat, sunday: null }
+      : { label: '토·일요일 진료', value: sat, sunday: sun }
+  }
+  if (!satOpen && sunOpen) return { label: '일요일 진료', value: sun, sunday: null }
+  return { label: '토요일 진료', value: sat || null, sunday: null }
+}
+
 /** 진료시간 표의 페이지 내 앵커. 표가 실제로 존재하는 곳만 가리킨다. */
 export const VISIT_HOURS_ANCHOR = 'clinic-hours'
 

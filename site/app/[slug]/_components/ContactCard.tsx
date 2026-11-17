@@ -3,6 +3,7 @@ import Link from 'next/link'
 import { fullClinicAddress } from '@/lib/clinic-schema'
 
 import { CalendarIcon, ExternalIcon, GlobeIcon, MapPinIcon, MessageIcon, NavigationIcon, PhoneIcon } from './icons'
+import { regionSentenceLabel } from '@/lib/clinic-region'
 
 interface ChannelLink {
   url: string | null
@@ -41,7 +42,7 @@ function pickIcon(label: string): JSX.Element {
 // 방문 전 확인용 일반 안내 — 병원별 실제 시설 정보를 단정하지 않는 비임상 체크리스트.
 const VISIT_CHECKS = [
   { title: '주차 안내', body: '방문 전 주차 가능 여부와 인근 주차장을 전화로 확인해 주세요.' },
-  { title: '대중교통', body: '가까운 지하철역·버스 정류장 하차 후 도보 이동을 권장합니다.' },
+  { title: '대중교통', body: '가까운 정류장과 내린 뒤 걸어오시는 길은 전화로 확인해 주세요.' },
   { title: '초진 준비물', body: '신분증과 복용 중인 약, 이전 검사 자료가 있으면 지참해 주세요.' },
 ]
 
@@ -58,7 +59,7 @@ export function ContactCard({
   hoursHref,
 }: Props) {
   const visibleLinks = links.filter((link) => Boolean(link.url))
-  const regionText = region.filter(Boolean).join(' ')
+  const regionText = regionSentenceLabel(region)
   const hoursIsSamePageAnchor = hoursHref.startsWith('#')
 
   return (

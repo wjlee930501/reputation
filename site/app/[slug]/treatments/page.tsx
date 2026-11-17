@@ -17,6 +17,8 @@ import { ContentCard } from '../_components/ContentCard'
 import { JsonLd } from '../_components/JsonLd'
 import { resolveClinicLayout } from '@/lib/clinic-layout'
 import { clinicLayoutShellClass } from '../_layouts/shell'
+import { regionSentenceLabel } from '@/lib/clinic-region'
+import { TREATMENTS_PAGE_NOTE } from '@/lib/clinic-template-copy'
 
 interface Props {
   params: Promise<{ slug: string }>
@@ -136,12 +138,9 @@ export default async function TreatmentsPage({ params: paramsPromise }: Props) {
                 <span className="clinic-library-divider-dot" aria-hidden="true" />
                 <span>{hospital.specialties.join(' · ')}</span>
                 <span className="clinic-library-divider-dot" aria-hidden="true" />
-                <span>{hospital.region.join(' ')}</span>
+                <span>{regionSentenceLabel(hospital.region)}</span>
               </p>
-              <p className="clinic-section-lede">
-                각 진료 영역에서 다루는 항목과 환자가 자주 묻는 내용을 함께 정리했습니다.
-                정확한 진단과 치료 계획은 진료 상담을 통해 확인해 주세요.
-              </p>
+              <p className="clinic-section-lede">{TREATMENTS_PAGE_NOTE}</p>
             </div>
           </section>
 

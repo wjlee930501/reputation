@@ -39,6 +39,7 @@ import { buildTreatmentSlug } from '@/lib/treatment-slug'
 import { PhysicianProfile } from './PhysicianProfile'
 import type { ClinicHomeModel } from './model'
 import s from './layout-c.module.css'
+import { regionSentenceLabel } from '@/lib/clinic-region'
 
 const NEWS_LIMIT = 5
 
@@ -64,7 +65,7 @@ function publishedDate(value: string | null): string {
 export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
   const { hospital, hospitalRootUrl, physicians, faqEntries, clusterContents, contents, composition } = model
   const specialtyLabel = displayClinicLabels(hospital.specialties).join(' · ')
-  const locationLabel = displayClinicLabels(hospital.region).join(' ')
+  const locationLabel = regionSentenceLabel(hospital.region)
   const headline = buildClinicHeroHeadline({
     approvedHeadline: hospital.hero_headline,
     accessMode: model.accessMode,

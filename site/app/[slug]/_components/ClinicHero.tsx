@@ -2,13 +2,14 @@ import { CLINIC_IMAGE_SIZES, CLINIC_IMAGE_QUALITY } from '@/lib/clinic-image-del
 import Image from 'next/image'
 import Link from 'next/link'
 
-import { nextOpenDay, uniformWeeklyHours } from '@/lib/business-hours'
+import { nextOpenDay, uniformWeeklyHours, weekendHoursCard } from '@/lib/business-hours'
 import { displayClinicLabels } from '@/lib/clinic-design'
 import type { ClinicAccessMode, ClinicMediaMode } from '@/lib/clinic-design'
 import { buildClinicHeroHeadline } from '@/lib/clinic-hero-headline'
 import { fullClinicAddress } from '@/lib/clinic-schema'
 
 import { CalendarIcon, ClockIcon, MapPinIcon, PhoneIcon } from './icons'
+import { regionSentenceLabel } from '@/lib/clinic-region'
 
 interface Props {
   hospitalName: string
@@ -77,7 +78,7 @@ export function ClinicHero({
   heroDescription = null,
 }: Props) {
   const today = todayHours(businessHours)
-  const saturday = businessHours?.sat
+  const weekend = weekendHoursCard(businessHours)
   // 요일 편차가 없는 병원에서 `토요일 진료`는 `오늘 진료`와 같은 값을 반복할 뿐이다.
   // 그 칸을 환자가 실제로 궁금해하는 사실(연중무휴)로 바꾼다.
   const uniformHours = uniformWeeklyHours(businessHours)
@@ -85,7 +86,7 @@ export function ClinicHero({
   // 알려야 한다(S-8).
   const upcoming = today?.closed ? nextOpenDay(businessHours, seoulDayKey()) : null
   const specialtyLabel = displayClinicLabels(specialties).join(' · ')
-  const locationLabel = displayClinicLabels(region).join(' ')
+  const locationLabel = regionSentenceLabel(region)
   const headline = buildClinicHeroHeadline({
     approvedHeadline: heroHeadline,
     accessMode,
@@ -186,13 +187,15 @@ export function ClinicHero({
         </div>
         <div>
           <CalendarIcon className="clinic-icon" />
-          <dt>{uniformHours ? '휴무일' : upcoming ? '다음 진료' : '토요일 진료'}</dt>
+          <dt>{uniformHours ? '휴무일' : upcoming ? '다음 진료' : weekend.label}</dt>
           <dd>
             {uniformHours
               ? '연중무휴'
               : upcoming
                 ? `${upcoming.label} ${upcoming.time}`
-                : saturday || '방문 전 전화 확인'}
+                : weekend.sunday
+                  ? <>토 {weekend.value}<br />일 {weekend.sunday}</>
+                  : weekend.value || '방문 전 전화 확인'}
           </dd>
         </div>
       </dl>
