@@ -2,12 +2,13 @@ import { CLINIC_IMAGE_SIZES, CLINIC_IMAGE_QUALITY } from '@/lib/clinic-image-del
 import Image from 'next/image'
 import Link from 'next/link'
 
-import { nextOpenDay, uniformWeeklyHours, weekendHoursCard } from '@/lib/business-hours'
+import { seoulToday } from '@/lib/clinic-layout'
 import { displayClinicLabels } from '@/lib/clinic-design'
 import type { ClinicAccessMode, ClinicMediaMode } from '@/lib/clinic-design'
 import { buildClinicHeroHeadline } from '@/lib/clinic-hero-headline'
 import { fullClinicAddress } from '@/lib/clinic-schema'
 
+import { HeroCallLabel, HeroScheduleCell, HeroTodayHours } from './HeroToday'
 import { CalendarIcon, ClockIcon, MapPinIcon, PhoneIcon } from './icons'
 import { regionSentenceLabel } from '@/lib/clinic-region'
 
@@ -26,35 +27,6 @@ interface Props {
   mediaMode: ClinicMediaMode
   heroHeadline?: string | null
   heroDescription?: string | null
-}
-
-const DAY_FULL_LABELS: Record<string, string> = {
-  mon: '월요일',
-  tue: '화요일',
-  wed: '수요일',
-  thu: '목요일',
-  fri: '금요일',
-  sat: '토요일',
-  sun: '일요일',
-}
-
-function seoulDayKey(): string {
-  return new Intl.DateTimeFormat('en-US', { weekday: 'short', timeZone: 'Asia/Seoul' })
-    .format(new Date())
-    .toLowerCase()
-}
-
-function todayHours(hours: Record<string, string> | null | undefined): {
-  label: string
-  time: string
-  closed: boolean
-} | null {
-  if (!hours) return null
-  const key = seoulDayKey()
-  const time = hours[key]
-  if (!time) return null
-  const closed = /휴진|휴무|closed/i.test(time)
-  return { label: DAY_FULL_LABELS[key] ?? key, time, closed }
 }
 
 function compactAddress(address: string): string {
@@ -77,14 +49,9 @@ export function ClinicHero({
   heroHeadline = null,
   heroDescription = null,
 }: Props) {
-  const today = todayHours(businessHours)
-  const weekend = weekendHoursCard(businessHours)
-  // 요일 편차가 없는 병원에서 `토요일 진료`는 `오늘 진료`와 같은 값을 반복할 뿐이다.
-  // 그 칸을 환자가 실제로 궁금해하는 사실(연중무휴)로 바꾼다.
-  const uniformHours = uniformWeeklyHours(businessHours)
-  // 오늘이 휴진이면 지나간 요일의 시간을 보여 줄 게 아니라 다음에 언제 여는지를
-  // 알려야 한다(S-8).
-  const upcoming = today?.closed ? nextOpenDay(businessHours, seoulDayKey()) : null
+  // 오늘에 따라 바뀌는 칸(오늘 진료·전화 버튼·다음 진료)은 HeroToday가 브라우저에서 한국 시간으로
+  // 다시 잰다 — 캐시된 HTML이 지난 요일 값을 보이지 않게. 연중무휴·다음 진료·주말 규칙은 그 파일에 있다.
+  const renderedTodayKey = seoulToday().key
   const specialtyLabel = displayClinicLabels(specialties).join(' · ')
   const locationLabel = regionSentenceLabel(region)
   const headline = buildClinicHeroHeadline({
@@ -137,7 +104,7 @@ export function ClinicHero({
                   <PhoneIcon className="clinic-icon clinic-icon--sm" />
                   {/* 오늘 휴진인데 '전화 상담'만 있으면 환자는 받지 않는 번호로 건다.
                       사실을 먼저 말하고, 전화는 그대로 걸 수 있게 둔다(S-8). */}
-                  {today?.closed ? '오늘 휴진 · 전화 문의' : '전화 상담'}
+                  <HeroCallLabel businessHours={businessHours} renderedTodayKey={renderedTodayKey} />
                 </a>
                 <Link className="clinic-btn clinic-btn-secondary" href={`${hospitalRootUrl}/visit`}>
                   <MapPinIcon className="clinic-icon clinic-icon--sm" />
@@ -173,7 +140,7 @@ export function ClinicHero({
         <div>
           <ClockIcon className="clinic-icon" />
           <dt>오늘 진료</dt>
-          <dd>{today ? (today.closed ? '오늘 휴진' : today.time) : '방문 전 전화 확인'}</dd>
+          <dd><HeroTodayHours businessHours={businessHours} renderedTodayKey={renderedTodayKey} /></dd>
         </div>
         <div>
           <PhoneIcon className="clinic-icon" />
@@ -187,16 +154,7 @@ export function ClinicHero({
         </div>
         <div>
           <CalendarIcon className="clinic-icon" />
-          <dt>{uniformHours ? '휴무일' : upcoming ? '다음 진료' : weekend.label}</dt>
-          <dd>
-            {uniformHours
-              ? '연중무휴'
-              : upcoming
-                ? `${upcoming.label} ${upcoming.time}`
-                : weekend.sunday
-                  ? <>토 {weekend.value}<br />일 {weekend.sunday}</>
-                  : weekend.value || '방문 전 전화 확인'}
-          </dd>
+          <HeroScheduleCell businessHours={businessHours} renderedTodayKey={renderedTodayKey} />
         </div>
       </dl>
 
