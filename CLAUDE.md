@@ -1,9 +1,17 @@
 # Re:putation — 현재 프로젝트 개발 안내
 
-## 최신 운영 배포 — 2026-11-15 새벽 공개 페이지 정렬·글 이미지·사진 캐시
+## 최신 운영 배포 — 2026-11-17 Beat 잠금 인계
+
+main `26e77d75`(PR #308 Beat 잠금 인계 `b064a5cb` + 문서 PR #307)를 12:51~13:05 KST에 `deploy.sh backend`로 배포했다(그날 첫 릴리스).
+**현재 리비전은 api `00292-j45`, worker `00284-kjf`, beat `00279-szw`**, Site `00152-s4v`·Admin `00123-p24`·DB head `0095` 그대로. readiness 통과, release `26e77d75`,
+smoke 통과, ERROR 0. #308을 싣는 첫 배포라 옛 Beat `00278`이 약 2시간 더 잠금을 쥐고 보내고, 새 Beat는 `/live` 실패 없이 WARNING `beat_lock_wait_long`만 남기며 기다린다(확인).
+다음 Backend 배포부터 인계는 약 35초다. **배포 때 `CLOUDSDK_CORE_PROJECT=mso-platform-481505`도 준다** — `deploy.sh`의 Job `update` 폴백이 `--project` 없이 gcloud 기본 프로젝트를 읽어,
+다시 로그인해 기본 프로젝트가 빈 1차 시도가 운영 변경 전에 멈췄다. 롤백 좌표 `.omo/rollback-beat/backend`. 상세는 [배포 기록](docs/releases/2026-11-17-beat-lock-handover-production.md).
+
+## 이전 운영 배포 — 2026-11-15 새벽 공개 페이지 정렬·글 이미지·사진 캐시
 
 11-14 22:35 KST에 Site만 main `c33d6764`(PR #309 정렬 보정)로 올린 뒤, 11-15 02:01~02:21 KST에 main `34f38d07`(PR #309 글 이미지 404 수정 + PR #310 사진 캐시 미리 채우기)을
-`deploy.sh all`로 5개 서비스에 배포했다(그날 첫 릴리스). **현재 리비전은 api `00291-gkq`, worker `00283-msm`, beat `00278-q9d`, site `00152-s4v`, admin `00123-p24`**, DB head `0095` 그대로.
+`deploy.sh all`로 5개 서비스에 배포했다(그날 첫 릴리스). 이 배포의 리비전은 api `00291-gkq`, worker `00283-msm`, beat `00278-q9d`, site `00152-s4v`, admin `00123-p24`(api·worker·beat는 11-17 배포로 바뀜), DB head `0095` 그대로.
 공개 글 이미지 경로가 `active_revision`을 싣지 않아 fail-closed 404였고(기존 결함), 이제 이미지 있는 글 36건 모두 302·화면 표지 200이다. 사진 늦음은 Site 1대·CPU 1개의 첫 요청 AVIF 변환이라
 Site 배포 직후 `scripts/warm_site_images.py`가 뒤에서 대표 화면 후보를 미리 요청한다(`SITE_IMAGE_WARMUP=0`이면 끔, 기록 `.omo/warmup/`). 옛 Beat(`00277`)가 또 잠금을 쥐고 남아 새 Beat가
 `/live` 재시작 ERROR를 남겼다(작업 누락 없음). 근본 수정 PR #308(Beat 잠금 인계)은 이 배포 뒤 main에 병합됐고(`b064a5cb`) 다음 Backend 배포부터 적용된다 —
@@ -336,7 +344,7 @@ BaseEssence의 일반 자료 추가 drift는 재합성하지 않는다. 명시�
 Site/Admin IAM 분리는 단계적으로 적용한다. 구 revision 종료 전 legacy grants를 회수하지 않는다.
 
 
-문서 버전: **2.34** · 갱신일: **2026-11-16 (Asia/Seoul)**
+문서 버전: **2.35** · 갱신일: **2026-11-17 (Asia/Seoul)**
 소스 기준선: **`4db1b69` 이후 커밋 이력 정합성 보완**
 구현 상태: **체크포인트 2(`a774851`) 운영 배포 완료. 그 뒤 main의 stable-base Essence(`8c59141`) 등 31개 커밋과 콘텐츠 수율 버전업 v2.7(`claude/system-performance-review-x6vtn4`, [계획](docs/plans/2026-09-12-content-yield-versionup-plan.md))은 미배포**
 
