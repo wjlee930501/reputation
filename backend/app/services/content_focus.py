@@ -36,6 +36,8 @@ _GENERIC_TAIL = ("관련 키워드", "키워드", "관련", "검사", "진료", 
 # 지역어 끝의 행정 단위. "하남"과 "하남시"를 같은 곳으로 본다.
 _REGION_SUFFIX = re.compile(r"(특별시|광역시|특별자치시|특별자치도|시|군|구|동|읍|면)$")
 _SPACE = re.compile(r"\s+")
+# 대조에서 떼는 기호 — 주제에 쓸 수 있는 기호(·/()+&-)와 질문에 흔한 문장부호.
+_MATCH_NOISE = re.compile(r"[\s·/()+&\-.,?!'\"‘’“”\[\]]+")
 _ALLOWED_TOPIC = re.compile(r"^[0-9A-Za-z가-힣·/()+&\- ]+$")
 
 
@@ -156,7 +158,9 @@ def validate_content_focus(
 
 
 def _match_key(text: object) -> str:
-    return _SPACE.sub("", str(text or "")).lower()
+    """대조 키 — 공백과 기호를 뗀다. 등록 진료 항목은 '유전자(DNA/PDRN) 주사'처럼 괄호·빗금을
+    쓰는데, 마케터는 'PDRN 주사'로 적는다. 기호를 남기면 ')'가 끼어 같은 주사를 못 찾는다(2026-11-17)."""
+    return _MATCH_NOISE.sub("", str(text or "")).lower()
 
 
 def topic_match_key(topic: str) -> str:
