@@ -366,3 +366,23 @@ def test_topic_swap_clears_the_old_focus_label():
     )
     values = _reset_values(item, uuid.uuid4(), {"reason": "test"}, attempt={"renewal": True})
     assert values["content_focus_topic"] is None
+
+
+def test_topic_matches_registered_treatment_written_with_brackets():
+    """마포성모탑 'PDRN 주사' — 등록 진료 항목은 '유전자(DNA/PDRN) 주사'다(2026-11-17).
+
+    공백만 떼던 대조는 ')'가 끼어 'pdrn주사'를 찾지 못했다. 기호도 떼고 본다.
+    """
+    target = _target(
+        name="마포역 유전자 주사 잘하는 정형외과 추천해줘",
+        treatment="유전자(DNA/PDRN) 주사",
+    )
+    assert target_matches_topic(target, "PDRN 주사")
+    assert target_matches_topic(target, "PDRN")
+    assert not target_matches_topic(target, "PRP 주사")
+
+
+def test_punctuation_in_topic_or_question_does_not_block_a_match():
+    target = _target(name="체외충격파, 몇 번 받아야 하나요?", treatment="체외충격파치료")
+    assert target_matches_topic(target, "체외 충격파")
+    assert target_matches_topic(_target(name="결절종·지방종 제거술 회복 기간", treatment=None), "결절종 지방종")
