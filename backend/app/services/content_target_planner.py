@@ -22,11 +22,15 @@ from app.services.content_brief import (
     content_brief_matches_inputs,
 )
 from app.services.content_focus import (
+    TREATMENT_FOCUS_CONTENT_TYPES,
     ContentFocus,
     focus_quota,
+    hospital_treatment_names,
     matching_topic,
+    matching_treatment,
     parse_content_focus,
     target_subject_is_region,
+    text_matches_topic,
 )
 from app.services.exposure_content_linker import BRIEF_CAPABLE_ACTION_TYPES
 from app.services.query_target_structure import (
@@ -105,10 +109,16 @@ def prepare_automatic_content_brief_sync(
         # 달력이 미리 배정한 질문이 병원 대표 진료과와 어울리지 않는다(내과 병원의
         # 영상의학과 질문 등). 이 슬롯은 어울리는 질문으로 다시 고른다.
         target = None
+    focus_treatment: dict[str, str] | None = None
     if target is None:
-        target = _choose_target(db, item=item, hospital_id=hospital.id, hospital=hospital)
+        focus_treatment = _stored_focus_treatment(item, hospital)
+        if focus_treatment is None:
+            target = _choose_target(db, item=item, hospital_id=hospital.id, hospital=hospital)
+            focus_treatment = _treatment_focus(db, item=item, hospital=hospital, target=target)
+            if focus_treatment is not None:
+                target = None
         item.query_target_id = target.id if target is not None else None
-    _record_focus_topic(item, target, hospital)
+    _record_focus_topic(item, target, hospital, focus_treatment)
 
     action = _load_or_choose_action(db, item=item, target=target, hospital_id=hospital.id)
     if hasattr(item, "exposure_action_id"):
@@ -127,6 +137,7 @@ def prepare_automatic_content_brief_sync(
             philosophy=philosophy,
             query_target=target,
         )
+        and item.content_brief.get("focus_treatment") == focus_treatment
     ):
         return {
             **item.content_brief,
@@ -139,6 +150,7 @@ def prepare_automatic_content_brief_sync(
         query_target=target,
         exposure_action=action,
         philosophy=philosophy,
+        focus_treatment=focus_treatment,
     )
     brief["source"] = {
         **(brief.get("source") or {}),
@@ -338,9 +350,82 @@ def _focus_rank(target: Any, content_type: Any, focus_topics: tuple[str, ...]) -
     return 0 if matching_topic(target, focus_topics) else 1
 
 
-def _record_focus_topic(item: ContentItem, target: Any, hospital: Any) -> None:
+def _content_type_value(item: Any) -> str:
+    value = getattr(item, "content_type", None)
+    return str(getattr(value, "value", value) or "")
+
+
+def _slot_focus_topics(db: Any, *, item: ContentItem, hospital: Any) -> tuple[str, ...]:
+    slot_date = item.scheduled_date or date.today()
+    month_start = slot_date.replace(day=1)
+    return _focus_topics_needed(
+        db,
+        item=item,
+        hospital=hospital,
+        hospital_id=hospital.id,
+        month_start=month_start,
+        month_end=arrow.get(month_start).ceil("month").date(),
+        slot_month=slot_date.strftime("%Y-%m"),
+    )
+
+
+def _treatment_focus(
+    db: Any, *, item: ContentItem, hospital: Any, target: Any
+) -> dict[str, str] | None:
+    """주력 주제와 맞는 측정 질문이 없을 때 등록 진료 항목으로 쓸 주제. 질문이 맞으면 None.
+
+    측정 질문은 병원 핵심 키워드로만 만들어져, 마케터가 원장님 요청으로 정한 진료 항목
+    ('PDRN 주사')에 맞는 질문이 아예 없을 수 있다(2026-11-18 마포성모탑). 새 측정 질문을
+    만들지 않고(측정 세트·비용·보고서 불변) 병원 정보의 등록 진료 항목을 글 주제로 쓴다.
+    """
+    if _content_type_value(item) not in TREATMENT_FOCUS_CONTENT_TYPES:
+        return None
+    if not hasattr(item, "content_focus_topic"):
+        return None
+    topics = _slot_focus_topics(db, item=item, hospital=hospital)
+    if not topics:
+        return None
+    if target is not None and _focus_rank(target, item.content_type, topics) == 0:
+        return None
+    matched = matching_treatment(hospital, topics)
+    if matched is None:
+        return None
+    topic, treatment = matched
+    return {"topic": topic, "treatment": treatment}
+
+
+def _stored_focus_treatment(item: ContentItem, hospital: Any) -> dict[str, str] | None:
+    """이미 진료 항목 주제로 정해진 슬롯 — 재시도 때 다시 고르지 않는다.
+
+    그 주제가 아직 이 달 주력 주제이고 진료 항목이 아직 등록돼 있을 때만 유지한다.
+    """
+    brief = item.content_brief if isinstance(item.content_brief, dict) else {}
+    stored = brief.get("focus_treatment")
+    if not isinstance(stored, dict) or getattr(item, "query_target_id", None):
+        return None
+    topic = str(stored.get("topic") or "")
+    treatment = str(stored.get("treatment") or "")
+    scheduled = getattr(item, "scheduled_date", None)
+    month = scheduled.strftime("%Y-%m") if scheduled else None
+    if not topic or not treatment or not month:
+        return None
+    if _content_type_value(item) not in TREATMENT_FOCUS_CONTENT_TYPES:
+        return None
+    if topic not in _hospital_focus(hospital).active_topics(month):
+        return None
+    if treatment not in hospital_treatment_names(hospital) or not text_matches_topic(treatment, topic):
+        return None
+    return {"topic": topic, "treatment": treatment}
+
+
+def _record_focus_topic(
+    item: ContentItem, target: Any, hospital: Any, focus_treatment: dict[str, str] | None = None
+) -> None:
     """이 글이 주력 주제 글인지 남긴다 — 그 달 목표 편수를 셀 때와 화면에 보일 때 쓴다."""
     if not hasattr(item, "content_focus_topic"):
+        return
+    if focus_treatment is not None:
+        item.content_focus_topic = focus_treatment["topic"][:40]
         return
     scheduled = getattr(item, "scheduled_date", None)
     month = scheduled.strftime("%Y-%m") if scheduled else None

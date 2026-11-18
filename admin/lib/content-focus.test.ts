@@ -61,9 +61,14 @@ test('month progress and shortfall', () => {
 test('match label tones', () => {
   assert.equal(matchLabel(undefined).tone, 'pending')
   assert.deepEqual(matchLabel({ topic: '여의사', matching_questions: 0, examples: [] }), {
-    text: '맞는 환자 질문 없음 — 이 주제로는 글을 고를 수 없습니다',
+    text: '맞는 환자 질문·진료 항목 없음 — 병원 정보의 진료 항목에 먼저 등록해 주세요',
     tone: 'warn',
   })
+  // 2026-11-18 마포성모탑: 측정 질문은 없지만 등록 진료 항목이 있으면 그 항목으로 쓴다.
+  assert.deepEqual(
+    matchLabel({ topic: 'PDRN 주사', matching_questions: 0, examples: [], matching_treatments: ['유전자(DNA/PDRN) 주사'] }),
+    { text: "맞는 환자 질문 없음 — 등록 진료 항목 '유전자(DNA/PDRN) 주사'로 글을 씁니다", tone: 'good' },
+  )
   assert.equal(matchLabel({ topic: '내시경', matching_questions: 11, examples: [] }).text, '맞는 환자 질문 11개')
 })
 

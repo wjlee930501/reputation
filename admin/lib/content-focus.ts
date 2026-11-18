@@ -7,6 +7,8 @@ export interface ContentFocusTopicMatch {
   topic: string
   matching_questions: number
   examples: string[]
+  /** 측정 질문이 없을 때 글 주제로 쓰는 등록 진료 항목(병원 정보 > 진료 항목). 옛 응답에는 없다. */
+  matching_treatments?: string[]
 }
 
 export interface ContentFocusMonth {
@@ -118,7 +120,14 @@ export function monthShortfall(month: ContentFocusMonth): string | null {
 export function matchLabel(match: ContentFocusTopicMatch | undefined): { text: string; tone: 'good' | 'warn' | 'pending' } {
   if (!match) return { text: '맞는 환자 질문 확인 중', tone: 'pending' }
   if (match.matching_questions === 0) {
-    return { text: '맞는 환자 질문 없음 — 이 주제로는 글을 고를 수 없습니다', tone: 'warn' }
+    const treatment = match.matching_treatments?.[0]
+    if (treatment) {
+      return { text: `맞는 환자 질문 없음 — 등록 진료 항목 '${treatment}'로 글을 씁니다`, tone: 'good' }
+    }
+    return {
+      text: '맞는 환자 질문·진료 항목 없음 — 병원 정보의 진료 항목에 먼저 등록해 주세요',
+      tone: 'warn',
+    }
   }
   return { text: `맞는 환자 질문 ${match.matching_questions}개`, tone: 'good' }
 }

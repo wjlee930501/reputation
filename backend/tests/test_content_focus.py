@@ -386,3 +386,174 @@ def test_punctuation_in_topic_or_question_does_not_block_a_match():
     target = _target(name="체외충격파, 몇 번 받아야 하나요?", treatment="체외충격파치료")
     assert target_matches_topic(target, "체외 충격파")
     assert target_matches_topic(_target(name="결절종·지방종 제거술 회복 기간", treatment=None), "결절종 지방종")
+
+
+# ── 측정 질문이 없는 주력 주제 → 등록 진료 항목으로 쓴다(2026-11-18 마포성모탑) ───────────────
+
+
+_PDRN_FOCUS = {"version": 1, "topics": ["PDRN 주사"], "share": 50, "from_month": "2026-11", "until_month": None}
+_MAPO_TREATMENTS = [
+    {"name": "PRP 자가혈 재생치료", "description": "환자 본인의 혈액에서 분리한 혈소판 성분을 이용하는 재생 치료"},
+    {"name": "유전자(DNA/PDRN) 주사", "description": "PDRN 성분 주사로 손상된 조직의 회복 과정을 돕는 비수술 치료입니다."},
+    "도수치료",
+]
+
+
+def _mapo(focus=_PDRN_FOCUS):
+    return SimpleNamespace(**{**vars(_hospital(focus)), "treatments": _MAPO_TREATMENTS})
+
+
+def test_topic_words_match_a_treatment_name_with_extra_words_between():
+    """'유전자(PDRN) 주사'는 이어 붙이면 '유전자pdrn주사'라 '유전자dnapdrn주사'에 없다 — 낱말로 본다."""
+    from app.services.content_focus import text_matches_topic, treatments_matching_topic
+
+    assert text_matches_topic("유전자(DNA/PDRN) 주사", "유전자(PDRN) 주사")
+    assert text_matches_topic("유전자(DNA/PDRN) 주사", "PDRN 주사")
+    assert not text_matches_topic("유전자(DNA/PDRN) 주사", "PRP 주사")
+    assert not text_matches_topic("PRP 자가혈 재생치료", "PDRN 주사")
+    # 일반어 낱말("검사")은 대조에 쓰지 않는다 — '내시경 검사'는 '위내시경'과 맞는다.
+    assert text_matches_topic("위내시경", "내시경 검사")
+    assert treatments_matching_topic(_mapo(), "유전자(PDRN) 주사") == ["유전자(DNA/PDRN) 주사"]
+    assert treatments_matching_topic(_mapo(), "도수") == ["도수치료"]
+    assert treatments_matching_topic(_mapo(), "여의사") == []
+
+
+def _slot(content_type=ContentType.TREATMENT, brief=None, query_target_id=None):
+    return SimpleNamespace(
+        id=uuid.uuid4(),
+        content_type=content_type,
+        scheduled_date=date(2026, 11, 20),
+        query_target_id=query_target_id,
+        content_focus_topic=None,
+        content_brief=brief,
+    )
+
+
+class _MonthDB:
+    """`_focus_topics_needed`가 읽는 이번 달 글 목록 한 번."""
+
+    def __init__(self, rows):
+        self.rows = rows
+
+    def execute(self, _stmt):
+        return _Result(self.rows)
+
+
+def test_treatment_focus_is_used_when_no_question_matches():
+    from app.services.content_target_planner import _treatment_focus
+
+    month_rows = [(uuid.uuid4(), None) for _ in range(11)]
+    focus = _treatment_focus(_MonthDB(month_rows), item=_slot(), hospital=_mapo(), target=_liver())
+    assert focus == {"topic": "PDRN 주사", "treatment": "유전자(DNA/PDRN) 주사"}
+
+
+def test_matching_question_wins_over_the_treatment_fallback():
+    from app.services.content_target_planner import _treatment_focus
+
+    pdrn_question = _target(name="마포역 PDRN 주사 잘하는 곳 추천해줘", treatment="PDRN 주사", region_terms=[])
+    month_rows = [(uuid.uuid4(), None) for _ in range(11)]
+    assert _treatment_focus(_MonthDB(month_rows), item=_slot(), hospital=_mapo(), target=pdrn_question) is None
+
+
+def test_treatment_focus_respects_quota_type_and_registration():
+    from app.services.content_target_planner import _treatment_focus
+
+    full = [(uuid.uuid4(), "PDRN 주사") for _ in range(6)] + [(uuid.uuid4(), None) for _ in range(5)]
+    assert _treatment_focus(_MonthDB(full), item=_slot(), hospital=_mapo(), target=None) is None
+    open_rows = [(uuid.uuid4(), None) for _ in range(11)]
+    # 지역 글·공지는 측정 질문 없이 쓰지 않는다.
+    for kind in (ContentType.LOCAL, ContentType.NOTICE):
+        assert _treatment_focus(_MonthDB(open_rows), item=_slot(kind), hospital=_mapo(), target=None) is None
+    # 진료 항목에도 없으면 종전처럼 고르지 않는다.
+    unregistered = SimpleNamespace(**{**vars(_mapo()), "treatments": ["도수치료"]})
+    assert _treatment_focus(_MonthDB(open_rows), item=_slot(), hospital=unregistered, target=None) is None
+
+
+def test_stored_treatment_focus_is_kept_on_retry_until_the_focus_changes():
+    from app.services.content_target_planner import _stored_focus_treatment
+
+    stored = {"focus_treatment": {"topic": "PDRN 주사", "treatment": "유전자(DNA/PDRN) 주사"}}
+    assert _stored_focus_treatment(_slot(brief=stored), _mapo()) == stored["focus_treatment"]
+    # 주력 주제를 바꾸면, 진료 항목이 빠지면, 질문이 배정되면 다시 고른다.
+    other = {**_PDRN_FOCUS, "topics": ["체외충격파"]}
+    assert _stored_focus_treatment(_slot(brief=stored), _mapo(other)) is None
+    dropped = SimpleNamespace(**{**vars(_mapo()), "treatments": ["도수치료"]})
+    assert _stored_focus_treatment(_slot(brief=stored), dropped) is None
+    assert _stored_focus_treatment(_slot(brief=stored, query_target_id=uuid.uuid4()), _mapo()) is None
+
+
+def test_record_focus_topic_counts_a_treatment_focus_article():
+    from app.services.content_target_planner import _record_focus_topic
+
+    item = _slot()
+    _record_focus_topic(item, None, _mapo(), {"topic": "PDRN 주사", "treatment": "유전자(DNA/PDRN) 주사"})
+    assert item.content_focus_topic == "PDRN 주사"
+
+
+def test_brief_for_a_treatment_focus_slot_uses_the_registered_treatment():
+    from app.services.content_brief import build_content_brief
+
+    hospital = _mapo()
+    item = SimpleNamespace(id=uuid.uuid4(), title=None, content_type=ContentType.TREATMENT)
+    brief = build_content_brief(
+        hospital=hospital,
+        content_item=item,
+        focus_treatment={"topic": "PDRN 주사", "treatment": "유전자(DNA/PDRN) 주사"},
+    )
+    assert brief["target_keyword"] == "PDRN 주사"
+    assert brief["target_query"] == "PDRN 주사에 대해 알고 싶어요"
+    assert brief["treatment_narrative"]["source"] == "hospital_profile"
+    assert brief["treatment_narrative"]["treatment"] == "유전자(DNA/PDRN) 주사"
+    assert brief["focus_treatment"] == {"topic": "PDRN 주사", "treatment": "유전자(DNA/PDRN) 주사"}
+    assert brief["query_target"] is None
+    # 질문이 있는 슬롯에는 진료 항목 주제를 싣지 않는다.
+    with_target = build_content_brief(
+        hospital=hospital,
+        content_item=item,
+        query_target=SimpleNamespace(**{**vars(_scope()), "decision_criteria": []}),
+        focus_treatment={"topic": "PDRN 주사", "treatment": "유전자(DNA/PDRN) 주사"},
+    )
+    assert "focus_treatment" not in with_target
+
+
+def test_planner_writes_the_registered_treatment_when_no_question_matches(monkeypatch):
+    """생성 경로 그대로: 질문은 무관한 것만 있고, 주력 주제 'PDRN 주사'는 등록 진료 항목으로 쓴다."""
+    from app.services import content_target_planner as planner
+
+    monkeypatch.setattr(planner, "_lock_target_planning", lambda *_: None)
+    monkeypatch.setattr(planner, "_choose_target", lambda *args, **kwargs: _liver())
+    monkeypatch.setattr(planner, "_focus_topics_needed", lambda *args, **kwargs: ("PDRN 주사",))
+    hospital = _mapo()
+    philosophy = SimpleNamespace(id=uuid.uuid4(), version=1)
+    item = SimpleNamespace(
+        id=uuid.uuid4(),
+        content_type=ContentType.TREATMENT,
+        title=None,
+        scheduled_date=date(2026, 11, 20),
+        query_target_id=None,
+        exposure_action_id=None,
+        content_focus_topic=None,
+        content_brief=None,
+        brief_status=None,
+        brief_approved_by=None,
+        content_revision=1,
+    )
+    brief = planner.prepare_automatic_content_brief_sync(None, item=item, hospital=hospital, philosophy=philosophy)
+    assert item.query_target_id is None
+    assert item.content_focus_topic == "PDRN 주사"
+    assert brief["focus_treatment"] == {"topic": "PDRN 주사", "treatment": "유전자(DNA/PDRN) 주사"}
+    assert brief["target_keyword"] == "PDRN 주사"
+    assert brief["treatment_narrative"]["treatment"] == "유전자(DNA/PDRN) 주사"
+
+    # 재시도: 저장된 진료 항목 주제를 그대로 쓰고 질문을 다시 고르지 않는다.
+    monkeypatch.setattr(planner, "_choose_target", lambda *args, **kwargs: pytest.fail("다시 고르면 안 된다"))
+    again = planner.prepare_automatic_content_brief_sync(None, item=item, hospital=hospital, philosophy=philosophy)
+    assert again["focus_treatment"] == brief["focus_treatment"]
+    assert item.query_target_id is None
+
+
+def test_word_matching_is_not_used_for_long_measurement_questions():
+    """낱말 대조는 진료 항목 이름에만 — 측정 질문에는 이어 붙인 키만 본다(Codex 검토 2026-11-18)."""
+    question = _target(name="무릎 관절염 상담과 어깨 주사는 어떻게 다른가요?", treatment=None)
+    assert not target_matches_topic(question, "무릎 주사")
+    assert target_matches_topic(_target(name="무릎 주사 치료 잘하는 곳", treatment=None), "무릎 주사")
