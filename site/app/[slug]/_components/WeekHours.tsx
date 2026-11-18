@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react'
 
+import { HOLIDAY_LABEL, holidayHours } from '@/lib/business-hours'
 import { seoulDateLabel, seoulToday } from '@/lib/clinic-layout'
 
 import { CalendarIcon } from './icons'
@@ -60,6 +61,8 @@ export function WeekHours({
     time: businessHours?.[key] ?? null,
     isToday: key === today.key,
   }))
+  // 공휴일은 요일 칸이 아니라 표 아래 한 줄이다 — 오늘이 공휴일인지는 달력이 없어 모른다.
+  const holiday = holidayHours(businessHours)
 
   return (
     <>
@@ -85,6 +88,12 @@ export function WeekHours({
           )
         })}
       </ol>
+      {holiday ? (
+        <p className={`clinic-week-holiday${holiday.closed ? ' is-closed' : ''}`}>
+          <span className="clinic-week-day-label">{HOLIDAY_LABEL}</span>
+          <span className="clinic-week-day-time">{holiday.closed ? '휴진' : holiday.value}</span>
+        </p>
+      ) : null}
     </>
   )
 }

@@ -3,6 +3,7 @@ import Link from 'next/link'
 import type { ReactNode } from 'react'
 
 import { resolveAssetUrl, TYPE_LABELS } from '@/lib/api'
+import { HOLIDAY_LABEL, holidayHours } from '@/lib/business-hours'
 import { clinicGalleryPolicy, displayClinicLabels, selectClinicGalleryPhotos } from '@/lib/clinic-design'
 import { buildClinicHeroHeadline } from '@/lib/clinic-hero-headline'
 import { CLINIC_IMAGE_QUALITY, CLINIC_IMAGE_SIZES } from '@/lib/clinic-image-delivery'
@@ -76,6 +77,7 @@ export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
   const todays = todayHours(hospital.business_hours, today.key)
   const todaysTime = todays && !todays.closed ? splitHoursNote(todays.time) : null
   const grid = buildSessionGrid(hospital.business_hours)
+  const holiday = holidayHours(hospital.business_hours)
   const news = contents.slice(0, NEWS_LIMIT)
   const questions = composition.showAnswerClusters ? selectAnswerQuestions(clusterContents, 6) : []
   const galleryPolicy = clinicGalleryPolicy('home', model.contentDensity)
@@ -202,9 +204,16 @@ export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
                     <span>{hospital.business_hours?.[key] || '-'}</span>
                   </li>
                 ))}
+                {holiday ? (
+                  <li>
+                    <span>{HOLIDAY_LABEL}</span>
+                    <span>{holiday.value}</span>
+                  </li>
+                ) : null}
               </ul>
             )}
             <p className={s.scheduleNote}>
+              {grid && holiday ? `${HOLIDAY_LABEL} ${holiday.closed ? '휴진' : holiday.value}. ` : ''}
               {grid?.hasPartial ? '▲ 표시는 시간이 다른 날입니다. ' : ''}요일별 정확한 시간은 아래 기본 정보에서 확인하세요.
             </p>
             <div className={s.scheduleActions}>
@@ -391,6 +400,7 @@ export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
                         {WEEK_DAY_KEYS.map((key) => (
                           <li key={key}>{dayShortLabel(key)} {hospital.business_hours?.[key] || '-'}</li>
                         ))}
+                        {holiday ? <li>{HOLIDAY_LABEL} {holiday.value}</li> : null}
                       </ul>
                     </td>
                   </tr>

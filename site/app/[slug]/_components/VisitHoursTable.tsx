@@ -1,4 +1,4 @@
-import { buildWeeklyHoursRows, VISIT_HOURS_ANCHOR } from '@/lib/business-hours'
+import { buildWeeklyHoursRows, HOLIDAY_KEY, VISIT_HOURS_ANCHOR } from '@/lib/business-hours'
 
 import { CalendarIcon } from './icons'
 
@@ -18,6 +18,8 @@ interface Props {
 export function VisitHoursTable({ hospitalName, phone, businessHours }: Props) {
   const rows = buildWeeklyHoursRows(businessHours)
   const hasHours = rows.some((row) => row.value !== null)
+  // 공휴일 값이 있으면 표에 '공휴일' 행이 있으므로, 공휴일에 따라 달라진다고 말하지 않는다.
+  const hasHolidayRow = rows.some((row) => row.key === HOLIDAY_KEY)
   const closedDays = rows.filter((row) => row.closed).map((row) => row.label)
 
   return (
@@ -29,7 +31,7 @@ export function VisitHoursTable({ hospitalName, phone, businessHours }: Props) {
             {hospitalName} 요일별 진료시간
           </h2>
           <p className="clinic-section-note">
-            공휴일과 병원 사정에 따라 달라질 수 있습니다. 방문 전 전화로 확인해 주세요.
+            {hasHolidayRow ? '병원 사정에 따라' : '공휴일과 병원 사정에 따라'} 달라질 수 있습니다. 방문 전 전화로 확인해 주세요.
           </p>
         </header>
 

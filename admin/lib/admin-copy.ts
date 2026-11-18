@@ -402,6 +402,16 @@ export const ADMIN_COPY = {
     sameRegionCount: '{province} {count}곳 사용 중',
     loadFailed: '같은 지역 분포를 불러오지 못했습니다. 레이아웃은 그대로 고를 수 있습니다.',
   },
+  // 병원 정보 > 진료시간의 공휴일 칸(2026-11-18 — 공휴일 휴진을 AI가 읽는 구조화 데이터에 싣는다).
+  businessHours: {
+    holiday: '공휴일',
+    holidayAria: '공휴일 진료시간',
+    holidayPlaceholder: '휴진 또는 09:00 ~ 13:00',
+    holidayClosedButton: '휴진',
+    // 버튼이 칸에 넣는 값. 공개 페이지가 '휴진'·'휴무'를 휴진으로 읽는다(site/lib/business-hours.ts).
+    holidayClosedValue: '휴진',
+    holidayHint: '비워 두면 공휴일 정보가 나가지 않습니다. 쉬면 \'휴진\', 진료하면 시간을 적으세요. 공개 페이지와 AI가 읽는 구조화 데이터에 함께 나갑니다.',
+  },
   pageCopy: {
     title: '병원 페이지 문구',
     hint: '홈의 진료 원칙과 오시는 길의 주차·대중교통 안내를 이 병원에 맞게 씁니다. 비운 칸은 공통 기본 문구가 나갑니다. 의료광고 금지 표현은 저장되지 않습니다.',

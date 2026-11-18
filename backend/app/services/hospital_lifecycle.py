@@ -118,8 +118,12 @@ def _text(value: Any) -> bool:
     return isinstance(value, str) and bool(value.strip())
 
 
+_WEEKDAY_KEYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+
+
 def _has_business_hours(value: Any) -> bool:
-    return isinstance(value, dict) and any(_text(item) for item in value.values())
+    # 공휴일(`holiday`) 값만으로는 진료시간을 채운 것이 아니다 — 요일 시간이 하나는 있어야 한다.
+    return isinstance(value, dict) and any(_text(value.get(day)) for day in _WEEKDAY_KEYS)
 
 
 def _has_named_treatment(value: Any) -> bool:

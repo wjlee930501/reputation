@@ -92,7 +92,11 @@ export function resolveClinicAccessMode(input: {
   if (input.configuredMode === 'appointment') return 'appointment'
   if (input.configuredMode === 'specialist') return 'specialist'
   const specialtyText = input.specialties.join(' ').replaceAll(' ', '')
-  const hoursText = Object.values(input.businessHours ?? {}).join(' ')
+  // 공휴일(`holiday`) 값은 보지 않는다 — 공휴일 칸을 채웠다고 레이아웃 모드가 바뀌지 않게.
+  const hoursText = Object.entries(input.businessHours ?? {})
+    .filter(([key]) => key !== 'holiday')
+    .map(([, value]) => value)
+    .join(' ')
   if (specialtyText.includes('응급') || /(?:20|21|22|23):\d{2}/.test(hoursText)) return 'urgent'
   if (input.boardCertifications.some((certification) => certification.trim())) return 'specialist'
   return 'appointment'

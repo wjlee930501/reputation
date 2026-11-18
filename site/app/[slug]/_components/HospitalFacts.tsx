@@ -1,3 +1,4 @@
+import { closedDaysPhrase, holidayHours } from '@/lib/business-hours'
 import { seoulToday } from '@/lib/clinic-layout'
 import { fullClinicAddress } from '@/lib/clinic-schema'
 
@@ -67,7 +68,10 @@ export function HospitalFacts({
   const visibleLinks = links.filter((link) => Boolean(link.url))
   const location = regionSentenceLabel(region) || '지역 정보 확인 중'
   const specialtyText = specialties.length > 0 ? specialties.join(', ') : '진료 영역 확인 중'
-  const closedDays = week.filter((d) => d.time && isClosed(d.time)).map((d) => d.label)
+  const closedDays = closedDaysPhrase(
+    week.filter((d) => d.time && isClosed(d.time)).map((d) => d.label),
+    Boolean(holidayHours(businessHours)?.closed),
+  )
 
   return (
     <section id="hospital-facts" className="clinic-section clinic-section--facts">
@@ -80,10 +84,10 @@ export function HospitalFacts({
         {hasHours && (
           <div className="clinic-week" aria-label="주간 진료시간">
             <WeekHours businessHours={businessHours} renderedToday={renderedToday} />
-            {closedDays.length > 0 && (
+            {closedDays && (
               <p className="clinic-week-notice">
                 <span aria-hidden="true" className="clinic-week-notice-dot" />
-                휴진 안내 — {closedDays.join(', ')}요일은 진료하지 않습니다. 방문 전 전화로 확인해 주세요.
+                휴진 안내 — {closedDays}은 진료하지 않습니다. 방문 전 전화로 확인해 주세요.
               </p>
             )}
           </div>

@@ -484,6 +484,27 @@ export function FactsSection({
                 />
               </div>
             ))}
+            <div className="border-t border-slate-100 pt-2">
+              <div className="flex items-center gap-3">
+                <span className="shrink-0 text-sm text-slate-600 font-medium">{ADMIN_COPY.businessHours.holiday}</span>
+                <input
+                  type="text"
+                  aria-label={ADMIN_COPY.businessHours.holidayAria}
+                  value={profile.business_hours?.holiday ?? ''}
+                  onChange={(e) => updateHours('holiday', e.target.value)}
+                  placeholder={ADMIN_COPY.businessHours.holidayPlaceholder}
+                  className="min-w-0 flex-1 px-3 py-1.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                />
+                <button
+                  type="button"
+                  onClick={() => updateHours('holiday', ADMIN_COPY.businessHours.holidayClosedValue)}
+                  className="shrink-0 rounded-lg border border-slate-300 px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50"
+                >
+                  {ADMIN_COPY.businessHours.holidayClosedButton}
+                </button>
+              </div>
+              <p className="mt-1.5 text-xs text-slate-500">{ADMIN_COPY.businessHours.holidayHint}</p>
+            </div>
           </div>
         </div>
       </SectionShell>
