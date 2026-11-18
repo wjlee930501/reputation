@@ -153,6 +153,10 @@ class BusinessHours(BaseModel):
     fri: str | None = Field(None, max_length=100)
     sat: str | None = Field(None, max_length=100)
     sun: str | None = Field(None, max_length=100)
+    # 공휴일 진료시간 — '휴진' 또는 '09:00 ~ 13:00'. 공개 페이지 JSON-LD에 dayOfWeek
+    # PublicHolidays로 나간다(2026-11-18 마케팅 요청). 요일 키와 같은 문자열 하나라 공개
+    # payload 검증·파서가 그대로 받는다. 보내지 않으면 저장된 값을 건드리지 않는다.
+    holiday: str | None = Field(None, max_length=100)
 
 
 class TreatmentItem(BaseModel):

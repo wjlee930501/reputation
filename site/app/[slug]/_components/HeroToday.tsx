@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react'
 
-import { nextOpenDay, uniformWeeklyHours, weekendHoursCard } from '@/lib/business-hours'
+import { nextOpenDay, weekendHoursCard, weeklyRestDayLabel } from '@/lib/business-hours'
 import { seoulToday, todayHours } from '@/lib/clinic-layout'
 
 type Hours = Record<string, string> | null | undefined
@@ -36,20 +36,21 @@ export function HeroCallLabel({ businessHours, renderedTodayKey }: { businessHou
 }
 
 /**
- * 첫 화면 넷째 칸. 연중무휴면 '휴무일 · 연중무휴', 오늘 휴진이면 다음 진료, 아니면 주말 진료.
+ * 첫 화면 넷째 칸. 7일 같은 시간이면 '휴무일 · 연중무휴'(공휴일 휴진이면 '휴무일 · 공휴일'),
+ * 오늘 휴진이면 다음 진료, 아니면 주말 진료.
  * `dt`·`dd` 둘을 함께 그린다.
  */
 export function HeroScheduleCell({ businessHours, renderedTodayKey }: { businessHours: Hours; renderedTodayKey: string }) {
   const key = useSeoulTodayKey(renderedTodayKey)
-  const uniformHours = uniformWeeklyHours(businessHours)
+  const restDay = weeklyRestDayLabel(businessHours)
   const upcoming = todayHours(businessHours, key)?.closed ? nextOpenDay(businessHours, key) : null
   const weekend = weekendHoursCard(businessHours)
   return (
     <>
-      <dt>{uniformHours ? '휴무일' : upcoming ? '다음 진료' : weekend.label}</dt>
+      <dt>{restDay ? '휴무일' : upcoming ? '다음 진료' : weekend.label}</dt>
       <dd>
-        {uniformHours
-          ? '연중무휴'
+        {restDay
+          ? restDay
           : upcoming
             ? `${upcoming.label} ${upcoming.time}`
             : weekend.sunday

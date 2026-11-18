@@ -45,3 +45,14 @@ test('unknown counts are not presented as zero', () => {
   assert.equal(describeUnknownCount(0, '건'), '0건')
   assert.equal(describeUnknownCount(3, '건'), '3건')
 })
+
+test('the public-holiday hours field writes a value the public site reads as closed', async () => {
+  // 공개 페이지는 '휴진'·'휴무'·'closed'가 든 값을 휴진으로 읽어 JSON-LD PublicHolidays를
+  // 00:00~00:00으로 낸다(site/lib/business-hours.ts isClosedLabel). 버튼 값이 바뀌면 그 판정이 깨진다.
+  assert.equal(ADMIN_COPY.businessHours.holidayClosedValue, '휴진')
+  assert.equal(ADMIN_COPY.businessHours.holiday, '공휴일')
+  const { readFileSync } = await import('node:fs')
+  const facts = readFileSync(new URL('../app/hospitals/[id]/info/FactsSection.tsx', import.meta.url), 'utf8')
+  assert.match(facts, /updateHours\('holiday', e\.target\.value\)/)
+  assert.match(facts, /updateHours\('holiday', ADMIN_COPY\.businessHours\.holidayClosedValue\)/)
+})

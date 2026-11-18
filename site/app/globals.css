@@ -6397,6 +6397,20 @@ a.clinic-tx-row:hover .clinic-tx-arrow {
   color: var(--color-revisit-text-caption);
   font-weight: 600;
 }
+.clinic-week-holiday {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 14px 14px;
+  padding: 12px 16px;
+  border-radius: 8px;
+  background: var(--clinic-paper);
+}
+.clinic-week-holiday.is-closed .clinic-week-day-time {
+  color: var(--color-revisit-text-caption);
+  font-weight: 600;
+}
 .clinic-week-notice {
   display: flex;
   align-items: flex-start;

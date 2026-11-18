@@ -3,6 +3,7 @@ import Link from 'next/link'
 
 import { IconAftercare, IconExam, IconExplain } from '@/components/brand'
 import { resolveAssetUrl, TYPE_LABELS } from '@/lib/api'
+import { HOLIDAY_LABEL, holidayHours } from '@/lib/business-hours'
 import { clinicGalleryPolicy, displayClinicLabels, selectClinicGalleryPhotos } from '@/lib/clinic-design'
 import { buildClinicHeroHeadline } from '@/lib/clinic-hero-headline'
 import { CLINIC_IMAGE_QUALITY, CLINIC_IMAGE_SIZES } from '@/lib/clinic-image-delivery'
@@ -57,6 +58,7 @@ export function HomeLayoutA({ model }: { model: ClinicHomeModel }) {
   })
   const today = seoulToday()
   const todays = todayHours(hospital.business_hours, today.key)
+  const holiday = holidayHours(hospital.business_hours)
   const questions = composition.showAnswerClusters ? selectAnswerQuestions(clusterContents, 6) : []
   const gallery = selectClinicGalleryPhotos(
     hospital.photos ?? [],
@@ -330,6 +332,12 @@ export function HomeLayoutA({ model }: { model: ClinicHomeModel }) {
                     </li>
                   )
                 })}
+                {holiday ? (
+                  <li>
+                    <span>{HOLIDAY_LABEL}</span>
+                    <span>{holiday.value}</span>
+                  </li>
+                ) : null}
               </ul>
               {visibleLinks.length > 0 ? (
                 <>
