@@ -550,3 +550,10 @@ def test_planner_writes_the_registered_treatment_when_no_question_matches(monkey
     again = planner.prepare_automatic_content_brief_sync(None, item=item, hospital=hospital, philosophy=philosophy)
     assert again["focus_treatment"] == brief["focus_treatment"]
     assert item.query_target_id is None
+
+
+def test_word_matching_is_not_used_for_long_measurement_questions():
+    """낱말 대조는 진료 항목 이름에만 — 측정 질문에는 이어 붙인 키만 본다(Codex 검토 2026-11-18)."""
+    question = _target(name="무릎 관절염 상담과 어깨 주사는 어떻게 다른가요?", treatment=None)
+    assert not target_matches_topic(question, "무릎 주사")
+    assert target_matches_topic(_target(name="무릎 주사 치료 잘하는 곳", treatment=None), "무릎 주사")

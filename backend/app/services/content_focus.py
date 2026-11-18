@@ -203,20 +203,26 @@ def _topic_tokens(topic: str) -> tuple[str, ...]:
     return tuple(word for word in words if word and word not in generic)
 
 
-def text_matches_topic(text: object, topic: str) -> bool:
-    """문장 하나가 주력 주제를 담는가 — 이어 붙인 키가 들어 있거나, 낱말이 모두 들어 있다."""
+def _contains_topic_key(text: object, topic: str) -> bool:
     key = topic_match_key(topic)
-    if len(key) < MIN_TOPIC_CHARS:
-        return False
-    haystack = _match_key(text)
-    if key in haystack:
+    return len(key) >= MIN_TOPIC_CHARS and key in _match_key(text)
+
+
+def text_matches_topic(text: object, topic: str) -> bool:
+    """진료 항목 이름 하나가 주력 주제를 담는가 — 이어 붙인 키가 있거나, 낱말이 모두 있다.
+
+    낱말 대조는 짧은 진료 항목 이름에만 쓴다. 긴 측정 질문에 쓰면 '무릎 주사'가 "무릎 관절염 상담과
+    어깨 주사는…"에 붙는다(Codex 검토 2026-11-18) — 측정 질문은 이어 붙인 키로만 본다.
+    """
+    if _contains_topic_key(text, topic):
         return True
+    haystack = _match_key(text)
     tokens = _topic_tokens(topic)
     return len(tokens) > 1 and all(token in haystack for token in tokens)
 
 
 def target_matches_topic(target: Any, topic: str) -> bool:
-    return any(text_matches_topic(text, topic) for text in _target_texts(target))
+    return any(_contains_topic_key(text, topic) for text in _target_texts(target))
 
 
 # 측정 질문 없이 등록 진료 항목으로 쓸 수 있는 글 유형. 지역 글(LOCAL)은 지역 질문이,
