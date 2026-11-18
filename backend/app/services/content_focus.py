@@ -6,6 +6,8 @@
 
 경계:
 - 새 측정 질문을 만들지 않는다 — 측정 기준(질문 세트 지문)을 바꾸지 않는다. 이미 있는 질문 중에서 고른다.
+- 측정 질문은 병원 핵심 키워드로만 만들어진다. 주력 주제와 맞는 질문이 없고 병원 정보의 등록 진료 항목과
+  맞으면, 질문 없이 그 진료 항목으로 글을 쓴다(브리프 `focus_treatment`, 2026-11-18 마포성모탑 'PDRN 주사').
 - 이미 주제가 정해진 글(예정 질문이 배정됐거나 생성을 시도한 슬롯)은 다시 고르지 않는다.
 - 주력 주제는 글의 사실·문구가 아니다. 작가 프롬프트에 넣지 않으므로 의료광고 판정과 무관하다.
 
@@ -190,11 +192,65 @@ def _target_texts(target: Any) -> list[str]:
     return [str(text) for text in texts if text]
 
 
-def target_matches_topic(target: Any, topic: str) -> bool:
+def _topic_tokens(topic: str) -> tuple[str, ...]:
+    """주제를 기호·공백으로 나눈 낱말. 일반어("검사"·"진료" 등)만으로 된 낱말은 뺀다.
+
+    '유전자(PDRN) 주사'는 등록 진료 항목 '유전자(DNA/PDRN) 주사'와 이어 붙인 키로는 맞지 않는다
+    (가운데 'DNA'). 낱말이 모두 같은 문장 안에 있으면 같은 주사로 본다(2026-11-18).
+    """
+    generic = {_match_key(tail) for tail in _GENERIC_TAIL}
+    words = [_match_key(word) for word in _MATCH_NOISE.split(str(topic or ""))]
+    return tuple(word for word in words if word and word not in generic)
+
+
+def text_matches_topic(text: object, topic: str) -> bool:
+    """문장 하나가 주력 주제를 담는가 — 이어 붙인 키가 들어 있거나, 낱말이 모두 들어 있다."""
     key = topic_match_key(topic)
     if len(key) < MIN_TOPIC_CHARS:
         return False
-    return any(key in _match_key(text) for text in _target_texts(target))
+    haystack = _match_key(text)
+    if key in haystack:
+        return True
+    tokens = _topic_tokens(topic)
+    return len(tokens) > 1 and all(token in haystack for token in tokens)
+
+
+def target_matches_topic(target: Any, topic: str) -> bool:
+    return any(text_matches_topic(text, topic) for text in _target_texts(target))
+
+
+# 측정 질문 없이 등록 진료 항목으로 쓸 수 있는 글 유형. 지역 글(LOCAL)은 지역 질문이,
+# 공지(NOTICE)는 병원 공지가 따로 있어야 하므로 뺀다.
+TREATMENT_FOCUS_CONTENT_TYPES = frozenset({"TREATMENT", "DISEASE", "FAQ", "COLUMN", "HEALTH"})
+
+
+def _treatment_entry_name(entry: object) -> str:
+    if isinstance(entry, dict):
+        return _clean_topic(entry.get("name"))
+    return _clean_topic(entry)
+
+
+def hospital_treatment_names(hospital: Any) -> list[str]:
+    names: list[str] = []
+    for entry in getattr(hospital, "treatments", None) or []:
+        name = _treatment_entry_name(entry)
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
+def treatments_matching_topic(hospital: Any, topic: str) -> list[str]:
+    """주력 주제와 맞는 등록 진료 항목 이름(병원 정보 > 진료 항목)."""
+    return [name for name in hospital_treatment_names(hospital) if text_matches_topic(name, topic)]
+
+
+def matching_treatment(hospital: Any, topics: Iterable[str]) -> tuple[str, str] | None:
+    """(주력 주제, 등록 진료 항목) — 측정 질문이 없을 때 글 주제로 쓸 진료 항목. 없으면 None."""
+    for topic in topics:
+        names = treatments_matching_topic(hospital, topic)
+        if names:
+            return topic, names[0]
+    return None
 
 
 def matching_topic(target: Any, topics: Iterable[str]) -> str | None:

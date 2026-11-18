@@ -32,6 +32,7 @@ from app.services.content_focus import (
     parse_content_focus,
     target_matches_topic,
     target_subject_is_region,
+    treatments_matching_topic,
     validate_content_focus,
 )
 from app.services.specialty_compatibility import target_fits_hospital
@@ -81,7 +82,10 @@ async def _candidate_targets(db: AsyncSession, hospital: Hospital) -> list[AIQue
     ]
 
 
-def _topic_matches(topics: list[str] | tuple[str, ...], targets: list[AIQueryTarget]) -> list[dict[str, Any]]:
+def _topic_matches(
+    topics: list[str] | tuple[str, ...], targets: list[AIQueryTarget], hospital: Hospital
+) -> list[dict[str, Any]]:
+    """주제마다 맞는 환자 질문과 등록 진료 항목. 질문이 없어도 진료 항목이 맞으면 그 항목으로 글을 쓴다."""
     result = []
     for topic in topics:
         matched = sorted(
@@ -93,6 +97,7 @@ def _topic_matches(topics: list[str] | tuple[str, ...], targets: list[AIQueryTar
                 "topic": topic,
                 "matching_questions": len(matched),
                 "examples": [str(target.name) for target in matched[:EXAMPLE_QUESTIONS]],
+                "matching_treatments": treatments_matching_topic(hospital, topic)[:EXAMPLE_QUESTIONS],
             }
         )
     return result
@@ -161,7 +166,7 @@ async def _payload(db: AsyncSession, hospital: Hospital) -> dict[str, Any]:
         "legacy_topics": list(focus.legacy_topics),
         "share_choices": list(SHARE_CHOICES),
         "max_topics": MAX_TOPICS,
-        "topic_matches": _topic_matches(focus.topics, targets),
+        "topic_matches": _topic_matches(focus.topics, targets, hospital),
         "months": await _month_summaries(db, hospital, focus),
     }
 
@@ -186,7 +191,7 @@ async def preview_content_focus(
         if topic and topic not in topics:
             topics.append(topic)
     targets = await _candidate_targets(db, hospital)
-    return {"topic_matches": _topic_matches(topics[:MAX_TOPICS], targets)}
+    return {"topic_matches": _topic_matches(topics[:MAX_TOPICS], targets, hospital)}
 
 
 @router.patch("/{hospital_id}/content-focus")

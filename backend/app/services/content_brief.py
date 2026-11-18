@@ -47,17 +47,38 @@ def build_content_brief(
     query_target: AIQueryTarget | None = None,
     exposure_action: ExposureAction | None = None,
     philosophy: HospitalContentPhilosophy | None = None,
+    focus_treatment: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Build an operator-editable fallback brief without external model calls.
 
     This intentionally lives on ``ContentItem`` as JSON instead of a separate
     model because Slice 4 only needs one current brief per monthly slot.
+
+    `focus_treatment`({"topic", "treatment"})는 측정 질문 없이 주력 주제를 등록 진료 항목으로
+    쓰는 슬롯이다(`content_target_planner._treatment_focus`). 그때 대상 키워드는 마케터가 적은
+    주제, 진료 서술은 그 등록 진료 항목에서 온다.
     """
-    target_query = _target_query(query_target, content_item)
-    treatment_name = _first_present(
-        getattr(query_target, "treatment", None),
-        getattr(query_target, "condition_or_symptom", None),
-        target_query,
+    focus = (
+        focus_treatment
+        if query_target is None
+        and isinstance(focus_treatment, dict)
+        and str(focus_treatment.get("topic") or "").strip()
+        and str(focus_treatment.get("treatment") or "").strip()
+        else None
+    )
+    if focus is not None:
+        focus = {"topic": str(focus["topic"]).strip(), "treatment": str(focus["treatment"]).strip()}
+    target_query = (
+        f"{focus['topic']}에 대해 알고 싶어요" if focus else _target_query(query_target, content_item)
+    )
+    treatment_name = (
+        focus["treatment"]
+        if focus
+        else _first_present(
+            getattr(query_target, "treatment", None),
+            getattr(query_target, "condition_or_symptom", None),
+            target_query,
+        )
     )
     treatment_narrative = _treatment_narrative(
         treatment_name=treatment_name,
@@ -66,9 +87,11 @@ def build_content_brief(
     )
     safety_policy = effective_safety_policy(philosophy)
     region_terms = _list(getattr(query_target, "region_terms", None))
-    target_keyword = _target_keyword(query_target, target_query, region_terms)
+    target_keyword = (
+        focus["topic"] if focus else _target_keyword(query_target, target_query, region_terms)
+    )
 
-    return {
+    brief = {
         "schema_version": CONTENT_BRIEF_SCHEMA_VERSION,
         "target_query": target_query,
         # ── 측정 질의를 프롬프트·검증이 그대로 쓸 수 있는 형태로 분해해 둔다.
@@ -104,6 +127,9 @@ def build_content_brief(
             "content_item_id": str(content_item.id),
         },
     }
+    if focus is not None:
+        brief["focus_treatment"] = focus
+    return brief
 
 
 def _patient_question(target_query: str, keyword: str | None) -> str:

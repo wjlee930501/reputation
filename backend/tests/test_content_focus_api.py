@@ -157,5 +157,24 @@ async def test_preview_counts_questions_without_saving():
     hospital = _hospital()
     db = _FakeDB(hospital, targets=[_target("위내시경 병원", treatment="위내시경")])
     result = await api.preview_content_focus(hospital.id, api.ContentFocusPreview(topics=["내시경", " 내시경 "]), db)
-    assert result == {"topic_matches": [{"topic": "내시경", "matching_questions": 1, "examples": ["위내시경 병원"]}]}
+    assert result == {
+        "topic_matches": [
+            {"topic": "내시경", "matching_questions": 1, "examples": ["위내시경 병원"], "matching_treatments": []}
+        ]
+    }
     assert hospital.content_focus_topics == [] and db.commits == 0
+
+
+async def test_preview_shows_the_registered_treatment_when_no_question_matches():
+    """마포성모탑 'PDRN 주사' — 측정 질문은 없지만 등록 진료 항목이 있다(2026-11-18)."""
+    hospital = _hospital()
+    hospital.treatments = [{"name": "유전자(DNA/PDRN) 주사"}, "도수치료"]
+    db = _FakeDB(hospital, targets=[_target("마포역 도수치료 잘하는 곳", treatment="도수치료")])
+    result = await api.preview_content_focus(
+        hospital.id, api.ContentFocusPreview(topics=["PDRN 주사", "유전자(PDRN) 주사", "여의사"]), db
+    )
+    by_topic = {row["topic"]: row for row in result["topic_matches"]}
+    assert by_topic["PDRN 주사"]["matching_questions"] == 0
+    assert by_topic["PDRN 주사"]["matching_treatments"] == ["유전자(DNA/PDRN) 주사"]
+    assert by_topic["유전자(PDRN) 주사"]["matching_treatments"] == ["유전자(DNA/PDRN) 주사"]
+    assert by_topic["여의사"]["matching_treatments"] == []
