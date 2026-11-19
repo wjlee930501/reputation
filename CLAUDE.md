@@ -1,6 +1,16 @@
 # Re:putation — 현재 프로젝트 개발 안내
 
-## 최신 운영 배포 — 2026-11-15 새벽 공개 페이지 정렬·글 이미지·사진 캐시
+## 최신 운영 배포 — 2026-11-19 저녁 원장 사전 설문(원장이 링크에서 직접 작성)
+
+main `e8f769ec`(PR #318 링크·작성·제출·설문 근거 자료, #319 사진·로고·인증서 올리기, #320 사실 답을 AE가 골라 병원 정보에 반영)를
+18:47~18:55 KST에 `deploy.sh all`로 5개 서비스에 배포했다(그날 첫 릴리스). **현재 리비전은 api `00296-l9c`, worker `00289-w4p`, beat `00284-7dm`,
+site `00156-fsf`, admin `00127-gbf`**, **DB head `0098_add_doctor_survey_files`**(추가형 `doctor_surveys` 0097 + `files` 0098). 운영 env 변경 없음(링크 토큰은
+`LEAD_REPORT_TOKEN_SECRET` 재사용 — **회전하면 모든 설문 링크가 막힌다**). 예약 slug `survey`, Site `/survey/{token}`(GA·픽셀 없음, no-store·noindex).
+CI는 main과 같은 기존 실패뿐(새 실패 0). readiness 통과, release 일치, 새 리비전 ERROR 0, Admin 설문 카드 실제 화면 확인. 실제 링크 생성·작성·제출 흐름은
+운영 데이터가 남아 사용자 확인 뒤 한다. 롤백 좌표 `.omo/rollback-survey/all`(DB는 되돌리지 않는다 — 옛 코드에서는 설문 자료가 보통 설문 자료로 보인다).
+설계는 [원장 사전 설문](docs/plans/2026-11-19-doctor-pre-survey.md), 상세는 [배포 기록](docs/releases/2026-11-19-doctor-pre-survey-production.md).
+
+## 이전 운영 배포 — 2026-11-15 새벽 공개 페이지 정렬·글 이미지·사진 캐시
 
 11-14 22:35 KST에 Site만 main `c33d6764`(PR #309 정렬 보정)로 올린 뒤, 11-15 02:01~02:21 KST에 main `34f38d07`(PR #309 글 이미지 404 수정 + PR #310 사진 캐시 미리 채우기)을
 `deploy.sh all`로 5개 서비스에 배포했다(그날 첫 릴리스). **현재 리비전은 api `00291-gkq`, worker `00283-msm`, beat `00278-q9d`, site `00152-s4v`, admin `00123-p24`**, DB head `0095` 그대로.

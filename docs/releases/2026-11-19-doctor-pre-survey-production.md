@@ -1,6 +1,6 @@
-# 원장 사전 설문 운영 배포 — 체크리스트 초안
+# 2026-11-19 원장 사전 설문 운영 배포
 
-상태: **배포 준비(초안). 병합·배포 전이다.** 병합과 배포는 사용자 승인 뒤에 한다. 설계·결정은 [설계 문서](../plans/2026-11-19-doctor-pre-survey.md).
+상태: **2026-11-19 18:47~18:55 KST에 5개 서비스에 배포했다**(main `e8f769ec`, 사용자 승인 "병합·배포 진행"). 결과는 아래 '실행 기록'. 설계·결정은 [설계 문서](../plans/2026-11-19-doctor-pre-survey.md).
 
 ## 범위
 
@@ -86,4 +86,19 @@ mkdir -p ../rollback-survey && cp .deploy-rollback ../rollback-survey/all
 - main과 같은 결과여야 한다. main(`5d3dd327`)에서도 실패하는 검사: Backend lint and tests, Security scans(npm audit), Terraform fmt and validate, rehearsal(브라우저 단계 '검사 전 확인할 준비 사항' 버튼 대기 시간 초과 — 이번 PR과 무관, 마이그레이션 head 단계는 통과). 결과는 각 PR 설명에 적는다.
 
 ## 실행 기록
-(배포 뒤 채운다.)
+
+- **병합**: #318 → #319 → #320(병합 커밋 `1b201df5` → `a793ea22` → `e8f769ec`, 17:46~17:47). 병합 전 main(`5d3dd327`)이 #320 머리의 조상이라 병합 뒤 main 트리가 CI·로컬에서 검증한 트리와 같다.
+- **CI(main 대비)**: 세 PR의 Backend lint and tests가 main과 같은 실패만 냈다 — 본 suite 16건(같은 테스트), 보조 단계 3건. 새 실패 0건. Security(npm audit)·Terraform·rehearsal(브라우저 단계 버튼 대기 시간 초과)은 main과 이미 병합된 #317·#316·#313에서도 실패하는 기존 실패다. Frontend·Docker·copy·DB budget 가드는 통과.
+- **배포 전 확인(읽기 전용)**: 트래픽 고정 없음(5개 LATEST 100%), 로컬 `.env.production` 없음 → 운영 env를 정본으로 그대로 사용(env 차이 없음, `--accept-env-diff` 안 씀), 공개 API `GET /api/v1/public/hospitals/survey` 404(실제 병원 slug 200으로 대조). 오늘 배포 잠금이 없어 `--override-reason` 없이 첫 릴리스로 배포했다(#317은 11-18 15:27 배포).
+- **실행**: `GCP_PROJECT_ID=mso-platform-481505 PUBLIC_DOMAIN=reputation.motionlabs.kr ADMIN_DOMAIN=admin.reputation.motionlabs.kr bash scripts/deploy.sh all`(18:47:25~18:54:59). 첫 시도(18:46)는 `PUBLIC_DOMAIN` 미지정으로 운영 변경 전에 멈췄다. legacy publish 사전 확인 0건, 이미지 `20261119-184725`, 마이그레이션 `0096 → 0097 → 0098`, RedBeat 정합성 복구, readiness Job(`reputation-production-readiness-n4k55`) 통과, 배포 뒤 공개 표면 확인 통과.
+- **리비전**: api `00296-l9c`, worker `00289-w4p`, beat `00284-7dm`, site `00156-fsf`, admin `00127-gbf`(각 100%). 롤백 좌표 `.omo/rollback-survey/all`(배포 전 api `00295-m9s`, worker `00288-5xw`, beat `00283-ch9`, site `00155-gdr`, admin `00126-r5v`).
+
+### 배포 뒤 확인(18:55~)
+- [x] `/api/v1/health/live` release `e8f769ec42ecbed9213fc6f56e211f610adc6cf0`. readiness Job 통과.
+- [x] DB head `0098_add_doctor_survey_files`(migrate Job 로그 `0096 → 0097 → 0098`).
+- [x] 없는 토큰 `GET /api/v1/public/doctor-survey/…` 404 + `Cache-Control: no-store` + `X-Robots-Tag: noindex, nofollow`. Site `/survey/…` 200(화면이 '링크를 열 수 없습니다'), `<meta name="robots" content="noindex, nofollow, nocache">`, GA 태그 없음. 실제 병원 공개 API 200.
+- [x] 새 리비전 5개의 ERROR 로그 0건(배포 직후 18:55).
+- [x] **Admin 설문 카드 실제 화면**: 연세유나유외과의원 병원 정보 → '원장 인터뷰 설문' 카드에 '원장님이 직접 작성하는 설문'·개원 병원 표시·'링크 만들기'가 보인다(상태 조회 정상). 링크는 만들지 않았다(운영 데이터 쓰기).
+- [x] **실제 링크(사용자 확인 뒤)**: 연세유나유외과의원(비공개·준비 중)에 Admin에서 '링크 만들기'를 눌렀다(19:00, 설문 행 1개·감사 `doctor_survey_link_issue` 1건). 카드가 링크·'링크 복사'·'새 링크 만들기'·'원장님이 아직 열어 보지 않았습니다'를 보인다. 링크가 열리는지는 원장의 '열어 봄' 기록을 남기지 않게 빈 동의 요청으로 확인했다 — 실제 토큰 422(본문 검사, 쓰기 없음)·없는 토큰 404, Site 화면 200. 동의·작성·제출은 하지 않았다(원장이 처음부터 쓴다).
+- [x] Slack `#C09CU7JAX6U` 사전 설문지 스레드에 배포·사용법 댓글(사용자 확인 문구, 19:02).
+- [x] 새 리비전 5개의 ERROR 로그 0건(18:47~19:26, 30분 관찰).
