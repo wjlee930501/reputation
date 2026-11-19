@@ -36,6 +36,7 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.Column("current_step", sa.String(length=400), nullable=True),
+        sa.Column("client_session", sa.String(length=40), nullable=True),
         sa.Column("client_seq", sa.BigInteger(), nullable=True),
         sa.Column("respondent", sa.String(length=20), nullable=True),
         sa.Column("consent_at", sa.DateTime(timezone=True), nullable=True),

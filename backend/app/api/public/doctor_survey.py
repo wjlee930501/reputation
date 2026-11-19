@@ -55,7 +55,8 @@ class AnswersBody(BaseModel):
     answers: dict[str, Any] = Field(default_factory=dict)
     current_step: str | None = Field(default=None, max_length=400)
     schema_version: str | None = Field(default=None, max_length=40)
-    # 화면의 저장 순번(밀리초 기반, 계속 커진다). 없으면 순번 검사를 하지 않는다.
+    # 화면(한 번 연 페이지)의 임의 id와 그 화면의 저장 순번. 없으면 순번 검사를 하지 않는다.
+    client_session: str | None = Field(default=None, max_length=40, pattern=r"^[A-Za-z0-9_-]+$")
     client_seq: int | None = Field(default=None, ge=0, le=2**62)
 
 
@@ -137,7 +138,15 @@ def _iso(value: datetime | None) -> str | None:
 
 
 def _is_stale(survey: DoctorSurvey, body: AnswersBody) -> bool:
-    return body.client_seq is not None and survey.client_seq is not None and body.client_seq <= survey.client_seq
+    """같은 화면이 이미 더 새 저장을 보냈는가. 다른 화면·기기의 저장은 비교하지 않는다(마지막 저장이 이긴다)."""
+
+    return (
+        body.client_session is not None
+        and body.client_seq is not None
+        and survey.client_session == body.client_session
+        and survey.client_seq is not None
+        and body.client_seq <= survey.client_seq
+    )
 
 
 def _write_draft(survey: DoctorSurvey, body: AnswersBody, answers: dict[str, Any], now: datetime) -> None:
@@ -148,8 +157,9 @@ def _write_draft(survey: DoctorSurvey, body: AnswersBody, answers: dict[str, Any
     if body.current_step is not None:
         # 화면 위치에는 진료 이름이 들어간다 — 답과 같이 가린다.
         survey.current_step = mask_personal_info(body.current_step)
-    if body.client_seq is not None:
-        survey.client_seq = max(body.client_seq, survey.client_seq or 0)
+    if body.client_session is not None and body.client_seq is not None:
+        survey.client_session = body.client_session
+        survey.client_seq = body.client_seq
     survey.last_saved_at = now
 
 
@@ -246,8 +256,12 @@ async def submit_survey(request: Request, token: str, db: AsyncSession = Depends
     await acquire_hospital_advisory_lock(db, preview.hospital_id)
     survey = await _survey_for_token(db, token, for_update=True)
     _require_consent(survey)
+    if _is_stale(survey, body):
+        # 같은 화면이 이미 더 새 답을 저장했다 — 옛 답으로 제출본·근거 자료를 덮지 않는다(다시 보낸 제출 등).
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="더 새 답이 이미 저장되었습니다. 화면을 새로고침한 뒤 다시 제출해 주세요.")
     now = datetime.now(UTC)
-    # 제출은 화면이 보낸 마지막 답이다. 순번만 앞으로 옮겨 늦게 도착한 옛 저장이 덮지 못하게 한다.
+    # 제출은 화면이 보낸 마지막 답이다. 순번을 옮겨 늦게 도착한 같은 화면의 옛 저장이 덮지 못하게 한다.
     _write_draft(survey, body, answers, now)
     result = await sync_doctor_survey_source(
         db,

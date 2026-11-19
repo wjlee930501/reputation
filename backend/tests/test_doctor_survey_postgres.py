@@ -248,14 +248,27 @@ async def test_an_older_save_arriving_late_does_not_overwrite_a_newer_one(db, cl
     ).json()["link_url"]
     public = f"/api/v1/public/doctor-survey/{_token(link)}"
     await client.post(f"{public}/consent", json={"consent_version": schema.CONSENT_VERSION, "respondent": "DIRECTOR"})
+    tab = {"client_session": "tabA"}
     newer = await client.put(
         f"{public}/answers",
-        json={"answers": {"principle": "새 답입니다."}, "client_seq": 200, "current_step": "focus|상담 010-1234-5678|care"},
+        json={"answers": {"principle": "새 답입니다."}, **tab, "client_seq": 2, "current_step": "focus|상담 010-1234-5678|care"},
     )
     assert newer.status_code == 200 and "stale" not in newer.json()
-    older = await client.put(f"{public}/answers", json={"answers": {"principle": "옛 답입니다."}, "client_seq": 100})
+    older = await client.put(f"{public}/answers", json={"answers": {"principle": "옛 답입니다."}, **tab, "client_seq": 1})
     assert older.json()["stale"] is True
+    # 같은 화면의 옛 순번으로 제출하면 거절한다(제출본·근거 자료를 옛 답으로 덮지 않게).
+    old_submit = await client.post(f"{public}/submit", json={"answers": {"principle": "옛 답입니다."}, **tab, "client_seq": 1})
+    assert old_submit.status_code == 409
     survey = (await db.execute(select(DoctorSurvey).where(DoctorSurvey.hospital_id == hospital_id))).scalar_one()
     await db.refresh(survey)
     assert survey.answers["principle"] == "새 답입니다."
+    assert survey.submission_count == 0
     assert "010-1234-5678" not in survey.current_step
+
+    # 다른 기기(다른 화면)의 저장은 순번을 비교하지 않는다 — 시계가 달라도 버려지지 않는다.
+    other = await client.put(
+        f"{public}/answers", json={"answers": {"principle": "다른 기기의 답입니다."}, "client_session": "tabB", "client_seq": 1}
+    )
+    assert "stale" not in other.json()
+    await db.refresh(survey)
+    assert survey.answers["principle"] == "다른 기기의 답입니다."

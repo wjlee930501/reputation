@@ -56,8 +56,10 @@ class DoctorSurvey(Base):
     )
     # 원장이 마지막으로 본 화면 — 다시 열면 그 화면부터 이어 쓴다.
     current_step: Mapped[str | None] = mapped_column(String(400))
-    # 화면이 저장할 때마다 올리는 순번. 늦게 도착한 옛 저장(느린 요청·화면 떠날 때 보낸 요청)이 새 답을
-    # 덮지 않게, 저장된 순번보다 작거나 같은 저장은 받지 않는다.
+    # 화면(한 번 연 페이지)마다 임의의 id와, 그 화면이 저장할 때마다 1씩 올리는 순번. 같은 화면에서 늦게 도착한
+    # 옛 저장(느린 요청·화면 떠날 때 보낸 요청)이 새 답을 덮지 않게, 같은 화면의 더 작은 순번은 받지 않는다.
+    # 다른 화면(다른 기기)의 저장은 순번을 비교하지 않는다 — 기기 시계가 달라도 저장이 버려지지 않는다.
+    client_session: Mapped[str | None] = mapped_column(String(40))
     client_seq: Mapped[int | None] = mapped_column(BigInteger)
     respondent: Mapped[str | None] = mapped_column(String(20))
     consent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

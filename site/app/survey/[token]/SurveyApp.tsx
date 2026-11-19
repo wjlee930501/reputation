@@ -113,11 +113,16 @@ export default function SurveyApp({ token }: { token: string }) {
   // 저장은 한 번에 하나만 보낸다. 느린 요청이 나중에 도착해 새 답을 덮지 않게, 보내는 동안 바뀐 답은
   // 같은 반복에서 이어서 보낸다. 실패하면 멈추고 다음 입력 때 다시 보낸다.
   const inFlight = useRef<Promise<void> | null>(null)
-  // 저장 순번 — 서버는 이미 받은 순번보다 작거나 같은 저장을 버린다(늦게 도착한 옛 답이 새 답을 덮지 않게).
+  // 이 화면의 저장 순번 — 서버는 같은 화면에서 이미 받은 순번보다 작거나 같은 저장을 버린다(늦게 도착한 옛 답이
+  // 새 답을 덮지 않게). 화면 id가 다르면(다른 기기·새로 연 화면) 비교하지 않으므로 기기 시계와 무관하다.
+  const session = useRef('')
   const seq = useRef(0)
   const nextSeq = useCallback(() => {
-    seq.current = Math.max(Date.now() * 1000, seq.current + 1)
-    return seq.current
+    if (!session.current) {
+      session.current = Array.from(crypto.getRandomValues(new Uint8Array(12)), (b) => b.toString(16).padStart(2, '0')).join('')
+    }
+    seq.current += 1
+    return { client_session: session.current, client_seq: seq.current }
   }, [])
 
   const save = useCallback((): Promise<void> => {
@@ -134,7 +139,7 @@ export default function SurveyApp({ token }: { token: string }) {
               answers: compactAnswers(latest.current.answers),
               current_step: latest.current.stepKey,
               schema_version: schemaVersion,
-              client_seq: nextSeq(),
+              ...nextSeq(),
             }),
           })
           if (!response.ok) {
@@ -180,7 +185,7 @@ export default function SurveyApp({ token }: { token: string }) {
         answers: compactAnswers(latest.current.answers),
         current_step: latest.current.stepKey,
         schema_version: schemaVersion,
-        client_seq: nextSeq(),
+        ...nextSeq(),
       })
       void fetch(`${base}/answers`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body, keepalive: true })
       dirty.current = false
@@ -268,7 +273,7 @@ export default function SurveyApp({ token }: { token: string }) {
           answers: compactAnswers(answers),
           current_step: 'review',
           schema_version: schema.version,
-          client_seq: nextSeq(),
+          ...nextSeq(),
         }),
       })
       if (!response.ok) {
