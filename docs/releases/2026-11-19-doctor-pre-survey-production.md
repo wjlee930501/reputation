@@ -97,8 +97,8 @@ mkdir -p ../rollback-survey && cp .deploy-rollback ../rollback-survey/all
 - [x] `/api/v1/health/live` release `e8f769ec42ecbed9213fc6f56e211f610adc6cf0`. readiness Job 통과.
 - [x] DB head `0098_add_doctor_survey_files`(migrate Job 로그 `0096 → 0097 → 0098`).
 - [x] 없는 토큰 `GET /api/v1/public/doctor-survey/…` 404 + `Cache-Control: no-store` + `X-Robots-Tag: noindex, nofollow`. Site `/survey/…` 200(화면이 '링크를 열 수 없습니다'), `<meta name="robots" content="noindex, nofollow, nocache">`, GA 태그 없음. 실제 병원 공개 API 200.
-- [x] 새 리비전 5개의 ERROR 로그 0건(18:47~18:55 기준 — 30분 관찰은 이어서).
+- [x] 새 리비전 5개의 ERROR 로그 0건(배포 직후 18:55).
 - [x] **Admin 설문 카드 실제 화면**: 연세유나유외과의원 병원 정보 → '원장 인터뷰 설문' 카드에 '원장님이 직접 작성하는 설문'·개원 병원 표시·'링크 만들기'가 보인다(상태 조회 정상). 링크는 만들지 않았다(운영 데이터 쓰기).
 - [x] **실제 링크(사용자 확인 뒤)**: 연세유나유외과의원(비공개·준비 중)에 Admin에서 '링크 만들기'를 눌렀다(19:00, 설문 행 1개·감사 `doctor_survey_link_issue` 1건). 카드가 링크·'링크 복사'·'새 링크 만들기'·'원장님이 아직 열어 보지 않았습니다'를 보인다. 링크가 열리는지는 원장의 '열어 봄' 기록을 남기지 않게 빈 동의 요청으로 확인했다 — 실제 토큰 422(본문 검사, 쓰기 없음)·없는 토큰 404, Site 화면 200. 동의·작성·제출은 하지 않았다(원장이 처음부터 쓴다).
 - [x] Slack `#C09CU7JAX6U` 사전 설문지 스레드에 배포·사용법 댓글(사용자 확인 문구, 19:02).
-- [ ] 새 리비전 ERROR 30분 관찰.
+- [x] 새 리비전 5개의 ERROR 로그 0건(18:47~19:26, 30분 관찰).
