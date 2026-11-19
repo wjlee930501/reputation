@@ -159,7 +159,9 @@ async def test_publish_reject_reset_and_repair_preserve_twelve_identities(db, mo
     assert db.scalar(select(func.count()).select_from(ContentItem)) == 12
     response = await api.set_schedule(
         hospital.id,
-        api.ScheduleCreate(plan="PLAN_12", publish_days=[0, 2, 4], active_from=date(2026, 9, 17)),
+        api.ScheduleCreate(
+            plan="PLAN_12", publish_days=[0, 2, 4], active_from=date(2026, 9, 17), daily_max=2
+        ),
         adapter,
     )
     assert response["slots_created"] == 0

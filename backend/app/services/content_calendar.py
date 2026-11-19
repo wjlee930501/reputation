@@ -59,6 +59,56 @@ def _spread_dates(dates: list[date], total: int) -> list[date]:
     return [dates[index] for index in indexes]
 
 
+#: 발행 요일 하루에 놓을 수 있는 최대 편수의 상한(일정 `daily_max`, DB 검사 제약과 같다).
+MAX_DAILY_ARTICLES = 3
+
+
+def capped_publish_dates(
+    dates: list[date],
+    total: int,
+    daily_max: int,
+    occupied: dict[date, int] | None = None,
+) -> list[date]:
+    """`total`편을 `dates`에 하루 `daily_max`편 이하로 놓는다(이미 놓인 편수 `occupied` 포함).
+
+    하루 1편씩 월 전체에 고르게 깐 뒤, 남은 편수만 2편째로 다시 고르게 얹는다(3편째도 같다).
+    그래서 하루 최대 2편이어도 날짜가 충분하면 하루 1편이고, 몰리는 날은 고르게 흩어진다.
+    자리가 모자라면 놓을 수 있는 만큼만 돌려준다 — 호출부가 `daily_capacity`로 먼저 확인한다.
+    """
+    occupied = occupied or {}
+    picked: list[date] = []
+    remaining = total
+    for level in range(1, daily_max + 1):
+        if remaining <= 0:
+            break
+        eligible = [day for day in dates if occupied.get(day, 0) < level]
+        take = min(remaining, len(eligible))
+        picked.extend(_spread_dates(eligible, take))
+        remaining -= take
+    return sorted(picked)
+
+
+def daily_capacity(
+    dates: list[date], daily_max: int, occupied: dict[date, int] | None = None
+) -> int:
+    """`dates`에 하루 `daily_max`편까지 더 놓을 수 있는 편수."""
+    occupied = occupied or {}
+    return sum(max(0, daily_max - occupied.get(day, 0)) for day in dates)
+
+
+def preferred_publish_dates(
+    publish_days: list[int], target_month: arrow.Arrow, start_date: date | None
+) -> list[date]:
+    """그 달에서 시작일 이후의 발행 요일 날짜."""
+    return [
+        day.date()
+        for day in arrow.Arrow.range(
+            "day", target_month.floor("month"), target_month.ceil("month")
+        )
+        if day.weekday() in publish_days and (start_date is None or day.date() >= start_date)
+    ]
+
+
 def generate_monthly_slots(
     plan: str,
     publish_days: list[int],
@@ -67,6 +117,7 @@ def generate_monthly_slots(
     hospital_id: object | None = None,
     ensure_quota: bool = False,
     total: int | None = None,
+    daily_max: int = 1,
 ) -> list[tuple[date, ContentType, int, int]]:
     """
     해당 월의 발행 날짜·유형·순번·총편수 목록 생성.
@@ -77,6 +128,10 @@ def generate_monthly_slots(
 
     `total`은 그 달 약속 편수가 요금제 편수보다 작을 때(첫 계약 월 안분,
     `services/content_month_target`)만 준다. 고르게 섞인 유형 순서의 앞부분을 쓴다.
+
+    `daily_max`는 발행 요일 하루에 놓을 수 있는 최대 편수(일정의 `daily_max`, 1~3)다.
+    하루 1편씩 고르게 깐 뒤 모자랄 때만 2편째(그다음 3편째)를 고르게 얹는다. 엄격 배치
+    (`ensure_quota=False`)는 `발행 요일 수 × daily_max`가 편수보다 적으면 거절한다.
     """
     distribution = PLAN_DISTRIBUTION.get(plan, {})
     seed = f"{hospital_id if hospital_id is not None else plan}:{target_month.format('YYYY-MM')}"
@@ -85,14 +140,8 @@ def generate_monthly_slots(
         type_sequence = type_sequence[: max(0, total)]
     total = len(type_sequence)
 
-    dates: list[date] = []
-    day = target_month.floor("month")
+    dates = preferred_publish_dates(publish_days, target_month, start_date)
     end = target_month.ceil("month")
-    while day <= end:
-        day_date = day.date()
-        if day.weekday() in publish_days and (start_date is None or day_date >= start_date):
-            dates.append(day_date)
-        day = day.shift(days=1)
 
     if not publish_days or any(type(day) is not int or not 0 <= day <= 6 for day in publish_days):
         raise ValueError("발행 가능한 날짜가 없습니다. 발행 요일은 0~6 사이의 값으로 하나 이상 설정해야 합니다.")
@@ -110,25 +159,39 @@ def generate_monthly_slots(
             f"발행 요일과 시작일을 확인해 주세요. ({target_month.format('YYYY-MM')})"
         )
 
-    if len(dates) < total and not ensure_quota:
+    if type(daily_max) is not int or not 1 <= daily_max <= MAX_DAILY_ARTICLES:
+        raise ValueError(f"하루 최대 편수는 1~{MAX_DAILY_ARTICLES} 사이여야 합니다.")
+    capacity = len(dates) * daily_max
+    if capacity < total and not ensure_quota:
+        if daily_max == 1:
+            raise ValueError(
+                f"발행일 수({len(dates)})가 요금제 편수({total})보다 적습니다. "
+                f"발행 요일을 추가하거나 하루 최대 편수를 늘려 주세요. "
+                f"({target_month.format('YYYY-MM')})"
+            )
         raise ValueError(
-            f"발행일 수({len(dates)})가 요금제 편수({total})보다 적습니다. "
-            f"발행 요일을 추가하거나 요금제를 변경해 주세요. "
+            f"발행일 수({len(dates)}) × 하루 최대 {daily_max}편 = {capacity}편으로 "
+            f"이번 달 편수({total})를 채울 수 없습니다. "
+            f"발행 요일을 추가하거나 하루 최대 편수를 늘려 주세요. "
             f"({target_month.format('YYYY-MM')})"
         )
-    if len(dates) < total:
+    if capacity >= total:
+        selected_dates = capped_publish_dates(dates, total, daily_max)
+    else:
         # Weekdays are preferences; the contract remains 12/16/20 even in short
-        # months. Fill off-weekday gaps first. A late start may require more than
-        # one article per day, but must never silently reduce the purchased quota.
-        other_dates = [
-            day for day in remaining_dates if day not in dates
-        ]
-        needed = total - len(dates)
-        dates = sorted(dates + _spread_dates(other_dates, min(needed, len(other_dates))))
-        if len(dates) < total:
-            dates = [dates[i * len(dates) // total] for i in range(total)]
-
-    selected_dates = _spread_dates(dates, total)
+        # months. Fill the chosen weekdays up to the daily cap, then off-weekday
+        # gaps (also capped). A late start may still require more than the cap
+        # per day, but must never silently reduce the purchased quota.
+        other_dates = [day for day in remaining_dates if day not in dates]
+        pool = sorted(dates * daily_max)
+        needed = total - len(pool)
+        pool = sorted(
+            pool
+            + capped_publish_dates(other_dates, min(needed, len(other_dates) * daily_max), daily_max)
+        )
+        if len(pool) < total:
+            pool = [pool[i * len(pool) // total] for i in range(total)]
+        selected_dates = pool
     result = [
         (pub_date, ctype, i + 1, total)
         for i, (pub_date, ctype) in enumerate(zip(selected_dates, type_sequence))

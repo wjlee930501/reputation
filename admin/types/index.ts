@@ -709,6 +709,8 @@ export interface ScheduleInfo {
   plan: 'PLAN_20' | 'PLAN_16' | 'PLAN_12'
   publish_days: number[]
   active_from: string
+  /** 발행 요일 하루 최대 편수(1~3). 옛 서버 응답에는 없으므로 1로 읽는다. */
+  daily_max?: number
   is_active: boolean
 }
 

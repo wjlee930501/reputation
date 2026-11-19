@@ -11,9 +11,12 @@
 
 근거는 그 일정을 만든 감사행과 그 달 슬롯의 개수다 — 슬롯의 `total_count`나 병원의 가장 이른
 일정을 읽지 않는다. 그래서 사람이 같은 달에 요일·시작일을 바꿔 일정을 교체해도(`POST .../schedule`)
-안분 편수는 그대로 남고, 교체 경로도 같은 판정으로 슬롯을 그 편수까지만 만든다(약속이 슬롯
-수로 올라가도 이미 있는 슬롯 수까지라 새로 만들 슬롯은 없다). 사람이 만든 첫 일정은 이
+안분 편수는 그대로 남았다(2026-11-19 전). 사람이 만든 첫 일정은 이
 감사행이 없으므로 요금제 편수 그대로다(소급하지 않는다).
+
+2026-11-19 대표 결정: 사람이 일정을 저장하면 그 시작 달의 약속은 요금제 편수다 — 저장 감사행이
+`contract_quota_month`(그 달 "YYYY-MM")를 남기고, 이 판정은 그 달의 안분을 쓰지 않는다
+(`month_quota_restored`). 표지가 없는 그 전 사람 저장은 소급하지 않는다.
 
 슬롯 생성(당월 조정 포함)·일정 교체·운영 계약 이행 집계·월간 보고서·현황 카드가 모두 이
 판정을 쓴다.
@@ -35,6 +38,11 @@ from app.models.content import ContentItem, ContentStatus, monthly_quota_for_pla
 
 #: 첫 일정을 자동으로 만든 행위자. 안분은 이 경로만 하므로 그 감사행이 안분의 증거다.
 INITIAL_SCHEDULE_ACTOR = "system:essence-auto-approval"
+
+#: 사람의 일정 저장 감사행(`set_schedule`)이 그 시작 달("YYYY-MM")을 계약 편수로 되돌렸다는 표지.
+#: 2026-11-19 대표 결정: 사람이 일정을 저장하면 그 달 약속은 요금제 편수다(안분을 쓰지 않는다).
+#: 표지를 남긴 저장부터만 적용한다 — 그 전 사람 저장은 소급하지 않는다.
+CONTRACT_QUOTA_MONTH_KEY = "contract_quota_month"
 
 
 def prorated_first_month_quota(plan: object, publish_days: list[int], start: date) -> int | None:
@@ -157,17 +165,34 @@ def month_is_voided(records, month: arrow.Arrow) -> bool:
     return voided
 
 
+def month_quota_restored(records, month: arrow.Arrow) -> bool:
+    """사람이 그 달을 시작 달로 일정을 저장해 그 달 약속을 계약 편수로 되돌렸는가.
+
+    `records`는 `schedule_change_records_stmt`의 (시각, detail)이다. 표지
+    (`CONTRACT_QUOTA_MONTH_KEY`)는 사람의 일정 저장만 남긴다. 미룬 달 판정
+    (`month_is_voided`)이 이보다 먼저다.
+    """
+
+    key = month.floor("month").format("YYYY-MM")
+    return any(
+        isinstance(detail, dict) and detail.get(CONTRACT_QUOTA_MONTH_KEY) == key
+        for _created_at, detail in records
+    )
+
+
 def resolve_month_target(
     quota: int | None,
     first_month_target: int | None,
     allocated: int = 0,
     *,
     voided: bool = False,
+    quota_restored: bool = False,
 ) -> int | None:
     """요금제 편수와 첫 일정이 기록한 첫 달 약속 편수로 그 달 약속 편수를 정한다.
 
     기록한 편수가 요금제 편수보다 작을 때만 안분한 달이다(0 포함 — 게시 요일이 남지 않은 첫 달).
     그 달의 살아 있는 슬롯(`allocated`)이 기록한 편수보다 많으면 슬롯 수다(요금제 편수가 상한).
+    사람이 그 달을 시작 달로 일정을 저장했으면(`quota_restored`) 안분 없이 요금제 편수다.
     """
 
     if quota is None:
@@ -175,6 +200,8 @@ def resolve_month_target(
     if voided:
         # 시작을 뒤 달로 미룬 달 — 그 뒤에 살아 있는 슬롯이 생겼으면 그 수까지만 약속이다.
         return min(quota, allocated)
+    if quota_restored:
+        return quota
     if first_month_target is not None and first_month_target < quota:
         return min(quota, max(first_month_target, allocated))
     return quota
@@ -186,9 +213,12 @@ def month_content_target_sync(
     quota = monthly_quota_for_plan(plan)
     if quota is None:
         return None
-    if month_is_voided(db.execute(schedule_change_records_stmt(hospital_id)).all(), month):
+    records = db.execute(schedule_change_records_stmt(hospital_id)).all()
+    if month_is_voided(records, month):
         allocated = db.scalar(month_allocation_count_stmt(hospital_id, month)) or 0
         return resolve_month_target(quota, None, allocated, voided=True)
+    if month_quota_restored(records, month):
+        return quota
     detail = db.scalar(initial_schedule_record_stmt(hospital_id))
     recorded = recorded_first_month_target(detail, month)
     if recorded is None or recorded >= quota:
@@ -214,13 +244,14 @@ async def month_content_target(
     quota = monthly_quota_for_plan(plan)
     if quota is None:
         return None
-    if not ignore_void and month_is_voided(
-        (await db.execute(schedule_change_records_stmt(hospital_id))).all(), month
-    ):
+    records = (await db.execute(schedule_change_records_stmt(hospital_id))).all()
+    if not ignore_void and month_is_voided(records, month):
         allocated = (
             await db.execute(month_allocation_count_stmt(hospital_id, month))
         ).scalar_one_or_none() or 0
         return resolve_month_target(quota, None, allocated, voided=True)
+    if month_quota_restored(records, month):
+        return quota
     detail = (await db.execute(initial_schedule_record_stmt(hospital_id))).scalar_one_or_none()
     recorded = recorded_first_month_target(detail, month)
     if recorded is None or recorded >= quota:

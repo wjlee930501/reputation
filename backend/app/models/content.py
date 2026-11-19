@@ -6,15 +6,18 @@ from typing import TYPE_CHECKING
 from sqlalchemy import (
     JSON,
     Boolean,
+    CheckConstraint,
     Date,
     DateTime,
     Enum,
     ForeignKey,
     Index,
     Integer,
+    SmallInteger,
     String,
     Text,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -108,6 +111,9 @@ class ContentSchedule(Base):
     """병원별 콘텐츠 발행 스케줄"""
 
     __tablename__ = "content_schedules"
+    __table_args__ = (
+        CheckConstraint("daily_max BETWEEN 1 AND 3", name="ck_content_schedules_daily_max_range"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     hospital_id: Mapped[uuid.UUID] = mapped_column(
@@ -121,6 +127,13 @@ class ContentSchedule(Base):
 
     active_from: Mapped[date] = mapped_column(Date, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # 발행 요일 하루에 놓을 수 있는 최대 편수(1~3, 0099). 1이면 종전과 같다.
+    daily_max: Mapped[int] = mapped_column(
+        SmallInteger, nullable=False, default=1, server_default=text("1")
+    )
+    # 뒤에 저장한 더 이른 시작일의 일정이 이 (아직 시작 전) 일정을 대신했다(0099).
+    # 대신된 행은 유효 조건 순위(`schedule_reconciliation.effective_schedules_query`)에서 빠진다.
+    superseded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     hospital: Mapped["Hospital"] = relationship(back_populates="content_schedules")

@@ -5,6 +5,7 @@ import { ApiError, fetchAPI } from '@/lib/api'
 import { OperatorIssuePanel } from '@/app/_components/OperatorIssuePanel'
 import { isExpectedOperatorRequestFailure, safeOperatorError } from '@/lib/operations-journey'
 import {
+  DAILY_MAX_OPTIONS,
   DAYS,
   DEFAULT_PUBLISH_DAYS_BY_PLAN,
   firstDayOfNextMonthInputValue,
@@ -35,12 +36,13 @@ export function ScheduleSection({
   const [selectedDays, setSelectedDays] = useState<number[]>([])
   const [daysChosen, setDaysChosen] = useState(false)
   const [activeFrom, setActiveFrom] = useState(firstDayOfNextMonthInputValue())
+  const [dailyMax, setDailyMax] = useState(1)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [refreshWarning, setRefreshWarning] = useState<string | null>(null)
   // 슬롯이 하나도 만들어지지 않으면 backend가 first_publish_date를 null로 내려준다
   // (api/admin/content.py). 타입이 string이면 화면은 없는 날짜를 있다고 말한다(M-22).
-  const [result, setResult] = useState<{ slots_created: number; first_publish_date: string | null; slots_cancelled_before_start?: number; slots_kept_before_start?: number } | null>(null)
+  const [result, setResult] = useState<{ slots_created: number; first_publish_date: string | null; month_target?: number | null; slots_cancelled_before_start?: number; slots_kept_before_start?: number } | null>(null)
   const [confirmingReplacement, setConfirmingReplacement] = useState(false)
 
   // 현재 운영 중인 발행 일정 — 404는 "아직 발행 일정 없음"으로 처리
@@ -63,6 +65,7 @@ export function ScheduleSection({
         // 기존 발행 일정으로 폼을 미리 채워 실수로 다른 값으로 덮어쓰지 않게 한다.
         setSelectedDays([...schedule.publish_days].sort((a, b) => a - b))
         setDaysChosen(true)
+        setDailyMax(schedule.daily_max ?? 1)
         // 시작일은 미래 날짜만 이어받는다 — 과거 날짜로 재저장하면 지난 달 슬롯을 다시 만들게 된다.
         const today = new Date().toISOString().slice(0, 10)
         if (schedule.active_from && schedule.active_from >= today) {
@@ -146,7 +149,8 @@ export function ScheduleSection({
       setError('발행 요일을 하나 이상 선택해 주세요.')
       return
     }
-    const capacityError = existing ? null : validateScheduleCapacity(plan, selectedDays, activeFrom)
+    // 일정 교체는 이미 공개·고정된 항목을 빼고 서버가 판정한다(SCHEDULE_CAPACITY_SHORT).
+    const capacityError = existing ? null : validateScheduleCapacity(plan, selectedDays, activeFrom, dailyMax)
     if (capacityError) {
       setError(capacityError)
       return
@@ -164,11 +168,11 @@ export function ScheduleSection({
     setLoading(true)
     setError(null)
     try {
-      const data = await fetchAPI<{ plan: ScheduleInfo['plan']; slots_created: number; first_publish_date: string | null; publish_days: number[]; slots_cancelled_before_start?: number; slots_kept_before_start?: number }>(
+      const data = await fetchAPI<{ plan: ScheduleInfo['plan']; slots_created: number; first_publish_date: string | null; publish_days: number[]; month_target?: number | null; slots_cancelled_before_start?: number; slots_kept_before_start?: number }>(
         `/admin/hospitals/${hospitalId}/schedule`,
         {
           method: 'POST',
-          body: JSON.stringify({ plan, publish_days: selectedDays, active_from: activeFrom }),
+          body: JSON.stringify({ plan, publish_days: selectedDays, active_from: activeFrom, daily_max: dailyMax }),
         },
       )
       setResult(data)
@@ -185,6 +189,11 @@ export function ScheduleSection({
       // 계약 요금제와 어긋난 저장은 서버가 막는다 — 운영자가 다음 행동을 알 수 있게 그대로 보여준다.
       if (e instanceof ApiError && e.detail && typeof e.detail === 'object') {
         const detail = e.detail as { code?: string; message?: string; contracted_plan?: string }
+        // 하루 최대 편수로 그 달 편수를 놓을 수 없으면 서버가 저장하지 않고 이유를 준다.
+        if (detail.code === 'SCHEDULE_CAPACITY_SHORT' && detail.message) {
+          setError(detail.message)
+          return
+        }
         if (detail.code === 'PLAN_MISMATCH') {
           setError(
             `${detail.message ?? '요금제는 계약 기록에서만 변경할 수 있습니다.'}`
@@ -253,6 +262,10 @@ export function ScheduleSection({
                 </dd>
               </div>
               <div className="flex justify-between gap-2">
+                <dt className="text-blue-700">{ADMIN_COPY.dailyMaxArticles}</dt>
+                <dd className="font-medium">{existing.daily_max ?? 1}편</dd>
+              </div>
+              <div className="flex justify-between gap-2">
                 <dt className="text-blue-700">시작일</dt>
                 <dd className="font-medium">{existing.active_from}</dd>
               </div>
@@ -272,7 +285,7 @@ export function ScheduleSection({
           <div className="rounded-xl border border-green-200 bg-green-50 p-4 sm:p-6">
             <p className="text-base font-medium text-green-800">발행 일정 설정 완료</p>
             <p className="mt-2 text-sm text-green-700">
-              {result.slots_created}개의 콘텐츠 항목을 추가했습니다.
+              {result.month_target ? `시작 달 ${result.month_target}편 기준으로 ` : ''}{result.slots_created}개의 콘텐츠 항목을 추가했습니다.
               {result.slots_cancelled_before_start
                 ? ` 새 시작일 이전 달의 미발행 항목 ${result.slots_cancelled_before_start}개는 종료했습니다(자동 생성·발행 제외).`
                 : ' 기존 원고는 유지합니다.'}
@@ -322,6 +335,29 @@ export function ScheduleSection({
               <p className="mt-2 text-xs text-slate-500">
                 선택된 요일: {selectedDays.map((d) => DAYS[d]).join(', ') || '없음'}
               </p>
+            </div>
+
+            {/* 하루 최대 발행 편수 */}
+            <div>
+              <span className="mb-2 block text-sm font-medium text-slate-700">{ADMIN_COPY.dailyMaxArticles}</span>
+              <div className="grid grid-cols-3 gap-2" role="group" aria-label={ADMIN_COPY.dailyMaxArticles}>
+                {DAILY_MAX_OPTIONS.map((count) => (
+                  <button
+                    key={count}
+                    type="button"
+                    onClick={() => setDailyMax(count)}
+                    aria-pressed={dailyMax === count}
+                    className={`min-h-10 rounded-lg text-sm font-medium transition-colors ${
+                      dailyMax === count
+                        ? 'bg-blue-600 text-white'
+                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                    }`}
+                  >
+                    {count}편
+                  </button>
+                ))}
+              </div>
+              <p className="mt-2 text-xs text-slate-500">{ADMIN_COPY.dailyMaxHint}</p>
             </div>
 
             {/* 시작일 */}
@@ -394,7 +430,7 @@ export function ScheduleSection({
                   {/* 계약 정정 뒤 일정이 아직 옛 요금제면, 되돌릴 수 없는 교체가 편수까지
                       바꾼다는 사실을 확인 문구가 감추면 안 된다. */}
                   {PLAN_LABELS[existing.plan] ?? existing.plan}
-                  <span className="block text-xs">대상 월의 계약 기록을 적용합니다.</span>
+                  <span className="block text-xs">시작 달도 계약 편수만큼 만듭니다.</span>
                 </dd>
               </div>
               <div className="grid grid-cols-[100px_1fr] gap-3 py-3">
@@ -403,6 +439,10 @@ export function ScheduleSection({
                   {[...existing.publish_days].sort().map((day) => DAYS[day]).join(', ') || '없음'} →{' '}
                   {selectedDays.map((day) => DAYS[day]).join(', ') || '없음'}
                 </dd>
+              </div>
+              <div className="grid grid-cols-[100px_1fr] gap-3 py-3">
+                <dt className="text-slate-500">{ADMIN_COPY.dailyMaxArticles}</dt>
+                <dd className="font-medium text-slate-900">{existing.daily_max ?? 1}편 → {dailyMax}편</dd>
               </div>
               <div className="grid grid-cols-[100px_1fr] gap-3 py-3">
                 <dt className="text-slate-500">시작일</dt>

@@ -12919,6 +12919,7 @@ def _build_monthly_report_for_hospital(
         .where(
             ContentSchedule.hospital_id == h.id,
             ContentSchedule.active_from < period_end.date(),
+            ContentSchedule.superseded_at.is_(None),
         )
         .order_by(ContentSchedule.active_from.desc(), ContentSchedule.created_at.desc())
         .limit(1)

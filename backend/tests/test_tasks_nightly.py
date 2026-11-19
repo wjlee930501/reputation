@@ -4230,7 +4230,8 @@ def test_monthly_slot_generation_isolates_other_exceptions_and_opens_incident(mo
     calls = {"n": 0}
 
     def fake_generate(
-        plan, publish_days, next_month, start_date=None, *, ensure_quota=False, total=None
+        plan, publish_days, next_month, start_date=None, *, ensure_quota=False, total=None,
+        daily_max=1,
     ):
         assert ensure_quota is True
         calls["n"] += 1

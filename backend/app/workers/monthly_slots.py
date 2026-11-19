@@ -84,6 +84,7 @@ def create_next_month_slots_for_schedule(
         start_date,
         ensure_quota=True,
         total=planned_total or None,
+        daily_max=int(getattr(schedule, "daily_max", None) or 1),
     )
 
     # 측정된 미언급 격차가 유형과 대상 질문을 정하게 한다. 월 전체 슬롯을 놓고 계산해야

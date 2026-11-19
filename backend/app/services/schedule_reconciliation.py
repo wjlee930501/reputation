@@ -67,6 +67,8 @@ def effective_schedules_query(month_end):
         .where(
             ContentSchedule.active_from <= month_end,
             ContentSchedule.hospital_id.in_(enabled),
+            # 뒤에 저장한 더 이른 시작일의 일정이 대신한 (시작 전) 일정은 조건이 아니다.
+            ContentSchedule.superseded_at.is_(None),
         )
         .subquery()
     )
@@ -75,6 +77,58 @@ def effective_schedules_query(month_end):
         .join(ranked, ranked.c.id == ContentSchedule.id)
         .where(ranked.c.position == 1)
     )
+
+
+def allocation_stays(row, *, today) -> bool:
+    """일정을 바꿔도 날짜를 옮기지 않는 슬롯인가(`retime_open_allocations`와 같은 판정).
+
+    지난 날짜·공개된 적 있는 글·이월·사람이 고친 원고·생성 중인 슬롯·DRAFT/READY가 아닌 슬롯이다.
+    """
+    current_date = getattr(row, "scheduled_date", None)
+    if current_date is None or current_date < today:
+        return True
+    return any(
+        getattr(row, field, None) is not None
+        for field in (
+            "carried_over_from",
+            "first_published_at",
+            "published_at",
+            "human_edited_at",
+            "generation_claim_token",
+        )
+    ) or getattr(row, "status", None) not in (ContentStatus.DRAFT, ContentStatus.READY)
+
+
+def place_open_slots(planned, existing, *, today, window_dates, daily_max):
+    """옮길 수 있는 슬롯과 새 슬롯의 날짜를 하루 `daily_max`편 이하로 다시 정한다.
+
+    계획은 월 전체 순번을 세우지만, 날짜를 옮기지 않는 기존 슬롯(`allocation_stays`)의 순번은
+    그 자리에 둔다. 나머지 순번만 시작일 이후 발행 요일(`window_dates`)에 고르게 놓고, 그 날
+    이미 놓인 슬롯 수만큼 그날 자리를 줄인다. 반환은 (새 계획, 놓지 못한 편수)다.
+    """
+    from dataclasses import replace
+
+    from app.services.content_calendar import capped_publish_dates, daily_capacity
+
+    stay_rows = [row for row in existing if allocation_stays(row, today=today)]
+    stay_sequences = {row.sequence_no for row in stay_rows}
+    occupied: dict = {}
+    for row in stay_rows:
+        if row.scheduled_date is not None and row.scheduled_date in window_dates:
+            occupied[row.scheduled_date] = occupied.get(row.scheduled_date, 0) + 1
+    open_slots = sorted(
+        (slot for slot in planned if slot.sequence_no not in stay_sequences),
+        key=lambda slot: slot.sequence_no,
+    )
+    capacity = daily_capacity(window_dates, daily_max, occupied)
+    if capacity < len(open_slots):
+        return planned, len(open_slots) - capacity
+    placed = capped_publish_dates(window_dates, len(open_slots), daily_max, occupied)
+    moved = {
+        slot.sequence_no: replace(slot, scheduled_date=day)
+        for slot, day in zip(open_slots, placed, strict=True)
+    }
+    return [moved.get(slot.sequence_no, slot) for slot in planned], 0
 
 
 async def retime_open_allocations(db, existing, planned, *, today):
@@ -89,18 +143,7 @@ async def retime_open_allocations(db, existing, planned, *, today):
     for row in existing:
         current_date = getattr(row, "scheduled_date", None)
         wanted = dates.get(row.sequence_no)
-        if current_date is None or wanted is None or current_date < today or wanted == current_date:
-            continue
-        if any(
-            getattr(row, field, None) is not None
-            for field in (
-                "carried_over_from",
-                "first_published_at",
-                "published_at",
-                "human_edited_at",
-                "generation_claim_token",
-            )
-        ) or getattr(row, "status", None) not in (ContentStatus.DRAFT, ContentStatus.READY):
+        if wanted is None or wanted == current_date or allocation_stays(row, today=today):
             continue
         result = await db.execute(
             update(ContentItem)
@@ -150,7 +193,8 @@ async def defer_unstarted_contract(db, hospital_id, *, new_start, today):
     earliest_start = (
         await db.execute(
             select(func.min(ContentSchedule.active_from)).where(
-                ContentSchedule.hospital_id == hospital_id
+                ContentSchedule.hospital_id == hospital_id,
+                ContentSchedule.superseded_at.is_(None),
             )
         )
     ).scalar_one_or_none()
