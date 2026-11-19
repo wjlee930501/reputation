@@ -314,7 +314,7 @@ export default function SurveyApp({ token }: { token: string }) {
     )
   }
 
-  const ctx: FieldContext = { schema, answers }
+  const ctx: FieldContext = { schema, answers, token }
   const isQuestion = Boolean(current?.question)
   const nextLabel = current?.key === 'intro' ? (consented ? '이어서 작성하기' : '시작하기') : current?.key === 'review' ? '제출하기' : '다음'
   const nextDisabled = busy || (current?.key === 'intro' && !consented && (!consentChecked || !respondent))

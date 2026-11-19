@@ -12,12 +12,13 @@ AE가 병원 정보 탭에서 만든 링크(`/survey/{token}`)로 원장이 들�
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
 from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -27,6 +28,7 @@ from app.core.database import get_db
 from app.core.rate_limit import limiter
 from app.models.doctor_survey import DoctorSurvey
 from app.models.hospital import Hospital
+from app.services import doctor_survey_files as survey_files
 from app.services import doctor_survey_schema as schema
 from app.services.audit_log import write_audit_log
 from app.services.doctor_survey_source import (
@@ -88,9 +90,9 @@ async def _read_body(request: Request, model: type[BaseModel]) -> Any:
 
 
 def uploads_enabled() -> bool:
-    """파일 올리기는 다음 단계(PR2)에서 연다. 그 전에는 '담당자에게 따로 보내 주세요' 안내다."""
+    """사진·로고·인증서 파일을 설문 화면에서 바로 올린다(`doctor_survey_files`)."""
 
-    return False
+    return True
 
 
 async def _survey_for_token(
@@ -168,13 +170,14 @@ def _require_consent(survey: DoctorSurvey) -> None:
         raise HTTPException(status_code=409, detail=CONSENT_REQUIRED)
 
 
-def _clean_answers(raw: dict[str, Any]) -> dict[str, Any]:
+def _clean_answers(raw: dict[str, Any], files: dict[str, Any] | None = None) -> dict[str, Any]:
     """검사 → 가림. 토큰을 확인한 뒤에만 부른다(없는 링크로 검사 비용을 쓰게 하지 않는다)."""
 
     try:
         answers = schema.mask_answers(schema.validate_answers(raw))
     except schema.SurveyAnswerError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    answers = survey_files.drop_unknown_files(answers, files or {})
     if len(json.dumps(answers, ensure_ascii=False).encode()) > MAX_ANSWERS_BYTES:
         raise HTTPException(status_code=413, detail=_TOO_LARGE)
     return answers
@@ -225,9 +228,10 @@ async def give_consent(request: Request, token: str, db: AsyncSession = Depends(
 @router.put("/{token}/answers")
 @limiter.limit(settings.PUBLIC_SITE_RATE_LIMIT)
 async def save_answers(request: Request, token: str, db: AsyncSession = Depends(get_db)):
-    _require_consent(await _survey_for_token(db, token))
+    preview = await _survey_for_token(db, token)
+    _require_consent(preview)
     body = await _read_body(request, AnswersBody)
-    answers = _clean_answers(body.answers)
+    answers = _clean_answers(body.answers, preview.files)
     survey = await _survey_for_token(db, token, for_update=True)
     _require_consent(survey)
     if _is_stale(survey, body):
@@ -252,7 +256,7 @@ async def submit_survey(request: Request, token: str, db: AsyncSession = Depends
     preview = await _survey_for_token(db, token)
     _require_consent(preview)
     body = await _read_body(request, AnswersBody)
-    answers = _clean_answers(body.answers)
+    answers = _clean_answers(body.answers, preview.files)
     await acquire_hospital_advisory_lock(db, preview.hospital_id)
     survey = await _survey_for_token(db, token, for_update=True)
     _require_consent(survey)
@@ -301,3 +305,80 @@ async def submit_survey(request: Request, token: str, db: AsyncSession = Depends
         "submission_count": survey.submission_count,
         "progress": schema.progress(answers, new_clinic=bool(survey.new_clinic)),
     }
+
+
+# ── 파일 ────────────────────────────────────────────────────────────────
+
+_MULTIPART_OVERHEAD = 64 * 1024
+
+
+async def _read_upload(upload: UploadFile) -> bytes:
+    chunks: list[bytes] = []
+    total = 0
+    while chunk := await upload.read(1024 * 1024):
+        total += len(chunk)
+        if total > survey_files.MAX_FILE_BYTES:
+            raise HTTPException(status_code=413, detail="파일이 너무 큽니다. 한 파일에 12MB까지 올릴 수 있습니다.")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+@router.post("/{token}/files")
+@limiter.limit(settings.PUBLIC_SITE_RATE_LIMIT)
+async def upload_file(request: Request, token: str, db: AsyncSession = Depends(get_db)):
+    """파일 하나를 올린다. 답에 넣는 일(파일 id)은 화면이 저장할 때 한다."""
+
+    from app.services.asset_storage import store_asset_bytes
+
+    preview = await _survey_for_token(db, token)
+    _require_consent(preview)
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > survey_files.MAX_FILE_BYTES + _MULTIPART_OVERHEAD:
+        raise HTTPException(status_code=413, detail="파일이 너무 큽니다. 한 파일에 12MB까지 올릴 수 있습니다.")
+    try:
+        form = await request.form(max_files=1, max_fields=2)
+    except Exception as exc:  # noqa: BLE001 — 깨진 multipart는 입력 오류다
+        raise HTTPException(status_code=400, detail=_BAD_BODY) from exc
+    kind = form.get("kind")
+    upload = form.get("file")
+    if not isinstance(kind, str) or not hasattr(upload, "read"):
+        raise HTTPException(status_code=400, detail=_BAD_BODY)
+    data = await _read_upload(upload)  # type: ignore[arg-type]
+    try:
+        mime = survey_files.check_upload(kind, data, len(preview.files or {}))
+    except survey_files.SurveyFileError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    file_id = survey_files.new_file_id()
+    ref = await asyncio.to_thread(
+        store_asset_bytes,
+        hospital_id=preview.hospital_id,
+        filename=survey_files.storage_filename(file_id, mime),
+        data=data,
+        mime_type=mime,
+    )
+    entry = survey_files.new_file_entry(
+        kind=kind, name=getattr(upload, "filename", "") or "", mime=mime, size=len(data), ref=ref
+    )
+    survey = await _survey_for_token(db, token, for_update=True)
+    survey.files = {**(survey.files or {}), file_id: entry}
+    await db.commit()
+    return {"id": file_id, "name": entry["name"], "kind": kind, "mime": mime, "size": len(data)}
+
+
+@router.get("/{token}/files/{file_id}")
+@limiter.limit(settings.PUBLIC_SITE_RATE_LIMIT)
+async def get_file(request: Request, token: str, file_id: str, db: AsyncSession = Depends(get_db)):
+    """원장이 올린 파일을 다시 본다(작성 화면의 미리보기). 이 설문의 파일만."""
+
+    from app.api.admin.essence import _asset_response
+
+    survey = await _survey_for_token(db, token)
+    entry = (survey.files or {}).get(file_id)
+    if not entry:
+        raise HTTPException(status_code=404, detail="파일을 찾을 수 없습니다.")
+    return _asset_response(
+        entry["ref"],
+        hospital_id=survey.hospital_id,
+        media_type=entry.get("mime"),
+        headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+    )

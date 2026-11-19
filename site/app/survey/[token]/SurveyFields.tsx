@@ -21,6 +21,8 @@ export interface FieldContext {
   schema: SurveySchema
   /** 보기를 끌어오는 데 쓰는 전체 답(진료 이름·동네·진료과). */
   answers: Answers
+  /** 파일을 올리고 다시 볼 때 쓰는 링크 토큰. */
+  token: string
 }
 
 type Change = (key: string, value: unknown) => void
@@ -385,6 +387,108 @@ function RowList({ field, scope, onChange, ctx }: { field: SurveyField; scope: A
   )
 }
 
+interface FileRef {
+  id: string
+  name: string
+}
+
+const fileRefs = (value: unknown): FileRef[] =>
+  Array.isArray(value)
+    ? value.filter((item): item is FileRef => Boolean(item) && typeof (item as FileRef).id === 'string').map((item) => ({ id: item.id, name: item.name ?? '' }))
+    : []
+
+const IMAGE_NAME = /\.(jpe?g|png|webp|gif|heic)$/i
+
+function FilesField({ field, scope, onChange, ctx }: { field: SurveyField; scope: Answers; onChange: Change; ctx: FieldContext }) {
+  const key = field.key!
+  const files = fileRefs(scope[key])
+  const [status, setStatus] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const base = `/api/doctor-survey/${encodeURIComponent(ctx.token)}/files`
+  const photos = field.kind === 'PHOTO'
+
+  async function upload(list: FileList | null) {
+    if (!list || !list.length) return
+    setBusy(true)
+    setStatus(null)
+    let next = files
+    const chosen = Array.from(list)
+    for (const [index, file] of chosen.entries()) {
+      setStatus(`올리는 중 ${index + 1} / ${chosen.length}`)
+      const body = new FormData()
+      body.append('kind', field.kind ?? 'PHOTO')
+      body.append('file', file)
+      try {
+        const response = await fetch(base, { method: 'POST', body })
+        const payload = (await response.json().catch(() => ({}))) as { id?: string; name?: string; detail?: unknown }
+        if (!response.ok || !payload.id) {
+          setStatus(typeof payload.detail === 'string' ? payload.detail : `${file.name}을(를) 올리지 못했습니다.`)
+          break
+        }
+        next = [...next, { id: payload.id, name: payload.name ?? file.name }]
+        onChange(key, next)
+      } catch {
+        setStatus('연결이 원활하지 않아 올리지 못했습니다. 다시 올려 주세요.')
+        break
+      }
+    }
+    setBusy(false)
+    if (next.length === files.length + chosen.length) setStatus(null)
+  }
+
+  const remove = (id: string) => onChange(key, files.filter((file) => file.id !== id))
+  const sub = files.length
+    ? photos
+      ? `${files.length}장 올림 · 눌러서 더 올리기`
+      : `${files.length}개 올림 · 눌러서 더 올리기`
+    : field.sub ?? '눌러서 올리기'
+
+  return (
+    <div>
+      <label className={`file wide${files.length ? ' has' : ''}`}>
+        <span className="ic">+</span>
+        <span>
+          <b>{field.label}</b>
+          <br />
+          <small>{busy ? status : sub}</small>
+        </span>
+        <input
+          type="file"
+          multiple
+          accept={field.accept ?? 'image/*'}
+          disabled={busy}
+          onChange={(event) => {
+            void upload(event.target.files)
+            event.target.value = ''
+          }}
+        />
+      </label>
+      {!busy && status ? <p className="err-msg" role="alert">{status}</p> : null}
+      {photos && files.length ? (
+        <div className="thumbs">
+          {files.map((file) => (
+            <div className="thumb" key={file.id}>
+              {/* eslint-disable-next-line @next/next/no-img-element -- 개인 링크의 비공개 파일이라 이미지 최적화를 거치지 않는다 */}
+              <img src={`${base}/${file.id}`} alt={file.name} />
+              <button type="button" aria-label={`${file.name} 삭제`} onClick={() => remove(file.id)}>×</button>
+            </div>
+          ))}
+        </div>
+      ) : null}
+      {!photos && files.length ? (
+        <ul className="file-list">
+          {files.map((file) => (
+            <li key={file.id}>
+              {IMAGE_NAME.test(file.name) ? '🖼' : '📄'} {file.name}
+              <button type="button" className="del" onClick={() => remove(file.id)}>삭제</button>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  )
+}
+
 function FilesPending({ field, ctx }: { field: SurveyField; ctx: FieldContext }) {
   return (
     <div className="file wide">
@@ -709,7 +813,11 @@ export function FieldView({ field, scope, onChange, ctx }: { field: SurveyField;
     case 'doctors':
       return <Doctors field={field} scope={scope} onChange={onChange} ctx={ctx} />
     case 'files':
-      return <FilesPending field={field} ctx={ctx} />
+      return ctx.schema.uploads_enabled ? (
+        <FilesField field={field} scope={scope} onChange={onChange} ctx={ctx} />
+      ) : (
+        <FilesPending field={field} ctx={ctx} />
+      )
     case 'info':
       return <div className="info">{field.text}</div>
     case 'sh':

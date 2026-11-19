@@ -130,3 +130,13 @@ test('설문 링크 화면은 분석 태그를 싣지 않는다(주소에 토큰
   assert.equal(isPrivateLinkPath('/surveys-guide'), false)
   assert.equal(isPrivateLinkPath('/'), false)
 })
+
+test('프록시는 파일 올리기와 이 설문 파일 보기만 통과시킨다', () => {
+  const token = 'A'.repeat(43)
+  const fileId = 'a'.repeat(32)
+  assert.equal(surveyUpstreamPath('POST', token, ['files']), `/doctor-survey/${token}/files`)
+  assert.equal(surveyUpstreamPath('GET', token, ['files', fileId]), `/doctor-survey/${token}/files/${fileId}`)
+  assert.equal(surveyUpstreamPath('GET', token, ['files', '../x']), null)
+  assert.equal(surveyUpstreamPath('GET', token, ['files']), null)
+  assert.equal(surveyUpstreamPath('DELETE', token, ['files', fileId]), null)
+})

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { ADMIN_COPY } from '@/lib/admin-copy'
-import { doctorSurveyStatusText, type DoctorSurveyStatus } from '@/lib/doctor-survey'
+import { doctorSurveyFileKindLabel, doctorSurveyStatusText, type DoctorSurveyStatus } from '@/lib/doctor-survey'
 import { fetchAPI } from '@/lib/api'
 import { formatDate } from '@/lib/format'
 
@@ -114,6 +114,24 @@ export default function DoctorSurveyLinkPanel({ hospitalId }: { hospitalId: stri
             {survey?.link_issued_at ? ` · ${copy.issuedAt} ${formatDate(survey.link_issued_at)}` : ''}
           </p>
           {survey?.has_unsubmitted_changes ? <p className="text-xs text-amber-800">{copy.statusEdited}</p> : null}
+          {survey?.files?.length ? (
+            <div className="space-y-1 border-t border-slate-100 pt-2">
+              <p className="text-xs font-semibold text-slate-700">{copy.filesTitle}</p>
+              <p className="text-xs text-slate-600">{copy.filesHint}</p>
+              <p className="text-xs text-slate-600">{survey.photo_consent ? copy.photoConsentYes : copy.photoConsentNo}</p>
+              <ul className="space-y-0.5">
+                {survey.files.map((file) => (
+                  <li key={file.id} className="text-xs text-slate-700">
+                    <span className="mr-1.5 rounded bg-slate-100 px-1.5 py-0.5">{doctorSurveyFileKindLabel(file.kind)}</span>
+                    <a href={file.url} target="_blank" rel="noreferrer" className="text-blue-700 underline">
+                      {file.name}
+                    </a>
+                    {file.context ? <span className="text-slate-500"> · {file.context}</span> : null}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
         </>
       ) : (
         <button

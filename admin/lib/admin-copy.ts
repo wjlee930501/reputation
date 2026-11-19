@@ -69,6 +69,13 @@ export const ADMIN_COPY = {
     statusEdited: '제출 뒤 고친 답이 있습니다. 원장님이 다시 제출하면 반영됩니다.',
     respondentStaff: '병원 직원이 대리 작성',
     issuedAt: '링크 만든 날',
+    filesTitle: '원장님이 올린 파일',
+    filesHint: '파일을 열어 확인한 뒤, 병원 페이지에 쓸 사진은 아래 사진 자료에서 분류·권리 근거와 함께 등록해 주세요.',
+    photoConsentYes: '원장님이 병원 페이지 사진 사용에 동의했습니다.',
+    photoConsentNo: '원장님이 아직 사진 사용 동의를 켜지 않았습니다.',
+    fileKindPhoto: '사진',
+    fileKindLogo: '로고',
+    fileKindCertificate: '지정서·인증서',
   },
   // 근거 문서 업로드 폼 — 서버가 받는 형식은 PDF·DOCX뿐이다.
   documentUploadHint: 'PDF·DOCX 문서를 올릴 수 있습니다. 여러 개를 한 번에 고를 수 있습니다.',

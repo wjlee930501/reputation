@@ -16,7 +16,7 @@ Site 설문 화면은 이 정의를 API로 받아 그린다(`GET /public/doctor-
 - ``toggle`` → 참/거짓. ``toggles`` → 스위치 여러 개(각 항목이 ``toggle``).
 - ``list`` → 줄 목록(``fields``가 한 줄의 칸).
 - ``hours`` → 진료시간 사전. ``doctors`` → 의료진 목록.
-- ``files`` → 올린 파일 목록(PR2에서 연다 — 지금은 '담당자에게 따로 보내 주세요' 안내).
+- ``files`` → 올린 파일 목록(``[{id, name}]``, `doctor_survey_files`).
 - 표시만: ``info`` ``sh``(소제목) ``sec``(묶음 제목).
 
 ``essence``가 있는 칸만 근거 자료(설문 자료)에 실린다. 값은 근거 노트 종류다. 필수 문구(모든 글에 원문
@@ -315,7 +315,7 @@ PARTS: list[dict[str, Any]] = [
                     {"t": "files", "key": "photos", "label": "사진 올리기", "accept": "image/*", "kind": "PHOTO", "sub": "여러 장을 한 번에 고를 수 있음"},
                     {"t": "toggle", "key": "photo_consent", "label": "병원 페이지에 사진 사용 동의"},
                     {"t": "sec", "title": "병원 로고", "d": "선호하시는 색이 있으면 함께 적어 주시면 됩니다."},
-                    {"t": "files", "key": "logo_files", "label": "로고 파일", "accept": "image/*,.ai,.svg,.pdf", "kind": "LOGO", "sub": "PNG, SVG, AI 파일"},
+                    {"t": "files", "key": "logo_files", "label": "로고 파일", "accept": "image/png,image/jpeg,image/webp", "kind": "LOGO", "sub": "PNG·JPG 파일 (AI·SVG 파일은 담당자에게 따로 보내 주세요)"},
                     {"t": "text", "key": "logo_color", "label": "선호하시는 색", "ph": "예) 로고에 쓰인 남색, 초록 계열"},
                 ],
             },
