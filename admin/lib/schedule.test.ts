@@ -24,6 +24,18 @@ test('schedule validation catches too few publish days before the API call', () 
   assert.match(error ?? '', /16개가 필요/)
 })
 
+test('a mid-month start still needs the contract count, and the daily cap multiplies capacity', () => {
+  // 11/21~30은 10일 — 매일·하루 1편으로는 12편을 못 놓고, 하루 2편이면 놓는다.
+  const daily = [0, 1, 2, 3, 4, 5, 6]
+  assert.equal(countMonthlyPublishDates('2026-11-21', daily), 10)
+  assert.match(validateScheduleCapacity('PLAN_12', daily, '2026-11-21') ?? '', /10개만/)
+  assert.equal(validateScheduleCapacity('PLAN_12', daily, '2026-11-21', 2), null)
+  assert.match(
+    validateScheduleCapacity('PLAN_12', [0, 2, 4], '2026-11-23', 2) ?? '',
+    /하루 최대 2편으로는 2026-11에 콘텐츠 항목 8개만/,
+  )
+})
+
 test('localDateInputValue does not shift the selected day through UTC conversion', () => {
   assert.equal(localDateInputValue(new Date(2026, 4, 11, 9, 0, 0)), '2026-05-11')
 })

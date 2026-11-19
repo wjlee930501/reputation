@@ -67,6 +67,8 @@ def effective_schedules_query(month_end):
         .where(
             ContentSchedule.active_from <= month_end,
             ContentSchedule.hospital_id.in_(enabled),
+            # 뒤에 저장한 더 이른 시작일의 일정이 대신한 (시작 전) 일정은 조건이 아니다.
+            ContentSchedule.superseded_at.is_(None),
         )
         .subquery()
     )
@@ -75,6 +77,84 @@ def effective_schedules_query(month_end):
         .join(ranked, ranked.c.id == ContentSchedule.id)
         .where(ranked.c.position == 1)
     )
+
+
+def allocation_stays(row, *, today) -> bool:
+    """일정을 바꿔도 날짜를 옮기지 않는 슬롯인가(`retime_open_allocations`와 같은 판정).
+
+    지난 날짜·공개된 적 있는 글·이월·사람이 고친 원고·생성 중인 슬롯·DRAFT/READY가 아닌 슬롯이다.
+    """
+    current_date = getattr(row, "scheduled_date", None)
+    if current_date is None or current_date < today:
+        return True
+    return any(
+        getattr(row, field, None) is not None
+        for field in (
+            "carried_over_from",
+            "first_published_at",
+            "published_at",
+            "human_edited_at",
+            "generation_claim_token",
+        )
+    ) or getattr(row, "status", None) not in (ContentStatus.DRAFT, ContentStatus.READY)
+
+
+def movable_rows(existing, *, today) -> list:
+    """일정 교체가 날짜를 옮길 기존 슬롯 — 순번마다 옮길 수 있는 첫 행 하나.
+
+    옛 일정이 여럿이면 같은 순번의 살아 있는 행이 둘 이상일 수 있다. 계획은 순번마다 날짜
+    하나를 주므로 둘 다 옮기면 같은 날에 겹친다. 나머지 행은 그 자리에 둔다(그날 자리를 쓴다).
+    """
+    moving: dict = {}
+    for row in existing:
+        if allocation_stays(row, today=today):
+            continue
+        moving.setdefault(row.sequence_no, row)
+    return list(moving.values())
+
+
+def place_open_slots(planned, existing, *, today, window_dates, daily_max, other_dates=()):
+    """옮길 수 있는 슬롯과 새 슬롯의 날짜를 하루 `daily_max`편 이하로 다시 정한다.
+
+    계획은 월 전체 순번을 세운다. 그중 실제로 날짜가 정해지는 순번 — 옮길 수 있는 기존 슬롯의
+    순번과 `remaining_month_slots`가 새로 만들 순번 — 만 시작일 이후 발행 요일(`window_dates`)에
+    고르게 놓는다. 그 자리에 남는 슬롯(`allocation_stays`, 취소 제외)과 다른 달에서 넘어와 그
+    날에 놓인 글(`other_dates`)만큼 그날 자리를 줄인다. 같은 순번이 취소 행과 살아 있는 행에
+    겹쳐도 행 단위로 판단한다. 반환은 (새 계획, 놓지 못한 편수)다.
+    """
+    from dataclasses import replace
+
+    from app.services.content_calendar import capped_publish_dates, daily_capacity
+
+    window = set(window_dates)
+    moving = movable_rows(existing, today=today)
+    moving_ids = {id(row) for row in moving}
+    open_sequences = {row.sequence_no for row in moving} | {
+        slot.sequence_no for slot in remaining_month_slots(planned, existing)
+    }
+    occupied: dict = {}
+    fixed_dates = [
+        row.scheduled_date
+        for row in existing
+        if id(row) not in moving_ids
+        and getattr(row, "status", None) != ContentStatus.CANCELLED
+    ]
+    for day in [*fixed_dates, *other_dates]:
+        if day is not None and day in window:
+            occupied[day] = occupied.get(day, 0) + 1
+    open_slots = sorted(
+        (slot for slot in planned if slot.sequence_no in open_sequences),
+        key=lambda slot: slot.sequence_no,
+    )
+    capacity = daily_capacity(window_dates, daily_max, occupied)
+    if capacity < len(open_slots):
+        return planned, len(open_slots) - capacity
+    placed = capped_publish_dates(window_dates, len(open_slots), daily_max, occupied)
+    moved = {
+        slot.sequence_no: replace(slot, scheduled_date=day)
+        for slot, day in zip(open_slots, placed, strict=True)
+    }
+    return [moved.get(slot.sequence_no, slot) for slot in planned], 0
 
 
 async def retime_open_allocations(db, existing, planned, *, today):
@@ -86,21 +166,10 @@ async def retime_open_allocations(db, existing, planned, *, today):
     """
     dates = {slot.sequence_no: slot.scheduled_date for slot in planned}
     changed = 0
-    for row in existing:
+    for row in movable_rows(existing, today=today):
         current_date = getattr(row, "scheduled_date", None)
         wanted = dates.get(row.sequence_no)
-        if current_date is None or wanted is None or current_date < today or wanted == current_date:
-            continue
-        if any(
-            getattr(row, field, None) is not None
-            for field in (
-                "carried_over_from",
-                "first_published_at",
-                "published_at",
-                "human_edited_at",
-                "generation_claim_token",
-            )
-        ) or getattr(row, "status", None) not in (ContentStatus.DRAFT, ContentStatus.READY):
+        if wanted is None or wanted == current_date:
             continue
         result = await db.execute(
             update(ContentItem)
@@ -150,7 +219,8 @@ async def defer_unstarted_contract(db, hospital_id, *, new_start, today):
     earliest_start = (
         await db.execute(
             select(func.min(ContentSchedule.active_from)).where(
-                ContentSchedule.hospital_id == hospital_id
+                ContentSchedule.hospital_id == hospital_id,
+                ContentSchedule.superseded_at.is_(None),
             )
         )
     ).scalar_one_or_none()

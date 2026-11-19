@@ -25,6 +25,8 @@ export const ADMIN_COPY = {
   monthlyReport: '보고서',
   plan: '요금제',
   monthlyArticles: '월 발행 편수',
+  dailyMaxArticles: '하루 최대 발행 편수',
+  dailyMaxHint: '요일이 모자랄 때만 하루에 여러 편을 놓습니다. 시작 달도 계약 편수만큼 만듭니다.',
   operator: '운영자',
   aeOwner: '담당 AE',
   postPublishReview: '공개 후 확인',

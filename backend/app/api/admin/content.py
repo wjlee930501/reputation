@@ -24,7 +24,7 @@ from typing import Any, Final, Optional
 import arrow
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -32,7 +32,12 @@ from app.api.admin.operations_center_serializers import requires_operator_action
 from app.api.admin.operations_links import hospital_incidents_href, incident_href
 from app.api.public.site import is_public_serving_hospital
 from app.core.database import get_db
-from app.models.content import ContentItem, ContentSchedule, ContentStatus
+from app.models.content import (
+    ContentItem,
+    ContentSchedule,
+    ContentStatus,
+    monthly_quota_for_plan,
+)
 from app.models.hospital import Hospital, HospitalStatus
 from app.models.operations import Incident, IncidentState, OperationRun, OperationRunState
 from app.models.sov import AIQueryTarget, ExposureAction
@@ -48,7 +53,11 @@ from app.services.content_brief import (
     build_content_brief,
     is_usable_content_brief,
 )
-from app.services.content_calendar import generate_monthly_slots
+from app.services.content_calendar import (
+    MAX_DAILY_ARTICLES,
+    generate_monthly_slots,
+    preferred_publish_dates,
+)
 from app.services.content_candidate_publication import (
     CandidateStageConflict,
     active_public_text,
@@ -60,7 +69,7 @@ from app.services.content_engine import (
     _normalize_references,
 )
 from app.services.content_month_target import (
-    month_content_target,
+    CONTRACT_QUOTA_MONTH_KEY,
     month_is_voided,
     schedule_change_records_stmt,
 )
@@ -140,6 +149,7 @@ from app.services.schedule_reconciliation import (
     DEFERRED_START_KEY,
     defer_unstarted_contract,
     month_items_query,
+    place_open_slots,
     remaining_month_slots,
     retime_open_allocations,
 )
@@ -197,6 +207,8 @@ class ScheduleCreate(BaseModel):
     plan: str = Field(pattern=r"^PLAN_(20|16|12)$")  # PLAN_20 | PLAN_16 | PLAN_12
     publish_days: list[int]  # [1, 4] = 화·금
     active_from: date
+    # 발행 요일 하루에 놓을 수 있는 최대 편수(0099). 옛 Admin은 보내지 않으므로 1이 기본이다.
+    daily_max: int = Field(default=1, ge=1, le=MAX_DAILY_ARTICLES)
 
     @field_validator("publish_days")
     @classmethod
@@ -365,11 +377,51 @@ async def set_schedule(
     old_result = await db.execute(old_stmt)
     old_schedules = old_result.scalars().all()
     old_schedule_ids = [old.id for old in old_schedules]
-    future_heads = [
-        old
-        for old in old_schedules
-        if getattr(old, "active_from", body.active_from) > body.active_from
+    # 새 시작일보다 늦게 시작하는(= 아직 시작 전) 일정. 계약 요금제 변경이 덧붙인 다음 달 조건
+    # (`handoffs._sync_active_schedule_plan`, 요금제가 다르고 켜져 있다)만 남기고, 나머지는 이
+    # 저장이 대신한다(superseded). 남겨 두면 유효 조건 순위(시작일 내림차순)가 이 저장보다 늦은
+    # 시작일을 골라, 시작일을 앞당겨도 운영 시작일이 옛 값으로 남는다(2026-11-19 다대으뜸내과).
+    starting_plan = (
+        await db.execute(
+            select(ContentSchedule.plan)
+            .where(
+                ContentSchedule.hospital_id == hospital_id,
+                ContentSchedule.active_from <= body.active_from,
+                ContentSchedule.superseded_at.is_(None),
+            )
+            .order_by(ContentSchedule.active_from.desc(), ContentSchedule.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none() or authoritative_plan or body.plan
+    later_schedules = (
+        await db.execute(
+            select(ContentSchedule).where(
+                ContentSchedule.hospital_id == hospital_id,
+                ContentSchedule.active_from > body.active_from,
+                ContentSchedule.superseded_at.is_(None),
+            )
+        )
+    ).scalars().all()
+    # 같은 시작일에 더 나중에 저장된 행이 있으면 그 행이 이미 대신했다(가려진 행은 대신한다).
+    latest_by_start: dict = {}
+    for later in later_schedules:
+        current = latest_by_start.get(later.active_from)
+        if current is None or (later.created_at or datetime.min.replace(tzinfo=timezone.utc)) > (
+            current.created_at or datetime.min.replace(tzinfo=timezone.utc)
+        ):
+            latest_by_start[later.active_from] = later
+    # 요금제가 다른 시작 전 행은 계약 변경 기록이라 켜짐 여부와 상관없이 남긴다.
+    contract_changes = [
+        later
+        for later in latest_by_start.values()
+        if later.plan != starting_plan
     ]
+    future_heads = [later for later in contract_changes if later.is_active]
+    superseded = [later for later in later_schedules if later not in contract_changes]
+    superseded_at = datetime.now(timezone.utc)
+    for later in superseded:
+        later.is_active = False
+        later.superseded_at = superseded_at
     for old in old_schedules:
         if old not in future_heads:
             old.is_active = False
@@ -388,13 +440,15 @@ async def set_schedule(
             .where(
                 ContentSchedule.hospital_id == hospital_id,
                 ContentSchedule.active_from <= target_month.ceil("month").date(),
+                ContentSchedule.superseded_at.is_(None),
             )
             .order_by(ContentSchedule.active_from.desc(), ContentSchedule.created_at.desc())
             .limit(1)
         )
     ).scalar_one_or_none() or body.plan
-    # 그 달 약속 편수. 시스템이 안분한 첫 계약 월은 그 편수다(content_month_target) — 사람이
-    # 같은 달에 요일·시작일을 바꿔 교체해도 요금제 편수로 다시 채우지 않는다(0편 달 포함).
+    # 그 달 약속 편수는 요금제 편수다(2026-11-19 대표 결정) — 시스템이 첫 계약 월을 안분했어도
+    # 사람이 그 달을 시작 달로 저장하면 계약 편수로 되돌린다. 감사행의 `contract_quota_month`가
+    # 그 사실을 남겨 보고서·현황·당월 조정이 같은 값을 읽는다(content_month_target).
     # 시작일을 미뤄 0편으로 둔 달 안이나 앞으로 다시 당기면 그 달은 다시 약속 달이다 — 미룰 때
     # 종료한 슬롯(공개된 적 없는 CANCELLED)은 배정으로 세지 않고 새 슬롯으로 채운다.
     reopening_voided_month = month_is_voided(
@@ -410,15 +464,14 @@ async def set_schedule(
                 and row.published_at is None
             )
         ]
-    month_target = await month_content_target(
-        db, hospital_id, target_month, period_plan, ignore_void=reopening_voided_month
-    )
+    month_target = monthly_quota_for_plan(period_plan)
 
     schedule = ContentSchedule(
         hospital_id=hospital_id,
         plan=period_plan,
         publish_days=body.publish_days,
         active_from=body.active_from,
+        daily_max=body.daily_max,
         is_active=not future_heads,
         created_at=datetime.now(timezone.utc),
     )
@@ -436,8 +489,9 @@ async def set_schedule(
                 body.publish_days,
                 target_month,
                 start_date=body.active_from,
-                ensure_quota=bool(existing_rows),
+                ensure_quota=True,
                 total=month_target,
+                daily_max=body.daily_max,
             )
         )
     except ValueError as exc:
@@ -463,6 +517,50 @@ async def set_schedule(
     planned = plan_gap_driven_slots(
         slots, plan=period_plan, gap_targets=gap_targets, existing=existing_slots
     )
+    # 옮길 수 있는 슬롯과 새 슬롯을 시작일 이후 발행 요일에 하루 `daily_max`편 이하로 놓는다.
+    # 자리가 모자라면 저장하지 않는다 — 몰아 넣지 않고 운영자가 요일·하루 편수를 고르게 한다.
+    window_dates = preferred_publish_dates(body.publish_days, target_month, body.active_from)
+    # 다른 달에서 이월돼 이 달 날짜에 놓인 글도 그날 자리를 쓴다.
+    contract_date = func.coalesce(ContentItem.carried_over_from, ContentItem.scheduled_date)
+    carried_in_dates = (
+        (
+            await db.execute(
+                select(ContentItem.scheduled_date).where(
+                    ContentItem.hospital_id == hospital_id,
+                    ContentItem.scheduled_date >= body.active_from,
+                    ContentItem.scheduled_date <= target_month.ceil("month").date(),
+                    ContentItem.status != ContentStatus.CANCELLED,
+                    contract_date < target_month.date(),
+                )
+            )
+        ).scalars().all()
+        if window_dates
+        else []
+    )
+    planned, unplaced = place_open_slots(
+        planned,
+        existing_rows,
+        today=today_kst,
+        window_dates=window_dates,
+        daily_max=body.daily_max,
+        other_dates=carried_in_dates,
+    )
+    if unplaced:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "SCHEDULE_CAPACITY_SHORT",
+                "message": (
+                    f"{target_month.format('YYYY년 M월')} 시작일 이후 발행 요일 {len(window_dates)}일에 "
+                    f"하루 최대 {body.daily_max}편으로는 {unplaced}편을 더 놓을 수 없습니다. "
+                    "발행 요일을 추가하거나 하루 최대 편수를 늘려 주세요."
+                ),
+                "month_target": month_target,
+                "publish_dates": len(window_dates),
+                "daily_max": body.daily_max,
+                "unplaced": unplaced,
+            },
+        )
     rescheduled_count = await retime_open_allocations(db, existing_rows, planned, today=today_kst)
     planned = remaining_month_slots(planned, existing_rows)
 
@@ -517,9 +615,14 @@ async def set_schedule(
             "plan": period_plan,
             "publish_days": body.publish_days,
             "active_from": str(body.active_from),
+            "daily_max": body.daily_max,
             "slots_created": len(created_items),
             "slots_rescheduled": rescheduled_count,
             "future_contract_preserved": bool(future_heads),
+            "superseded_schedule_ids": [str(later.id) for later in superseded],
+            # 이 저장이 시작 달의 약속을 계약 편수로 되돌렸다(content_month_target).
+            CONTRACT_QUOTA_MONTH_KEY: target_month.format("YYYY-MM"),
+            "month_target": month_target,
             "slots_cancelled_before_start": len(deferred_start["cancelled_ids"])
             if deferred_start
             else 0,
@@ -582,9 +685,12 @@ async def set_schedule(
         "schedule_id": str(schedule.id),
         "plan": period_plan,
         "publish_days": body.publish_days,
+        "daily_max": body.daily_max,
+        "month_target": month_target,
         "slots_created": len(created_items),
         "slots_rescheduled": rescheduled_count,
         "future_contract_preserved": bool(future_heads),
+        "schedules_superseded": len(superseded),
         "slots_cancelled_before_start": len(deferred_start["cancelled_ids"]) if deferred_start else 0,
         "slots_kept_before_start": len(deferred_start["kept_human_edited_ids"]) if deferred_start else 0,
         "first_publish_date": str(created_items[0].scheduled_date) if created_items else None,
@@ -618,6 +724,7 @@ async def get_schedule(
         "plan": _enum_value(schedule.plan),
         "publish_days": schedule.publish_days,
         "active_from": str(schedule.active_from),
+        "daily_max": int(getattr(schedule, "daily_max", None) or 1),
         "is_active": bool(schedule.is_active),
         "created_at": schedule.created_at.isoformat() if schedule.created_at else None,
     }

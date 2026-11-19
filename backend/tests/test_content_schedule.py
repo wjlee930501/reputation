@@ -57,6 +57,12 @@ class _FakeDB:
         return self.hospital if object_id == self.hospital.id else None
 
     async def execute(self, statement):
+        if str(statement).startswith("SELECT content_items.scheduled_date"):
+            # 다른 달에서 이월돼 이 달 날짜에 놓인 글 — 이 더블에는 없다.
+            return _ExecuteResult([], self.hospital)
+        if "content_schedules.active_from >" in str(statement):
+            # 새 시작일보다 늦게 시작하는 일정(대신할 후보) — 이 더블에는 없다.
+            return _ExecuteResult([], self.hospital)
         if str(statement).startswith(
             ("SELECT content_schedules.plan", "SELECT admin_audit_logs.detail", "SELECT admin_audit_logs.created_at", "SELECT min(content_schedules.active_from)")
         ):
@@ -137,8 +143,11 @@ async def test_set_schedule_returns_validation_error_for_capacity_shortfall(monk
     with pytest.raises(HTTPException) as exc:
         await content_api.set_schedule(hospital.id, body, db=db)
 
-    assert exc.value.status_code == 400
-    assert "발행일 수(6)" in exc.value.detail
+    # 하루 최대 편수(기본 1)로 월 편수를 채울 수 없으면 저장하지 않는다(2026-11-19 대표 결정).
+    assert exc.value.status_code == 422
+    assert exc.value.detail["code"] == "SCHEDULE_CAPACITY_SHORT"
+    assert exc.value.detail["publish_dates"] == 6
+    assert exc.value.detail["unplaced"] == 10
     assert db.committed is False
 
 
@@ -508,6 +517,8 @@ async def test_get_schedule_returns_active_schedule():
         "plan": "PLAN_12",
         "publish_days": [0, 2, 4],
         "active_from": "2026-07-01",
+        # 0099 이전 행(속성 없음)은 하루 1편이다.
+        "daily_max": 1,
         "is_active": True,
         "created_at": schedule.created_at.isoformat(),
     }

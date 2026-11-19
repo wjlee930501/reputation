@@ -6,6 +6,9 @@ export const PLAN_TOTALS: Record<string, number> = {
   PLAN_12: 12,
 }
 
+/** 발행 요일 하루에 놓을 수 있는 최대 편수의 선택지(backend `MAX_DAILY_ARTICLES`와 같다). */
+export const DAILY_MAX_OPTIONS = [1, 2, 3] as const
+
 export const DEFAULT_PUBLISH_DAYS_BY_PLAN: Record<string, number[]> = {
   PLAN_20: [0, 1, 2, 3, 4],
   PLAN_16: [0, 1, 2, 3],
@@ -66,14 +69,16 @@ export function validateScheduleCapacity(
   plan: string,
   publishDays: number[],
   activeFrom: string,
+  dailyMax = 1,
 ): string | null {
   const total = PLAN_TOTALS[plan]
   if (!total) return '알 수 없는 요금제입니다.'
   if (publishDays.length === 0) return '발행 요일을 하나 이상 선택해 주세요.'
 
-  const available = countMonthlyPublishDates(activeFrom, publishDays)
+  // 사람이 저장한 일정의 시작 달은 계약 편수 그대로다(월 중간 시작이어도 줄이지 않는다).
+  const available = countMonthlyPublishDates(activeFrom, publishDays) * dailyMax
   if (available >= total) return null
 
   const monthLabel = activeFrom.slice(0, 7)
-  return `선택한 요일로는 ${monthLabel}에 콘텐츠 항목 ${available}개만 만들 수 있습니다. ${total}개가 필요하므로 발행 요일을 추가하거나 요금제를 변경해 주세요.`
+  return `선택한 요일과 하루 최대 ${dailyMax}편으로는 ${monthLabel}에 콘텐츠 항목 ${available}개만 만들 수 있습니다. ${total}개가 필요하므로 발행 요일을 추가하거나 하루 최대 편수를 늘려 주세요.`
 }

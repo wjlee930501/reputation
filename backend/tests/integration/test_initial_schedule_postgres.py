@@ -401,13 +401,18 @@ async def _human_replaces_schedule(pg_session, monkeypatch, hospital, *, today, 
     return await content_api.set_schedule(hospital.id, body, _AsyncWriteShim(pg_session))
 
 
-async def test_a_human_weekday_change_keeps_the_prorated_first_month(
+async def test_a_human_weekday_change_restores_the_contract_quota(
     pg_session, monkeypatch
 ) -> None:
-    """자동 일정(PLAN_12, 첫 달 9편) 뒤 사람이 같은 달 요일을 바꿔도 약속은 9편 그대로다."""
+    """자동 일정(PLAN_12, 첫 달 9편) 뒤 사람이 같은 달 일정을 저장하면 약속은 계약 편수(12)다.
+
+    2026-11-19 대표 결정(다대으뜸내과): 사람의 저장은 시스템 안분을 쓰지 않는다. 하루 최대 편수로
+    그 달 편수를 놓을 수 없으면 저장하지 않는다.
+    """
     from unittest.mock import AsyncMock
 
     import arrow
+    from fastapi import HTTPException
 
     from app.api.admin import hospital_overview as overview
     from app.api.admin.content import ScheduleCreate
@@ -419,28 +424,53 @@ async def test_a_human_weekday_change_keeps_the_prorated_first_month(
         pg_session, hospital.id, today=MID_MONTH, trigger="essence_auto_approval"
     )
     assert outcome.slots_created == 9
+    october = arrow.get(date(2026, 10, 1))
+
+    # 화·목은 10/13 뒤로 6일 — 하루 1편으로 12편을 놓을 수 없어 저장하지 않는다.
+    attempt = pg_session.begin_nested()
+    with pytest.raises(HTTPException) as short:
+        await _human_replaces_schedule(
+            pg_session,
+            monkeypatch,
+            hospital,
+            today=MID_MONTH,
+            body=ScheduleCreate(
+                plan="PLAN_12", publish_days=[1, 3], active_from=date(2026, 10, 13)
+            ),
+        )
+    assert short.value.status_code == 422
+    assert short.value.detail["code"] == "SCHEDULE_CAPACITY_SHORT"
+    attempt.rollback()
+    assert month_content_target_sync(pg_session, hospital.id, october, "PLAN_12") == 9
 
     response = await _human_replaces_schedule(
         pg_session,
         monkeypatch,
         hospital,
         today=MID_MONTH,
-        body=ScheduleCreate(plan="PLAN_12", publish_days=[1, 3], active_from=date(2026, 10, 13)),
+        body=ScheduleCreate(
+            plan="PLAN_12", publish_days=[1, 3], active_from=date(2026, 10, 13), daily_max=2
+        ),
     )
 
-    assert response["slots_created"] == 0
-    october = arrow.get(date(2026, 10, 1))
+    assert response["slots_created"] == 3 and response["month_target"] == 12
     rows = _month_rows(pg_session, hospital.id, date(2026, 10, 1), date(2026, 10, 31))
-    assert len(rows) == 9 and {row.total_count for row in rows} == {9}
-    assert month_content_target_sync(pg_session, hospital.id, october, "PLAN_12") == 9
+    assert len(rows) == 12
+    # 기존 9편도 새 요일로 옮겨, 하루 2편을 넘는 날이 없다.
+    per_day: dict[date, int] = {}
+    for row in rows:
+        assert row.scheduled_date.weekday() in (1, 3)
+        per_day[row.scheduled_date] = per_day.get(row.scheduled_date, 0) + 1
+    assert max(per_day.values()) == 2
+    assert month_content_target_sync(pg_session, hospital.id, october, "PLAN_12") == 12
 
-    # 매일 당월 조정도 새 일정으로 요금제 편수까지 채우지 않는다.
+    # 매일 당월 조정은 더 만들지 않는다(이미 12편).
     latest = pg_session.execute(
         select(ContentSchedule).where(
             ContentSchedule.hospital_id == hospital.id, ContentSchedule.is_active
         )
     ).scalar_one()
-    assert latest.id != outcome.schedule_id
+    assert latest.id != outcome.schedule_id and latest.daily_max == 2
     assert (
         create_next_month_slots_for_schedule(
             pg_session, latest, october, october.date(), october.ceil("month").date(),
@@ -448,7 +478,6 @@ async def test_a_human_weekday_change_keeps_the_prorated_first_month(
         )
         is False
     )
-    assert len(_month_rows(pg_session, hospital.id, date(2026, 10, 1), date(2026, 10, 31))) == 9
 
     monkeypatch.setattr(
         overview.arrow, "now", lambda *args: arrow.get(datetime(2026, 10, 13, 3, tzinfo=timezone.utc))
@@ -457,14 +486,19 @@ async def test_a_human_weekday_change_keeps_the_prorated_first_month(
     summary = await overview._month_summary(
         _AsyncSessionShim(pg_session), pg_session.get(Hospital, hospital.id)
     )
-    assert summary.planned_total == 9
+    assert summary.planned_total == 12
 
 
-async def test_a_human_edit_of_a_zero_slot_first_month_stays_zero(
+async def test_a_human_edit_of_a_zero_slot_first_month_cannot_cram_the_quota(
     pg_session, monkeypatch
 ) -> None:
-    """첫 달 0편(게시 요일이 남지 않은 달)을 사람이 다른 요일로 바꿔도 그 달 슬롯은 0편이다."""
+    """첫 달 0편(게시 요일이 남지 않은 달)을 사람이 마지막 날 하루로 바꾸면 저장하지 않는다.
+
+    사람의 저장은 계약 편수(20)를 약속하므로 하루 최대 편수(1~3)로 하루에 놓을 수 없다.
+    그 달 약속은 0편 그대로다.
+    """
     import arrow
+    from fastapi import HTTPException
 
     from app.api.admin.content import ScheduleCreate
     from app.services.content_month_target import month_content_target_sync
@@ -475,18 +509,20 @@ async def test_a_human_edit_of_a_zero_slot_first_month_stays_zero(
     )
     assert outcome.active_from == date(2026, 10, 31) and outcome.slots_created == 0
 
-    # 10/31(토)이 게시 요일이 되도록 바꿔도 10월 약속은 늘지 않는다.
-    response = await _human_replaces_schedule(
-        pg_session,
-        monkeypatch,
-        hospital,
-        today=date(2026, 10, 30),
-        body=ScheduleCreate(
-            plan="PLAN_20", publish_days=[0, 1, 2, 3, 5], active_from=date(2026, 10, 31)
-        ),
-    )
-
-    assert response["slots_created"] == 0
+    attempt = pg_session.begin_nested()
+    with pytest.raises(HTTPException) as short:
+        await _human_replaces_schedule(
+            pg_session,
+            monkeypatch,
+            hospital,
+            today=date(2026, 10, 30),
+            body=ScheduleCreate(
+                plan="PLAN_20", publish_days=[0, 1, 2, 3, 5], active_from=date(2026, 10, 31),
+                daily_max=3,
+            ),
+        )
+    assert short.value.status_code == 422
+    attempt.rollback()
     assert _month_rows(pg_session, hospital.id, date(2026, 10, 1), date(2026, 10, 31)) == []
     october = arrow.get(date(2026, 10, 1))
     assert month_content_target_sync(pg_session, hospital.id, october, "PLAN_20") == 0
@@ -534,3 +570,271 @@ def test_rollback_overdelivery_report_finds_old_code_top_up_slots(pg_session) ->
     [row], candidates = report()
     assert (row["month_slots"], row["live_slots"], row["topped_up_slots"]) == (12, 12, 3)
     assert {c["content_id"] for c in candidates} == {item.id for item in extra}
+
+
+async def test_an_earlier_start_replaces_a_not_yet_started_later_schedule(
+    pg_session, monkeypatch
+) -> None:
+    """다대으뜸내과(2026-11-19): 11/30 시작 일정 뒤에 11/20 시작으로 앞당기면 앞당긴 일정이 운영 일정이다.
+
+    옛 코드는 늦게 시작하는 일정을 '미래 계약'으로 남기고 새 일정을 꺼 둔 채 저장해, 화면은 '설정
+    완료'인데 운영 시작일은 11/30이었다. 같은 요금제의 시작 전 일정은 이제 이 저장이 대신한다.
+    """
+    import arrow
+
+    from app.api.admin import content as content_api
+    from app.api.admin.content import ScheduleCreate
+    from app.services.content_month_target import month_content_target_sync
+    from app.services.schedule_reconciliation import effective_schedules_query
+    from app.workers.monthly_slots import create_next_month_slots_for_schedule
+
+    hospital = _seed(pg_session)
+    outcome = ensure_initial_content_schedule(
+        pg_session, hospital.id, today=date(2026, 11, 19), trigger="essence_auto_approval"
+    )
+    # 11/20부터 월·수·금 5일 → 안분 5편.
+    assert outcome.active_from == date(2026, 11, 20) and outcome.slots_created == 5
+    november = arrow.get(date(2026, 11, 1))
+    assert month_content_target_sync(pg_session, hospital.id, november, "PLAN_12") == 5
+
+    # 옛 코드에서 사람이 11/30·매일로 저장해 남은 상태(그 일정이 켜진 운영 일정).
+    system_schedule = pg_session.get(ContentSchedule, outcome.schedule_id)
+    system_schedule.is_active = False
+    late = ContentSchedule(
+        hospital_id=hospital.id,
+        plan="PLAN_12",
+        publish_days=list(range(7)),
+        active_from=date(2026, 11, 30),
+        is_active=True,
+        created_at=datetime(2026, 11, 19, 6, 8, tzinfo=timezone.utc),
+    )
+    pg_session.add(late)
+    pg_session.flush()
+
+    response = await _human_replaces_schedule(
+        pg_session,
+        monkeypatch,
+        hospital,
+        today=date(2026, 11, 20),
+        body=ScheduleCreate(
+            plan="PLAN_12", publish_days=list(range(7)), active_from=date(2026, 11, 21),
+            daily_max=2,
+        ),
+    )
+
+    assert response["future_contract_preserved"] is False
+    assert response["schedules_superseded"] == 1
+    assert response["month_target"] == 12 and response["slots_created"] == 7
+    pg_session.refresh(late)
+    assert late.is_active is False and late.superseded_at is not None
+
+    current = await content_api.get_schedule(hospital.id, _AsyncWriteShim(pg_session))
+    assert current["active_from"] == "2026-11-21" and current["daily_max"] == 2
+    effective = pg_session.scalars(
+        effective_schedules_query(date(2026, 11, 30)).where(
+            ContentSchedule.hospital_id == hospital.id
+        )
+    ).one()
+    assert str(effective.id) == current["schedule_id"]
+
+    rows = _month_rows(pg_session, hospital.id, date(2026, 11, 1), date(2026, 11, 30))
+    assert len(rows) == 12
+    per_day: dict[date, int] = {}
+    for row in rows:
+        assert row.scheduled_date >= date(2026, 11, 21)
+        per_day[row.scheduled_date] = per_day.get(row.scheduled_date, 0) + 1
+    # 11/21~30은 10일 — 하루 1편씩 깔고 남은 2편만 하루 2편이다.
+    assert sorted(per_day.values()) == [1] * 8 + [2] * 2
+    assert month_content_target_sync(pg_session, hospital.id, november, "PLAN_12") == 12
+
+    # 21:30 당월 조정은 앞당긴 일정으로 읽고 더 만들지 않는다.
+    assert (
+        create_next_month_slots_for_schedule(
+            pg_session, effective, november, november.date(), november.ceil("month").date(),
+            not_before=date(2026, 11, 20),
+        )
+        is False
+    )
+    # 12월은 앞당긴 일정(매일·하루 최대 2편)이 조건이다 — 대신된 11/30 일정이 아니다.
+    december = pg_session.scalars(
+        effective_schedules_query(date(2026, 12, 31)).where(
+            ContentSchedule.hospital_id == hospital.id
+        )
+    ).one()
+    assert december.id == effective.id
+
+
+async def test_a_plan_change_head_still_survives_an_earlier_same_month_edit(
+    pg_session, monkeypatch
+) -> None:
+    """요금제 변경이 덧붙인 다음 달 조건(요금제가 다르다)은 이번 달 일정 저장이 대신하지 않는다."""
+    from app.api.admin.content import ScheduleCreate
+
+    hospital = _seed(pg_session)
+    current = ContentSchedule(
+        hospital_id=hospital.id,
+        plan="PLAN_12",
+        publish_days=[0, 2, 4],
+        active_from=date(2026, 10, 1),
+        is_active=False,
+    )
+    head = ContentSchedule(
+        hospital_id=hospital.id,
+        plan="PLAN_20",
+        publish_days=[0, 2, 4],
+        active_from=date(2026, 12, 1),
+        is_active=True,
+    )
+    pg_session.add_all([current, head])
+    hospital.schedule_set = True
+    hospital.plan = Plan.PLAN_20  # 계약 정정이 요금제를 바꾸고 12월 조건을 덧붙였다.
+    pg_session.flush()
+
+    response = await _human_replaces_schedule(
+        pg_session,
+        monkeypatch,
+        hospital,
+        today=date(2026, 11, 10),
+        body=ScheduleCreate(
+            plan="PLAN_20", publish_days=list(range(7)), active_from=date(2026, 11, 11)
+        ),
+    )
+
+    assert response["future_contract_preserved"] is True
+    assert response["plan"] == "PLAN_12"  # 11월은 옛 요금제 조건 그대로
+    assert response["schedules_superseded"] == 0
+    pg_session.refresh(head)
+    assert head.is_active is True and head.superseded_at is None
+
+
+def test_current_month_reconcile_does_not_stack_past_the_daily_max(pg_session) -> None:
+    """21:30 당월 조정이 이미 찬 날에 새 슬롯을 얹어 하루 최대 편수를 넘기지 않는다(Codex 검토)."""
+    import arrow
+
+    from app.models.content import ContentStatus, ContentType
+    from app.workers.monthly_slots import create_next_month_slots_for_schedule
+
+    hospital = _seed(pg_session)
+    schedule = ContentSchedule(
+        hospital_id=hospital.id,
+        plan="PLAN_12",
+        publish_days=list(range(7)),
+        active_from=date(2026, 11, 21),
+        daily_max=2,
+        is_active=True,
+    )
+    pg_session.add(schedule)
+    pg_session.flush()
+    for seq in (1, 2):
+        pg_session.add(
+            ContentItem(
+                hospital_id=hospital.id,
+                schedule_id=schedule.id,
+                content_type=ContentType.FAQ,
+                sequence_no=seq,
+                total_count=12,
+                scheduled_date=date(2026, 11, 25),
+                status=ContentStatus.DRAFT,
+            )
+        )
+    pg_session.flush()
+    november = arrow.get(date(2026, 11, 1))
+    assert create_next_month_slots_for_schedule(
+        pg_session, schedule, november, november.date(), november.ceil("month").date(),
+        not_before=date(2026, 11, 21),
+    )
+    rows = _month_rows(pg_session, hospital.id, date(2026, 11, 1), date(2026, 11, 30))
+    assert len(rows) == 12
+    days = [row.scheduled_date for row in rows]
+    assert min(days) >= date(2026, 11, 21)
+    assert max(days.count(day) for day in set(days)) <= 2
+
+
+async def test_an_inactive_plan_change_row_is_not_superseded(pg_session, monkeypatch) -> None:
+    """12/1 요금제 변경 행이 1/1 일정 저장으로 꺼졌어도, 11월 일정 저장이 그 행을 대신하지 않는다(Codex 검토)."""
+    from app.api.admin.content import ScheduleCreate
+    from app.services.schedule_reconciliation import effective_schedules_query
+
+    hospital = _seed(pg_session)
+    current = ContentSchedule(
+        hospital_id=hospital.id, plan="PLAN_12", publish_days=[0, 2, 4],
+        active_from=date(2026, 10, 1), is_active=False,
+        created_at=datetime(2026, 9, 30, tzinfo=timezone.utc),
+    )
+    change = ContentSchedule(
+        hospital_id=hospital.id, plan="PLAN_16", publish_days=[0, 2, 4],
+        active_from=date(2026, 12, 1), is_active=False,
+        created_at=datetime(2026, 11, 1, tzinfo=timezone.utc),
+    )
+    january = ContentSchedule(
+        hospital_id=hospital.id, plan="PLAN_16", publish_days=[0, 1, 2, 3],
+        active_from=date(2027, 1, 1), is_active=True,
+        created_at=datetime(2026, 11, 10, tzinfo=timezone.utc),
+    )
+    pg_session.add_all([current, change, january])
+    hospital.schedule_set = True
+    hospital.plan = Plan.PLAN_16
+    pg_session.flush()
+
+    response = await _human_replaces_schedule(
+        pg_session,
+        monkeypatch,
+        hospital,
+        today=date(2026, 11, 20),
+        body=ScheduleCreate(
+            plan="PLAN_16", publish_days=list(range(7)), active_from=date(2026, 11, 21),
+            daily_max=2,
+        ),
+    )
+
+    assert response["plan"] == "PLAN_12" and response["schedules_superseded"] == 0
+    pg_session.refresh(change)
+    assert change.superseded_at is None
+    december = pg_session.scalars(
+        effective_schedules_query(date(2026, 12, 31)).where(
+            ContentSchedule.hospital_id == hospital.id
+        )
+    ).one()
+    assert december.id == change.id and december.plan == "PLAN_16"
+
+
+async def test_a_shadowed_older_row_does_not_resurface_after_superseding(
+    pg_session, monkeypatch
+) -> None:
+    """같은 시작일에 요금제 변경으로 가려진 옛 행은 같은 요금제 행과 함께 대신한다."""
+    from app.api.admin.content import ScheduleCreate
+    from app.services.schedule_reconciliation import effective_schedules_query
+
+    hospital = _seed(pg_session, plan=Plan.PLAN_20)
+    shadowed = ContentSchedule(
+        hospital_id=hospital.id, plan="PLAN_12", publish_days=[0, 2, 4],
+        active_from=date(2026, 12, 1), is_active=False,
+        created_at=datetime(2026, 11, 1, tzinfo=timezone.utc),
+    )
+    head = ContentSchedule(
+        hospital_id=hospital.id, plan="PLAN_20", publish_days=[0, 2, 4],
+        active_from=date(2026, 12, 1), is_active=True,
+        created_at=datetime(2026, 11, 2, tzinfo=timezone.utc),
+    )
+    pg_session.add_all([shadowed, head])
+    hospital.schedule_set = True
+    pg_session.flush()
+
+    response = await _human_replaces_schedule(
+        pg_session,
+        monkeypatch,
+        hospital,
+        today=date(2026, 11, 20),
+        body=ScheduleCreate(
+            plan="PLAN_20", publish_days=list(range(7)), active_from=date(2026, 11, 21),
+            daily_max=2,
+        ),
+    )
+
+    assert response["schedules_superseded"] == 2
+    december = pg_session.scalars(
+        effective_schedules_query(date(2026, 12, 31)).where(
+            ContentSchedule.hospital_id == hospital.id
+        )
+    ).one()
+    assert december.plan == "PLAN_20" and december.active_from == date(2026, 11, 21)

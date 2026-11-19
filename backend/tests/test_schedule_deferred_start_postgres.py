@@ -9,6 +9,7 @@ from datetime import date, datetime, timedelta, timezone
 
 import arrow
 import pytest
+from fastapi import HTTPException
 from sqlalchemy import delete, select
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
@@ -149,15 +150,24 @@ async def test_moving_an_unstarted_start_to_next_month_cancels_old_slots(frozen_
             assert await month_content_target(db, hospital_id, DEC, "PLAN_12") == 12
 
         # 다시 11월 시작으로 저장하면 11월은 다시 약속 달이고 새 슬롯이 생긴다(0편 기록이 풀린다).
+        # 사람의 저장이므로 약속은 안분(8)이 아니라 계약 편수(12)다(2026-11-19 대표 결정) — 월·수·금
+        # 8일로는 하루 1편으로 못 채워 저장을 막고, 하루 최대 2편이면 저장한다.
         async with AsyncSession(engine, expire_on_commit=False) as db:
             body = content_api.ScheduleCreate(
                 plan="PLAN_12", publish_days=[0, 2, 4], active_from=date(2026, 11, 13)
             )
+            with pytest.raises(HTTPException) as short:
+                await content_api.set_schedule(hospital_id, body, db=db)
+        assert short.value.status_code == 422
+        async with AsyncSession(engine, expire_on_commit=False) as db:
+            body = content_api.ScheduleCreate(
+                plan="PLAN_12", publish_days=[0, 2, 4], active_from=date(2026, 11, 13), daily_max=2
+            )
             reopened = await content_api.set_schedule(hospital_id, body, db=db)
-        assert reopened["slots_created"] == 8
+        assert reopened["slots_created"] == 12
         async with AsyncSession(engine, expire_on_commit=False) as db:
             target = await month_content_target(db, hospital_id, NOV, "PLAN_12")
-            assert target == 8
+            assert target == 12
             rows = await _statuses(db, hospital_id)
             live = [d for d, s in rows if d.month == 11 and s != ContentStatus.CANCELLED]
             assert len(live) == reopened["slots_created"]
