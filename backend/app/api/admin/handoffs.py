@@ -214,6 +214,7 @@ async def _sync_active_schedule_plan(
         db.add(ContentSchedule(
             hospital_id=hospital_id, plan=plan.value,
             publish_days=list(schedule.publish_days), active_from=effective_from,
+            daily_max=getattr(schedule, "daily_max", None) or 1,
             is_active=True, created_at=datetime.now(UTC),
         ))
     return synced

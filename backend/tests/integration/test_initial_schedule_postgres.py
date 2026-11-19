@@ -705,3 +705,46 @@ async def test_a_plan_change_head_still_survives_an_earlier_same_month_edit(
     assert response["schedules_superseded"] == 0
     pg_session.refresh(head)
     assert head.is_active is True and head.superseded_at is None
+
+
+def test_current_month_reconcile_does_not_stack_past_the_daily_max(pg_session) -> None:
+    """21:30 당월 조정이 이미 찬 날에 새 슬롯을 얹어 하루 최대 편수를 넘기지 않는다(Codex 검토)."""
+    import arrow
+
+    from app.models.content import ContentStatus, ContentType
+    from app.workers.monthly_slots import create_next_month_slots_for_schedule
+
+    hospital = _seed(pg_session)
+    schedule = ContentSchedule(
+        hospital_id=hospital.id,
+        plan="PLAN_12",
+        publish_days=list(range(7)),
+        active_from=date(2026, 11, 21),
+        daily_max=2,
+        is_active=True,
+    )
+    pg_session.add(schedule)
+    pg_session.flush()
+    for seq in (1, 2):
+        pg_session.add(
+            ContentItem(
+                hospital_id=hospital.id,
+                schedule_id=schedule.id,
+                content_type=ContentType.FAQ,
+                sequence_no=seq,
+                total_count=12,
+                scheduled_date=date(2026, 11, 25),
+                status=ContentStatus.DRAFT,
+            )
+        )
+    pg_session.flush()
+    november = arrow.get(date(2026, 11, 1))
+    assert create_next_month_slots_for_schedule(
+        pg_session, schedule, november, november.date(), november.ceil("month").date(),
+        not_before=date(2026, 11, 21),
+    )
+    rows = _month_rows(pg_session, hospital.id, date(2026, 11, 1), date(2026, 11, 30))
+    assert len(rows) == 12
+    days = [row.scheduled_date for row in rows]
+    assert min(days) >= date(2026, 11, 21)
+    assert max(days.count(day) for day in set(days)) <= 2

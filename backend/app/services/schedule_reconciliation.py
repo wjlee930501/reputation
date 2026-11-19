@@ -99,25 +99,35 @@ def allocation_stays(row, *, today) -> bool:
     ) or getattr(row, "status", None) not in (ContentStatus.DRAFT, ContentStatus.READY)
 
 
-def place_open_slots(planned, existing, *, today, window_dates, daily_max):
+def place_open_slots(planned, existing, *, today, window_dates, daily_max, other_dates=()):
     """옮길 수 있는 슬롯과 새 슬롯의 날짜를 하루 `daily_max`편 이하로 다시 정한다.
 
-    계획은 월 전체 순번을 세우지만, 날짜를 옮기지 않는 기존 슬롯(`allocation_stays`)의 순번은
-    그 자리에 둔다. 나머지 순번만 시작일 이후 발행 요일(`window_dates`)에 고르게 놓고, 그 날
-    이미 놓인 슬롯 수만큼 그날 자리를 줄인다. 반환은 (새 계획, 놓지 못한 편수)다.
+    계획은 월 전체 순번을 세운다. 그중 실제로 날짜가 정해지는 순번 — 옮길 수 있는 기존 슬롯의
+    순번과 `remaining_month_slots`가 새로 만들 순번 — 만 시작일 이후 발행 요일(`window_dates`)에
+    고르게 놓는다. 그 자리에 남는 슬롯(`allocation_stays`, 취소 제외)과 다른 달에서 넘어와 그
+    날에 놓인 글(`other_dates`)만큼 그날 자리를 줄인다. 같은 순번이 취소 행과 살아 있는 행에
+    겹쳐도 행 단위로 판단한다. 반환은 (새 계획, 놓지 못한 편수)다.
     """
     from dataclasses import replace
 
     from app.services.content_calendar import capped_publish_dates, daily_capacity
 
-    stay_rows = [row for row in existing if allocation_stays(row, today=today)]
-    stay_sequences = {row.sequence_no for row in stay_rows}
+    window = set(window_dates)
+    open_sequences = {
+        row.sequence_no for row in existing if not allocation_stays(row, today=today)
+    } | {slot.sequence_no for slot in remaining_month_slots(planned, existing)}
     occupied: dict = {}
-    for row in stay_rows:
-        if row.scheduled_date is not None and row.scheduled_date in window_dates:
-            occupied[row.scheduled_date] = occupied.get(row.scheduled_date, 0) + 1
+    fixed_dates = [
+        row.scheduled_date
+        for row in existing
+        if allocation_stays(row, today=today)
+        and getattr(row, "status", None) != ContentStatus.CANCELLED
+    ]
+    for day in [*fixed_dates, *other_dates]:
+        if day is not None and day in window:
+            occupied[day] = occupied.get(day, 0) + 1
     open_slots = sorted(
-        (slot for slot in planned if slot.sequence_no not in stay_sequences),
+        (slot for slot in planned if slot.sequence_no in open_sequences),
         key=lambda slot: slot.sequence_no,
     )
     capacity = daily_capacity(window_dates, daily_max, occupied)

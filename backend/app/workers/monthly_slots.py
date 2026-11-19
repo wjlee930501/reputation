@@ -22,6 +22,48 @@ from app.workers.generation_attempt_state import fresh_generation_attempt
 logger = logging.getLogger(__name__)
 
 
+def _respect_daily_max(db, schedule, hospital_id, month, start_date, planned):
+    """새로 만들 슬롯이 그 달에 이미 놓인 글과 합쳐 하루 `daily_max`편을 넘으면 날짜를 다시 놓는다.
+
+    계획은 월 전체를 새로 세우므로, 일부 날짜가 이미 찬 달(사람 저장 뒤 당월 조정 등)에서는 남은
+    순번이 찬 날에 겹칠 수 있다. 넘는 날이 없으면 계획 그대로 두고(종전 결과와 같다), 시작일 이후
+    발행 요일에 자리가 충분할 때만 다시 놓는다 — 모자라면 계약을 줄이지 않고 계획 그대로 만든다.
+    """
+    from dataclasses import replace
+
+    from sqlalchemy import select
+
+    from app.services.content_calendar import (
+        capped_publish_dates,
+        daily_capacity,
+        preferred_publish_dates,
+    )
+
+    daily_max = int(getattr(schedule, "daily_max", None) or 1)
+    existing_dates = db.execute(
+        select(ContentItem.scheduled_date).where(
+            ContentItem.hospital_id == hospital_id,
+            ContentItem.scheduled_date >= month.floor("month").date(),
+            ContentItem.scheduled_date <= month.ceil("month").date(),
+            ContentItem.status != ContentStatus.CANCELLED,
+        )
+    ).scalars().all()
+    occupied: dict = {}
+    for day in existing_dates:
+        occupied[day] = occupied.get(day, 0) + 1
+    combined = dict(occupied)
+    for slot in planned:
+        combined[slot.scheduled_date] = combined.get(slot.scheduled_date, 0) + 1
+    if max(combined.values(), default=0) <= daily_max:
+        return planned
+    window = preferred_publish_dates(schedule.publish_days, month, start_date)
+    if daily_capacity(window, daily_max, occupied) < len(planned):
+        return planned
+    ordered = sorted(planned, key=lambda slot: slot.sequence_no)
+    dates = capped_publish_dates(window, len(ordered), daily_max, occupied)
+    return [replace(slot, scheduled_date=day) for slot, day in zip(ordered, dates, strict=True)]
+
+
 def create_next_month_slots_for_schedule(
     db,
     schedule: ContentSchedule,
@@ -102,6 +144,7 @@ def create_next_month_slots_for_schedule(
     planned = remaining_month_slots(planned, existing_rows)
     if not planned:
         return False
+    planned = _respect_daily_max(db, schedule, hospital.id, next_month, start_date, planned)
 
     try:
         with db.begin_nested():

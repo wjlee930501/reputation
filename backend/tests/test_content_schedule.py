@@ -57,6 +57,9 @@ class _FakeDB:
         return self.hospital if object_id == self.hospital.id else None
 
     async def execute(self, statement):
+        if str(statement).startswith("SELECT content_items.scheduled_date"):
+            # 다른 달에서 이월돼 이 달 날짜에 놓인 글 — 이 더블에는 없다.
+            return _ExecuteResult([], self.hospital)
         if "content_schedules.active_from >" in str(statement):
             # 새 시작일보다 늦게 시작하는 일정(대신할 후보) — 이 더블에는 없다.
             return _ExecuteResult([], self.hospital)

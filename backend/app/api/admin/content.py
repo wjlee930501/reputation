@@ -24,7 +24,7 @@ from typing import Any, Final, Optional
 import arrow
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -508,12 +508,30 @@ async def set_schedule(
     # 옮길 수 있는 슬롯과 새 슬롯을 시작일 이후 발행 요일에 하루 `daily_max`편 이하로 놓는다.
     # 자리가 모자라면 저장하지 않는다 — 몰아 넣지 않고 운영자가 요일·하루 편수를 고르게 한다.
     window_dates = preferred_publish_dates(body.publish_days, target_month, body.active_from)
+    # 다른 달에서 이월돼 이 달 날짜에 놓인 글도 그날 자리를 쓴다.
+    contract_date = func.coalesce(ContentItem.carried_over_from, ContentItem.scheduled_date)
+    carried_in_dates = (
+        (
+            await db.execute(
+                select(ContentItem.scheduled_date).where(
+                    ContentItem.hospital_id == hospital_id,
+                    ContentItem.scheduled_date >= body.active_from,
+                    ContentItem.scheduled_date <= target_month.ceil("month").date(),
+                    ContentItem.status != ContentStatus.CANCELLED,
+                    contract_date < target_month.date(),
+                )
+            )
+        ).scalars().all()
+        if window_dates
+        else []
+    )
     planned, unplaced = place_open_slots(
         planned,
         existing_rows,
         today=today_kst,
         window_dates=window_dates,
         daily_max=body.daily_max,
+        other_dates=carried_in_dates,
     )
     if unplaced:
         raise HTTPException(

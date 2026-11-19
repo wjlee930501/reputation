@@ -138,3 +138,48 @@ def test_human_save_marker_restores_only_its_month():
     assert resolve_month_target(12, 5, 5) == 5
     # 미룬 달 판정이 먼저다.
     assert resolve_month_target(12, 5, 0, voided=True, quota_restored=True) == 0
+
+
+def test_place_open_slots_judges_rows_not_sequence_numbers():
+    """취소 행과 살아 있는 행이 같은 순번이어도 살아 있는 행은 옮길 슬롯으로 센다(Codex 검토)."""
+    from dataclasses import dataclass
+
+    @dataclass(frozen=True)
+    class Plan:
+        sequence_no: int
+        scheduled_date: date
+        total_count: int = 12
+
+    today = date(2026, 11, 20)
+    window = [date(2026, 11, d) for d in range(21, 31)]
+    planned = [Plan(seq, date(2026, 11, 21)) for seq in range(1, 13)]
+    existing = [_row(seq, date(2026, 11, 2), status=ContentStatus.CANCELLED) for seq in range(1, 9)]
+    existing += [_row(seq, date(2026, 11, 25)) for seq in range(1, 13)]
+    # 살아 있는 12편을 10일에 하루 1편으로는 놓을 수 없다.
+    _placed, unplaced = place_open_slots(
+        planned, existing, today=today, window_dates=window, daily_max=1
+    )
+    assert unplaced == 2
+    placed, unplaced = place_open_slots(
+        planned, existing, today=today, window_dates=window, daily_max=2
+    )
+    days = [slot.scheduled_date for slot in placed]
+    assert unplaced == 0 and max(days.count(day) for day in set(days)) <= 2
+
+
+def test_place_open_slots_counts_articles_carried_in_from_another_month():
+    from dataclasses import dataclass
+
+    @dataclass(frozen=True)
+    class Plan:
+        sequence_no: int
+        scheduled_date: date
+        total_count: int = 10
+
+    window = [date(2026, 11, d) for d in range(21, 31)]
+    planned = [Plan(seq, date(2026, 11, 21)) for seq in range(1, 11)]
+    _placed, unplaced = place_open_slots(
+        planned, [], today=date(2026, 11, 20), window_dates=window, daily_max=1,
+        other_dates=[date(2026, 11, 21)],
+    )
+    assert unplaced == 1
