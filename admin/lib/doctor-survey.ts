@@ -48,3 +48,21 @@ export function doctorSurveyStatusText(survey: DoctorSurveyStatus): string {
   if (survey.status === 'NOT_OPENED') return copy.statusNotOpened
   return ''
 }
+
+/** `GET /admin/hospitals/{id}/doctor-survey/facts`의 한 항목. */
+export interface DoctorSurveyFact {
+  field: string
+  label: string
+  value: string
+  /** 반영하면 저장되는 하위 내용(약력·자격·진료 설명·요일별 시간). */
+  details: string[]
+  current: string
+  applicable: boolean
+  patch: Record<string, unknown> | null
+  reason: string | null
+}
+
+/** 반영할 항목 이름 — 서버가 잠금 아래서 다시 확인하고 저장한다. 반영할 수 없는 항목은 보내지 않는다. */
+export function chosenFactFields(facts: DoctorSurveyFact[], selected: ReadonlySet<string>): string[] {
+  return facts.filter((fact) => fact.applicable && selected.has(fact.field)).map((fact) => fact.field)
+}

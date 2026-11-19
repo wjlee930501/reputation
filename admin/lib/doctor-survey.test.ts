@@ -23,3 +23,14 @@ test('원장이 올린 파일 종류 이름', async () => {
   assert.equal(doctorSurveyFileKindLabel('LOGO'), '로고')
   assert.equal(doctorSurveyFileKindLabel('CERTIFICATE'), '지정서·인증서')
 })
+
+test('고른 반영 가능 항목 이름만 보낸다', async () => {
+  const { chosenFactFields } = await import('./doctor-survey.ts')
+  const base = { label: '', value: '', details: [], current: '', patch: null, reason: null }
+  const facts = [
+    { ...base, field: 'phone', applicable: true },
+    { ...base, field: 'specialties', applicable: true },
+    { ...base, field: 'competitors', applicable: false, reason: '측정 기준' },
+  ]
+  assert.deepEqual(chosenFactFields(facts, new Set(['phone', 'competitors'])), ['phone'])
+})

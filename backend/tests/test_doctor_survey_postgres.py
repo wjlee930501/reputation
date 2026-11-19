@@ -335,3 +335,50 @@ async def test_an_upload_without_length_header_is_cut_at_the_limit(db, client):
         f"{public}/files", content=body(), headers={"Content-Type": "multipart/form-data; boundary=b"}
     )
     assert response.status_code == 413
+
+
+async def test_the_ae_applies_checked_facts_and_a_stale_choice_is_refused(db, client):
+    """반영은 서버가 같은 병원 잠금 아래서 빈 칸인지 다시 보고 기존 프로필 저장으로 한다."""
+
+    hospital_id = await _hospital(db)
+    base = f"/api/v1/admin/hospitals/{hospital_id}/doctor-survey"
+    link = (await client.post(f"{base}/link", headers=ADMIN, json={})).json()["link_url"]
+    public = f"/api/v1/public/doctor-survey/{_token(link)}"
+    await client.post(f"{public}/consent", json={"consent_version": schema.CONSENT_VERSION, "respondent": "DIRECTOR"})
+    assert (await client.get(f"{base}/facts", headers=ADMIN)).json()["items"] == []
+    answers = {
+        "departments": ["정형외과"],
+        "doctors": [
+            {"name": "홍길동", "title": "대표원장", "school": "○○대학교 의과대학", "specialty": "정형외과",
+             "societies": ["대한정형외과학회"], "bio": [{"kind": "학력", "text": "○○대 졸업", "star": True}]},
+            {"name": "김의사", "title": "원장"},
+        ],
+        "treatments": [{"name": "체외충격파 치료", "summary": "충격파로 통증을 줄이는 비수술 치료"}],
+        "address_detail": "3층",
+        "phone": "02-555-1234",
+        "hours": {"same": True, "weekday": {"start": "09:00", "end": "18:00"}, "sat": {"open": False}},
+        "holiday": "휴진",
+        "channels": ["블로그"],
+        "channel_url_blog": "https://blog.naver.com/clinic",
+        "competitors": ["B의원"],
+    }
+    assert (await client.post(f"{public}/submit", json={"answers": answers})).status_code == 200
+    seen = (await client.get(f"{base}/facts", headers=ADMIN)).json()
+    applicable = [item["field"] for item in seen["items"] if item["applicable"]]
+    assert {"specialties", "physicians", "treatments", "phone", "business_hours", "blog_url"} <= set(applicable)
+    assert "competitors" not in applicable
+
+    # 화면이 목록을 본 뒤 다른 AE가 전화번호를 채웠다 — 그 항목을 고른 반영은 거절된다.
+    filled = await client.patch(f"/api/v1/admin/hospitals/{hospital_id}/profile", headers=ADMIN, json={"phone": "02-000-0000"})
+    assert filled.status_code == 200
+    stale = await client.post(
+        f"{base}/facts/apply", headers=ADMIN, json={"fields": ["phone", "specialties"], "submitted_at": seen["submitted_at"]}
+    )
+    assert stale.status_code == 409
+
+    chosen = [field for field in applicable if field != "phone"]
+    applied = await client.post(f"{base}/facts/apply", headers=ADMIN, json={"fields": chosen, "submitted_at": seen["submitted_at"]})
+    assert applied.status_code == 200, applied.text
+    after = {i["field"]: i for i in (await client.get(f"{base}/facts", headers=ADMIN)).json()["items"]}
+    assert not after["physicians"]["applicable"] and not after["specialties"]["applicable"]
+    assert after["phone"]["current"] == "02-000-0000"
