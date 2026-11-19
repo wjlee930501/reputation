@@ -47,6 +47,29 @@ export const ADMIN_COPY = {
   surveyFileFailed: '파일 형식(PDF·DOCX)을 확인한 뒤 다시 저장하세요.',
   surveyLinkSaved: '링크를 추가했습니다. 처리는 자동으로 이어집니다.',
   surveyLinkFailed: '링크 공유 설정을 확인한 뒤 다시 추가하세요.',
+  // 원장님이 직접 작성하는 사전 설문 링크(같은 카드 위쪽).
+  doctorSurvey: {
+    title: '원장님이 직접 작성하는 설문',
+    hint: '링크를 복사해 원장님께 보내 주세요. 원장님이 제출한 답은 진료 철학과 병원 특성의 근거로 자동 반영됩니다. 시스템이 원장님께 링크를 보내지는 않습니다.',
+    newClinic: '새로 개원한 병원 — 개원 계기 문항을 보입니다',
+    create: '링크 만들기',
+    copy: '링크 복사',
+    copied: '링크를 복사했습니다. 원장님께 보내 주세요.',
+    copyFailed: '복사하지 못했습니다. 링크를 직접 선택해 복사해 주세요.',
+    reissue: '새 링크 만들기',
+    reissueConfirm: '새 링크를 만들면 지금 링크는 더 이상 열리지 않습니다. 작성하던 답은 그대로 이어집니다. 새 링크를 만들까요?',
+    reissued: '새 링크를 만들었습니다. 이전 링크는 더 이상 열리지 않습니다.',
+    saveFailed: '링크를 만들지 못했습니다. 잠시 뒤 다시 시도해 주세요.',
+    loadFailed: '설문 상태를 불러오지 못했습니다.',
+    statusNotOpened: '원장님이 아직 열어 보지 않았습니다.',
+    // {answered}·{total}은 doctorSurveyStatusText가 채운다.
+    statusInProgress: '작성 중 · {answered}/{total}문항 답함',
+    // {date}는 제출 시각.
+    statusSubmitted: '제출됨 · {date}',
+    statusEdited: '제출 뒤 고친 답이 있습니다. 원장님이 다시 제출하면 반영됩니다.',
+    respondentStaff: '병원 직원이 대리 작성',
+    issuedAt: '링크 만든 날',
+  },
   // 근거 문서 업로드 폼 — 서버가 받는 형식은 PDF·DOCX뿐이다.
   documentUploadHint: 'PDF·DOCX 문서를 올릴 수 있습니다. 여러 개를 한 번에 고를 수 있습니다.',
   documentUploadLabel: '올릴 문서 파일 (PDF·DOCX)',

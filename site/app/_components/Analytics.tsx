@@ -5,7 +5,7 @@ import { usePathname } from 'next/navigation'
 import { useEffect, useRef, useState } from 'react'
 
 import { ensureAttributionCaptured } from '@/lib/ad-attribution-client'
-import { configureGa, resolveGaPlan, trackPageView, type GaPlan } from '@/lib/analytics'
+import { configureGa, isPrivateLinkPath, resolveGaPlan, trackPageView, type GaPlan } from '@/lib/analytics'
 import {
   OPENAI_PIXEL_SDK_URL,
   initPixel,
@@ -25,6 +25,12 @@ import {
  */
 export default function Analytics() {
   const pathname = usePathname()
+  // 원장 사전 설문은 링크 자체가 열쇠다 — 주소(토큰)가 GA·픽셀로 나가지 않게 태그를 싣지 않는다.
+  if (isPrivateLinkPath(pathname)) return null
+  return <TrackedAnalytics pathname={pathname} />
+}
+
+function TrackedAnalytics({ pathname }: { pathname: string }) {
   const [gaPlan, setGaPlan] = useState<GaPlan | null>(null)
   const [pixelEnabled, setPixelEnabled] = useState(false)
 

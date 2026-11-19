@@ -17,6 +17,7 @@ from app.api.admin import auth as admin_auth
 from app.api.admin import content as admin_content
 from app.api.admin import content_focus as admin_content_focus
 from app.api.admin import director_feedback as admin_director_feedback
+from app.api.admin import doctor_survey as admin_doctor_survey
 from app.api.admin import domain as admin_domain
 from app.api.admin import domain_connect as admin_domain_connect
 from app.api.admin import domain_setup as admin_domain_setup
@@ -34,6 +35,7 @@ from app.api.admin import reports as admin_reports
 from app.api.admin import sov as admin_sov
 from app.api.admin import watchdog as admin_watchdog
 from app.api.public import diagnosis as public_diagnosis
+from app.api.public import doctor_survey as public_doctor_survey
 from app.api.public import leads as public_leads
 from app.api.public import site as public_site
 from app.core.config import settings
@@ -132,7 +134,8 @@ class PublicApiCacheMiddleware(BaseHTTPMiddleware):
         # 무료 진단은 **개인에게 발급된 토큰**으로 열리는 표면이다(PRD F5-4).
         # 여기에 public 캐시 헤더가 붙으면 CDN이 한 사람의 리포트를 저장했다가
         # 같은 URL을 요청한 다른 사람에게 그대로 내줄 수 있다.
-        if request.url.path.startswith("/api/v1/public/diagnosis"):
+        # 원장 사전 설문도 병원마다 발급된 링크다 — 답이 CDN에 남으면 안 된다.
+        if request.url.path.startswith(("/api/v1/public/diagnosis", "/api/v1/public/doctor-survey")):
             response.headers["Cache-Control"] = "no-store"
             response.headers["X-Robots-Tag"] = "noindex, nofollow"
             response.headers["Referrer-Policy"] = "no-referrer"
@@ -192,6 +195,7 @@ app.include_router(admin_domain_connect.router, prefix="/api/v1", dependencies=a
 app.include_router(admin_domain_setup.router, prefix="/api/v1", dependencies=admin_deps)
 app.include_router(admin_domain.router, prefix="/api/v1", dependencies=admin_deps)
 app.include_router(admin_essence.router, prefix="/api/v1", dependencies=admin_deps)
+app.include_router(admin_doctor_survey.router, prefix="/api/v1", dependencies=admin_deps)
 app.include_router(admin_exposure_actions.router, prefix="/api/v1", dependencies=admin_deps)
 app.include_router(admin_operations.router, prefix="/api/v1", dependencies=admin_deps)
 app.include_router(admin_operations.cost_guard_router, prefix="/api/v1", dependencies=admin_deps)
@@ -209,6 +213,7 @@ app.include_router(public_site.router, prefix="/api/v1")
 app.include_router(public_site.domain_router, prefix="/api/v1")
 app.include_router(public_leads.router, prefix="/api/v1")
 app.include_router(public_diagnosis.router, prefix="/api/v1")
+app.include_router(public_doctor_survey.router, prefix="/api/v1")
 
 
 @app.get("/health")

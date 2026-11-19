@@ -10,6 +10,7 @@ from app.models.content import (
     ContentType,
 )
 from app.models.director_delta import DirectorDelta, DirectorDeltaSource, DirectorDeltaStatus
+from app.models.doctor_survey import DoctorSurvey
 from app.models.essence import (
     EvidenceNoteType,
     HospitalContentPhilosophy,
@@ -81,6 +82,7 @@ from app.models.usage import (
 
 __all__ = [
     "DirectorDelta", "DirectorDeltaSource", "DirectorDeltaStatus",
+    "DoctorSurvey",
     "Hospital", "Plan", "HospitalStatus", "DomainManagementMode", "DomainDnsStrategy",
     "HospitalHandoff", "HandoffState", "HandoffSource",
     "HospitalPhysician",

@@ -17,6 +17,7 @@ import {
   type SourceProcessingRunSummary,
 } from '@/lib/info-sections'
 import { safeOperatorError } from '@/lib/operations-journey'
+import DoctorSurveyLinkPanel from './DoctorSurveyLinkPanel'
 import NaverBlogBulkForm from './NaverBlogBulkForm'
 
 interface NoteRow {
@@ -454,6 +455,8 @@ function SurveyCard({
         <h4 className="text-sm font-semibold text-slate-800">{ADMIN_COPY.surveyTitle}</h4>
         <p className="mt-0.5 text-xs leading-5 text-slate-600">{ADMIN_COPY.surveyHint}</p>
       </div>
+
+      <DoctorSurveyLinkPanel hospitalId={hospitalId} />
 
       <form onSubmit={uploadFile} className="flex flex-wrap items-center gap-3">
         <input

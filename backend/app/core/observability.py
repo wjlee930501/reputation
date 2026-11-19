@@ -47,9 +47,32 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(payload, ensure_ascii=False)
 
 
+# 원장 사전 설문 링크는 주소 자체가 열쇠다(만료 없음). 접근 로그에 토큰이 남지 않게 가린다.
+_SURVEY_TOKEN_RE = re.compile(r"(/doctor-survey/)[A-Za-z0-9_-]{16,}")
+
+
+def redact_link_tokens(value: object) -> object:
+    if isinstance(value, str) and "/doctor-survey/" in value:
+        return _SURVEY_TOKEN_RE.sub(r"\1[token]", value)
+    return value
+
+
+class LinkTokenRedactionFilter(logging.Filter):
+    """uvicorn 접근 로그 등에서 설문 링크 토큰을 지운다(인자와 메시지 모두)."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.msg = redact_link_tokens(record.msg)
+        if isinstance(record.args, tuple):
+            record.args = tuple(redact_link_tokens(arg) for arg in record.args)
+        elif isinstance(record.args, dict):
+            record.args = {key: redact_link_tokens(arg) for key, arg in record.args.items()}
+        return True
+
+
 def _build_handler(json_logs: bool) -> logging.Handler:
     handler = logging.StreamHandler(sys.stdout)
     handler.addFilter(RequestIdFilter())
+    handler.addFilter(LinkTokenRedactionFilter())
     if json_logs:
         handler.setFormatter(JsonFormatter())
     else:

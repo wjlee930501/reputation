@@ -165,6 +165,11 @@ export function pendingEventsForTest(): ReadonlyArray<{ name: string; params: Re
  * `gtag('config')`는 최초 1회만 page_view를 보낸다. 랜딩에서 `/ai-diagnosis`로 가는
  * 건 Next의 클라이언트 이동이라 **그대로 두면 전환 페이지가 보고서에 아예 뜨지 않는다.**
  */
+/** 개인에게 발급된 링크(주소에 토큰이 든) 화면 — 분석 태그를 싣지 않는다. */
+export function isPrivateLinkPath(pathname: string | null | undefined): boolean {
+  return typeof pathname === 'string' && /^\/survey(?:\/|$)/.test(pathname)
+}
+
 export function trackPageView(path: string): void {
   trackEvent('page_view', {
     page_path: path,
