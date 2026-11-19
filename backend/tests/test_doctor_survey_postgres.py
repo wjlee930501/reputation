@@ -213,3 +213,27 @@ async def test_copying_the_link_again_returns_the_same_url(db, client):
     shown = (await client.get(base, headers=ADMIN)).json()
     assert first["link_url"] == again["link_url"] == shown["link_url"]
     assert shown["new_clinic"] is True
+
+
+async def test_drafts_are_stored_masked_and_unknown_links_never_read_the_body(db, client):
+    from app.models.doctor_survey import DoctorSurvey
+
+    hospital_id = await _hospital(db)
+    link = (
+        await client.post(f"/api/v1/admin/hospitals/{hospital_id}/doctor-survey/link", headers=ADMIN, json={})
+    ).json()["link_url"]
+    public = f"/api/v1/public/doctor-survey/{_token(link)}"
+    await client.post(f"{public}/consent", json={"consent_version": schema.CONSENT_VERSION, "respondent": "STAFF"})
+    saved = await client.put(
+        f"{public}/answers",
+        json={"answers": {"phone": "010-1234-5678", "principle": "연락은 010-1234-5678로 주세요."}},
+    )
+    assert saved.status_code == 200
+    survey = (await db.execute(select(DoctorSurvey).where(DoctorSurvey.hospital_id == hospital_id))).scalar_one()
+    await db.refresh(survey)
+    assert survey.answers["phone"] == "010-1234-5678"  # 병원 대표 전화번호 칸은 그대로
+    assert "010-1234-5678" not in survey.answers["principle"]
+
+    huge = {"answers": {"principle": "가" * 400_000}}
+    assert (await client.put("/api/v1/public/doctor-survey/" + "x" * 43 + "/answers", json=huge)).status_code == 404
+    assert (await client.put(f"{public}/answers", json=huge)).status_code == 413

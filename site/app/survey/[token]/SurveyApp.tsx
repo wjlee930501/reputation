@@ -110,35 +110,49 @@ export default function SurveyApp({ token }: { token: string }) {
   const questions = flow.filter((item) => item.question)
   const questionIndex = questions.findIndex((item) => item.key === current?.key)
 
-  const save = useCallback(async () => {
-    if (!dirty.current) return
-    dirty.current = false
-    setSaveState('saving')
-    try {
-      const response = await fetch(`${base}/answers`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          answers: compactAnswers(latest.current.answers),
-          current_step: latest.current.stepKey,
-          schema_version: schemaVersion,
-        }),
-      })
-      if (!response.ok) {
-        dirty.current = true
-        setSaveState('error')
-        setError(await readDetail(response, '저장하지 못했습니다. 잠시 뒤 다시 시도해 주세요.'))
-        return
+  // 저장은 한 번에 하나만 보낸다. 느린 요청이 나중에 도착해 새 답을 덮지 않게, 보내는 동안 바뀐 답은
+  // 같은 반복에서 이어서 보낸다. 실패하면 멈추고 다음 입력 때 다시 보낸다.
+  const inFlight = useRef<Promise<void> | null>(null)
+
+  const save = useCallback((): Promise<void> => {
+    if (inFlight.current) return inFlight.current
+    const run = (async () => {
+      while (dirty.current) {
+        dirty.current = false
+        setSaveState('saving')
+        try {
+          const response = await fetch(`${base}/answers`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              answers: compactAnswers(latest.current.answers),
+              current_step: latest.current.stepKey,
+              schema_version: schemaVersion,
+            }),
+          })
+          if (!response.ok) {
+            dirty.current = true
+            setSaveState('error')
+            setError(await readDetail(response, '저장하지 못했습니다. 잠시 뒤 다시 시도해 주세요.'))
+            return
+          }
+          const payload = (await response.json()) as { saved_at: string }
+          setSavedAt(payload.saved_at)
+          setSaveState('saved')
+          setError(null)
+        } catch {
+          dirty.current = true
+          setSaveState('error')
+          return
+        }
       }
-      const payload = (await response.json()) as { saved_at: string }
-      setSavedAt(payload.saved_at)
-      setSaveState('saved')
-      setError(null)
-    } catch {
-      dirty.current = true
-      setSaveState('error')
-    }
+    })().finally(() => {
+      inFlight.current = null
+    })
+    inFlight.current = run
+    return run
   }, [base, schemaVersion])
+
 
   const scheduleSave = useCallback(() => {
     if (!consented) return
@@ -235,6 +249,9 @@ export default function SurveyApp({ token }: { token: string }) {
     if (timer.current) clearTimeout(timer.current)
     setBusy(true)
     setError(null)
+    dirty.current = false
+    // 보내던 저장이 제출 뒤에 도착해 제출한 답을 덮지 않게 먼저 끝낸다.
+    if (inFlight.current) await inFlight.current
     try {
       const response = await fetch(`${base}/submit`, {
         method: 'POST',

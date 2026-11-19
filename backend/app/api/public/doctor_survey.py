@@ -18,7 +18,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -55,6 +55,33 @@ class AnswersBody(BaseModel):
     answers: dict[str, Any] = Field(default_factory=dict)
     current_step: str | None = Field(default=None, max_length=120)
     schema_version: str | None = Field(default=None, max_length=40)
+
+
+MAX_BODY_BYTES = 300 * 1024
+_TOO_LARGE = "답이 너무 깁니다. 긴 답을 줄여 주세요."
+_BAD_BODY = "입력 형식을 확인할 수 없습니다. 화면을 새로고침해 주세요."
+
+
+async def _read_body(request: Request, model: type[BaseModel]) -> Any:
+    """링크를 확인한 **뒤에** 본문을 읽는다 — 크기를 먼저 막고 끝까지 받지 않는다.
+
+    FastAPI 본문 인자로 받으면 토큰을 보기 전에 본문 전체를 읽고 검사한다(없는 링크로 비용을 쓰게 된다).
+    """
+
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > MAX_BODY_BYTES:
+        raise HTTPException(status_code=413, detail=_TOO_LARGE)
+    chunks: list[bytes] = []
+    size = 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > MAX_BODY_BYTES:
+            raise HTTPException(status_code=413, detail=_TOO_LARGE)
+        chunks.append(chunk)
+    try:
+        return model.model_validate_json(b"".join(chunks) or b"{}")
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=_BAD_BODY) from exc
 
 
 def uploads_enabled() -> bool:
@@ -109,12 +136,14 @@ def _require_consent(survey: DoctorSurvey) -> None:
 
 
 def _clean_answers(raw: dict[str, Any]) -> dict[str, Any]:
+    """검사 → 가림. 토큰을 확인한 뒤에만 부른다(없는 링크로 검사 비용을 쓰게 하지 않는다)."""
+
     try:
-        answers = schema.validate_answers(raw)
+        answers = schema.mask_answers(schema.validate_answers(raw))
     except schema.SurveyAnswerError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     if len(json.dumps(answers, ensure_ascii=False).encode()) > MAX_ANSWERS_BYTES:
-        raise HTTPException(status_code=413, detail="답이 너무 깁니다. 긴 답을 줄여 주세요.")
+        raise HTTPException(status_code=413, detail=_TOO_LARGE)
     return answers
 
 
@@ -134,9 +163,9 @@ async def get_survey(request: Request, token: str, db: AsyncSession = Depends(ge
 
 @router.post("/{token}/consent")
 @limiter.limit(settings.PUBLIC_SITE_RATE_LIMIT)
-async def give_consent(
-    request: Request, token: str, body: ConsentBody, db: AsyncSession = Depends(get_db)
-):
+async def give_consent(request: Request, token: str, db: AsyncSession = Depends(get_db)):
+    await _survey_for_token(db, token)
+    body = await _read_body(request, ConsentBody)
     if body.consent_version != schema.CONSENT_VERSION:
         raise HTTPException(status_code=409, detail="동의 내용이 바뀌었습니다. 화면을 새로고침해 주세요.")
     if body.respondent not in schema.RESPONDENTS:
@@ -162,9 +191,9 @@ async def give_consent(
 
 @router.put("/{token}/answers")
 @limiter.limit(settings.PUBLIC_SITE_RATE_LIMIT)
-async def save_answers(
-    request: Request, token: str, body: AnswersBody, db: AsyncSession = Depends(get_db)
-):
+async def save_answers(request: Request, token: str, db: AsyncSession = Depends(get_db)):
+    _require_consent(await _survey_for_token(db, token))
+    body = await _read_body(request, AnswersBody)
     answers = _clean_answers(body.answers)
     survey = await _survey_for_token(db, token, for_update=True)
     _require_consent(survey)
@@ -184,12 +213,12 @@ async def save_answers(
 
 @router.post("/{token}/submit")
 @limiter.limit(settings.PUBLIC_SITE_RATE_LIMIT)
-async def submit_survey(
-    request: Request, token: str, body: AnswersBody, db: AsyncSession = Depends(get_db)
-):
-    answers = _clean_answers(body.answers)
+async def submit_survey(request: Request, token: str, db: AsyncSession = Depends(get_db)):
     # 병원 잠금 → 설문 행 잠금 순서. 설문 자료를 맞추는 일은 프로필 저장·Essence 조정과 같은 병원 잠금을 쓴다.
     preview = await _survey_for_token(db, token)
+    _require_consent(preview)
+    body = await _read_body(request, AnswersBody)
+    answers = _clean_answers(body.answers)
     await acquire_hospital_advisory_lock(db, preview.hospital_id)
     survey = await _survey_for_token(db, token, for_update=True)
     _require_consent(survey)

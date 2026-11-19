@@ -19,7 +19,10 @@ Site 설문 화면은 이 정의를 API로 받아 그린다(`GET /public/doctor-
 - ``files`` → 올린 파일 목록(PR2에서 연다 — 지금은 '담당자에게 따로 보내 주세요' 안내).
 - 표시만: ``info`` ``sh``(소제목) ``sec``(묶음 제목).
 
-``essence``가 있는 칸만 근거 자료(설문 자료)에 실린다. 값은 근거 노트 종류다. 병원 사실(이름·의료진·
+``essence``가 있는 칸만 근거 자료(설문 자료)에 실린다. 값은 근거 노트 종류다. 필수 문구(모든 글에 원문
+그대로 들어가는 원장 문장)는 진료 철학·핵심 메시지 노트에서만 고르므로(`essence_engine._select_must_use`),
+그 종류는 '첫 진료 원칙'·'그 이유'·'한 줄 소개'에만 준다 — 개원 이야기처럼 긴 일화가 모든 글 끝에 붙지 않게
+개원 계기는 지역·맥락 노트다. 병원 사실(이름·의료진·
 주소·전화·진료시간·채널·인증·가격)과 측정 기준(검색 키워드·AI 질문·비교 병원)은 싣지 않는다 — 사실은
 AE가 보고 병원 정보에 반영하고, 측정 기준은 바꾸면 지난달과 비교할 수 없게 되기 때문이다.
 """
@@ -454,7 +457,7 @@ PARTS: list[dict[str, Any]] = [
                 "new_clinic_only": True,
                 "t": "개원 계기와 지역 선택 이유",
                 "b": [
-                    {"t": "area", "key": "opening_story", "ph": "예) 대학병원에서 수술 대기만 몇 달씩 하는 환자들을 보며…", "essence": NOTE_PHILOSOPHY, "render_label": "개원 계기와 지역 선택 이유"}
+                    {"t": "area", "key": "opening_story", "ph": "예) 대학병원에서 수술 대기만 몇 달씩 하는 환자들을 보며…", "essence": NOTE_LOCAL, "render_label": "개원 계기와 지역 선택 이유"}
                 ],
             },
             {
@@ -581,8 +584,8 @@ INTRO = {
         "items": [
             "수집 항목: 원장님·의료진 성함, 학력·경력·자격, 병원 정보, 설문 답변, 올려 주신 사진·파일",
             "이용 목적: 병원 AI 페이지와 콘텐츠 제작, AI 답변 분석",
-            "보유 기간: 서비스 계약 종료 후 1년 또는 삭제 요청 시까지",
-            "답변에 적힌 휴대전화번호·이메일·주민등록번호는 저장할 때 자동으로 가립니다.",
+            "보유 기간: 서비스 계약 기간 동안 보관하며, 삭제를 요청하시면 지체 없이 파기합니다.",
+            "답변에 적힌 휴대전화번호·이메일·주민등록번호는 저장할 때 자동으로 가립니다. 병원 대표 전화번호 칸은 그대로 저장합니다.",
         ],
         "label": "위 내용에 동의합니다.",
     },
@@ -947,6 +950,39 @@ def validate_answers(raw: Any) -> dict[str, Any]:
     return answers
 
 
+# ── 개인정보 가림 ────────────────────────────────────────────────────────
+
+#: 가리지 않는 칸 — 병원 대표 전화번호(원장 휴대전화가 아니라 병원 사실)와 숫자 칸.
+UNMASKED_KEYS = frozenset(
+    {"phone"}
+    | {
+        str(spec["key"])
+        for spec in [*TOP_FIELDS.values(), *FOCUS_FIELDS.values()]
+        for spec in [spec, *iter_fields(spec.get("fields") or [])]
+        if spec.get("t") == "number"
+    }
+)
+
+
+def mask_answers(value: Any, key: str | None = None) -> Any:
+    """저장 전에 답 안의 휴대전화·이메일·주민등록번호를 가린다(동의 화면의 약속, E6과 같은 규칙).
+
+    작성 중인 답(`doctor_surveys.answers`)도, 제출한 답도, 근거 자료도 모두 가린 값만 저장한다.
+    """
+
+    from app.services.survey_sources import mask_personal_info
+
+    if key in UNMASKED_KEYS:
+        return value
+    if isinstance(value, str):
+        return mask_personal_info(value)
+    if isinstance(value, list):
+        return [mask_answers(item, key) for item in value]
+    if isinstance(value, dict):
+        return {name: mask_answers(item, str(name)) for name, item in value.items()}
+    return value
+
+
 # ── 진행률 ───────────────────────────────────────────────────────────────
 
 
@@ -1004,6 +1040,7 @@ __all__ = (
     "SurveyAnswerError",
     "TOP_FIELDS",
     "iter_fields",
+    "mask_answers",
     "option_value",
     "progress",
     "public_schema",

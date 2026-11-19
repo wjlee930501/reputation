@@ -122,3 +122,11 @@ test('프록시는 정해진 동작과 토큰 모양만 통과시킨다', () => 
   assert.equal(surveyUpstreamPath('GET', '../admin', undefined), null)
   assert.equal(surveyUpstreamPath('GET', token, ['..', 'x']), null)
 })
+
+test('설문 링크 화면은 분석 태그를 싣지 않는다(주소에 토큰이 있다)', async () => {
+  const { isPrivateLinkPath } = await import('./analytics.ts')
+  assert.equal(isPrivateLinkPath('/survey/abc'), true)
+  assert.equal(isPrivateLinkPath('/survey'), true)
+  assert.equal(isPrivateLinkPath('/surveys-guide'), false)
+  assert.equal(isPrivateLinkPath('/'), false)
+})

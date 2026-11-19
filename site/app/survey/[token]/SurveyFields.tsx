@@ -41,7 +41,24 @@ function Fld({ label, children, extra }: { label?: string; children: ReactNode; 
   )
 }
 
-function TextInput({ field, scope, onChange, type = 'text' }: { field: SurveyField; scope: Answers; onChange: Change; type?: string }) {
+// 서버(`doctor_survey_schema`)의 글자 수 한도와 같다 — 한 칸이 넘치면 저장 전체가 거절되므로 입력에서 막는다.
+const TEXT_MAX = 500
+const AREA_MAX = 3000
+const OPTION_MAX = 200
+
+function TextInput({
+  field,
+  scope,
+  onChange,
+  type = 'text',
+  limit = TEXT_MAX,
+}: {
+  field: SurveyField
+  scope: Answers
+  onChange: Change
+  type?: string
+  limit?: number
+}) {
   const value = str(scope[field.key!])
   return (
     <Fld
@@ -53,7 +70,7 @@ function TextInput({ field, scope, onChange, type = 'text' }: { field: SurveyFie
         type={type}
         inputMode={type === 'tel' ? 'tel' : undefined}
         placeholder={field.ph ?? ''}
-        maxLength={field.max}
+        maxLength={field.max ?? limit}
         value={value}
         onChange={(event) => onChange(field.key!, event.target.value)}
       />
@@ -66,6 +83,7 @@ function AreaInput({ field, scope, onChange }: { field: SurveyField; scope: Answ
     <Fld label={field.label}>
       <textarea
         className="inp"
+        maxLength={AREA_MAX}
         placeholder={field.ph ?? ''}
         value={str(scope[field.key!])}
         onChange={(event) => onChange(field.key!, event.target.value)}
@@ -126,6 +144,7 @@ function SelectInput({ field, scope, onChange, ctx }: { field: SurveyField; scop
             className="inp"
             style={{ marginTop: 8 }}
             placeholder="직접 입력"
+            maxLength={OPTION_MAX}
             value={value}
             onChange={(event) => onChange(field.key!, event.target.value)}
           />
@@ -217,6 +236,7 @@ function Chips({
             <input
               className="inp"
               placeholder={field.custom_ph ?? '목록에 없으면 입력'}
+              maxLength={OPTION_MAX}
               value={draft}
               onChange={(event) => setDraft(event.target.value)}
               onKeyDown={(event: KeyboardEvent<HTMLInputElement>) => {
@@ -268,6 +288,7 @@ function Tags({ field, scope, onChange }: { field: SurveyField; scope: Answers; 
         ))}
         <input
           placeholder={values.length ? '추가 입력' : field.ph ?? ''}
+          maxLength={OPTION_MAX}
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
           onKeyDown={(event) => {
@@ -485,6 +506,7 @@ function BioRows({ rows, kinds, first, onChange }: { rows: Answers[]; kinds: str
             <input
               className="inp"
               placeholder={index === 0 && first ? '예) ○○대학교 의과대학 졸업' : '예) ○○대학교병원 임상강사'}
+              maxLength={300}
               value={str(row.text)}
               onChange={(event) => update(index, { text: event.target.value })}
             />
@@ -535,7 +557,7 @@ function DoctorCard({
         <b>의료진 {index + 1}</b>
         {first ? null : <button type="button" className="del" onClick={onRemove}>삭제</button>}
       </div>
-      <TextInput field={{ t: 'text', key: 'name', label: '이름', ph: '홍길동' }} scope={doctor} onChange={set} />
+      <TextInput field={{ t: 'text', key: 'name', label: '이름', ph: '홍길동' }} scope={doctor} onChange={set} limit={100} />
       <Fld label="직함">
         <div>
           <div className="chips">
@@ -563,7 +585,7 @@ function DoctorCard({
           </div>
           {titleCustom ? (
             <div className="sub">
-              <input className="inp" placeholder="직함" value={title} onChange={(event) => set('title', event.target.value)} />
+              <input className="inp" placeholder="직함" maxLength={50} value={title} onChange={(event) => set('title', event.target.value)} />
             </div>
           ) : null}
         </div>
@@ -576,7 +598,7 @@ function DoctorCard({
       {expanded ? (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
           <div className="sh">자격</div>
-          <TextInput field={{ t: 'text', key: 'school', label: '졸업한 의과대학', ph: '예) ○○대학교 의과대학' }} scope={doctor} onChange={set} />
+          <TextInput field={{ t: 'text', key: 'school', label: '졸업한 의과대학', ph: '예) ○○대학교 의과대학' }} scope={doctor} onChange={set} limit={200} />
           <SpecialtySelect field={specialtyField} doctor={doctor} ctx={ctx} onChange={set} />
           <Tags field={{ t: 'tags', key: 'societies', label: '정회원 학회', ph: '예) 대한정형외과학회' }} scope={doctor} onChange={set} />
           <div className="sh">약력</div>
@@ -618,7 +640,7 @@ function SpecialtySelect({ field, doctor, ctx, onChange }: { field: SurveyField;
           <option value={CUSTOM}>직접 입력</option>
         </select>
         {customMode ? (
-          <input className="inp" style={{ marginTop: 8 }} placeholder="직접 입력" value={value} onChange={(event) => onChange('specialty', event.target.value)} />
+          <input className="inp" style={{ marginTop: 8 }} placeholder="직접 입력" maxLength={100} value={value} onChange={(event) => onChange('specialty', event.target.value)} />
         ) : null}
       </div>
     </Fld>

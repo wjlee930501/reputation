@@ -41,7 +41,7 @@ from app.models.essence import (
     SourceType,
 )
 from app.services import doctor_survey_schema as schema
-from app.services.survey_sources import mask_personal_info
+from app.services.survey_sources import MASK, mask_personal_info
 from app.utils.error_page import looks_like_error_page_text
 from app.utils.medical_filter import check_forbidden
 from app.utils.prompt_injection import has_prompt_injection
@@ -66,7 +66,10 @@ _TAGS: dict[str, str] = {
 }
 _TAG_NOTE_TYPES = {tag: note_type for note_type, tag in _TAGS.items()}
 _LINE_PATTERN = re.compile(r"^\[(?P<tag>[^\]]+)\] (?P<label>[^:\n]+): (?P<value>.+)$")
-_MAX_VALUE_CHARS = 600
+# 한 줄(= 노트 하나)의 답 길이. Essence 합성이 설문 노트 발췌를 400자까지 싣으므로 그 안에 들게 문장
+# 단위로 나눠 여러 줄에 싣는다 — 긴 답을 자르지 않는다.
+_CHUNK_CHARS = 380
+_SENTENCE_END = re.compile(r"(?<=[.!?。！？])\s+")
 _TREATMENT_SEPARATOR = " — "
 
 
@@ -103,8 +106,31 @@ def is_doctor_survey_source(source: Any) -> bool:
 
 
 def _one_line(text: str) -> str:
-    text = re.sub(r"\s+", " ", text.replace("\x00", " ")).strip()
-    return text[:_MAX_VALUE_CHARS]
+    return re.sub(r"\s+", " ", text.replace("\x00", " ")).strip()
+
+
+def _chunks(text: str) -> list[str]:
+    """긴 답을 문장 경계에서 나눈다. 한 문장이 너무 길면 띄어쓰기에서 나눈다."""
+
+    text = _one_line(text)
+    if len(text) <= _CHUNK_CHARS:
+        return [text] if text else []
+    pieces: list[str] = []
+    for sentence in _SENTENCE_END.split(text):
+        while len(sentence) > _CHUNK_CHARS:
+            cut = sentence.rfind(" ", 0, _CHUNK_CHARS)
+            cut = cut if cut > 0 else _CHUNK_CHARS
+            pieces.append(sentence[:cut].strip())
+            sentence = sentence[cut:].strip()
+        if sentence:
+            pieces.append(sentence)
+    chunks: list[str] = []
+    for piece in pieces:
+        if chunks and len(chunks[-1]) + 1 + len(piece) <= _CHUNK_CHARS:
+            chunks[-1] = f"{chunks[-1]} {piece}"
+        else:
+            chunks.append(piece)
+    return chunks
 
 
 def _label(text: str) -> str:
@@ -138,8 +164,9 @@ def _field_lines(
         text = _display(value)
         if not text.strip():
             continue
-        label = str(spec.get("render_label") or spec.get("label") or key)
-        yield SurveyLine(note_type, _label(f"{prefix}{label}"), _one_line(text), treatment)
+        label = _label(f"{prefix}{spec.get('render_label') or spec.get('label') or key}")
+        for chunk in _chunks(text):
+            yield SurveyLine(note_type, label, chunk, treatment)
 
 
 def survey_lines(answers: Mapping[str, Any] | None, *, new_clinic: bool) -> list[SurveyLine]:
@@ -164,18 +191,13 @@ def survey_lines(answers: Mapping[str, Any] | None, *, new_clinic: bool) -> list
                     if not name:
                         continue
                     value = f"{name}{_TREATMENT_SEPARATOR}{summary}" if summary else name
-                    lines.append(SurveyLine(spec["essence"], "진료 항목", value, name))
+                    lines.extend(SurveyLine(spec["essence"], "진료 항목", chunk, name) for chunk in _chunks(value))
                 elif key == "faq_custom":
                     question_text = _one_line(str(row.get("question") or ""))
                     answer = _one_line(str(row.get("answer") or ""))
                     if question_text and answer:
-                        lines.append(
-                            SurveyLine(
-                                spec["essence"],
-                                _label(f"자주 받는 질문 '{question_text}'에 대한 답"),
-                                answer,
-                            )
-                        )
+                        label = _label(f"자주 받는 질문 '{question_text}'에 대한 답")
+                        lines.extend(SurveyLine(spec["essence"], label, chunk) for chunk in _chunks(answer))
         lines.extend(_field_lines(question.get("b") or [], answers))
     focus_answers = answers.get(schema.FOCUS_ANSWERS_KEY) or {}
     for name in (answers.get("focus_treatments") or [])[: schema.FOCUS_MAX]:
@@ -191,6 +213,15 @@ def survey_lines(answers: Mapping[str, Any] | None, *, new_clinic: bool) -> list
     return lines
 
 
+def _without_masked_sentences(text: str) -> str:
+    """가린 자리가 든 문장은 근거에서 뺀다 — '문의는 [가림]으로 주세요' 같은 문장은 알맹이가 없고,
+    원장 문장으로 뽑히면 모든 글에 그대로 들어간다."""
+
+    if MASK not in text:
+        return text
+    return " ".join(sentence for sentence in _SENTENCE_END.split(text) if MASK not in sentence).strip()
+
+
 def render_interview_text(
     answers: Mapping[str, Any] | None,
     *,
@@ -201,10 +232,13 @@ def render_interview_text(
 
     rendered: list[str] = []
     for line in survey_lines(answers, new_clinic=new_clinic):
+        value = _without_masked_sentences(mask_personal_info(line.value) or "")
+        if not value:
+            continue
         masked = SurveyLine(
             line.note_type,
             mask_personal_info(line.label) or "",
-            mask_personal_info(line.value) or "",
+            value,
             line.treatment,
         )
         text = masked.render()

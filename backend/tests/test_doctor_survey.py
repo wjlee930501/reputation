@@ -153,12 +153,14 @@ def test_opening_story_needs_the_new_clinic_flag():
     assert "대학병원에서" not in render_interview_text(_answers(), new_clinic=False)
 
 
-def test_render_masks_personal_contacts():
+def test_render_masks_contacts_and_drops_the_masked_sentence():
     text = render_interview_text(
-        _answers(principle="상담은 010-1234-5678이나 doctor@example.com으로 주세요."), new_clinic=False
+        _answers(principle="검사 화면을 같이 봅니다. 상담은 010-1234-5678이나 doctor@example.com으로 주세요."),
+        new_clinic=False,
     )
     assert "010-1234-5678" not in text and "doctor@example.com" not in text
-    assert "[가림]" in text
+    assert "[가림]" not in text
+    assert "첫 진료 원칙: 검사 화면을 같이 봅니다." in text
 
 
 def test_prompt_injection_line_is_dropped_not_the_whole_source():
@@ -268,3 +270,68 @@ def test_essence_engine_processes_the_survey_source_without_an_llm(monkeypatch):
     )
     payloads = essence_engine.process_source_asset(asset)
     assert [p.source_excerpt for p in payloads] == [n.source_excerpt for n in survey_note_payloads(raw_text)]
+
+
+def test_must_use_comes_from_the_doctors_principle_not_masked_or_anecdote_sentences():
+    """실제 필수 문구 선택에 설문 노트를 넣어 본다 — 모든 글에 원문 그대로 들어가는 문장이다."""
+
+    import uuid
+    from types import SimpleNamespace
+
+    from app.services import essence_engine
+
+    answers = schema.mask_answers(
+        schema.validate_answers(
+            {
+                "opening_story": "대학병원에서 수술 대기만 몇 달씩 하는 환자들을 보며 개원했습니다. "
+                "문의는 010-2222-3333으로 연락 주세요.",
+                "principle": "검사 화면을 같이 보며 설명한 다음 치료를 정합니다. 연락은 010-1111-2222로 주세요.",
+                "principle_reason": "환자가 이해하지 못한 치료는 오래가기 어렵습니다.",
+            }
+        )
+    )
+    text = render_interview_text(answers, new_clinic=True)
+    assert "[가림]" not in text
+    source = SimpleNamespace(
+        id=uuid.uuid4(), source_type=SourceType.INTERVIEW, source_metadata={"system_kind": DOCTOR_SURVEY_SYSTEM_KIND}
+    )
+    notes = [
+        SimpleNamespace(
+            id=uuid.uuid4(),
+            source_asset_id=source.id,
+            note_type=n.note_type,
+            source_excerpt=n.source_excerpt,
+            note_metadata=n.note_metadata,
+        )
+        for n in survey_note_payloads(text)
+    ]
+    result: dict = {"must_use_messages": []}
+    essence_engine._select_must_use(result, notes, [source], essence_engine.AutomaticPruneReport(), set())
+    assert result["must_use_messages"] == [
+        "검사 화면을 같이 보며 설명한 다음 치료를 정합니다.",
+        "환자가 이해하지 못한 치료는 오래가기 어렵습니다.",
+    ]
+
+
+def test_answers_are_masked_before_saving_except_the_clinic_phone():
+    masked = schema.mask_answers(
+        {
+            "phone": "010-1234-5678",
+            "principle": "연락은 010-1234-5678, doctor@example.com",
+            "doctors": [{"name": "홍길동", "bio": [{"text": "800101-1234567"}]}],
+            "focus_answers": {"충격파": {"visits": "3", "aftercare": "010 9999 8888로 연락"}},
+        }
+    )
+    assert masked["phone"] == "010-1234-5678"
+    assert "010-1234-5678" not in masked["principle"] and "doctor@example.com" not in masked["principle"]
+    assert masked["doctors"][0]["bio"][0]["text"] == "[가림]"
+    assert masked["focus_answers"]["충격파"] == {"visits": "3", "aftercare": "[가림]로 연락"}
+
+
+def test_long_answers_are_split_on_sentences_not_cut():
+    long_story = " ".join(f"{i}번째 이야기는 동네 환자들과 함께한 시간에 관한 것입니다." for i in range(40))
+    text = render_interview_text(schema.validate_answers({"opening_story": long_story}), new_clinic=True)
+    values = [note.source_excerpt for note in survey_note_payloads(text)]
+    assert len(values) > 1
+    assert all(len(value) <= 400 for value in values)
+    assert " ".join(values) == long_story
