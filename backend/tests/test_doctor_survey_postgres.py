@@ -314,3 +314,24 @@ async def test_doctor_uploads_a_photo_and_the_ae_sees_it(db, client, tmp_path, m
     assert [(item["name"], item["kind"]) for item in status["files"]] == [("외관.png", "PHOTO")]
     admin_file = await client.get(f"{base}/files/{file_id}", headers=ADMIN)
     assert admin_file.status_code == 200 and admin_file.content == png
+
+
+async def test_an_upload_without_length_header_is_cut_at_the_limit(db, client):
+    from app.services import doctor_survey_files
+
+    hospital_id = await _hospital(db)
+    link = (
+        await client.post(f"/api/v1/admin/hospitals/{hospital_id}/doctor-survey/link", headers=ADMIN, json={})
+    ).json()["link_url"]
+    public = f"/api/v1/public/doctor-survey/{_token(link)}"
+    await client.post(f"{public}/consent", json={"consent_version": schema.CONSENT_VERSION, "respondent": "DIRECTOR"})
+
+    async def body():
+        yield b"--b\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.png\"\r\n\r\n"
+        for _ in range(doctor_survey_files.MAX_FILE_BYTES // (1024 * 1024) + 2):
+            yield b"\x00" * (1024 * 1024)
+
+    response = await client.post(
+        f"{public}/files", content=body(), headers={"Content-Type": "multipart/form-data; boundary=b"}
+    )
+    assert response.status_code == 413

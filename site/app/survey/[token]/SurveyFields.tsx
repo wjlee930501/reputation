@@ -23,9 +23,17 @@ export interface FieldContext {
   answers: Answers
   /** 파일을 올리고 다시 볼 때 쓰는 링크 토큰. */
   token: string
+  /** 올리는 중인 파일 작업을 화면에 알린다 — 다 끝나기 전에는 제출하지 않는다. */
+  trackUpload: (work: Promise<void>) => void
 }
 
-type Change = (key: string, value: unknown) => void
+/** 값 또는 '지금 값 → 새 값' 함수. 비동기 작업(파일 올리기)이 끝날 때 그 사이 고친 답을 덮지 않게 함수로 쓴다. */
+export type ChangeValue = unknown | ((current: unknown) => unknown)
+type Change = (key: string, value: ChangeValue) => void
+
+export function resolveChange(current: unknown, value: ChangeValue): unknown {
+  return typeof value === 'function' ? (value as (current: unknown) => unknown)(current) : value
+}
 
 const str = (value: unknown): string => (typeof value === 'string' ? value : '')
 const strList = (value: unknown): string[] =>
@@ -354,10 +362,14 @@ function RowList({ field, scope, onChange, ctx }: { field: SurveyField; scope: A
   const key = field.key!
   const rows = rowList(scope[key])
   const minimum = field.rows ?? 1
-  const shown = rows.length >= minimum ? rows : [...rows, ...Array.from({ length: minimum - rows.length }, () => ({}))]
-  const update = (index: number, rowKey: string, value: unknown) => {
-    const next = shown.map((row, i) => (i === index ? { ...row, [rowKey]: value } : row))
-    onChange(key, next)
+  const pad = (list: Answers[]): Answers[] =>
+    list.length >= minimum ? list : [...list, ...Array.from({ length: minimum - list.length }, () => ({}))]
+  const shown = pad(rows)
+  const update = (index: number, rowKey: string, value: ChangeValue) => {
+    // 지금 값을 기준으로 이 줄의 이 칸만 바꾼다(올리기가 끝날 때 그 사이 고친 다른 칸·줄을 덮지 않게).
+    onChange(key, (current: unknown) =>
+      pad(rowList(current)).map((row, i) => (i === index ? { ...row, [rowKey]: resolveChange(row[rowKey], value) } : row)),
+    )
   }
   const remove = (index: number) => {
     const next = shown.filter((_row, i) => i !== index)
@@ -407,12 +419,26 @@ function FilesField({ field, scope, onChange, ctx }: { field: SurveyField; scope
   const base = `/api/doctor-survey/${encodeURIComponent(ctx.token)}/files`
   const photos = field.kind === 'PHOTO'
 
+  const limit = field.max ?? 30
+
   async function upload(list: FileList | null) {
     if (!list || !list.length) return
+    const room = limit - files.length
+    if (room <= 0) {
+      setStatus(`이 칸에는 ${limit}개까지 올릴 수 있습니다. 나머지는 담당자에게 보내 주세요.`)
+      return
+    }
+    const chosen = Array.from(list).slice(0, room)
+    const skipped = list.length - chosen.length
+    const work = uploadAll(chosen, skipped)
+    ctx.trackUpload(work)
+    await work
+  }
+
+  async function uploadAll(chosen: File[], skipped: number) {
     setBusy(true)
     setStatus(null)
-    let next = files
-    const chosen = Array.from(list)
+    let done = 0
     for (const [index, file] of chosen.entries()) {
       setStatus(`올리는 중 ${index + 1} / ${chosen.length}`)
       const body = new FormData()
@@ -425,18 +451,21 @@ function FilesField({ field, scope, onChange, ctx }: { field: SurveyField; scope
           setStatus(typeof payload.detail === 'string' ? payload.detail : `${file.name}을(를) 올리지 못했습니다.`)
           break
         }
-        next = [...next, { id: payload.id, name: payload.name ?? file.name }]
-        onChange(key, next)
+        const ref = { id: payload.id, name: payload.name ?? file.name }
+        onChange(key, (current: unknown) => [...fileRefs(current), ref])
+        done += 1
       } catch {
         setStatus('연결이 원활하지 않아 올리지 못했습니다. 다시 올려 주세요.')
         break
       }
     }
     setBusy(false)
-    if (next.length === files.length + chosen.length) setStatus(null)
+    if (done === chosen.length) {
+      setStatus(skipped > 0 ? `이 칸에는 ${limit}개까지 올릴 수 있어 ${skipped}개는 올리지 않았습니다.` : null)
+    }
   }
 
-  const remove = (id: string) => onChange(key, files.filter((file) => file.id !== id))
+  const remove = (id: string) => onChange(key, (current: unknown) => fileRefs(current).filter((file) => file.id !== id))
   const sub = files.length
     ? photos
       ? `${files.length}장 올림 · 눌러서 더 올리기`

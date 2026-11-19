@@ -310,6 +310,7 @@ async def submit_survey(request: Request, token: str, db: AsyncSession = Depends
 # ── 파일 ────────────────────────────────────────────────────────────────
 
 _MULTIPART_OVERHEAD = 64 * 1024
+_FILE_TOO_LARGE = "파일이 너무 큽니다. 한 파일에 12MB까지 올릴 수 있습니다."
 
 
 async def _read_upload(upload: UploadFile) -> bytes:
@@ -318,7 +319,7 @@ async def _read_upload(upload: UploadFile) -> bytes:
     while chunk := await upload.read(1024 * 1024):
         total += len(chunk)
         if total > survey_files.MAX_FILE_BYTES:
-            raise HTTPException(status_code=413, detail="파일이 너무 큽니다. 한 파일에 12MB까지 올릴 수 있습니다.")
+            raise HTTPException(status_code=413, detail=_FILE_TOO_LARGE)
         chunks.append(chunk)
     return b"".join(chunks)
 
@@ -332,9 +333,18 @@ async def upload_file(request: Request, token: str, db: AsyncSession = Depends(g
 
     preview = await _survey_for_token(db, token)
     _require_consent(preview)
+    limit = survey_files.MAX_FILE_BYTES + _MULTIPART_OVERHEAD
     declared = request.headers.get("content-length")
-    if declared and declared.isdigit() and int(declared) > survey_files.MAX_FILE_BYTES + _MULTIPART_OVERHEAD:
-        raise HTTPException(status_code=413, detail="파일이 너무 큽니다. 한 파일에 12MB까지 올릴 수 있습니다.")
+    if declared and declared.isdigit() and int(declared) > limit:
+        raise HTTPException(status_code=413, detail=_FILE_TOO_LARGE)
+    # 길이 머리가 없거나 거짓이어도 multipart 파서가 끝까지 받기 전에 끊는다 — 본문을 한도 안에서 먼저 읽고
+    # 파서에는 읽은 바이트만 준다.
+    received = bytearray()
+    async for chunk in request.stream():
+        received.extend(chunk)
+        if len(received) > limit:
+            raise HTTPException(status_code=413, detail=_FILE_TOO_LARGE)
+    request._body = bytes(received)  # noqa: SLF001 — Starlette가 form()에서 이 값을 다시 읽는다
     try:
         form = await request.form(max_files=1, max_fields=2)
     except Exception as exc:  # noqa: BLE001 — 깨진 multipart는 입력 오류다
@@ -360,6 +370,13 @@ async def upload_file(request: Request, token: str, db: AsyncSession = Depends(g
         kind=kind, name=getattr(upload, "filename", "") or "", mime=mime, size=len(data), ref=ref
     )
     survey = await _survey_for_token(db, token, for_update=True)
+    # 잠근 뒤 다시 센다 — 동시에 올린 요청이 함께 한도를 넘기지 않게(남은 저장 객체는 답이 가리키지 않는다).
+    if len(survey.files or {}) >= survey_files.MAX_FILES_PER_SURVEY:
+        await db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail=f"파일은 {survey_files.MAX_FILES_PER_SURVEY}개까지 올릴 수 있습니다. 나머지는 담당자에게 보내 주세요.",
+        )
     survey.files = {**(survey.files or {}), file_id: entry}
     await db.commit()
     return {"id": file_id, "name": entry["name"], "kind": kind, "mime": mime, "size": len(data)}

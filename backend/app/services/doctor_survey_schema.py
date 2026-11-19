@@ -297,7 +297,7 @@ PARTS: list[dict[str, Any]] = [
                         "fields": [
                             {"t": "text", "key": "name", "label": "이름", "ph": "예) 보건복지부 지정 ○○전문병원, 의료기관 인증"},
                             {"t": "select", "key": "year", "label": "받은 해", "opts": YEARS},
-                            {"t": "files", "key": "files", "label": "지정서·인증서 사진", "accept": "image/*,.pdf", "kind": "CERTIFICATE"},
+                            {"t": "files", "key": "files", "label": "지정서·인증서 사진", "accept": "image/*,.pdf", "kind": "CERTIFICATE", "max": 5},
                         ],
                     }
                 ],
@@ -312,10 +312,10 @@ PARTS: list[dict[str, Any]] = [
                         "title": "병원 페이지용 사진",
                         "d": "원장님 사진과 병원 외관·내부·진료실 사진을 한 번에 올려 주시면 됩니다. 환자 얼굴이 나온 사진과 전후 사진은 사용하지 않겠습니다.",
                     },
-                    {"t": "files", "key": "photos", "label": "사진 올리기", "accept": "image/*", "kind": "PHOTO", "sub": "여러 장을 한 번에 고를 수 있음"},
+                    {"t": "files", "key": "photos", "label": "사진 올리기", "accept": "image/*", "kind": "PHOTO", "sub": "여러 장을 한 번에 고를 수 있음 · 30장까지", "max": 30},
                     {"t": "toggle", "key": "photo_consent", "label": "병원 페이지에 사진 사용 동의"},
                     {"t": "sec", "title": "병원 로고", "d": "선호하시는 색이 있으면 함께 적어 주시면 됩니다."},
-                    {"t": "files", "key": "logo_files", "label": "로고 파일", "accept": "image/png,image/jpeg,image/webp", "kind": "LOGO", "sub": "PNG·JPG 파일 (AI·SVG 파일은 담당자에게 따로 보내 주세요)"},
+                    {"t": "files", "key": "logo_files", "label": "로고 파일", "accept": "image/png,image/jpeg,image/webp", "kind": "LOGO", "sub": "PNG·JPG 파일 (AI·SVG 파일은 담당자에게 따로 보내 주세요)", "max": 5},
                     {"t": "text", "key": "logo_color", "label": "선호하시는 색", "ph": "예) 로고에 쓰인 남색, 초록 계열"},
                 ],
             },
@@ -769,11 +769,13 @@ def _allowed(field: Mapping[str, Any]) -> set[str] | None:
     return {option_value(option) for option in opts}
 
 
-def _clean_files(value: Any, key: str) -> list[dict[str, str]]:
+def _clean_files(value: Any, key: str, limit: int = MAX_FILES) -> list[dict[str, str]]:
     if value is None:
         return []
-    if not isinstance(value, list) or len(value) > MAX_FILES:
+    if not isinstance(value, list):
         raise _bad(key)
+    if len(value) > limit:
+        raise SurveyAnswerError(f"파일은 이 칸에 {limit}개까지 올릴 수 있습니다. 나머지는 담당자에게 보내 주세요.")
     out: list[dict[str, str]] = []
     for item in value:
         if not isinstance(item, Mapping):
@@ -908,7 +910,7 @@ def _clean_value(field: Mapping[str, Any], value: Any) -> Any:
     if kind == "doctors":
         return _clean_doctors(value, key)
     if kind == "files":
-        return _clean_files(value, key)
+        return _clean_files(value, key, int(field.get("max") or MAX_FILES))
     raise _bad(key)  # pragma: no cover — 정의에 없는 종류
 
 

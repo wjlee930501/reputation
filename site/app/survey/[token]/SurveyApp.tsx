@@ -13,7 +13,7 @@ import {
   type FlowItem,
   type SurveySchema,
 } from '@/lib/doctor-survey'
-import { FieldList, type FieldContext } from './SurveyFields'
+import { FieldList, resolveChange, type ChangeValue, type FieldContext } from './SurveyFields'
 
 /**
  * 원장 사전 설문 화면 — 시작(동의) → 문항 → 제출 전 확인 → 완료.
@@ -113,6 +113,17 @@ export default function SurveyApp({ token }: { token: string }) {
   // 저장은 한 번에 하나만 보낸다. 느린 요청이 나중에 도착해 새 답을 덮지 않게, 보내는 동안 바뀐 답은
   // 같은 반복에서 이어서 보낸다. 실패하면 멈추고 다음 입력 때 다시 보낸다.
   const inFlight = useRef<Promise<void> | null>(null)
+  // 올리는 중인 파일 — 끝나기 전에 제출하면 그 파일이 제출본에서 빠진다.
+  const uploads = useRef(new Set<Promise<void>>())
+  const [uploading, setUploading] = useState(0)
+  const trackUpload = useCallback((work: Promise<void>) => {
+    uploads.current.add(work)
+    setUploading(uploads.current.size)
+    void work.finally(() => {
+      uploads.current.delete(work)
+      setUploading(uploads.current.size)
+    })
+  }, [])
   // 이 화면의 저장 순번 — 서버는 같은 화면에서 이미 받은 순번보다 작거나 같은 저장을 버린다(늦게 도착한 옛 답이
   // 새 답을 덮지 않게). 화면 id가 다르면(다른 기기·새로 연 화면) 비교하지 않으므로 기기 시계와 무관하다.
   const session = useRef('')
@@ -200,19 +211,19 @@ export default function SurveyApp({ token }: { token: string }) {
   }, [base, consented, schemaVersion, nextSeq])
 
   const setTop = useCallback(
-    (key: string, value: unknown) => {
-      setAnswers((prev) => ({ ...prev, [key]: value }))
+    (key: string, value: ChangeValue) => {
+      setAnswers((prev) => ({ ...prev, [key]: resolveChange(prev[key], value) }))
       scheduleSave()
     },
     [scheduleSave],
   )
 
   const setFocus = useCallback(
-    (focus: string, key: string, value: unknown) => {
+    (focus: string, key: string, value: ChangeValue) => {
       if (!schema) return
       setAnswers((prev) => {
         const all = { ...((prev[schema.focus_key] as Record<string, Answers> | undefined) ?? {}) }
-        all[focus] = { ...(all[focus] ?? {}), [key]: value }
+        all[focus] = { ...(all[focus] ?? {}), [key]: resolveChange((all[focus] ?? {})[key], value) }
         return { ...prev, [schema.focus_key]: all }
       })
       scheduleSave()
@@ -262,6 +273,11 @@ export default function SurveyApp({ token }: { token: string }) {
     if (timer.current) clearTimeout(timer.current)
     setBusy(true)
     setError(null)
+    if (uploads.current.size) {
+      setBusy(false)
+      setError('파일을 올리는 중입니다. 다 올라간 뒤 제출해 주세요.')
+      return
+    }
     dirty.current = false
     // 보내던 저장이 제출 뒤에 도착해 제출한 답을 덮지 않게 먼저 끝낸다.
     if (inFlight.current) await inFlight.current
@@ -314,10 +330,13 @@ export default function SurveyApp({ token }: { token: string }) {
     )
   }
 
-  const ctx: FieldContext = { schema, answers, token }
+  const ctx: FieldContext = { schema, answers, token, trackUpload }
   const isQuestion = Boolean(current?.question)
   const nextLabel = current?.key === 'intro' ? (consented ? '이어서 작성하기' : '시작하기') : current?.key === 'review' ? '제출하기' : '다음'
-  const nextDisabled = busy || (current?.key === 'intro' && !consented && (!consentChecked || !respondent))
+  const nextDisabled =
+    busy ||
+    (current?.key === 'review' && uploading > 0) ||
+    (current?.key === 'intro' && !consented && (!consentChecked || !respondent))
   const missing = questions.filter((item) => !questionAnswered(schema, answers, item))
   const savedLabel =
     saveState === 'error' ? '저장 안 됨' : saveState === 'saving' ? '저장 중' : savedAt ? `저장됨 ${clock(savedAt)}` : ''
@@ -442,7 +461,11 @@ export default function SurveyApp({ token }: { token: string }) {
                   else step(1)
                 }}
               >
-                {busy && current?.key === 'review' ? '제출하는 중…' : nextLabel}
+                {current?.key === 'review' && uploading > 0
+                  ? '파일을 올리는 중…'
+                  : busy && current?.key === 'review'
+                    ? '제출하는 중…'
+                    : nextLabel}
               </button>
             </div>
             {isQuestion ? (

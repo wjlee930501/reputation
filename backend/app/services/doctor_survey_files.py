@@ -18,6 +18,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from app.services import doctor_survey_schema as schema
+from app.services.survey_sources import mask_personal_info
 
 MAX_FILE_BYTES = 12 * 1024 * 1024
 MAX_FILES_PER_SURVEY = 60
@@ -98,7 +99,8 @@ def new_file_id() -> str:
 def new_file_entry(*, kind: str, name: str, mime: str, size: int, ref: str) -> dict[str, Any]:
     return {
         "kind": kind,
-        "name": (name or "").strip()[:200] or f"파일.{_EXTENSIONS.get(mime, 'bin')}",
+        # 파일 이름도 답처럼 가린다(휴대전화·이메일이 든 이름) — Admin 목록이 이 이름을 그대로 보인다.
+        "name": mask_personal_info((name or "").strip()[:200]) or f"파일.{_EXTENSIONS.get(mime, 'bin')}",
         "mime": mime,
         "size": size,
         "ref": ref,

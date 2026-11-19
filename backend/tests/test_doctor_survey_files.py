@@ -61,3 +61,19 @@ def test_referenced_files_lists_what_the_answers_still_point_at():
     }
     listed = files.referenced_files(answers, stored)
     assert [(item["name"], item["context"]) for item in listed] == [("외관.jpg", None), ("인증.pdf", "의료기관 인증")]
+
+
+def test_file_names_are_masked_before_saving():
+    entry = files.new_file_entry(
+        kind="PHOTO", name="010-1234-5678_doctor@example.com.png", mime="image/png", size=1, ref="local://x"
+    )
+    assert "010-1234-5678" not in entry["name"] and "doctor@example.com" not in entry["name"]
+
+
+def test_each_file_field_has_its_own_limit_shown_to_the_screen():
+    from app.services import doctor_survey_schema as schema
+
+    assert schema.TOP_FIELDS["photos"]["max"] == 30
+    with pytest.raises(schema.SurveyAnswerError):
+        schema.validate_answers({"logo_files": [{"id": f"{i:032x}", "name": "x"} for i in range(6)]})
+    assert len(schema.validate_answers({"photos": [{"id": f"{i:032x}", "name": "x"} for i in range(30)]})["photos"]) == 30
