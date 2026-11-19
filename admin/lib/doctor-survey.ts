@@ -48,3 +48,24 @@ export function doctorSurveyStatusText(survey: DoctorSurveyStatus): string {
   if (survey.status === 'NOT_OPENED') return copy.statusNotOpened
   return ''
 }
+
+/** `GET /admin/hospitals/{id}/doctor-survey/facts`의 한 항목. */
+export interface DoctorSurveyFact {
+  field: string
+  label: string
+  value: string
+  current: string
+  applicable: boolean
+  patch: Record<string, unknown> | null
+  reason: string | null
+}
+
+/** 고른 항목의 patch를 하나로 합친다(프로필 저장 본문). 반영할 수 없는 항목은 건너뛴다. */
+export function mergeFactPatches(facts: DoctorSurveyFact[], selected: ReadonlySet<string>): Record<string, unknown> {
+  const body: Record<string, unknown> = {}
+  for (const fact of facts) {
+    if (!fact.applicable || !fact.patch || !selected.has(fact.field)) continue
+    Object.assign(body, fact.patch)
+  }
+  return body
+}

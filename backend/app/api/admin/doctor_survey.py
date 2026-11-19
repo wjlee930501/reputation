@@ -12,12 +12,14 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.models.doctor_survey import DoctorSurvey
 from app.models.hospital import Hospital
+from app.models.physician import HospitalPhysician
+from app.services import doctor_survey_facts as survey_facts
 from app.services import doctor_survey_files as survey_files
 from app.services import doctor_survey_schema as schema
 from app.services.audit_log import default_actor, write_audit_log
@@ -167,3 +169,23 @@ async def get_doctor_survey_file(
         media_type=entry.get("mime"),
         headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"},
     )
+
+
+@router.get("/{hospital_id}/doctor-survey/facts")
+async def get_doctor_survey_facts(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    """제출한 사실 답 → 병원 정보 반영 제안. 반영은 화면이 기존 프로필 저장으로 보낸다(AE 확인)."""
+
+    hospital = await _hospital_or_404(db, hospital_id)
+    survey = await _survey(db, hospital_id)
+    if survey is None or not survey.submission_count:
+        return {"hospital_id": str(hospital_id), "submitted_at": None, "items": []}
+    physician_count = await db.scalar(
+        select(func.count()).select_from(HospitalPhysician).where(HospitalPhysician.hospital_id == hospital_id)
+    )
+    return {
+        "hospital_id": str(hospital_id),
+        "submitted_at": _iso(survey.last_submitted_at),
+        "items": survey_facts.fact_suggestions(
+            survey.submitted_answers or {}, hospital, physician_count=int(physician_count or 0)
+        ),
+    }

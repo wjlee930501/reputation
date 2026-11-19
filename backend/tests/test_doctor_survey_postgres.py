@@ -335,3 +335,47 @@ async def test_an_upload_without_length_header_is_cut_at_the_limit(db, client):
         f"{public}/files", content=body(), headers={"Content-Type": "multipart/form-data; boundary=b"}
     )
     assert response.status_code == 413
+
+
+async def test_every_applicable_fact_patch_is_accepted_by_the_profile_save(db, client, monkeypatch):
+    """AE 화면은 제안의 patch를 그대로 프로필 저장에 보낸다 — 저장 스키마가 받아야 한다."""
+
+    hospital_id = await _hospital(db)
+    base = f"/api/v1/admin/hospitals/{hospital_id}/doctor-survey"
+    link = (await client.post(f"{base}/link", headers=ADMIN, json={})).json()["link_url"]
+    public = f"/api/v1/public/doctor-survey/{_token(link)}"
+    await client.post(f"{public}/consent", json={"consent_version": schema.CONSENT_VERSION, "respondent": "DIRECTOR"})
+    assert (await client.get(f"{base}/facts", headers=ADMIN)).json()["items"] == []
+    answers = {
+        "departments": ["정형외과"],
+        "doctors": [
+            {"name": "홍길동", "title": "대표원장", "school": "○○대학교 의과대학", "specialty": "정형외과",
+             "societies": ["대한정형외과학회"], "bio": [{"kind": "학력", "text": "○○대 졸업", "star": True}]},
+            {"name": "김의사", "title": "원장"},
+        ],
+        "treatments": [{"name": "체외충격파 치료", "summary": "충격파로 통증을 줄이는 비수술 치료"}],
+        "address_detail": "3층",
+        "phone": "02-555-1234",
+        "hours": {"same": True, "weekday": {"start": "09:00", "end": "18:00"}, "sat": {"open": False}},
+        "holiday": "휴진",
+        "channels": ["블로그"],
+        "channel_url_blog": "https://blog.naver.com/clinic",
+        "competitors": ["B의원"],
+    }
+    assert (await client.post(f"{public}/submit", json={"answers": answers})).status_code == 200
+    facts = (await client.get(f"{base}/facts", headers=ADMIN)).json()["items"]
+    patch: dict = {}
+    for item in facts:
+        if item["applicable"]:
+            patch.update(item["patch"])
+    assert {"specialties", "physicians", "treatments", "phone", "business_hours", "blog_url"} <= set(patch)
+    assert "competitors" not in patch
+
+    # 주소 변경은 좌표 조회를 부른다 — 이 검사는 저장 스키마만 본다.
+    patch.pop("address", None)
+    saved = await client.patch(
+        f"/api/v1/admin/hospitals/{hospital_id}/profile", headers=ADMIN, json={**patch, "geocode_address": False}
+    )
+    assert saved.status_code == 200, saved.text
+    after = {i["field"]: i for i in (await client.get(f"{base}/facts", headers=ADMIN)).json()["items"]}
+    assert not after["phone"]["applicable"] and not after["physicians"]["applicable"]

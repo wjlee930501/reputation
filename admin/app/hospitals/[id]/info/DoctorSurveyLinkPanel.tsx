@@ -5,6 +5,7 @@ import { ADMIN_COPY } from '@/lib/admin-copy'
 import { doctorSurveyFileKindLabel, doctorSurveyStatusText, type DoctorSurveyStatus } from '@/lib/doctor-survey'
 import { fetchAPI } from '@/lib/api'
 import { formatDate } from '@/lib/format'
+import DoctorSurveyFactsPanel from './DoctorSurveyFactsPanel'
 
 /**
  * 원장님이 직접 작성하는 사전 설문 링크 — 만들기·복사·새 링크와 진행 상태.
@@ -145,6 +146,7 @@ export default function DoctorSurveyLinkPanel({ hospitalId }: { hospitalId: stri
       )}
 
       {feedback ? <p role="status" className="text-xs text-slate-600">{feedback}</p> : null}
+      {survey?.status === 'SUBMITTED' ? <DoctorSurveyFactsPanel hospitalId={hospitalId} /> : null}
     </div>
   )
 }
