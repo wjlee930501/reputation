@@ -113,6 +113,12 @@ export default function SurveyApp({ token }: { token: string }) {
   // 저장은 한 번에 하나만 보낸다. 느린 요청이 나중에 도착해 새 답을 덮지 않게, 보내는 동안 바뀐 답은
   // 같은 반복에서 이어서 보낸다. 실패하면 멈추고 다음 입력 때 다시 보낸다.
   const inFlight = useRef<Promise<void> | null>(null)
+  // 저장 순번 — 서버는 이미 받은 순번보다 작거나 같은 저장을 버린다(늦게 도착한 옛 답이 새 답을 덮지 않게).
+  const seq = useRef(0)
+  const nextSeq = useCallback(() => {
+    seq.current = Math.max(Date.now() * 1000, seq.current + 1)
+    return seq.current
+  }, [])
 
   const save = useCallback((): Promise<void> => {
     if (inFlight.current) return inFlight.current
@@ -128,6 +134,7 @@ export default function SurveyApp({ token }: { token: string }) {
               answers: compactAnswers(latest.current.answers),
               current_step: latest.current.stepKey,
               schema_version: schemaVersion,
+              client_seq: nextSeq(),
             }),
           })
           if (!response.ok) {
@@ -151,7 +158,7 @@ export default function SurveyApp({ token }: { token: string }) {
     })
     inFlight.current = run
     return run
-  }, [base, schemaVersion])
+  }, [base, schemaVersion, nextSeq])
 
 
   const scheduleSave = useCallback(() => {
@@ -173,6 +180,7 @@ export default function SurveyApp({ token }: { token: string }) {
         answers: compactAnswers(latest.current.answers),
         current_step: latest.current.stepKey,
         schema_version: schemaVersion,
+        client_seq: nextSeq(),
       })
       void fetch(`${base}/answers`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body, keepalive: true })
       dirty.current = false
@@ -184,7 +192,7 @@ export default function SurveyApp({ token }: { token: string }) {
       document.removeEventListener('visibilitychange', onHide)
       window.removeEventListener('pagehide', flush)
     }
-  }, [base, consented, schemaVersion])
+  }, [base, consented, schemaVersion, nextSeq])
 
   const setTop = useCallback(
     (key: string, value: unknown) => {
@@ -256,10 +264,17 @@ export default function SurveyApp({ token }: { token: string }) {
       const response = await fetch(`${base}/submit`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ answers: compactAnswers(answers), current_step: 'review', schema_version: schema.version }),
+        body: JSON.stringify({
+          answers: compactAnswers(answers),
+          current_step: 'review',
+          schema_version: schema.version,
+          client_seq: nextSeq(),
+        }),
       })
       if (!response.ok) {
         setError(await readDetail(response, '제출하지 못했습니다. 잠시 뒤 다시 시도해 주세요.'))
+        // 제출이 안 됐으면 답도 저장되지 않았을 수 있다 — 다시 저장 대상으로 되돌린다.
+        scheduleSave()
         return
       }
       dirty.current = false
@@ -268,6 +283,7 @@ export default function SurveyApp({ token }: { token: string }) {
       dirty.current = false
     } catch {
       setError('제출하지 못했습니다. 연결을 확인한 뒤 다시 시도해 주세요.')
+      scheduleSave()
     } finally {
       setBusy(false)
     }

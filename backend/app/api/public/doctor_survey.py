@@ -53,8 +53,10 @@ class ConsentBody(BaseModel):
 
 class AnswersBody(BaseModel):
     answers: dict[str, Any] = Field(default_factory=dict)
-    current_step: str | None = Field(default=None, max_length=120)
+    current_step: str | None = Field(default=None, max_length=400)
     schema_version: str | None = Field(default=None, max_length=40)
+    # 화면의 저장 순번(밀리초 기반, 계속 커진다). 없으면 순번 검사를 하지 않는다.
+    client_seq: int | None = Field(default=None, ge=0, le=2**62)
 
 
 MAX_BODY_BYTES = 300 * 1024
@@ -130,6 +132,27 @@ def survey_view(survey: DoctorSurvey, hospital: Hospital | None) -> dict[str, An
     }
 
 
+def _iso(value: datetime | None) -> str | None:
+    return value.isoformat() if value else None
+
+
+def _is_stale(survey: DoctorSurvey, body: AnswersBody) -> bool:
+    return body.client_seq is not None and survey.client_seq is not None and body.client_seq <= survey.client_seq
+
+
+def _write_draft(survey: DoctorSurvey, body: AnswersBody, answers: dict[str, Any], now: datetime) -> None:
+    from app.services.survey_sources import mask_personal_info
+
+    survey.answers = answers
+    survey.schema_version = body.schema_version or schema.SCHEMA_VERSION
+    if body.current_step is not None:
+        # 화면 위치에는 진료 이름이 들어간다 — 답과 같이 가린다.
+        survey.current_step = mask_personal_info(body.current_step)
+    if body.client_seq is not None:
+        survey.client_seq = max(body.client_seq, survey.client_seq or 0)
+    survey.last_saved_at = now
+
+
 def _require_consent(survey: DoctorSurvey) -> None:
     if survey.consent_at is None or survey.consent_version != schema.CONSENT_VERSION:
         raise HTTPException(status_code=409, detail=CONSENT_REQUIRED)
@@ -197,12 +220,13 @@ async def save_answers(request: Request, token: str, db: AsyncSession = Depends(
     answers = _clean_answers(body.answers)
     survey = await _survey_for_token(db, token, for_update=True)
     _require_consent(survey)
+    if _is_stale(survey, body):
+        # 더 새 저장이 이미 들어왔다 — 이 요청은 늦게 도착한 옛 답이다.
+        saved_at = _iso(survey.last_saved_at)
+        await db.rollback()
+        return {"stale": True, "saved_at": saved_at}
     now = datetime.now(UTC)
-    survey.answers = answers
-    survey.schema_version = body.schema_version or schema.SCHEMA_VERSION
-    if body.current_step is not None:
-        survey.current_step = body.current_step
-    survey.last_saved_at = now
+    _write_draft(survey, body, answers, now)
     await db.commit()
     return {
         "saved_at": now.isoformat(),
@@ -223,11 +247,8 @@ async def submit_survey(request: Request, token: str, db: AsyncSession = Depends
     survey = await _survey_for_token(db, token, for_update=True)
     _require_consent(survey)
     now = datetime.now(UTC)
-    survey.answers = answers
-    survey.schema_version = body.schema_version or schema.SCHEMA_VERSION
-    if body.current_step is not None:
-        survey.current_step = body.current_step
-    survey.last_saved_at = now
+    # 제출은 화면이 보낸 마지막 답이다. 순번만 앞으로 옮겨 늦게 도착한 옛 저장이 덮지 못하게 한다.
+    _write_draft(survey, body, answers, now)
     result = await sync_doctor_survey_source(
         db,
         hospital_id=survey.hospital_id,

@@ -108,6 +108,8 @@ AI_QUESTION_FALLBACKS = {"town": "우리 동네", "dept": "진료과", "focus": 
 
 FOCUS_ANSWERS_KEY = "focus_answers"
 FOCUS_MAX = 5
+# 진료 이름은 다른 칸(진료비의 진료 선택·주력 진료)의 보기 값이 된다 — 보기 값 한도(200자)와 맞춘다.
+MAX_OPTION_INPUT = 200
 
 # ── 문항 ────────────────────────────────────────────────────────────────
 
@@ -155,7 +157,7 @@ PARTS: list[dict[str, Any]] = [
                         "rows": 1,
                         "essence": NOTE_TREATMENT,
                         "fields": [
-                            {"t": "text", "key": "name", "label": "진료 이름", "ph": "예) 체외충격파 치료", "role": "treat"},
+                            {"t": "text", "key": "name", "label": "진료 이름", "ph": "예) 체외충격파 치료", "role": "treat", "max": MAX_OPTION_INPUT},
                             {"t": "text", "key": "summary", "label": "한 줄 설명", "ph": "예) 통증 부위에 충격파를 쏘는 비수술 치료"},
                         ],
                     }
@@ -979,6 +981,9 @@ def mask_answers(value: Any, key: str | None = None) -> Any:
     if isinstance(value, list):
         return [mask_answers(item, key) for item in value]
     if isinstance(value, dict):
+        # 진료별 답의 key는 원장이 적은 진료 이름이다 — `focus_treatments`와 같은 값으로 가려야 서로 맞는다.
+        if key == FOCUS_ANSWERS_KEY:
+            return {mask_personal_info(str(name)): mask_answers(item) for name, item in value.items()}
         return {name: mask_answers(item, str(name)) for name, item in value.items()}
     return value
 

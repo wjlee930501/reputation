@@ -109,28 +109,50 @@ def _one_line(text: str) -> str:
     return re.sub(r"\s+", " ", text.replace("\x00", " ")).strip()
 
 
-def _chunks(text: str) -> list[str]:
-    """긴 답을 문장 경계에서 나눈다. 한 문장이 너무 길면 띄어쓰기에서 나눈다."""
+def _chunks(text: str) -> list[tuple[str, bool]]:
+    """긴 답을 문장 경계에서 나눈다. (조각, 문장 중간에서 잘렸는가).
+
+    한 문장이 한도보다 길면 띄어쓰기에서 나누는데, 그 조각은 온전한 문장이 아니다 — 필수 문구 후보가 되지
+    않게 호출자가 노트 종류를 바꾼다.
+    """
 
     text = _one_line(text)
     if len(text) <= _CHUNK_CHARS:
-        return [text] if text else []
-    pieces: list[str] = []
+        return [(text, False)] if text else []
+    pieces: list[tuple[str, bool]] = []
     for sentence in _SENTENCE_END.split(text):
+        cut_sentence = False
         while len(sentence) > _CHUNK_CHARS:
             cut = sentence.rfind(" ", 0, _CHUNK_CHARS)
             cut = cut if cut > 0 else _CHUNK_CHARS
-            pieces.append(sentence[:cut].strip())
+            pieces.append((sentence[:cut].strip(), True))
             sentence = sentence[cut:].strip()
+            cut_sentence = True
         if sentence:
-            pieces.append(sentence)
-    chunks: list[str] = []
-    for piece in pieces:
-        if chunks and len(chunks[-1]) + 1 + len(piece) <= _CHUNK_CHARS:
-            chunks[-1] = f"{chunks[-1]} {piece}"
+            pieces.append((sentence, cut_sentence))
+    chunks: list[tuple[str, bool]] = []
+    for piece, fragment in pieces:
+        if chunks and len(chunks[-1][0]) + 1 + len(piece) <= _CHUNK_CHARS:
+            chunks[-1] = (f"{chunks[-1][0]} {piece}", chunks[-1][1] or fragment)
         else:
-            chunks.append(piece)
+            chunks.append((piece, fragment))
     return chunks
+
+
+#: 문장 중간에서 잘린 조각이 이 종류면 맥락 노트로 내린다(필수 문구는 진료 철학·핵심 메시지 노트에서만 고른다).
+_MUST_USE_ELIGIBLE = frozenset({schema.NOTE_PHILOSOPHY, schema.NOTE_KEY_MESSAGE})
+
+
+def _lines_for(note_type: str, label: str, text: str, treatment: str | None = None) -> list[SurveyLine]:
+    return [
+        SurveyLine(
+            schema.NOTE_LOCAL if fragment and note_type in _MUST_USE_ELIGIBLE else note_type,
+            label,
+            chunk,
+            treatment,
+        )
+        for chunk, fragment in _chunks(text)
+    ]
 
 
 def _label(text: str) -> str:
@@ -165,8 +187,7 @@ def _field_lines(
         if not text.strip():
             continue
         label = _label(f"{prefix}{spec.get('render_label') or spec.get('label') or key}")
-        for chunk in _chunks(text):
-            yield SurveyLine(note_type, label, chunk, treatment)
+        yield from _lines_for(note_type, label, text, treatment)
 
 
 def survey_lines(answers: Mapping[str, Any] | None, *, new_clinic: bool) -> list[SurveyLine]:
@@ -191,13 +212,13 @@ def survey_lines(answers: Mapping[str, Any] | None, *, new_clinic: bool) -> list
                     if not name:
                         continue
                     value = f"{name}{_TREATMENT_SEPARATOR}{summary}" if summary else name
-                    lines.extend(SurveyLine(spec["essence"], "진료 항목", chunk, name) for chunk in _chunks(value))
+                    lines.extend(_lines_for(spec["essence"], "진료 항목", value, name))
                 elif key == "faq_custom":
                     question_text = _one_line(str(row.get("question") or ""))
                     answer = _one_line(str(row.get("answer") or ""))
                     if question_text and answer:
                         label = _label(f"자주 받는 질문 '{question_text}'에 대한 답")
-                        lines.extend(SurveyLine(spec["essence"], label, chunk) for chunk in _chunks(answer))
+                        lines.extend(_lines_for(spec["essence"], label, answer))
         lines.extend(_field_lines(question.get("b") or [], answers))
     focus_answers = answers.get(schema.FOCUS_ANSWERS_KEY) or {}
     for name in (answers.get("focus_treatments") or [])[: schema.FOCUS_MAX]:

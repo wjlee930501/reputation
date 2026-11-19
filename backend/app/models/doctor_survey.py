@@ -13,6 +13,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     DateTime,
     ForeignKey,
@@ -54,7 +55,10 @@ class DoctorSurvey(Base):
         JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
     )
     # 원장이 마지막으로 본 화면 — 다시 열면 그 화면부터 이어 쓴다.
-    current_step: Mapped[str | None] = mapped_column(String(120))
+    current_step: Mapped[str | None] = mapped_column(String(400))
+    # 화면이 저장할 때마다 올리는 순번. 늦게 도착한 옛 저장(느린 요청·화면 떠날 때 보낸 요청)이 새 답을
+    # 덮지 않게, 저장된 순번보다 작거나 같은 저장은 받지 않는다.
+    client_seq: Mapped[int | None] = mapped_column(BigInteger)
     respondent: Mapped[str | None] = mapped_column(String(20))
     consent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     consent_version: Mapped[str | None] = mapped_column(String(40))

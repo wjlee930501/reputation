@@ -335,3 +335,42 @@ def test_long_answers_are_split_on_sentences_not_cut():
     assert len(values) > 1
     assert all(len(value) <= 400 for value in values)
     assert " ".join(values) == long_story
+
+
+def test_focus_answer_keys_are_masked_like_the_focus_list():
+    answers = schema.mask_answers(
+        schema.validate_answers(
+            {
+                "focus_treatments": ["상담 010-1234-5678"],
+                "focus_answers": {"상담 010-1234-5678": {"aftercare": "무리하지 않기"}},
+            }
+        )
+    )
+    name = answers["focus_treatments"][0]
+    assert "010-1234-5678" not in name
+    assert list(answers["focus_answers"]) == [name]
+    assert "무리하지 않기" in render_interview_text(answers, new_clinic=False)
+
+
+def test_a_sentence_cut_in_the_middle_is_never_a_must_use_candidate():
+    long_sentence = "환자분의 " + "생활 환경과 가족 관계, 직업과 운동 습관까지 함께 듣고 " * 12 + "치료를 정합니다."
+    text = render_interview_text(schema.validate_answers({"principle": long_sentence}), new_clinic=False)
+    notes = survey_note_payloads(text)
+    assert len(notes) > 1
+    assert all(note.note_type == EvidenceNoteType.LOCAL_CONTEXT for note in notes)
+
+
+def test_access_logs_do_not_keep_the_survey_token():
+    import logging
+
+    from app.core.observability import LinkTokenRedactionFilter
+
+    record = logging.LogRecord(
+        "uvicorn.access", logging.INFO, __file__, 1, '%s - "%s %s HTTP/%s" %d',
+        ("127.0.0.1", "PUT", "/api/v1/public/doctor-survey/Yo_ybhWfMr2N_qg3P_4pD3FTBPaQ3_KDSqBz5NcQd_0/answers", "1.1", 200),
+        None,
+    )
+    LinkTokenRedactionFilter().filter(record)
+    message = record.getMessage()
+    assert "Yo_ybhWfMr2N" not in message
+    assert "/doctor-survey/[token]/answers" in message

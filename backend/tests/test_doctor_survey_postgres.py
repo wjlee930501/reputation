@@ -237,3 +237,25 @@ async def test_drafts_are_stored_masked_and_unknown_links_never_read_the_body(db
     huge = {"answers": {"principle": "가" * 400_000}}
     assert (await client.put("/api/v1/public/doctor-survey/" + "x" * 43 + "/answers", json=huge)).status_code == 404
     assert (await client.put(f"{public}/answers", json=huge)).status_code == 413
+
+
+async def test_an_older_save_arriving_late_does_not_overwrite_a_newer_one(db, client):
+    from app.models.doctor_survey import DoctorSurvey
+
+    hospital_id = await _hospital(db)
+    link = (
+        await client.post(f"/api/v1/admin/hospitals/{hospital_id}/doctor-survey/link", headers=ADMIN, json={})
+    ).json()["link_url"]
+    public = f"/api/v1/public/doctor-survey/{_token(link)}"
+    await client.post(f"{public}/consent", json={"consent_version": schema.CONSENT_VERSION, "respondent": "DIRECTOR"})
+    newer = await client.put(
+        f"{public}/answers",
+        json={"answers": {"principle": "새 답입니다."}, "client_seq": 200, "current_step": "focus|상담 010-1234-5678|care"},
+    )
+    assert newer.status_code == 200 and "stale" not in newer.json()
+    older = await client.put(f"{public}/answers", json={"answers": {"principle": "옛 답입니다."}, "client_seq": 100})
+    assert older.json()["stale"] is True
+    survey = (await db.execute(select(DoctorSurvey).where(DoctorSurvey.hospital_id == hospital_id))).scalar_one()
+    await db.refresh(survey)
+    assert survey.answers["principle"] == "새 답입니다."
+    assert "010-1234-5678" not in survey.current_step
