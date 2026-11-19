@@ -402,10 +402,22 @@ async def set_schedule(
             )
         )
     ).scalars().all()
-    future_heads = [
-        later for later in later_schedules if later.is_active and later.plan != starting_plan
+    # 같은 시작일에 더 나중에 저장된 행이 있으면 그 행이 이미 대신했다(가려진 행은 대신한다).
+    latest_by_start: dict = {}
+    for later in later_schedules:
+        current = latest_by_start.get(later.active_from)
+        if current is None or (later.created_at or datetime.min.replace(tzinfo=timezone.utc)) > (
+            current.created_at or datetime.min.replace(tzinfo=timezone.utc)
+        ):
+            latest_by_start[later.active_from] = later
+    # 요금제가 다른 시작 전 행은 계약 변경 기록이라 켜짐 여부와 상관없이 남긴다.
+    contract_changes = [
+        later
+        for later in latest_by_start.values()
+        if later.plan != starting_plan
     ]
-    superseded = [later for later in later_schedules if later not in future_heads]
+    future_heads = [later for later in contract_changes if later.is_active]
+    superseded = [later for later in later_schedules if later not in contract_changes]
     superseded_at = datetime.now(timezone.utc)
     for later in superseded:
         later.is_active = False

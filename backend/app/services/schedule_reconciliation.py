@@ -99,6 +99,20 @@ def allocation_stays(row, *, today) -> bool:
     ) or getattr(row, "status", None) not in (ContentStatus.DRAFT, ContentStatus.READY)
 
 
+def movable_rows(existing, *, today) -> list:
+    """일정 교체가 날짜를 옮길 기존 슬롯 — 순번마다 옮길 수 있는 첫 행 하나.
+
+    옛 일정이 여럿이면 같은 순번의 살아 있는 행이 둘 이상일 수 있다. 계획은 순번마다 날짜
+    하나를 주므로 둘 다 옮기면 같은 날에 겹친다. 나머지 행은 그 자리에 둔다(그날 자리를 쓴다).
+    """
+    moving: dict = {}
+    for row in existing:
+        if allocation_stays(row, today=today):
+            continue
+        moving.setdefault(row.sequence_no, row)
+    return list(moving.values())
+
+
 def place_open_slots(planned, existing, *, today, window_dates, daily_max, other_dates=()):
     """옮길 수 있는 슬롯과 새 슬롯의 날짜를 하루 `daily_max`편 이하로 다시 정한다.
 
@@ -113,14 +127,16 @@ def place_open_slots(planned, existing, *, today, window_dates, daily_max, other
     from app.services.content_calendar import capped_publish_dates, daily_capacity
 
     window = set(window_dates)
-    open_sequences = {
-        row.sequence_no for row in existing if not allocation_stays(row, today=today)
-    } | {slot.sequence_no for slot in remaining_month_slots(planned, existing)}
+    moving = movable_rows(existing, today=today)
+    moving_ids = {id(row) for row in moving}
+    open_sequences = {row.sequence_no for row in moving} | {
+        slot.sequence_no for slot in remaining_month_slots(planned, existing)
+    }
     occupied: dict = {}
     fixed_dates = [
         row.scheduled_date
         for row in existing
-        if allocation_stays(row, today=today)
+        if id(row) not in moving_ids
         and getattr(row, "status", None) != ContentStatus.CANCELLED
     ]
     for day in [*fixed_dates, *other_dates]:
@@ -150,10 +166,10 @@ async def retime_open_allocations(db, existing, planned, *, today):
     """
     dates = {slot.sequence_no: slot.scheduled_date for slot in planned}
     changed = 0
-    for row in existing:
+    for row in movable_rows(existing, today=today):
         current_date = getattr(row, "scheduled_date", None)
         wanted = dates.get(row.sequence_no)
-        if wanted is None or wanted == current_date or allocation_stays(row, today=today):
+        if wanted is None or wanted == current_date:
             continue
         result = await db.execute(
             update(ContentItem)

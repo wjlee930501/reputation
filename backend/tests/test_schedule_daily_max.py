@@ -183,3 +183,28 @@ def test_place_open_slots_counts_articles_carried_in_from_another_month():
         other_dates=[date(2026, 11, 21)],
     )
     assert unplaced == 1
+
+
+def test_duplicate_live_sequence_moves_once_and_the_other_holds_its_day():
+    """옛 일정이 둘이라 살아 있는 같은 순번 행이 둘이면 하나만 옮기고 나머지는 그날 자리를 쓴다."""
+    from dataclasses import dataclass
+
+    from app.services.schedule_reconciliation import movable_rows
+
+    @dataclass(frozen=True)
+    class Plan:
+        sequence_no: int
+        scheduled_date: date
+        total_count: int = 12
+
+    today = date(2026, 11, 19)
+    window = [date(2026, 11, d) for d in range(20, 31)]  # 11일
+    planned = [Plan(seq, date(2026, 11, 20)) for seq in range(1, 13)]
+    existing = [_row(1, date(2026, 11, 25))]
+    existing += [_row(seq, date(2026, 11, 26)) for seq in range(1, 12)]
+    assert len(movable_rows(existing, today=today)) == 11
+    _placed, unplaced = place_open_slots(
+        planned, existing, today=today, window_dates=window, daily_max=1
+    )
+    # 11일 중 하루는 옮기지 않는 중복 행이 쓰므로 하루 1편으로는 11편을 놓을 수 없다.
+    assert unplaced == 1

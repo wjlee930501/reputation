@@ -748,3 +748,93 @@ def test_current_month_reconcile_does_not_stack_past_the_daily_max(pg_session) -
     days = [row.scheduled_date for row in rows]
     assert min(days) >= date(2026, 11, 21)
     assert max(days.count(day) for day in set(days)) <= 2
+
+
+async def test_an_inactive_plan_change_row_is_not_superseded(pg_session, monkeypatch) -> None:
+    """12/1 요금제 변경 행이 1/1 일정 저장으로 꺼졌어도, 11월 일정 저장이 그 행을 대신하지 않는다(Codex 검토)."""
+    from app.api.admin.content import ScheduleCreate
+    from app.services.schedule_reconciliation import effective_schedules_query
+
+    hospital = _seed(pg_session)
+    current = ContentSchedule(
+        hospital_id=hospital.id, plan="PLAN_12", publish_days=[0, 2, 4],
+        active_from=date(2026, 10, 1), is_active=False,
+        created_at=datetime(2026, 9, 30, tzinfo=timezone.utc),
+    )
+    change = ContentSchedule(
+        hospital_id=hospital.id, plan="PLAN_16", publish_days=[0, 2, 4],
+        active_from=date(2026, 12, 1), is_active=False,
+        created_at=datetime(2026, 11, 1, tzinfo=timezone.utc),
+    )
+    january = ContentSchedule(
+        hospital_id=hospital.id, plan="PLAN_16", publish_days=[0, 1, 2, 3],
+        active_from=date(2027, 1, 1), is_active=True,
+        created_at=datetime(2026, 11, 10, tzinfo=timezone.utc),
+    )
+    pg_session.add_all([current, change, january])
+    hospital.schedule_set = True
+    hospital.plan = Plan.PLAN_16
+    pg_session.flush()
+
+    response = await _human_replaces_schedule(
+        pg_session,
+        monkeypatch,
+        hospital,
+        today=date(2026, 11, 20),
+        body=ScheduleCreate(
+            plan="PLAN_16", publish_days=list(range(7)), active_from=date(2026, 11, 21),
+            daily_max=2,
+        ),
+    )
+
+    assert response["plan"] == "PLAN_12" and response["schedules_superseded"] == 0
+    pg_session.refresh(change)
+    assert change.superseded_at is None
+    december = pg_session.scalars(
+        effective_schedules_query(date(2026, 12, 31)).where(
+            ContentSchedule.hospital_id == hospital.id
+        )
+    ).one()
+    assert december.id == change.id and december.plan == "PLAN_16"
+
+
+async def test_a_shadowed_older_row_does_not_resurface_after_superseding(
+    pg_session, monkeypatch
+) -> None:
+    """같은 시작일에 요금제 변경으로 가려진 옛 행은 같은 요금제 행과 함께 대신한다."""
+    from app.api.admin.content import ScheduleCreate
+    from app.services.schedule_reconciliation import effective_schedules_query
+
+    hospital = _seed(pg_session, plan=Plan.PLAN_20)
+    shadowed = ContentSchedule(
+        hospital_id=hospital.id, plan="PLAN_12", publish_days=[0, 2, 4],
+        active_from=date(2026, 12, 1), is_active=False,
+        created_at=datetime(2026, 11, 1, tzinfo=timezone.utc),
+    )
+    head = ContentSchedule(
+        hospital_id=hospital.id, plan="PLAN_20", publish_days=[0, 2, 4],
+        active_from=date(2026, 12, 1), is_active=True,
+        created_at=datetime(2026, 11, 2, tzinfo=timezone.utc),
+    )
+    pg_session.add_all([shadowed, head])
+    hospital.schedule_set = True
+    pg_session.flush()
+
+    response = await _human_replaces_schedule(
+        pg_session,
+        monkeypatch,
+        hospital,
+        today=date(2026, 11, 20),
+        body=ScheduleCreate(
+            plan="PLAN_20", publish_days=list(range(7)), active_from=date(2026, 11, 21),
+            daily_max=2,
+        ),
+    )
+
+    assert response["schedules_superseded"] == 2
+    december = pg_session.scalars(
+        effective_schedules_query(date(2026, 12, 31)).where(
+            ContentSchedule.hospital_id == hospital.id
+        )
+    ).one()
+    assert december.plan == "PLAN_20" and december.active_from == date(2026, 11, 21)
