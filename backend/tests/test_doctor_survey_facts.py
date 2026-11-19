@@ -40,7 +40,7 @@ def test_hours_become_the_public_page_format():
         "wed": "09:00-18:00 (점심 13:00-14:00)",
         "thu": "09:00-18:00 (점심 13:00-14:00)",
         "fri": "09:00-18:00 (점심 13:00-14:00)",
-        "sat": "09:00-13:00 (격주 휴진)",
+        "sat": "09:00-13:00 (격주로 쉼)",
         "sun": "휴진",
         "holiday": "휴진",
     }
@@ -107,3 +107,34 @@ def test_physicians_are_offered_only_when_the_hospital_has_none():
     assert offered["physicians"]["applicable"]
     kept = {i["field"]: i for i in fact_suggestions(answers, _hospital(director_name="홍길동"), physician_count=1)}
     assert not kept["physicians"]["applicable"]
+
+
+def test_biweekly_note_never_uses_a_word_the_public_page_reads_as_closed():
+    """`site/lib/business-hours.ts`의 isClosedLabel은 휴진·휴무·closed가 든 요일을 매주 휴진으로 본다."""
+
+    hours = business_hours_from_survey(
+        {"hours": {"sat": {"open": True, "start": "09:00", "end": "13:00"}}, "biweekly_off": "있음", "biweekly_day": "토"}
+    )
+    assert not any(word in hours["sat"].lower() for word in ("휴진", "휴무", "closed"))
+
+
+def test_a_holiday_answer_alone_is_still_offered():
+    assert business_hours_from_survey({"holiday": "휴진"}) == {"holiday": "휴진"}
+
+
+def test_values_longer_than_the_profile_accepts_are_not_applicable():
+    from app.services.doctor_survey_facts import REASON_INVALID
+
+    items = {i["field"]: i for i in fact_suggestions({"address_detail": "가" * 201}, _hospital(), physician_count=0)}
+    assert not items["address_detail"]["applicable"]
+    assert items["address_detail"]["reason"] == REASON_INVALID
+
+
+def test_every_saved_sub_value_is_shown_to_the_ae():
+    answers = {
+        "doctors": [{"name": "홍길동", "title": "대표원장", "school": "○○의대", "specialty": "정형외과", "bio": [{"kind": "학력", "text": "○○대 졸업"}]}],
+        "treatments": [{"name": "충격파", "summary": "비수술 치료"}],
+    }
+    items = {i["field"]: i for i in fact_suggestions(answers, _hospital(), physician_count=0)}
+    assert items["physicians"]["details"] == ["홍길동 대표원장 · 졸업: ○○의대 · 전문의: 정형외과 · 약력: 학력: ○○대 졸업"]
+    assert items["treatments"]["details"] == ["충격파 — 비수술 치료"]

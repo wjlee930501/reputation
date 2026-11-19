@@ -24,13 +24,13 @@ test('원장이 올린 파일 종류 이름', async () => {
   assert.equal(doctorSurveyFileKindLabel('CERTIFICATE'), '지정서·인증서')
 })
 
-test('고른 반영 가능 항목의 patch만 합친다', async () => {
-  const { mergeFactPatches } = await import('./doctor-survey.ts')
+test('고른 반영 가능 항목 이름만 보낸다', async () => {
+  const { chosenFactFields } = await import('./doctor-survey.ts')
+  const base = { label: '', value: '', details: [], current: '', patch: null, reason: null }
   const facts = [
-    { field: 'phone', label: '', value: '', current: '', applicable: true, patch: { phone: '02-1' }, reason: null },
-    { field: 'specialties', label: '', value: '', current: '', applicable: true, patch: { specialties: ['정형외과'] }, reason: null },
-    { field: 'competitors', label: '', value: '', current: '', applicable: false, patch: null, reason: '측정 기준' },
-    { field: 'address', label: '', value: '', current: '기존', applicable: false, patch: { address: 'x' }, reason: null },
+    { ...base, field: 'phone', applicable: true },
+    { ...base, field: 'specialties', applicable: true },
+    { ...base, field: 'competitors', applicable: false, reason: '측정 기준' },
   ]
-  assert.deepEqual(mergeFactPatches(facts, new Set(['phone', 'competitors', 'address'])), { phone: '02-1' })
+  assert.deepEqual(chosenFactFields(facts, new Set(['phone', 'competitors'])), ['phone'])
 })

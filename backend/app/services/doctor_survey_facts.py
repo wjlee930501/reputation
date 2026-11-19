@@ -32,6 +32,7 @@ REASON_MEASUREMENT = "측정 기준이라 반영하지 않습니다 — 바꾸�
 REASON_IDENTITY = "병원명은 계약 등록 값입니다. 다르면 담당자가 확인해 주세요."
 REASON_REFERENCE = "병원 정보에 칸이 없는 답입니다. 콘텐츠·AE 상담에 참고해 주세요."
 REASON_FILLED = "이미 값이 있어 반영하지 않습니다(덮어쓰지 않습니다)."
+REASON_INVALID = "병원 정보 형식(글자 수 등)에 맞지 않아 반영할 수 없습니다. 병원 정보에서 직접 고쳐 입력해 주세요."
 
 
 def _str(value: Any) -> str:
@@ -75,18 +76,17 @@ def _day_text(day: Mapping[str, Any] | None, *, default_open: bool) -> str | Non
 
 def business_hours_from_survey(answers: Mapping[str, Any]) -> dict[str, str]:
     hours = answers.get("hours") if isinstance(answers.get("hours"), Mapping) else {}
-    if not hours:
-        return {}
-    same = hours.get("same") if isinstance(hours.get("same"), bool) else True
     out: dict[str, str] = {}
-    for key in _DAYS:
-        text = _day_text(hours.get("weekday" if same else key), default_open=True)
-        if text:
-            out[key] = text
-    for key, default_open in (("sat", True), ("sun", False)):
-        text = _day_text(hours.get(key), default_open=default_open)
-        if text:
-            out[key] = text
+    if hours:
+        same = hours.get("same") if isinstance(hours.get("same"), bool) else True
+        for key in _DAYS:
+            text = _day_text(hours.get("weekday" if same else key), default_open=True)
+            if text:
+                out[key] = text
+        for key, default_open in (("sat", True), ("sun", False)):
+            text = _day_text(hours.get(key), default_open=default_open)
+            if text:
+                out[key] = text
     holiday = _str(answers.get("holiday"))
     if holiday == "휴진":
         out["holiday"] = "휴진"
@@ -97,7 +97,8 @@ def business_hours_from_survey(answers: Mapping[str, Any]) -> dict[str, str]:
             _str(answers.get("biweekly_day"))
         )
         if key and key in out and out[key] != "휴진":
-            out[key] = f"{out[key]} (격주 휴진)"
+            # '휴진'이라고 쓰면 공개 페이지가 그 요일을 매주 휴진으로 읽는다(`site/lib/business-hours.ts`).
+            out[key] = f"{out[key]} (격주로 쉼)"
     return out
 
 
@@ -140,7 +141,35 @@ def physicians_from_survey(answers: Mapping[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
+def _physician_detail(doctor: Mapping[str, Any]) -> str:
+    credentials = doctor.get("credentials") or {}
+    parts = [f"{doctor['name']}{' ' + doctor['title'] if doctor.get('title') else ''}"]
+    if credentials.get("medical_school"):
+        parts.append(f"졸업: {credentials['medical_school']}")
+    if credentials.get("board_certifications"):
+        parts.append(f"전문의: {', '.join(credentials['board_certifications'])}")
+    if credentials.get("society_memberships"):
+        parts.append(f"학회: {', '.join(credentials['society_memberships'])}")
+    if doctor.get("career"):
+        parts.append("약력: " + " / ".join(str(doctor["career"]).split("\n")))
+    return " · ".join(parts)
+
+
 # ── 제안 목록 ───────────────────────────────────────────────────────────
+
+
+def _patch_fits_profile(patch: Mapping[str, Any]) -> bool:
+    """프로필 저장 스키마가 받는 값인가 — 설문 한도(500자)가 병원 정보 한도(전화 50자 등)보다 넓다."""
+
+    from pydantic import ValidationError
+
+    from app.api.admin.hospitals import HospitalProfileUpdate
+
+    try:
+        HospitalProfileUpdate.model_validate(dict(patch))
+    except ValidationError:
+        return False
+    return True
 
 
 def _item(
@@ -152,7 +181,10 @@ def _item(
     current: str,
     current_empty: bool,
     reason: str | None = None,
+    details: list[str] | None = None,
 ) -> dict[str, Any]:
+    if patch is not None and reason is None and not _patch_fits_profile(patch):
+        reason = REASON_INVALID
     applicable = patch is not None and current_empty and reason is None
     if patch is not None and not current_empty and reason is None:
         reason = REASON_FILLED
@@ -160,6 +192,8 @@ def _item(
         "field": field,
         "label": label,
         "value": value,
+        # 반영하면 저장되는 하위 내용 전부(약력·자격·진료 설명·요일별 시간) — AE가 보고 고른다.
+        "details": details or [],
         "current": current,
         "applicable": applicable,
         "patch": patch if applicable else None,
@@ -205,6 +239,7 @@ def fact_suggestions(
                 ),
                 patch={"physicians": physicians}, current=director or (f"{physician_count}명" if physician_count else ""),
                 current_empty=current_empty,
+                details=[_physician_detail(doctor) for doctor in physicians],
             )
         )
 
@@ -221,6 +256,7 @@ def fact_suggestions(
                 patch={"treatments": treatments},
                 current=", ".join(_str(t.get("name")) for t in current if isinstance(t, Mapping)),
                 current_empty=_empty(current),
+                details=[f"{t['name']} — {t['description']}" if t["description"] else t["name"] for t in treatments],
             )
         )
 
@@ -237,6 +273,7 @@ def fact_suggestions(
             _item(
                 "business_hours", "진료시간", _hours_display(hours),
                 patch={"business_hours": hours},
+                details=_hours_display(hours).split(" · "),
                 current=_hours_display({k: v for k, v in current_hours.items() if isinstance(v, str)}) if isinstance(current_hours, Mapping) else "",
                 current_empty=_empty(current_hours),
             )

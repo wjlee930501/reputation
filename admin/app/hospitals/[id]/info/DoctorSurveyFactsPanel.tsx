@@ -2,8 +2,8 @@
 
 import { useEffect, useState } from 'react'
 import { ADMIN_COPY } from '@/lib/admin-copy'
-import { mergeFactPatches, type DoctorSurveyFact } from '@/lib/doctor-survey'
-import { fetchAPI } from '@/lib/api'
+import { chosenFactFields, type DoctorSurveyFact } from '@/lib/doctor-survey'
+import { ApiError, fetchAPI } from '@/lib/api'
 
 /**
  * 원장님이 제출한 사실 답(병원명·의료진·진료 항목·주소·전화·진료시간·채널)을 AE가 보고 병원 정보에 반영한다.
@@ -13,40 +13,51 @@ import { fetchAPI } from '@/lib/api'
 export default function DoctorSurveyFactsPanel({ hospitalId }: { hospitalId: string }) {
   const copy = ADMIN_COPY.doctorSurvey
   const [facts, setFacts] = useState<DoctorSurveyFact[] | null>(null)
+  const [submittedAt, setSubmittedAt] = useState<string | null>(null)
+  const [reloadKey, setReloadKey] = useState(0)
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [busy, setBusy] = useState(false)
   const [feedback, setFeedback] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
-    fetchAPI<{ items: DoctorSurveyFact[] }>(`/admin/hospitals/${hospitalId}/doctor-survey/facts`)
+    fetchAPI<{ items: DoctorSurveyFact[]; submitted_at: string | null }>(`/admin/hospitals/${hospitalId}/doctor-survey/facts`)
       .then((data) => {
         if (cancelled) return
         setFacts(data.items)
+        setSubmittedAt(data.submitted_at)
         setSelected(new Set(data.items.filter((item) => item.applicable).map((item) => item.field)))
       })
       .catch(() => !cancelled && setFeedback(copy.factsLoadFailed))
     return () => {
       cancelled = true
     }
-  }, [hospitalId, copy.factsLoadFailed])
+  }, [hospitalId, copy.factsLoadFailed, reloadKey])
 
   if (facts === null) return feedback ? <p className="text-xs text-slate-600">{feedback}</p> : null
   if (facts.length === 0) return null
 
   async function apply() {
     if (!facts) return
-    const body = mergeFactPatches(facts, selected)
-    if (Object.keys(body).length === 0) return
+    const fields = chosenFactFields(facts, selected)
+    if (fields.length === 0) return
     if (!window.confirm(copy.factsApplyConfirm)) return
     setBusy(true)
     setFeedback(null)
     try {
-      await fetchAPI(`/admin/hospitals/${hospitalId}/profile`, { method: 'PATCH', body: JSON.stringify(body) })
+      await fetchAPI(`/admin/hospitals/${hospitalId}/doctor-survey/facts/apply`, {
+        method: 'POST',
+        body: JSON.stringify({ fields, submitted_at: submittedAt }),
+      })
       setFeedback(copy.factsApplied)
       window.location.reload()
-    } catch {
-      setFeedback(copy.factsFailed)
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 409) {
+        setFeedback(copy.factsChanged)
+        setReloadKey((key) => key + 1)
+      } else {
+        setFeedback(copy.factsFailed)
+      }
       setBusy(false)
     }
   }
@@ -80,6 +91,13 @@ export default function DoctorSurveyFactsPanel({ hospitalId }: { hospitalId: str
               <span className="min-w-0">
                 <span className="font-semibold">{item.label}</span>
                 <span className="ml-1.5 break-all">{item.value}</span>
+                {item.details.length ? (
+                  <span className="mt-0.5 block space-y-0.5 text-slate-600">
+                    {item.details.map((line) => (
+                      <span key={line} className="block break-all">· {line}</span>
+                    ))}
+                  </span>
+                ) : null}
                 {item.current ? (
                   <span className="block text-slate-500">{copy.factsCurrent}: {item.current}</span>
                 ) : null}

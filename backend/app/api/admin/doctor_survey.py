@@ -10,7 +10,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -189,3 +189,70 @@ async def get_doctor_survey_facts(hospital_id: uuid.UUID, db: AsyncSession = Dep
             survey.submitted_answers or {}, hospital, physician_count=int(physician_count or 0)
         ),
     }
+
+
+class FactsApplyBody(BaseModel):
+    fields: list[str]
+    # 화면이 본 제출 시각 — 그 뒤에 원장이 다시 제출했으면 다시 보고 고르게 한다.
+    submitted_at: str | None = None
+
+
+FACTS_CHANGED = {
+    "code": "DOCTOR_SURVEY_FACTS_CHANGED",
+    "message": "그 사이 병원 정보나 설문 답이 바뀌었습니다. 목록을 다시 불러와 확인한 뒤 반영해 주세요.",
+}
+
+
+@router.post("/{hospital_id}/doctor-survey/facts/apply")
+async def apply_doctor_survey_facts(
+    hospital_id: uuid.UUID,
+    body: FactsApplyBody,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+):
+    """AE가 고른 사실 답을 병원 정보에 반영한다 — 같은 병원 잠금 아래서 빈 칸인지 **다시** 확인한 뒤.
+
+    화면이 받은 제안을 그대로 저장하면, 그 사이 다른 AE·자동 입력이 채운 칸을 덮고 의료진 집합 치환이
+    새로 생긴 의료진을 지운다. 반영은 기존 프로필 저장(`update_profile`)으로 해 감사·출처 원장·자료 동기화를
+    그대로 탄다.
+    """
+
+    from app.api.admin.hospitals import HospitalProfileUpdate, update_profile
+    from app.utils.db_locks import acquire_hospital_advisory_lock
+
+    requested = [field for field in dict.fromkeys(body.fields) if field]
+    if not requested:
+        raise HTTPException(status_code=422, detail="반영할 항목을 골라 주세요.")
+    await acquire_hospital_advisory_lock(db, hospital_id)
+    hospital = await _hospital_or_404(db, hospital_id)
+    await db.refresh(hospital)
+    survey = await _survey(db, hospital_id, for_update=True)
+    if survey is None or not survey.submission_count:
+        raise HTTPException(status_code=409, detail=FACTS_CHANGED)
+    if body.submitted_at is not None and body.submitted_at != _iso(survey.last_submitted_at):
+        raise HTTPException(status_code=409, detail=FACTS_CHANGED)
+    physician_count = await db.scalar(
+        select(func.count()).select_from(HospitalPhysician).where(HospitalPhysician.hospital_id == hospital_id)
+    )
+    items = {
+        item["field"]: item
+        for item in survey_facts.fact_suggestions(
+            survey.submitted_answers or {}, hospital, physician_count=int(physician_count or 0)
+        )
+    }
+    patch: dict[str, Any] = {}
+    for field in requested:
+        item = items.get(field)
+        if item is None or not item["applicable"]:
+            raise HTTPException(status_code=409, detail=FACTS_CHANGED)
+        patch.update(item["patch"])
+    await write_audit_log(
+        db,
+        action="doctor_survey_facts_apply",
+        hospital_id=hospital_id,
+        actor=default_actor(),
+        target_type="doctor_survey",
+        target_id=survey.id,
+        detail={"fields": requested, "submitted_at": _iso(survey.last_submitted_at)},
+    )
+    return await update_profile(hospital_id, HospitalProfileUpdate.model_validate(patch), background_tasks, db)

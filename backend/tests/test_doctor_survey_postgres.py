@@ -337,8 +337,8 @@ async def test_an_upload_without_length_header_is_cut_at_the_limit(db, client):
     assert response.status_code == 413
 
 
-async def test_every_applicable_fact_patch_is_accepted_by_the_profile_save(db, client, monkeypatch):
-    """AE 화면은 제안의 patch를 그대로 프로필 저장에 보낸다 — 저장 스키마가 받아야 한다."""
+async def test_the_ae_applies_checked_facts_and_a_stale_choice_is_refused(db, client):
+    """반영은 서버가 같은 병원 잠금 아래서 빈 칸인지 다시 보고 기존 프로필 저장으로 한다."""
 
     hospital_id = await _hospital(db)
     base = f"/api/v1/admin/hospitals/{hospital_id}/doctor-survey"
@@ -363,19 +363,22 @@ async def test_every_applicable_fact_patch_is_accepted_by_the_profile_save(db, c
         "competitors": ["B의원"],
     }
     assert (await client.post(f"{public}/submit", json={"answers": answers})).status_code == 200
-    facts = (await client.get(f"{base}/facts", headers=ADMIN)).json()["items"]
-    patch: dict = {}
-    for item in facts:
-        if item["applicable"]:
-            patch.update(item["patch"])
-    assert {"specialties", "physicians", "treatments", "phone", "business_hours", "blog_url"} <= set(patch)
-    assert "competitors" not in patch
+    seen = (await client.get(f"{base}/facts", headers=ADMIN)).json()
+    applicable = [item["field"] for item in seen["items"] if item["applicable"]]
+    assert {"specialties", "physicians", "treatments", "phone", "business_hours", "blog_url"} <= set(applicable)
+    assert "competitors" not in applicable
 
-    # 주소 변경은 좌표 조회를 부른다 — 이 검사는 저장 스키마만 본다.
-    patch.pop("address", None)
-    saved = await client.patch(
-        f"/api/v1/admin/hospitals/{hospital_id}/profile", headers=ADMIN, json={**patch, "geocode_address": False}
+    # 화면이 목록을 본 뒤 다른 AE가 전화번호를 채웠다 — 그 항목을 고른 반영은 거절된다.
+    filled = await client.patch(f"/api/v1/admin/hospitals/{hospital_id}/profile", headers=ADMIN, json={"phone": "02-000-0000"})
+    assert filled.status_code == 200
+    stale = await client.post(
+        f"{base}/facts/apply", headers=ADMIN, json={"fields": ["phone", "specialties"], "submitted_at": seen["submitted_at"]}
     )
-    assert saved.status_code == 200, saved.text
+    assert stale.status_code == 409
+
+    chosen = [field for field in applicable if field != "phone"]
+    applied = await client.post(f"{base}/facts/apply", headers=ADMIN, json={"fields": chosen, "submitted_at": seen["submitted_at"]})
+    assert applied.status_code == 200, applied.text
     after = {i["field"]: i for i in (await client.get(f"{base}/facts", headers=ADMIN)).json()["items"]}
-    assert not after["phone"]["applicable"] and not after["physicians"]["applicable"]
+    assert not after["physicians"]["applicable"] and not after["specialties"]["applicable"]
+    assert after["phone"]["current"] == "02-000-0000"

@@ -85,6 +85,7 @@ export const ADMIN_COPY = {
     factsLoadFailed: '설문 답을 불러오지 못했습니다.',
     factsCurrent: '지금 값',
     factsNone: '반영할 사실 답이 없습니다.',
+    factsChanged: '그 사이 병원 정보나 설문 답이 바뀌었습니다. 목록을 다시 불러왔으니 확인한 뒤 반영해 주세요.',
   },
   // 근거 문서 업로드 폼 — 서버가 받는 형식은 PDF·DOCX뿐이다.
   documentUploadHint: 'PDF·DOCX 문서를 올릴 수 있습니다. 여러 개를 한 번에 고를 수 있습니다.',
