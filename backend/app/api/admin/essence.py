@@ -46,6 +46,12 @@ from app.services.asset_storage import (
     store_asset_bytes,
 )
 from app.services.audit_log import default_actor, write_audit_log
+from app.services.doctor_survey_source import (
+    DOCTOR_SURVEY_READ_ONLY_CODE,
+    DOCTOR_SURVEY_READ_ONLY_MESSAGE,
+    DOCTOR_SURVEY_TITLE,
+    is_doctor_survey_source,
+)
 from app.services.essence_engine import (
     compute_source_content_hash,
     effective_safety_policy,
@@ -1661,6 +1667,14 @@ async def _get_mutable_source_or_404(
                 "message": PROFILE_FACTS_READ_ONLY_MESSAGE,
             },
         )
+    if is_doctor_survey_source(source):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": DOCTOR_SURVEY_READ_ONLY_CODE,
+                "message": DOCTOR_SURVEY_READ_ONLY_MESSAGE,
+            },
+        )
     return source
 
 
@@ -1854,15 +1868,19 @@ def _asset_response(
 
 def _serialize_source_display(source: HospitalSourceAsset) -> dict:
     profile_facts = is_profile_facts_source(source)
+    doctor_survey = is_doctor_survey_source(source)
     return {
         "source_type_label": (
             PROFILE_FACTS_TITLE
             if profile_facts
+            else DOCTOR_SURVEY_TITLE
+            if doctor_survey
             else _display_label(SOURCE_TYPE_DISPLAY_LABELS, source.source_type)
         ),
         "status_label": _display_label(SOURCE_STATUS_DISPLAY_LABELS, source.status),
-        # 병원 정보(자동) 자료는 병원 정보 화면의 값으로만 바뀐다 — 수정·제외·재처리 없음.
-        "read_only": profile_facts,
+        # 병원 정보(자동) 자료는 병원 정보 화면의 값으로만, 원장 사전 설문 자료는 원장이 링크에서 제출한
+        # 답으로만 바뀐다 — 수정·제외·재처리 없음.
+        "read_only": profile_facts or doctor_survey,
     }
 
 

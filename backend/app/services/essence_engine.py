@@ -262,6 +262,23 @@ def process_source_asset(
             for note in profile_fact_note_payloads(asset.raw_text)
         ]
 
+    from app.services.doctor_survey_source import is_doctor_survey_source, survey_note_payloads
+
+    if is_doctor_survey_source(asset):
+        # 원장이 링크에서 제출한 설문 자료도 줄 하나가 노트 하나다 — 발췌는 답 부분만이다.
+        return [
+            EvidenceNotePayload(
+                note_type=note.note_type,
+                claim=note.claim,
+                source_excerpt=note.source_excerpt,
+                excerpt_start=note.excerpt_start,
+                excerpt_end=note.excerpt_end,
+                confidence=1.0,
+                note_metadata=dict(note.note_metadata),
+            )
+            for note in survey_note_payloads(asset.raw_text)
+        ]
+
     if use_llm and llm_enabled():
         try:
             payloads = _process_source_asset_llm(asset)

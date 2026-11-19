@@ -557,6 +557,7 @@ RESERVED_SITE_SLUGS = frozenset(
         "robots",
         "sitemap",
         "favicon",
+        "survey",
     }
 )
 
