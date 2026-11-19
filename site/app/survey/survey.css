@@ -183,3 +183,5 @@
 .dsv .gone .desc{margin-top:12px}
 .dsv .next:disabled{opacity:.4;cursor:not-allowed}
 .dsv .edit-btn{margin-top:24px;height:52px;padding:0 22px;border-radius:14px;border:1.5px solid var(--g20);font-size:16px;font-weight:500}
+.dsv .file-list{list-style:none;margin-top:10px;display:flex;flex-direction:column;gap:6px;font-size:15px}
+.dsv .file-list li{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 12px;border-radius:12px;background:var(--g05);word-break:break-all}

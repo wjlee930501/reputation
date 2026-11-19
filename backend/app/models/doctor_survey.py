@@ -54,6 +54,11 @@ class DoctorSurvey(Base):
     answers: Mapped[dict] = mapped_column(
         JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
     )
+    # 원장이 올린 파일(사진·로고·인증서). {파일 id: {kind, name, mime, size, ref, uploaded_at}}.
+    # 답(`answers`)은 파일 id만 가리킨다. 사진 자료로 등록하는 일은 AE가 분류·권리 근거와 함께 한다.
+    files: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
     # 원장이 마지막으로 본 화면 — 다시 열면 그 화면부터 이어 쓴다.
     current_step: Mapped[str | None] = mapped_column(String(400))
     # 화면(한 번 연 페이지)마다 임의의 id와, 그 화면이 저장할 때마다 1씩 올리는 순번. 같은 화면에서 늦게 도착한

@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.models.doctor_survey import DoctorSurvey
 from app.models.hospital import Hospital
+from app.services import doctor_survey_files as survey_files
 from app.services import doctor_survey_schema as schema
 from app.services.audit_log import default_actor, write_audit_log
 from app.services.doctor_survey_token import derive_survey_token, issue_survey_token, survey_url
@@ -73,6 +74,12 @@ def serialize_survey(hospital_id: uuid.UUID, survey: DoctorSurvey | None) -> dic
         and answers != (survey.submitted_answers or {}),
         "progress": schema.progress(answers, new_clinic=bool(survey.new_clinic)),
         "interview_source_id": str(survey.interview_source_id) if survey.interview_source_id else None,
+        # 원장이 올린 파일(답이 가리키는 것만). 사진 자료 등록은 AE가 분류·권리 근거와 함께 한다.
+        "files": [
+            {**item, "url": f"/api/admin/hospitals/{hospital_id}/doctor-survey/files/{item['id']}"}
+            for item in survey_files.referenced_files(answers, survey.files)
+        ],
+        "photo_consent": answers.get("photo_consent") is True,
     }
 
 
@@ -142,3 +149,21 @@ async def issue_doctor_survey_link(
     await db.commit()
     await db.refresh(survey)
     return serialize_survey(hospital_id, survey)
+
+
+@router.get("/{hospital_id}/doctor-survey/files/{file_id}")
+async def get_doctor_survey_file(
+    hospital_id: uuid.UUID, file_id: str, db: AsyncSession = Depends(get_db)
+):
+    from app.api.admin.essence import _asset_response
+
+    survey = await _survey(db, hospital_id)
+    entry = (survey.files or {}).get(file_id) if survey else None
+    if not entry:
+        raise HTTPException(status_code=404, detail="파일을 찾을 수 없습니다.")
+    return _asset_response(
+        entry["ref"],
+        hospital_id=hospital_id,
+        media_type=entry.get("mime"),
+        headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"},
+    )

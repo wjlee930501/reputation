@@ -13,6 +13,25 @@ export interface DoctorSurveyStatus {
   submission_count?: number
   has_unsubmitted_changes?: boolean
   progress?: { answered: number; total: number }
+  files?: DoctorSurveyFile[]
+  photo_consent?: boolean
+}
+
+export interface DoctorSurveyFile {
+  id: string
+  kind: 'PHOTO' | 'LOGO' | 'CERTIFICATE'
+  name: string
+  mime: string
+  size: number
+  context: string | null
+  url: string
+}
+
+export function doctorSurveyFileKindLabel(kind: DoctorSurveyFile['kind']): string {
+  const copy = ADMIN_COPY.doctorSurvey
+  if (kind === 'LOGO') return copy.fileKindLogo
+  if (kind === 'CERTIFICATE') return copy.fileKindCertificate
+  return copy.fileKindPhoto
 }
 
 /** 카드에 보이는 진행 상태 한 줄(제출 뒤 고친 답 안내는 따로). */

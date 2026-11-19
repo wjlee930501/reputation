@@ -16,7 +16,7 @@ Site 설문 화면은 이 정의를 API로 받아 그린다(`GET /public/doctor-
 - ``toggle`` → 참/거짓. ``toggles`` → 스위치 여러 개(각 항목이 ``toggle``).
 - ``list`` → 줄 목록(``fields``가 한 줄의 칸).
 - ``hours`` → 진료시간 사전. ``doctors`` → 의료진 목록.
-- ``files`` → 올린 파일 목록(PR2에서 연다 — 지금은 '담당자에게 따로 보내 주세요' 안내).
+- ``files`` → 올린 파일 목록(``[{id, name}]``, `doctor_survey_files`).
 - 표시만: ``info`` ``sh``(소제목) ``sec``(묶음 제목).
 
 ``essence``가 있는 칸만 근거 자료(설문 자료)에 실린다. 값은 근거 노트 종류다. 필수 문구(모든 글에 원문
@@ -297,7 +297,7 @@ PARTS: list[dict[str, Any]] = [
                         "fields": [
                             {"t": "text", "key": "name", "label": "이름", "ph": "예) 보건복지부 지정 ○○전문병원, 의료기관 인증"},
                             {"t": "select", "key": "year", "label": "받은 해", "opts": YEARS},
-                            {"t": "files", "key": "files", "label": "지정서·인증서 사진", "accept": "image/*,.pdf", "kind": "CERTIFICATE"},
+                            {"t": "files", "key": "files", "label": "지정서·인증서 사진", "accept": "image/*,.pdf", "kind": "CERTIFICATE", "max": 5},
                         ],
                     }
                 ],
@@ -312,10 +312,10 @@ PARTS: list[dict[str, Any]] = [
                         "title": "병원 페이지용 사진",
                         "d": "원장님 사진과 병원 외관·내부·진료실 사진을 한 번에 올려 주시면 됩니다. 환자 얼굴이 나온 사진과 전후 사진은 사용하지 않겠습니다.",
                     },
-                    {"t": "files", "key": "photos", "label": "사진 올리기", "accept": "image/*", "kind": "PHOTO", "sub": "여러 장을 한 번에 고를 수 있음"},
+                    {"t": "files", "key": "photos", "label": "사진 올리기", "accept": "image/*", "kind": "PHOTO", "sub": "여러 장을 한 번에 고를 수 있음 · 30장까지", "max": 30},
                     {"t": "toggle", "key": "photo_consent", "label": "병원 페이지에 사진 사용 동의"},
                     {"t": "sec", "title": "병원 로고", "d": "선호하시는 색이 있으면 함께 적어 주시면 됩니다."},
-                    {"t": "files", "key": "logo_files", "label": "로고 파일", "accept": "image/*,.ai,.svg,.pdf", "kind": "LOGO", "sub": "PNG, SVG, AI 파일"},
+                    {"t": "files", "key": "logo_files", "label": "로고 파일", "accept": "image/png,image/jpeg,image/webp", "kind": "LOGO", "sub": "PNG·JPG 파일 (AI·SVG 파일은 담당자에게 따로 보내 주세요)", "max": 5},
                     {"t": "text", "key": "logo_color", "label": "선호하시는 색", "ph": "예) 로고에 쓰인 남색, 초록 계열"},
                 ],
             },
@@ -721,6 +721,7 @@ MAX_FILES = 30
 _NUMBER = re.compile(r"^\d{1,12}$")
 _TIME = re.compile(r"^(?:[01]\d|2[0-4]):[0-5]\d$")
 _FILE_ID = re.compile(r"^[0-9a-f]{32}$")
+_ROW_ID = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
 HOURS_DAYS = ("weekday", "mon", "tue", "wed", "thu", "fri", "sat", "sun")
 HOURS_DAY_FLAGS = ("open", "lunch", "night")
 HOURS_DAY_TIMES = ("start", "end", "last", "lunch_start", "lunch_end", "night_end")
@@ -769,11 +770,13 @@ def _allowed(field: Mapping[str, Any]) -> set[str] | None:
     return {option_value(option) for option in opts}
 
 
-def _clean_files(value: Any, key: str) -> list[dict[str, str]]:
+def _clean_files(value: Any, key: str, limit: int = MAX_FILES) -> list[dict[str, str]]:
     if value is None:
         return []
-    if not isinstance(value, list) or len(value) > MAX_FILES:
+    if not isinstance(value, list):
         raise _bad(key)
+    if len(value) > limit:
+        raise SurveyAnswerError(f"파일은 이 칸에 {limit}개까지 올릴 수 있습니다. 나머지는 담당자에게 보내 주세요.")
     out: list[dict[str, str]] = []
     for item in value:
         if not isinstance(item, Mapping):
@@ -901,14 +904,19 @@ def _clean_value(field: Mapping[str, Any], value: Any) -> Any:
         for row in value:
             if not isinstance(row, Mapping):
                 raise _bad(key)
-            rows.append(_clean_mapping(row, row_fields))
+            cleaned_row = _clean_mapping(row, row_fields)
+            # 화면이 붙이는 줄 id — 늦게 끝난 파일 올리기가 원래 줄을 찾게 한다. 근거 자료·제안에는 쓰지 않는다.
+            row_id = row.get("_rid")
+            if isinstance(row_id, str) and _ROW_ID.match(row_id):
+                cleaned_row["_rid"] = row_id
+            rows.append(cleaned_row)
         return rows
     if kind == "hours":
         return _clean_hours(value, key)
     if kind == "doctors":
         return _clean_doctors(value, key)
     if kind == "files":
-        return _clean_files(value, key)
+        return _clean_files(value, key, int(field.get("max") or MAX_FILES))
     raise _bad(key)  # pragma: no cover — 정의에 없는 종류
 
 
@@ -956,7 +964,8 @@ def validate_answers(raw: Any) -> dict[str, Any]:
 
 #: 가리지 않는 칸 — 병원 대표 전화번호(원장 휴대전화가 아니라 병원 사실)와 숫자 칸.
 UNMASKED_KEYS = frozenset(
-    {"phone"}
+    # 파일 id·줄 id는 시스템이 만든 값이다 — 숫자열이 휴대전화처럼 보여도 가리면 첨부·줄을 잃는다.
+    {"phone", "id", "_rid"}
     | {
         str(spec["key"])
         for spec in [*TOP_FIELDS.values(), *FOCUS_FIELDS.values()]
@@ -996,8 +1005,11 @@ def _has_value(value: Any) -> bool:
         return False
     if isinstance(value, str):
         return bool(value.strip())
-    if isinstance(value, (list, dict)):
-        return any(_has_value(item) for item in (value.values() if isinstance(value, dict) else value))
+    if isinstance(value, dict):
+        # 줄 id(`_rid`)는 답이 아니다.
+        return any(_has_value(item) for key, item in value.items() if key != "_rid")
+    if isinstance(value, list):
+        return any(_has_value(item) for item in value)
     return True
 
 

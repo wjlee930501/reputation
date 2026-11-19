@@ -99,7 +99,9 @@ export function hasValue(value: unknown): boolean {
   if (value === null || value === undefined || value === false) return false
   if (typeof value === 'string') return value.trim().length > 0
   if (Array.isArray(value)) return value.some(hasValue)
-  if (typeof value === 'object') return Object.values(value as Record<string, unknown>).some(hasValue)
+  // 줄 id(`_rid`)는 답이 아니다.
+  if (typeof value === 'object')
+    return Object.entries(value as Record<string, unknown>).some(([key, item]) => key !== '_rid' && hasValue(item))
   return true
 }
 
@@ -216,4 +218,29 @@ export function compactAnswers(answers: Answers): Answers {
     if (hasValue(value) || value === false) out[key] = value
   }
   return out
+}
+
+const randomRowId = () =>
+  Array.from(crypto.getRandomValues(new Uint8Array(8)), (b) => b.toString(16).padStart(2, '0')).join('')
+
+/** 불러온 답의 줄 목록마다 고유 id(`_rid`)를 채운다 — 늦게 끝난 파일 올리기가 줄 번호가 아니라 id로 원래 줄을 찾게. */
+export function ensureRowIds(schema: SurveySchema, answers: Answers, makeId: () => string = randomRowId): Answers {
+  const listKeys = new Set<string>()
+  for (const part of schema.parts) {
+    for (const question of part.qs) {
+      for (const field of iterFields(question.b)) if (field.t === 'list' && field.key) listKeys.add(field.key)
+    }
+  }
+  let changed = false
+  const out: Answers = { ...answers }
+  for (const key of listKeys) {
+    const rows = out[key]
+    if (!Array.isArray(rows)) continue
+    out[key] = rows.map((row) => {
+      if (!row || typeof row !== 'object' || typeof (row as Answers)._rid === 'string') return row
+      changed = true
+      return { ...(row as Answers), _rid: makeId() }
+    })
+  }
+  return changed ? out : answers
 }

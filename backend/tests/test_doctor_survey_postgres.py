@@ -272,3 +272,66 @@ async def test_an_older_save_arriving_late_does_not_overwrite_a_newer_one(db, cl
     assert "stale" not in other.json()
     await db.refresh(survey)
     assert survey.answers["principle"] == "다른 기기의 답입니다."
+
+
+async def test_doctor_uploads_a_photo_and_the_ae_sees_it(db, client, tmp_path, monkeypatch):
+    from app.services import asset_storage
+
+    monkeypatch.setattr(asset_storage, "LOCAL_UPLOAD_DIR", tmp_path)
+    hospital_id = await _hospital(db)
+    base = f"/api/v1/admin/hospitals/{hospital_id}/doctor-survey"
+    link = (await client.post(f"{base}/link", headers=ADMIN, json={})).json()["link_url"]
+    public = f"/api/v1/public/doctor-survey/{_token(link)}"
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 128
+
+    # 동의 전에는 올리지 못한다.
+    assert (
+        await client.post(f"{public}/files", data={"kind": "PHOTO"}, files={"file": ("a.png", png, "image/png")})
+    ).status_code == 409
+    await client.post(f"{public}/consent", json={"consent_version": schema.CONSENT_VERSION, "respondent": "DIRECTOR"})
+    svg = await client.post(
+        f"{public}/files", data={"kind": "LOGO"}, files={"file": ("logo.svg", b"<svg></svg>", "image/svg+xml")}
+    )
+    assert svg.status_code == 422
+    uploaded = await client.post(f"{public}/files", data={"kind": "PHOTO"}, files={"file": ("외관.png", png, "image/png")})
+    assert uploaded.status_code == 200, uploaded.text
+    file_id = uploaded.json()["id"]
+
+    saved = await client.put(
+        f"{public}/answers",
+        json={"answers": {"photos": [{"id": file_id, "name": "외관.png"}, {"id": "f" * 32, "name": "남의 파일"}], "photo_consent": True}},
+    )
+    assert saved.status_code == 200
+    reopened = (await client.get(public)).json()
+    assert reopened["answers"]["photos"] == [{"id": file_id, "name": "외관.png"}]
+    assert reopened["schema"]["uploads_enabled"] is True
+    preview = await client.get(f"{public}/files/{file_id}")
+    assert preview.status_code == 200 and preview.content == png
+    assert (await client.get(f"{public}/files/{'f' * 32}")).status_code == 404
+
+    status = (await client.get(base, headers=ADMIN)).json()
+    assert status["photo_consent"] is True
+    assert [(item["name"], item["kind"]) for item in status["files"]] == [("외관.png", "PHOTO")]
+    admin_file = await client.get(f"{base}/files/{file_id}", headers=ADMIN)
+    assert admin_file.status_code == 200 and admin_file.content == png
+
+
+async def test_an_upload_without_length_header_is_cut_at_the_limit(db, client):
+    from app.services import doctor_survey_files
+
+    hospital_id = await _hospital(db)
+    link = (
+        await client.post(f"/api/v1/admin/hospitals/{hospital_id}/doctor-survey/link", headers=ADMIN, json={})
+    ).json()["link_url"]
+    public = f"/api/v1/public/doctor-survey/{_token(link)}"
+    await client.post(f"{public}/consent", json={"consent_version": schema.CONSENT_VERSION, "respondent": "DIRECTOR"})
+
+    async def body():
+        yield b"--b\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.png\"\r\n\r\n"
+        for _ in range(doctor_survey_files.MAX_FILE_BYTES // (1024 * 1024) + 2):
+            yield b"\x00" * (1024 * 1024)
+
+    response = await client.post(
+        f"{public}/files", content=body(), headers={"Content-Type": "multipart/form-data; boundary=b"}
+    )
+    assert response.status_code == 413

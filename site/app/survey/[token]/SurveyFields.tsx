@@ -21,9 +21,19 @@ export interface FieldContext {
   schema: SurveySchema
   /** 보기를 끌어오는 데 쓰는 전체 답(진료 이름·동네·진료과). */
   answers: Answers
+  /** 파일을 올리고 다시 볼 때 쓰는 링크 토큰. */
+  token: string
+  /** 올리는 중인 파일 작업을 화면에 알린다 — 다 끝나기 전에는 제출하지 않는다. */
+  trackUpload: (work: Promise<void>) => void
 }
 
-type Change = (key: string, value: unknown) => void
+/** 값 또는 '지금 값 → 새 값' 함수. 비동기 작업(파일 올리기)이 끝날 때 그 사이 고친 답을 덮지 않게 함수로 쓴다. */
+export type ChangeValue = unknown | ((current: unknown) => unknown)
+type Change = (key: string, value: ChangeValue) => void
+
+export function resolveChange(current: unknown, value: ChangeValue): unknown {
+  return typeof value === 'function' ? (value as (current: unknown) => unknown)(current) : value
+}
 
 const str = (value: unknown): string => (typeof value === 'string' ? value : '')
 const strList = (value: unknown): string[] =>
@@ -348,40 +358,179 @@ function Toggle({ field, scope, onChange, ctx }: { field: SurveyField; scope: An
   )
 }
 
+const newRowId = () => Array.from(crypto.getRandomValues(new Uint8Array(8)), (b) => b.toString(16).padStart(2, '0')).join('')
+
+/** 줄마다 고유 id(`_rid`)를 둔다 — 파일 올리기처럼 늦게 끝나는 작업이 줄을 지우거나 앞줄을 지운 뒤에도 원래
+ * 줄을 찾게(없어졌으면 버린다). 아직 저장되지 않은 기본 빈 줄은 자리 id(`pad-n`)를 쓴다. */
 function RowList({ field, scope, onChange, ctx }: { field: SurveyField; scope: Answers; onChange: Change; ctx: FieldContext }) {
   const key = field.key!
   const rows = rowList(scope[key])
   const minimum = field.rows ?? 1
-  const shown = rows.length >= minimum ? rows : [...rows, ...Array.from({ length: minimum - rows.length }, () => ({}))]
-  const update = (index: number, rowKey: string, value: unknown) => {
-    const next = shown.map((row, i) => (i === index ? { ...row, [rowKey]: value } : row))
-    onChange(key, next)
+  const pad = (list: Answers[]): Answers[] =>
+    list.length >= minimum
+      ? list
+      : [...list, ...Array.from({ length: minimum - list.length }, (_v, i) => ({ _rid: `pad-${list.length + i}` }))]
+  const rid = (row: Answers, index: number) => (typeof row._rid === 'string' ? row._rid : `idx-${index}`)
+  const shown = pad(rows)
+  const update = (rowId: string, rowKey: string, value: ChangeValue) => {
+    // 지금 값을 기준으로 그 줄(id)의 그 칸만 바꾼다. 그 사이 줄이 지워졌으면 아무것도 하지 않는다.
+    onChange(key, (current: unknown) => {
+      const list = pad(rowList(current))
+      if (!list.some((row, i) => rid(row, i) === rowId)) return current
+      return list.map((row, i) =>
+        rid(row, i) === rowId ? { ...row, _rid: rowId, [rowKey]: resolveChange(row[rowKey], value) } : row,
+      )
+    })
   }
-  const remove = (index: number) => {
-    const next = shown.filter((_row, i) => i !== index)
-    onChange(key, next)
-  }
+  const remove = (rowId: string) =>
+    onChange(key, (current: unknown) => pad(rowList(current)).filter((row, i) => rid(row, i) !== rowId))
   return (
     <Fld label={field.label}>
       <div className="lst">
         <div className="lst">
-          {shown.map((row, index) => (
-            <div className="card" key={index}>
-              <div className="card-h">
-                <b>{field.row_label ?? '항목'} {index + 1}</b>
-                {shown.length > minimum || minimum === 0 ? (
-                  <button type="button" className="del" onClick={() => remove(index)}>삭제</button>
-                ) : null}
+          {shown.map((row, index) => {
+            const rowId = rid(row, index)
+            return (
+              <div className="card" key={rowId}>
+                <div className="card-h">
+                  <b>{field.row_label ?? '항목'} {index + 1}</b>
+                  {shown.length > minimum || minimum === 0 ? (
+                    <button type="button" className="del" onClick={() => remove(rowId)}>삭제</button>
+                  ) : null}
+                </div>
+                <FieldList fields={field.fields ?? []} scope={row} onChange={(rowKey, value) => update(rowId, rowKey, value)} ctx={ctx} />
               </div>
-              <FieldList fields={field.fields ?? []} scope={row} onChange={(rowKey, value) => update(index, rowKey, value)} ctx={ctx} />
-            </div>
-          ))}
+            )
+          })}
         </div>
-        <button type="button" className="add" onClick={() => onChange(key, [...shown, {}])}>
+        <button
+          type="button"
+          className="add"
+          onClick={() => onChange(key, (current: unknown) => [...pad(rowList(current)), { _rid: newRowId() }])}
+        >
           + {field.add ?? '추가'}
         </button>
       </div>
     </Fld>
+  )
+}
+
+interface FileRef {
+  id: string
+  name: string
+}
+
+const fileRefs = (value: unknown): FileRef[] =>
+  Array.isArray(value)
+    ? value.filter((item): item is FileRef => Boolean(item) && typeof (item as FileRef).id === 'string').map((item) => ({ id: item.id, name: item.name ?? '' }))
+    : []
+
+const IMAGE_NAME = /\.(jpe?g|png|webp|gif|heic)$/i
+
+function FilesField({ field, scope, onChange, ctx }: { field: SurveyField; scope: Answers; onChange: Change; ctx: FieldContext }) {
+  const key = field.key!
+  const files = fileRefs(scope[key])
+  const [status, setStatus] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const base = `/api/doctor-survey/${encodeURIComponent(ctx.token)}/files`
+  const photos = field.kind === 'PHOTO'
+
+  const limit = field.max ?? 30
+
+  async function upload(list: FileList | null) {
+    if (!list || !list.length) return
+    const room = limit - files.length
+    if (room <= 0) {
+      setStatus(`이 칸에는 ${limit}개까지 올릴 수 있습니다. 나머지는 담당자에게 보내 주세요.`)
+      return
+    }
+    const chosen = Array.from(list).slice(0, room)
+    const skipped = list.length - chosen.length
+    const work = uploadAll(chosen, skipped)
+    ctx.trackUpload(work)
+    await work
+  }
+
+  async function uploadAll(chosen: File[], skipped: number) {
+    setBusy(true)
+    setStatus(null)
+    let done = 0
+    for (const [index, file] of chosen.entries()) {
+      setStatus(`올리는 중 ${index + 1} / ${chosen.length}`)
+      const body = new FormData()
+      body.append('kind', field.kind ?? 'PHOTO')
+      body.append('file', file)
+      try {
+        const response = await fetch(base, { method: 'POST', body })
+        const payload = (await response.json().catch(() => ({}))) as { id?: string; name?: string; detail?: unknown }
+        if (!response.ok || !payload.id) {
+          setStatus(typeof payload.detail === 'string' ? payload.detail : `${file.name}을(를) 올리지 못했습니다.`)
+          break
+        }
+        const ref = { id: payload.id, name: payload.name ?? file.name }
+        onChange(key, (current: unknown) => [...fileRefs(current), ref])
+        done += 1
+      } catch {
+        setStatus('연결이 원활하지 않아 올리지 못했습니다. 다시 올려 주세요.')
+        break
+      }
+    }
+    setBusy(false)
+    if (done === chosen.length) {
+      setStatus(skipped > 0 ? `이 칸에는 ${limit}개까지 올릴 수 있어 ${skipped}개는 올리지 않았습니다.` : null)
+    }
+  }
+
+  const remove = (id: string) => onChange(key, (current: unknown) => fileRefs(current).filter((file) => file.id !== id))
+  const sub = files.length
+    ? photos
+      ? `${files.length}장 올림 · 눌러서 더 올리기`
+      : `${files.length}개 올림 · 눌러서 더 올리기`
+    : field.sub ?? '눌러서 올리기'
+
+  return (
+    <div>
+      <label className={`file wide${files.length ? ' has' : ''}`}>
+        <span className="ic">+</span>
+        <span>
+          <b>{field.label}</b>
+          <br />
+          <small>{busy ? status : sub}</small>
+        </span>
+        <input
+          type="file"
+          multiple
+          accept={field.accept ?? 'image/*'}
+          disabled={busy}
+          onChange={(event) => {
+            void upload(event.target.files)
+            event.target.value = ''
+          }}
+        />
+      </label>
+      {!busy && status ? <p className="err-msg" role="alert">{status}</p> : null}
+      {photos && files.length ? (
+        <div className="thumbs">
+          {files.map((file) => (
+            <div className="thumb" key={file.id}>
+              {/* eslint-disable-next-line @next/next/no-img-element -- 개인 링크의 비공개 파일이라 이미지 최적화를 거치지 않는다 */}
+              <img src={`${base}/${file.id}`} alt={file.name} />
+              <button type="button" aria-label={`${file.name} 삭제`} onClick={() => remove(file.id)}>×</button>
+            </div>
+          ))}
+        </div>
+      ) : null}
+      {!photos && files.length ? (
+        <ul className="file-list">
+          {files.map((file) => (
+            <li key={file.id}>
+              {IMAGE_NAME.test(file.name) ? '🖼' : '📄'} {file.name}
+              <button type="button" className="del" onClick={() => remove(file.id)}>삭제</button>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
   )
 }
 
@@ -709,7 +858,11 @@ export function FieldView({ field, scope, onChange, ctx }: { field: SurveyField;
     case 'doctors':
       return <Doctors field={field} scope={scope} onChange={onChange} ctx={ctx} />
     case 'files':
-      return <FilesPending field={field} ctx={ctx} />
+      return ctx.schema.uploads_enabled ? (
+        <FilesField field={field} scope={scope} onChange={onChange} ctx={ctx} />
+      ) : (
+        <FilesPending field={field} ctx={ctx} />
+      )
     case 'info':
       return <div className="info">{field.text}</div>
     case 'sh':

@@ -15,7 +15,7 @@ function declaredContentLength(headers: Headers): number | null {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : null
 }
 
-async function readBodyBytesWithLimit(request: Request, maxBytes: number): Promise<Uint8Array> {
+export async function readBodyBytesWithLimit(request: Request, maxBytes: number): Promise<Uint8Array> {
   const declaredLength = declaredContentLength(request.headers)
   if (declaredLength !== null && declaredLength > maxBytes) {
     throw new BodyTooLargeError(maxBytes)
