@@ -579,7 +579,7 @@ INTRO = {
     "notice": "환자 치료 경험담, 치료 전후 사진, 기준일 없는 수치는 받지 않습니다.",
     "respondent_label": "작성하시는 분",
     "respondents": [["DIRECTOR", "원장님"], ["STAFF", "병원 직원(대리 작성)"]],
-    # 처리방침 문구는 대표 확정 전 임시본이다(PR 설명 참고).
+    # 동의 문구는 사용자 확정(2026-11-19). 바꾸면 `CONSENT_VERSION`을 올려 원장에게 다시 동의를 받는다.
     "consent": {
         "version": CONSENT_VERSION,
         "title": "개인정보 수집·이용 동의",
