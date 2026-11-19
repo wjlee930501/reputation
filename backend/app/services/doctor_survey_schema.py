@@ -964,7 +964,8 @@ def validate_answers(raw: Any) -> dict[str, Any]:
 
 #: 가리지 않는 칸 — 병원 대표 전화번호(원장 휴대전화가 아니라 병원 사실)와 숫자 칸.
 UNMASKED_KEYS = frozenset(
-    {"phone"}
+    # 파일 id·줄 id는 시스템이 만든 값이다 — 숫자열이 휴대전화처럼 보여도 가리면 첨부·줄을 잃는다.
+    {"phone", "id", "_rid"}
     | {
         str(spec["key"])
         for spec in [*TOP_FIELDS.values(), *FOCUS_FIELDS.values()]

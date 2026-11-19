@@ -85,3 +85,19 @@ def test_row_ids_survive_validation_but_are_not_answers():
     cleaned = schema.validate_answers({"certifications": [{"_rid": "r1", "name": "의료기관 인증"}, {"_rid": "r2"}]})
     assert cleaned["certifications"][0]["_rid"] == "r1"
     assert schema.progress({"certifications": [{"_rid": "r2"}]}, new_clinic=False)["answered"] == 0
+
+
+def test_masking_never_touches_file_or_row_ids():
+    from app.services import doctor_survey_schema as schema
+
+    phone_like = "01012345678a4aaa8aaaaaaaaaaaaaaa"
+    masked = schema.mask_answers(
+        schema.validate_answers(
+            {"photos": [{"id": phone_like, "name": "010-1234-5678.jpg"}],
+             "certifications": [{"_rid": "01012345678", "name": "인증", "files": [{"id": phone_like, "name": "x"}]}]}
+        )
+    )
+    assert masked["photos"][0]["id"] == phone_like
+    assert "010-1234-5678" not in masked["photos"][0]["name"]
+    assert masked["certifications"][0]["_rid"] == "01012345678"
+    assert masked["certifications"][0]["files"][0]["id"] == phone_like

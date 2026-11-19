@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   buildFlow,
   compactAnswers,
+  ensureRowIds,
   focusScope,
   questionAnswered,
   questionDesc,
@@ -86,7 +87,7 @@ export default function SurveyApp({ token }: { token: string }) {
         }
         const payload = (await response.json()) as SurveyData
         setData(payload)
-        setAnswers(payload.answers ?? {})
+        setAnswers(ensureRowIds(payload.schema, payload.answers ?? {}))
         setRespondent(payload.respondent)
         setConsented(payload.consented)
         setConsentChecked(payload.consented)

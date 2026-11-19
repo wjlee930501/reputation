@@ -146,3 +146,14 @@ test('줄 id만 있는 줄은 답한 것이 아니다', async () => {
   assert.equal(hasValue([{ _rid: 'pad-0' }]), false)
   assert.equal(hasValue([{ _rid: 'a', name: '도수' }]), true)
 })
+
+test('불러온 줄 목록에 id가 없으면 채운다', async () => {
+  const { ensureRowIds } = await import('./doctor-survey.ts')
+  const listSchema = {
+    ...schema,
+    parts: [{ name: 'p', sum: '', qs: [{ id: 'c', n: '', t: '', b: [{ t: 'list', key: 'certifications', fields: [] }] }] }],
+  } as unknown as SurveySchema
+  let n = 0
+  const out = ensureRowIds(listSchema, { certifications: [{ name: 'A' }, { _rid: 'keep', name: 'B' }] }, () => `r${++n}`)
+  assert.deepEqual(out.certifications, [{ name: 'A', _rid: 'r1' }, { _rid: 'keep', name: 'B' }])
+})
