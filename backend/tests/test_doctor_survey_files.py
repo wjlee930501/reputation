@@ -77,3 +77,11 @@ def test_each_file_field_has_its_own_limit_shown_to_the_screen():
     with pytest.raises(schema.SurveyAnswerError):
         schema.validate_answers({"logo_files": [{"id": f"{i:032x}", "name": "x"} for i in range(6)]})
     assert len(schema.validate_answers({"photos": [{"id": f"{i:032x}", "name": "x"} for i in range(30)]})["photos"]) == 30
+
+
+def test_row_ids_survive_validation_but_are_not_answers():
+    from app.services import doctor_survey_schema as schema
+
+    cleaned = schema.validate_answers({"certifications": [{"_rid": "r1", "name": "의료기관 인증"}, {"_rid": "r2"}]})
+    assert cleaned["certifications"][0]["_rid"] == "r1"
+    assert schema.progress({"certifications": [{"_rid": "r2"}]}, new_clinic=False)["answered"] == 0

@@ -721,6 +721,7 @@ MAX_FILES = 30
 _NUMBER = re.compile(r"^\d{1,12}$")
 _TIME = re.compile(r"^(?:[01]\d|2[0-4]):[0-5]\d$")
 _FILE_ID = re.compile(r"^[0-9a-f]{32}$")
+_ROW_ID = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
 HOURS_DAYS = ("weekday", "mon", "tue", "wed", "thu", "fri", "sat", "sun")
 HOURS_DAY_FLAGS = ("open", "lunch", "night")
 HOURS_DAY_TIMES = ("start", "end", "last", "lunch_start", "lunch_end", "night_end")
@@ -903,7 +904,12 @@ def _clean_value(field: Mapping[str, Any], value: Any) -> Any:
         for row in value:
             if not isinstance(row, Mapping):
                 raise _bad(key)
-            rows.append(_clean_mapping(row, row_fields))
+            cleaned_row = _clean_mapping(row, row_fields)
+            # 화면이 붙이는 줄 id — 늦게 끝난 파일 올리기가 원래 줄을 찾게 한다. 근거 자료·제안에는 쓰지 않는다.
+            row_id = row.get("_rid")
+            if isinstance(row_id, str) and _ROW_ID.match(row_id):
+                cleaned_row["_rid"] = row_id
+            rows.append(cleaned_row)
         return rows
     if kind == "hours":
         return _clean_hours(value, key)
@@ -998,8 +1004,11 @@ def _has_value(value: Any) -> bool:
         return False
     if isinstance(value, str):
         return bool(value.strip())
-    if isinstance(value, (list, dict)):
-        return any(_has_value(item) for item in (value.values() if isinstance(value, dict) else value))
+    if isinstance(value, dict):
+        # 줄 id(`_rid`)는 답이 아니다.
+        return any(_has_value(item) for key, item in value.items() if key != "_rid")
+    if isinstance(value, list):
+        return any(_has_value(item) for item in value)
     return True
 
 

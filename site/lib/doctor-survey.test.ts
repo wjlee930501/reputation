@@ -140,3 +140,9 @@ test('프록시는 파일 올리기와 이 설문 파일 보기만 통과시킨�
   assert.equal(surveyUpstreamPath('GET', token, ['files']), null)
   assert.equal(surveyUpstreamPath('DELETE', token, ['files', fileId]), null)
 })
+
+test('줄 id만 있는 줄은 답한 것이 아니다', async () => {
+  const { hasValue } = await import('./doctor-survey.ts')
+  assert.equal(hasValue([{ _rid: 'pad-0' }]), false)
+  assert.equal(hasValue([{ _rid: 'a', name: '도수' }]), true)
+})

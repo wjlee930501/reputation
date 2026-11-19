@@ -99,7 +99,9 @@ export function hasValue(value: unknown): boolean {
   if (value === null || value === undefined || value === false) return false
   if (typeof value === 'string') return value.trim().length > 0
   if (Array.isArray(value)) return value.some(hasValue)
-  if (typeof value === 'object') return Object.values(value as Record<string, unknown>).some(hasValue)
+  // 줄 id(`_rid`)는 답이 아니다.
+  if (typeof value === 'object')
+    return Object.entries(value as Record<string, unknown>).some(([key, item]) => key !== '_rid' && hasValue(item))
   return true
 }
 

@@ -358,40 +358,56 @@ function Toggle({ field, scope, onChange, ctx }: { field: SurveyField; scope: An
   )
 }
 
+const newRowId = () => Array.from(crypto.getRandomValues(new Uint8Array(8)), (b) => b.toString(16).padStart(2, '0')).join('')
+
+/** 줄마다 고유 id(`_rid`)를 둔다 — 파일 올리기처럼 늦게 끝나는 작업이 줄을 지우거나 앞줄을 지운 뒤에도 원래
+ * 줄을 찾게(없어졌으면 버린다). 아직 저장되지 않은 기본 빈 줄은 자리 id(`pad-n`)를 쓴다. */
 function RowList({ field, scope, onChange, ctx }: { field: SurveyField; scope: Answers; onChange: Change; ctx: FieldContext }) {
   const key = field.key!
   const rows = rowList(scope[key])
   const minimum = field.rows ?? 1
   const pad = (list: Answers[]): Answers[] =>
-    list.length >= minimum ? list : [...list, ...Array.from({ length: minimum - list.length }, () => ({}))]
+    list.length >= minimum
+      ? list
+      : [...list, ...Array.from({ length: minimum - list.length }, (_v, i) => ({ _rid: `pad-${list.length + i}` }))]
+  const rid = (row: Answers, index: number) => (typeof row._rid === 'string' ? row._rid : `idx-${index}`)
   const shown = pad(rows)
-  const update = (index: number, rowKey: string, value: ChangeValue) => {
-    // 지금 값을 기준으로 이 줄의 이 칸만 바꾼다(올리기가 끝날 때 그 사이 고친 다른 칸·줄을 덮지 않게).
-    onChange(key, (current: unknown) =>
-      pad(rowList(current)).map((row, i) => (i === index ? { ...row, [rowKey]: resolveChange(row[rowKey], value) } : row)),
-    )
+  const update = (rowId: string, rowKey: string, value: ChangeValue) => {
+    // 지금 값을 기준으로 그 줄(id)의 그 칸만 바꾼다. 그 사이 줄이 지워졌으면 아무것도 하지 않는다.
+    onChange(key, (current: unknown) => {
+      const list = pad(rowList(current))
+      if (!list.some((row, i) => rid(row, i) === rowId)) return current
+      return list.map((row, i) =>
+        rid(row, i) === rowId ? { ...row, _rid: rowId, [rowKey]: resolveChange(row[rowKey], value) } : row,
+      )
+    })
   }
-  const remove = (index: number) => {
-    const next = shown.filter((_row, i) => i !== index)
-    onChange(key, next)
-  }
+  const remove = (rowId: string) =>
+    onChange(key, (current: unknown) => pad(rowList(current)).filter((row, i) => rid(row, i) !== rowId))
   return (
     <Fld label={field.label}>
       <div className="lst">
         <div className="lst">
-          {shown.map((row, index) => (
-            <div className="card" key={index}>
-              <div className="card-h">
-                <b>{field.row_label ?? '항목'} {index + 1}</b>
-                {shown.length > minimum || minimum === 0 ? (
-                  <button type="button" className="del" onClick={() => remove(index)}>삭제</button>
-                ) : null}
+          {shown.map((row, index) => {
+            const rowId = rid(row, index)
+            return (
+              <div className="card" key={rowId}>
+                <div className="card-h">
+                  <b>{field.row_label ?? '항목'} {index + 1}</b>
+                  {shown.length > minimum || minimum === 0 ? (
+                    <button type="button" className="del" onClick={() => remove(rowId)}>삭제</button>
+                  ) : null}
+                </div>
+                <FieldList fields={field.fields ?? []} scope={row} onChange={(rowKey, value) => update(rowId, rowKey, value)} ctx={ctx} />
               </div>
-              <FieldList fields={field.fields ?? []} scope={row} onChange={(rowKey, value) => update(index, rowKey, value)} ctx={ctx} />
-            </div>
-          ))}
+            )
+          })}
         </div>
-        <button type="button" className="add" onClick={() => onChange(key, [...shown, {}])}>
+        <button
+          type="button"
+          className="add"
+          onClick={() => onChange(key, (current: unknown) => [...pad(rowList(current)), { _rid: newRowId() }])}
+        >
           + {field.add ?? '추가'}
         </button>
       </div>
