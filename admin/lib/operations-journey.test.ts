@@ -94,7 +94,8 @@ test('live marketer surfaces fail closed instead of rendering raw states or exce
   assert.match(content, /whitespace-nowrap break-keep/)
   assert.match(content, /min-h-11[\s\S]{0,180}전체 보기/)
   assert.match(content, /min-h-11[\s\S]{0,220}확인 완료/)
-  assert.match(content, /min-h-11[\s\S]{0,220}문제 발견/)
+  // 2026-11-20: 비공개 후 재생성은 ⋯ 메뉴 안(메뉴 항목도 min-h-11, `DangerMenu`).
+  assert.match(content, /DangerMenu[\s\S]{0,220}문제 발견/)
   assert.match(content, /setError\(null\)[\s\S]{0,240}isExpectedOperatorRequestFailure/)
   assert.doesNotMatch(globalError, /error\.message/)
   assert.match(globalError, /개발팀 문의용 정보 복사|OperatorIssuePanel/)

@@ -42,6 +42,7 @@ import { useHospitalHeader } from '../hospital-context'
 import { ContentFocusSection } from './ContentFocusSection'
 import { ReadOnlySignals } from './ReadOnlySignals'
 import { ScheduleSection } from './ScheduleSection'
+import { DangerMenu } from '@/app/_components/DangerMenu'
 
 const ESSENCE_LABELS: Record<string, { label: string; color: string }> = {
   ALIGNED: { label: '운영 기준 통과', color: 'bg-green-100 text-green-700' },
@@ -1340,13 +1341,15 @@ export default function ContentPage() {
                     )}
                     {/* 결함이 확인된 공개 글은 표본 여부와 무관하게 사람이 내릴 수 있다
                         (의료광고 안전 통제). "문제 없음" 확인만 표본으로 제한한다. */}
-                    <button
-                      onClick={() => setConfirmAction('reject')}
-                      disabled={actionLoading}
-                      className="min-h-11 flex-1 min-w-48 rounded-lg bg-red-100 px-4 text-sm font-medium text-red-700 hover:bg-red-200 disabled:opacity-50"
-                    >
-                      문제 발견 · 비공개 후 재생성
-                    </button>
+                    {/* 2026-11-20: 위험 동작은 ⋯ 메뉴 안으로. 고른 뒤 사유 입력 확인창은 그대로다. */}
+                    <DangerMenu
+                      items={[{
+                        label: '문제 발견 · 비공개 후 재생성…',
+                        danger: true,
+                        disabled: actionLoading,
+                        onSelect: () => setConfirmAction('reject'),
+                      }]}
+                    />
                   </div>
                 ) : selected.status === 'CANCELLED' ? (
                   <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">

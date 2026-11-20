@@ -7,8 +7,10 @@ import { ApiError, fetchAPI } from '@/lib/api'
 import {
   getHospitalLifecycleAction,
   hospitalLifecycleActionPath,
-  hospitalLifecycleConfirmMessage,
+  type HospitalLifecycleAction,
 } from '@/lib/hospital-lifecycle'
+import { ConfirmDialog } from '@/app/_components/ConfirmDialog'
+import { DangerMenu } from '@/app/_components/DangerMenu'
 import { readHospitalDomainStatus } from '@/lib/hospital-domain-status'
 import {
   describeContentState,
@@ -63,6 +65,8 @@ export default function HospitalLayout({
   const [loadErrorStatus, setLoadErrorStatus] = useState<number | null>(null)
   const [lifecycleLoading, setLifecycleLoading] = useState(false)
   const [lifecycleError, setLifecycleError] = useState<string | null>(null)
+  // 일시정지·재개 확인창. 일시정지는 병원명을 다시 입력해야 한다(2026-11-20).
+  const [lifecycleDialog, setLifecycleDialog] = useState<HospitalLifecycleAction | null>(null)
 
   const requestSeq = useRef(0)
 
@@ -143,7 +147,6 @@ export default function HospitalLayout({
 
   async function handleLifecycleAction() {
     if (!hospital || !lifecycleAction) return
-    if (!confirm(hospitalLifecycleConfirmMessage(lifecycleAction))) return
     setLifecycleLoading(true)
     setLifecycleError(null)
     try {
@@ -151,6 +154,7 @@ export default function HospitalLayout({
         method: 'POST',
       })
       // 일시정지·재개는 공개 서비스 상태를 바꾼다 — 헤더의 3상태까지 같이 다시 받는다.
+      setLifecycleDialog(null)
       await refetch()
     } catch (e: unknown) {
       setLifecycleError(e instanceof Error ? e.message : '병원 상태 변경에 실패했습니다.')
@@ -161,6 +165,21 @@ export default function HospitalLayout({
 
   return (
     <HospitalHeaderContext.Provider value={{ hospital, overview, loading: headerLoading, refetch }}>
+    <ConfirmDialog
+      open={lifecycleDialog !== null}
+      title={lifecycleDialog === 'pause' ? ADMIN_COPY.dangerConfirm.pauseTitle : ADMIN_COPY.dangerConfirm.resumeTitle}
+      description={lifecycleDialog === 'pause' ? ADMIN_COPY.dangerConfirm.pauseBody : ADMIN_COPY.dangerConfirm.resumeBody}
+      confirmLabel={lifecycleDialog === 'pause' ? ADMIN_COPY.dangerConfirm.pauseConfirm : ADMIN_COPY.dangerConfirm.resumeConfirm}
+      typedConfirmation={lifecycleDialog === 'pause' ? hospital?.name : null}
+      tone={lifecycleDialog === 'pause' ? 'danger' : 'neutral'}
+      busy={lifecycleLoading}
+      error={lifecycleDialog ? lifecycleError : null}
+      onConfirm={() => void handleLifecycleAction()}
+      onClose={() => {
+        setLifecycleDialog(null)
+        setLifecycleError(null)
+      }}
+    />
     <div className="flex min-h-full flex-col">
       {/* Hospital header */}
       <header className="border-b border-slate-200 bg-white px-4 py-3 lg:px-8 lg:pb-0 lg:pt-5">
@@ -235,19 +254,20 @@ export default function HospitalLayout({
                   {planLabel}
                 </span>
               )}
-              {lifecycleAction && (
+              {lifecycleAction === 'resume' && (
                 <button
                   type="button"
-                  onClick={() => void handleLifecycleAction()}
+                  onClick={() => setLifecycleDialog('resume')}
                   disabled={lifecycleLoading}
-                  className={`inline-flex min-h-11 items-center rounded-lg border px-3 py-2 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
-                    lifecycleAction === 'pause'
-                      ? 'border-red-200 text-red-700 hover:bg-red-50'
-                      : 'border-green-200 text-green-700 hover:bg-green-50'
-                  }`}
+                  className="inline-flex min-h-11 items-center rounded-lg border border-green-200 px-3 py-2 text-xs font-medium text-green-700 transition-colors hover:bg-green-50 disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  {lifecycleLoading ? '처리 중...' : lifecycleAction === 'pause' ? '일시정지' : '재개'}
+                  {lifecycleLoading ? '처리 중...' : '재개'}
                 </button>
+              )}
+              {lifecycleAction === 'pause' && (
+                <DangerMenu
+                  items={[{ label: ADMIN_COPY.dangerConfirm.pauseItem, danger: true, disabled: lifecycleLoading, onSelect: () => setLifecycleDialog('pause') }]}
+                />
               )}
             </div>
             {publicAddress && (
