@@ -90,20 +90,22 @@ export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
 
   return (
     <main id="main-content" className={s.home}>
-      <section className={`${s.hero}${model.heroPhotoUrl ? '' : ` ${s.heroPlain}`}`} aria-label="첫 화면">
+      <section className={`${s.hero}${model.heroPhotoUrl ? ` ${s.heroSplit}` : ` ${s.heroPlain}`}`} aria-label="첫 화면">
         {model.heroPhotoUrl ? (
-          <>
+          // 좌우 분할(2026-11-20 결정 N2): 사진은 오른쪽 절반(휴대폰은 위 4:3)에 덮개 없이 두고,
+          // 글은 대표색 바탕의 왼쪽(휴대폰은 아래)에 놓는다 — 사진이 가려지지 않고 흰 글자 대비가
+          // 사진 밝기와 무관하게 지켜진다.
+          <div className={s.heroMedia}>
             <Image
               src={model.heroPhotoUrl}
               alt={model.mediaMode === 'brand-graphic' ? `${hospital.name} 브랜드 그래픽` : `${hospital.name} 진료 공간`}
               fill
               preload
               quality={CLINIC_IMAGE_QUALITY}
-              sizes="100vw"
+              sizes="(max-width: 900px) 100vw, 50vw"
               style={{ objectFit: 'cover' }}
             />
-            <span className={s.heroVeil} aria-hidden="true" />
-          </>
+          </div>
         ) : null}
         <div className={s.heroInner}>
           <div className={s.heroCopy}>
