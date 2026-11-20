@@ -1,4 +1,5 @@
 import Link from 'next/link'
+import { formatSeoulDate } from '@/lib/clinic-dates'
 
 import { TYPE_LABELS, type ContentSummary } from '@/lib/api'
 import { categoryTagClass } from '@/lib/content-meta'
@@ -9,16 +10,9 @@ interface Props {
   hospitalName: string
 }
 
-function formatDate(value: string | null | undefined, fallback: string) {
-  if (!value) return fallback
-  const parsed = new Date(value)
-  if (Number.isNaN(parsed.getTime())) return fallback
-  return parsed.toLocaleDateString('ko-KR', { year: 'numeric', month: 'long', day: 'numeric' })
-}
-
 export function ContentCard({ content, hospitalRootUrl }: Props) {
   const typeLabel = TYPE_LABELS[content.content_type] ?? content.content_type
-  const dateLabel = formatDate(content.published_at, content.scheduled_date)
+  const dateLabel = formatSeoulDate(content.published_at, content.scheduled_date)
 
   return (
     <Link

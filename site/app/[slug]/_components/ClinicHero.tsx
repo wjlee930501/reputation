@@ -1,6 +1,7 @@
 import { CLINIC_IMAGE_SIZES, CLINIC_IMAGE_QUALITY } from '@/lib/clinic-image-delivery'
 import Image from 'next/image'
 import Link from 'next/link'
+import { KeepTogether } from './KeepTogether'
 
 import { seoulToday } from '@/lib/clinic-layout'
 import { displayClinicLabels } from '@/lib/clinic-design'
@@ -80,13 +81,15 @@ export function ClinicHero({
           >
             {headline.lead.map((part, index) => (
               <span key={`${part}-${index}`}>
-                {part}{' '}
+                <KeepTogether text={part} compounds />{' '}
               </span>
             ))}
-            <strong>{headline.emphasis}</strong>
+            <strong><KeepTogether text={headline.emphasis} compounds /></strong>
           </h1>
           <p className="clinic-hero-editorial-lede">
-            {heroDescription?.trim() || `${hospitalName}의 진료 영역, 진료시간과 위치를 한곳에서 확인할 수 있습니다.`}
+            <KeepTogether
+              text={heroDescription?.trim() || `${hospitalName}의 진료 영역, 진료시간과 위치를 한곳에서 확인할 수 있습니다.`}
+            />
           </p>
           <div className="clinic-hero-editorial-actions">
             {accessMode === 'specialist' ? (
