@@ -55,7 +55,7 @@ export function ContentsFeedView({ contents, hospitalRootUrl, directorName, acti
     return (
       <div className="clinic-empty">
         <span className="clinic-empty-title">아직 발행된 콘텐츠가 없습니다</span>
-        <p>진료 안내와 건강 정보 글을 준비하고 있습니다.</p>
+        <p>진료 안내와 의료 정보 글을 준비하고 있습니다.</p>
       </div>
     )
   }

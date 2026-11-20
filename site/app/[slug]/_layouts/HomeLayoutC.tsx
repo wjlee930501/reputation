@@ -144,7 +144,7 @@ export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
         {news.length > 0 ? (
           <section id="contents" className={s.newsBlock}>
             <div className={s.blockHead}>
-              <SectionTitle label="NEWS">최근 건강 정보</SectionTitle>
+              <SectionTitle label="NEWS">최근 의료 정보</SectionTitle>
               <Link className={s.moreLink} href={`${hospitalRootUrl}/contents`}>
                 {contents.length}편 모두 보기 →
               </Link>
@@ -315,7 +315,7 @@ export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
         <section className={s.section} aria-label="자주 확인하는 질문">
           <div className={s.blockHead}>
             <SectionTitle label="Q&A">{QUESTIONS_SECTION_TITLE}</SectionTitle>
-            <Link className={s.moreLink} href={`${hospitalRootUrl}/contents`}>건강 정보 {contents.length}편 →</Link>
+            <Link className={s.moreLink} href={`${hospitalRootUrl}/contents`}>의료 정보 {contents.length}편 →</Link>
           </div>
           <div className={s.qaGrid}>
             {questions.map((content) => (
