@@ -250,7 +250,7 @@ test('admin API route rejects invalid proxy paths before revocation lookup', asy
 })
 
 test('admin API route rejects state-changing requests without or with mismatched CSRF nonce', async () => {
-  for (const method of ['POST', 'PATCH', 'DELETE']) {
+  for (const method of ['POST', 'PUT', 'PATCH', 'DELETE']) {
     const missing = await handleAdminApiProxy(await buildAuthorizedRequest(method), {
       params: Promise.resolve({ path: ['hospitals'] }),
     })

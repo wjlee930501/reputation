@@ -245,6 +245,21 @@ async def get_site_config(hospital_id: uuid.UUID, db: AsyncSession = Depends(get
     }
 
 
+@router.get("/{hospital_id}/site-config/faq-candidates")
+async def list_site_config_faq_candidates(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    """FAQ 직접 고르기 후보 — 홈 FAQ와 같은 집합(공개 FAQ 글 중 승인 질문·답이 있는 것), 최근 공개 순.
+
+    질문 문장은 승인된 그대로 보인다(편집기에서 고치지 않는다, I8). 공개 중이 아닌 병원은 빈 목록이다.
+    """
+
+    hospital = await _hospital_or_404(db, hospital_id)
+    entries = await site_config_refs.public_faq_entries(db, hospital)
+    return {
+        "items": [{"id": str(content_id), "question": entry["question"]} for content_id, entry in entries.items()],
+        "limit": site_config_refs.FAQ_SCAN_LIMIT,
+    }
+
+
 async def _write_draft(
     db: AsyncSession,
     hospital: Hospital,
