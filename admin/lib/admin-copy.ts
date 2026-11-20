@@ -551,6 +551,23 @@ export const ADMIN_COPY = {
     accountsTitle: '운영자 계정',
     costGuardTitle: '자동 작업 한도',
   },
+  // 병원 목록 칸·필터(2026-11-20 마케팅 요청).
+  hospitalList: {
+    filterDefault: '운영 · 준비',
+    filterReportGap: '보고 미전달',
+    pausedGroup: '일시 정지',
+    sortLabel: '정렬',
+    sortCreated: '등록 순',
+    sortName: '병원명',
+    sortPublish: '이번 달 발행',
+    sortMention: 'AI 언급률',
+    colAddress: '공개 주소',
+    colPublish: '이번 달 발행',
+    colMention: 'AI 언급률',
+    colTodo: '할 일',
+    publishPrefix: '공개',
+    publishHint: '현황 탭과 같은 값 · 이번 계약 월 공개 글 / 약속 편수',
+  },
   // 병원 정보 > 진료시간의 공휴일 칸(2026-11-18 — 공휴일 휴진을 AI가 읽는 구조화 데이터에 싣는다).
   businessHours: {
     holiday: '공휴일',

@@ -737,3 +737,23 @@ async def test_exception_card_carries_the_actions_the_server_will_accept(pg_asyn
     assert operator_actions["RETRY_RUN"].enabled is False
     assert operator_card.allowed_actions == ["OPEN_INCIDENT"]
     assert owner_card.allowed_actions == ["OPEN_INCIDENT", "RETRY_RUN", "ASSIGN_INCIDENT"]
+
+
+async def test_list_month_metrics_match_the_overview_month(pg_async_session):
+    """병원 목록의 이번 달 발행·언급률 칸은 현황 탭과 같은 숫자다(2026-11-20)."""
+    from app.api.admin.hospitals import list_hospital_month_metrics
+
+    db = pg_async_session
+    hospital = await _hospital(db, "목록지표 의원")
+    await _content(db, hospital)
+    await _content(db, hospital, withheld=True)
+
+    overview = await _overview(db, hospital.id)
+    rows = await list_hospital_month_metrics(db=db)
+    row = next(item for item in rows if item["hospital_id"] == str(hospital.id))
+    month = overview.month
+    assert row["published_count"] == month.published_count
+    assert row["public_count"] == month.public_count
+    assert row["planned_total"] == month.planned_total
+    assert row["mention_rate"] == month.mention_rate
+    assert (row["year"], row["month"]) == (month.year, month.month)
