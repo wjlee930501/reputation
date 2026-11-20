@@ -1,0 +1,756 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Re:putation 운영 어드민 · 개선 시안 v2</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css">
+<style>
+:root{
+  --o:#FF3D00;--o2:#FF6A2B;--os:#FFF1EB;--os2:#FFE3D6;
+  --ink:#111114;--g8:#3F3F46;--g6:#71717A;--g4:#A1A1AA;--g3:#D4D4D8;--g2:#E7E7EA;--g1:#F2F2F4;--bg:#F6F6F7;--card:#fff;
+  --ok:#15803D;--oks:#E8F6EC;--wa:#B45309;--was:#FFF4E2;--bad:#DC2626;--bads:#FDECEC;--info:#2563EB;--infos:#EAF1FF;--off:#52525B;--offs:#EFEFF1;
+  --r:18px;--sh:0 1px 2px rgba(17,17,20,.04),0 4px 16px rgba(17,17,20,.04);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:Pretendard,-apple-system,'Apple SD Gothic Neo','Noto Sans KR',sans-serif;color:var(--ink);background:var(--bg);font-size:13.5px;letter-spacing:-.01em;-webkit-font-smoothing:antialiased;line-height:1.5}
+button{font:inherit;cursor:pointer}
+svg{width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;flex:none;vertical-align:middle}
+a{color:inherit}
+.app{display:grid;grid-template-columns:236px minmax(0,1fr);min-height:100vh}
+
+/* sidebar */
+.sb{background:#0E0E10;color:#fff;padding:24px 14px 18px;display:flex;flex-direction:column;position:sticky;top:0;height:100vh}
+.logo{font-weight:800;font-size:20px;letter-spacing:-.045em;padding:0 10px;display:flex;align-items:center;gap:8px}
+.logo b{color:var(--o)}
+.logo span{font-size:10.5px;font-weight:700;color:#fff;background:#26262A;border-radius:999px;padding:3px 8px;letter-spacing:0}
+.env{margin:10px 10px 22px;font-size:11.5px;color:#8B8B93;display:flex;align-items:center;gap:7px}
+.env i{width:7px;height:7px;border-radius:50%;background:#F59E0B;box-shadow:0 0 0 3px rgba(245,158,11,.18)}
+.nav{display:flex;flex-direction:column;gap:3px}
+.nav .grp{font-size:10.5px;font-weight:700;color:#5E5E66;padding:14px 12px 6px;letter-spacing:.02em}
+.nav a{display:flex;align-items:center;gap:11px;padding:10px 12px;border-radius:12px;color:#C9C9CF;text-decoration:none;font-weight:600;cursor:pointer;transition:background .15s}
+.nav a svg{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.nav a:hover{background:#1B1B1F}
+.nav a.on{background:var(--o);color:#fff}
+.nav a .cnt{margin-left:auto;font-size:11px;font-weight:700;background:#26262A;color:#fff;border-radius:999px;padding:1px 8px}
+.nav a .cnt.hot{background:var(--o);}
+.nav a.on .cnt{background:rgba(0,0,0,.22)}
+.sbft{margin-top:auto;padding:14px 10px 0;border-top:1px solid #1F1F23}
+.me{display:flex;align-items:center;gap:10px;color:#E4E4E7;font-weight:600;font-size:12.5px}
+.me small{display:block;color:#7A7A82;font-weight:500;font-size:11px}
+.me .lo{margin-left:auto;color:#7A7A82;background:none;border:0;font-size:11.5px;white-space:nowrap}
+.ver{font-size:10.5px;color:#56565E;margin-top:12px}
+
+/* main */
+.main{padding:30px 40px 80px;min-width:0}
+.top{display:flex;align-items:flex-end;gap:16px;margin-bottom:22px;flex-wrap:wrap}
+.top h1{font-size:26px;font-weight:700;letter-spacing:-.04em}
+.top .d{font-size:12.5px;color:var(--g6);margin-top:3px}
+.sp{flex:1}
+.crumb{font-size:12.5px;color:var(--g6);margin-bottom:10px;cursor:pointer;display:inline-flex;gap:6px;align-items:center}
+.crumb:hover{color:var(--ink)}
+
+/* buttons */
+.btn{display:inline-flex;align-items:center;gap:7px;height:36px;padding:0 14px;border-radius:11px;border:1px solid var(--g2);background:#fff;color:var(--ink);font-weight:600;font-size:13px;white-space:nowrap;transition:border-color .15s,background .15s}
+.btn:hover{border-color:var(--g3);background:#FBFBFC}
+.btn svg{width:15px;height:15px;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.btn.pri{background:var(--o);border-color:var(--o);color:#fff}
+.btn.pri:hover{background:#F03800}
+.btn.dark{background:var(--ink);border-color:var(--ink);color:#fff}
+.btn.sm{height:30px;padding:0 11px;font-size:12px;border-radius:9px}
+.btn.ghost{border-color:transparent;background:transparent;color:var(--g6)}
+.btn.ghost:hover{background:var(--g1);color:var(--ink)}
+.btn.danger{color:var(--bad)}
+.ic{width:34px;height:34px;border-radius:10px;border:1px solid var(--g2);background:#fff;display:inline-grid;place-items:center}
+.ic svg{width:16px;height:16px;stroke:var(--g8);fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+
+/* status pill */
+.pill{display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 10px;border-radius:999px;font-size:11.5px;font-weight:700;white-space:nowrap}
+.pill::before{content:'';width:6px;height:6px;border-radius:50%;background:currentColor}
+.pill.ok{color:var(--ok);background:var(--oks)}
+.pill.wa{color:var(--wa);background:var(--was)}
+.pill.bad{color:var(--bad);background:var(--bads)}
+.pill.info{color:var(--info);background:var(--infos)}
+.pill.off{color:var(--off);background:var(--offs)}
+.pill.br{color:var(--o);background:var(--os)}
+.chip{display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 8px;border-radius:7px;font-size:11px;font-weight:700;background:var(--g1);color:var(--g8);white-space:nowrap}
+.chip.o{background:var(--os);color:var(--o)}
+.chip.wa{background:var(--was);color:var(--wa)}
+
+/* cards */
+.card{background:var(--card);border-radius:var(--r);box-shadow:var(--sh);padding:22px 24px}
+.card+.card{margin-top:16px}
+.grid>.card+.card,.panel>.card+.card{margin-top:0}
+.ch{display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap}
+.ch h2{font-size:16px;font-weight:700;letter-spacing:-.03em}
+.ch h2 small{font-size:12px;color:var(--g6);font-weight:500;margin-left:6px;letter-spacing:0}
+.ch .n{font-size:11.5px;font-weight:700;background:var(--g1);color:var(--g8);border-radius:999px;padding:1px 9px}
+.desc{font-size:12.5px;color:var(--g6);margin:-8px 0 16px}
+.grid{display:grid;gap:16px}
+.g2{grid-template-columns:repeat(auto-fit,minmax(320px,1fr))}
+.g3{grid-template-columns:repeat(auto-fit,minmax(240px,1fr))}
+.g4{grid-template-columns:repeat(auto-fit,minmax(180px,1fr))}
+.g5{grid-template-columns:repeat(auto-fit,minmax(160px,1fr))}
+
+/* KPI */
+.kpi{background:#fff;border-radius:var(--r);box-shadow:var(--sh);padding:18px 20px;position:relative;overflow:hidden;cursor:pointer;transition:transform .15s}
+.kpi:hover{transform:translateY(-2px)}
+.kpi .ki{width:34px;height:34px;border-radius:11px;display:grid;place-items:center;background:var(--g1);margin-bottom:14px}
+.kpi .ki svg{width:17px;height:17px;stroke:var(--g8);fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.kpi.o .ki{background:var(--os)} .kpi.o .ki svg{stroke:var(--o)}
+.kpi.wa .ki{background:var(--was)} .kpi.wa .ki svg{stroke:var(--wa)}
+.kpi .l{font-size:12px;color:var(--g6);font-weight:600}
+.kpi .v{font-size:30px;font-weight:700;letter-spacing:-.04em;font-variant-numeric:tabular-nums;line-height:1.15;margin-top:2px}
+.kpi .v small{font-size:14px;font-weight:600;color:var(--g6);margin-left:3px}
+.kpi .s{font-size:11.5px;color:var(--g6);margin-top:4px}
+.kpi.hero{background:var(--o);color:#fff}
+.kpi.hero .l,.kpi.hero .s,.kpi.hero .v small{color:rgba(255,255,255,.85)}
+.kpi.hero .ki{background:rgba(255,255,255,.18)} .kpi.hero .ki svg{stroke:#fff}
+.kpi .ring{position:absolute;right:18px;top:18px;width:58px;height:58px;border-radius:50%;display:grid;place-items:center}
+.kpi .ring::after{content:attr(data-t);width:44px;height:44px;border-radius:50%;background:var(--o);color:#fff;display:grid;place-items:center;font-size:11px;font-weight:700}
+
+/* donut status */
+.stbar{display:flex;height:10px;border-radius:999px;overflow:hidden;margin:8px 0 12px;background:var(--g1)}
+.stbar i{display:block;height:100%}
+.legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--g8)}
+.legend span{display:inline-flex;align-items:center;gap:6px}
+.legend i{width:8px;height:8px;border-radius:3px;display:block}
+
+/* task list */
+.task{display:grid;grid-template-columns:4px 40px minmax(0,1fr) auto;gap:14px;align-items:center;padding:13px 0;border-top:1px solid var(--g1)}
+.task:first-child{border-top:0}
+.task .bar{width:4px;height:36px;border-radius:4px}
+.task .tt{font-weight:700;font-size:13.5px}
+.task .tm{font-size:12px;color:var(--g6);margin-top:2px}
+.task .acts{display:flex;gap:6px}
+
+/* hospital avatar */
+.av{width:32px;height:32px;border-radius:50%;display:grid;place-items:center;font-weight:800;font-size:12px;background:var(--o);color:#fff;flex:none}
+.hav{width:36px;height:36px;border-radius:11px;display:grid;place-items:center;font-weight:800;font-size:14px;color:#fff;flex:none}
+
+/* table */
+.tw{overflow-x:auto;margin:0 -24px;padding:0 24px}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{font-size:11.5px;font-weight:700;color:var(--g6);text-align:left;padding:10px 10px;border-bottom:1px solid var(--g2);white-space:nowrap;background:#FCFCFD}
+th.sort::after{content:' ↕';color:var(--g4)}
+td{padding:12px 10px;border-bottom:1px solid var(--g1);vertical-align:middle}
+tr:hover td{background:#FCFCFD}
+.hn{display:flex;align-items:center;gap:11px}
+.hn b{font-weight:700;display:block;white-space:nowrap}
+.hn small{font-size:11.5px;color:var(--g6)}
+.url{display:inline-flex;align-items:center;gap:6px;max-width:260px}
+.url a{color:var(--info);text-decoration:none;font-weight:600;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.url a:hover{text-decoration:underline}
+.cp{width:24px;height:24px;border-radius:7px;border:1px solid var(--g2);background:#fff;display:inline-grid;place-items:center;flex:none}
+.cp svg{width:12px;height:12px;stroke:var(--g6);fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.cp.done{border-color:var(--ok)} .cp.done svg{stroke:var(--ok)}
+.prog{display:flex;align-items:center;gap:8px;font-variant-numeric:tabular-nums;font-weight:600;font-size:12.5px}
+.prog .pb{width:72px;height:6px;border-radius:99px;background:var(--g1);overflow:hidden}
+.prog .pb i{display:block;height:100%;background:var(--o);border-radius:99px}
+.muted{color:var(--g6)}
+.ex{font-size:10px;font-weight:700;color:var(--g4);border:1px dashed var(--g3);border-radius:5px;padding:0 4px;margin-left:4px}
+
+/* hospital header */
+.hhead{background:#fff;border-radius:var(--r);box-shadow:var(--sh);padding:22px 24px 0;margin-bottom:18px}
+.hrow{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+.hrow h1{font-size:24px;font-weight:700;letter-spacing:-.04em}
+.hmeta{display:flex;gap:18px;flex-wrap:wrap;margin:14px 0 16px;font-size:12.5px;color:var(--g6)}
+.hmeta .it{display:flex;align-items:center;gap:7px}
+.hmeta .it b{color:var(--ink);font-weight:600}
+.tabs{display:flex;gap:2px;overflow-x:auto;margin:0 -8px}
+.tabs a{padding:12px 14px;font-weight:600;color:var(--g6);border-bottom:2px solid transparent;cursor:pointer;white-space:nowrap;display:flex;align-items:center;gap:6px}
+.tabs a:hover{color:var(--ink)}
+.tabs a.on{color:var(--ink);border-bottom-color:var(--o)}
+.tabs a .dot{width:6px;height:6px;border-radius:50%;background:var(--wa)}
+.menuw{position:relative}
+.menu{display:none;position:absolute;right:0;top:40px;background:#fff;border-radius:14px;box-shadow:0 12px 40px rgba(0,0,0,.14);padding:6px;min-width:190px;z-index:20}
+.menu.on{display:block}
+.menu div{padding:9px 12px;border-radius:9px;font-weight:600;font-size:13px;cursor:pointer}
+.menu div:hover{background:var(--g1)}
+.menu .sep{height:1px;background:var(--g1);padding:0;margin:4px 0}
+.menu .danger{color:var(--bad)}
+
+/* form */
+.layout2{display:grid;grid-template-columns:200px minmax(0,1fr);gap:20px;align-items:start}
+.toc{position:sticky;top:20px;background:#fff;border-radius:var(--r);box-shadow:var(--sh);padding:14px 10px}
+.toc .t{font-size:10.5px;font-weight:700;color:var(--g4);padding:6px 10px 4px}
+.toc a{display:flex;align-items:center;justify-content:space-between;padding:8px 10px;border-radius:9px;font-weight:600;color:var(--g8);cursor:pointer;font-size:12.5px;text-decoration:none}
+.toc a:hover{background:var(--g1)}
+.toc a.on{background:var(--os);color:var(--o)}
+.toc a .req{font-size:10px;color:var(--ok);font-weight:700}
+.toc a .chg{width:7px;height:7px;border-radius:50%;background:var(--wa)}
+.fs{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px 16px}
+.fs.c1{grid-template-columns:1fr}
+.f{display:flex;flex-direction:column;gap:6px;min-width:0}
+.f.w2{grid-column:span 2}
+.f label{font-size:12px;font-weight:700;color:var(--g8);display:flex;gap:6px;align-items:center}
+.f label .op{font-weight:500;color:var(--g4)}
+.f label .rq{color:var(--o)}
+.in{min-height:40px;border:1px solid var(--g2);border-radius:11px;padding:9px 12px;font-size:13px;background:#fff;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.in.ta{white-space:normal;min-height:64px;line-height:1.55}
+.in.ph{color:var(--g4)}
+.in.sel{display:flex;justify-content:space-between;align-items:center}
+.in.sel::after{content:'⌄';color:var(--g4)}
+.in.chg{border-color:var(--wa);box-shadow:0 0 0 3px rgba(180,83,9,.08)}
+.hint{font-size:11.5px;color:var(--g6)}
+.sub{background:var(--g1);border-radius:14px;padding:16px;margin-top:4px}
+.sub+.sub{margin-top:12px}
+.subh{display:flex;align-items:center;gap:8px;margin-bottom:12px;font-weight:700;font-size:13px}
+.tags{display:flex;flex-wrap:wrap;gap:6px;border:1px solid var(--g2);border-radius:11px;padding:7px 8px;background:#fff;min-height:40px;align-items:center}
+.tag{display:inline-flex;align-items:center;gap:5px;height:26px;padding:0 9px;border-radius:8px;background:var(--g1);font-size:12px;font-weight:600}
+.tag::after{content:'×';color:var(--g4);font-weight:700}
+.tags .add{font-size:12px;color:var(--g4);padding:0 4px}
+.radio{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px}
+.rc{border:1.5px solid var(--g2);border-radius:14px;padding:14px;cursor:pointer;background:#fff}
+.rc.on{border-color:var(--o);background:var(--os)}
+.rc b{display:block;font-size:13px}
+.rc span{font-size:11.5px;color:var(--g6)}
+.rc .thumb{height:64px;border-radius:9px;margin-bottom:10px;background:linear-gradient(180deg,#E9E6E1 0 40%,#fff 40%)}
+.seg{display:inline-flex;background:var(--g1);border-radius:11px;padding:3px;gap:2px;flex-wrap:wrap}
+.seg span{padding:6px 12px;border-radius:9px;font-size:12px;font-weight:600;color:var(--g6);cursor:pointer}
+.seg span.on{background:#fff;color:var(--ink);box-shadow:0 1px 2px rgba(0,0,0,.06)}
+.days{display:flex;gap:6px;flex-wrap:wrap}
+.days span{width:38px;height:38px;border-radius:11px;border:1px solid var(--g2);display:grid;place-items:center;font-weight:700;font-size:12.5px;background:#fff}
+.days span.on{background:var(--ink);color:#fff;border-color:var(--ink)}
+.hours{display:grid;grid-template-columns:64px minmax(0,1fr) auto;gap:8px 10px;align-items:center}
+.hours .dl{font-weight:700;font-size:12.5px}
+.hours .dl.we{color:var(--o)}
+.sw{width:36px;height:21px;border-radius:99px;background:var(--g3);position:relative;flex:none;display:inline-block;vertical-align:middle}
+.sw::after{content:'';position:absolute;left:3px;top:3px;width:15px;height:15px;border-radius:50%;background:#fff}
+.sw.on{background:var(--o)} .sw.on::after{left:18px}
+.photos{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:12px}
+.ph{border:1px solid var(--g2);border-radius:14px;overflow:hidden;background:#fff}
+.ph .im{height:110px;background:linear-gradient(135deg,#EDE7DF,#D9D2C7);position:relative}
+.ph .im .chip{position:absolute;left:8px;top:8px;background:rgba(255,255,255,.9)}
+.ph .im .star{position:absolute;right:8px;top:8px;background:var(--o);color:#fff}
+.ph .bd{padding:10px 12px}
+.ph .bd b{font-size:12.5px;display:block}
+.ph .bd small{font-size:11px;color:var(--g6);display:block;margin-top:2px}
+.ph .ft{display:flex;align-items:center;gap:6px;padding:8px 10px;border-top:1px solid var(--g1);font-size:11.5px;font-weight:600;white-space:nowrap}
+.ph .ft .btn{padding:0 7px}
+.drop{border:1.5px dashed var(--g3);border-radius:14px;padding:18px;text-align:center;color:var(--g6);font-size:12.5px;background:#FCFCFD}
+.drop b{color:var(--o)}
+.dns{width:100%;font-family:ui-monospace,Menlo,monospace;font-size:12px}
+.dns td,.dns th{padding:9px 10px}
+.steps{display:flex;gap:0;margin:6px 0 4px;flex-wrap:wrap}
+.st{flex:1;min-width:110px;position:relative;padding-top:30px;font-size:11.5px;font-weight:600;color:var(--g6)}
+.st::before{content:attr(data-n);position:absolute;top:0;left:0;width:22px;height:22px;border-radius:50%;background:var(--g2);color:var(--g8);display:grid;place-items:center;font-size:11px;font-weight:800}
+.st::after{content:'';position:absolute;top:11px;left:26px;right:6px;height:2px;background:var(--g2)}
+.st:last-child::after{display:none}
+.st.done{color:var(--ink)} .st.done::before{background:var(--ok);color:#fff;content:'✓'} .st.done::after{background:var(--ok)}
+.savebar{position:sticky;bottom:16px;margin-top:18px;display:flex;align-items:center;gap:12px;padding:12px 14px 12px 18px;border-radius:16px;background:var(--ink);color:#fff;box-shadow:0 12px 40px rgba(0,0,0,.2);flex-wrap:wrap;z-index:5}
+.savebar .t{flex:1;min-width:200px;font-size:13px}
+.savebar .t b{color:var(--o2)}
+.savebar .btn{border-color:#333;background:#1E1E22;color:#fff}
+.savebar .btn.pri{background:var(--o);border-color:var(--o)}
+.note{display:flex;gap:10px;background:var(--infos);color:#1E3A8A;border-radius:12px;padding:11px 14px;font-size:12.5px;margin-bottom:14px}
+.note.wa{background:var(--was);color:#7C2D12}
+.foot{font-size:11.5px;color:var(--g6);margin-top:20px}
+
+/* content list */
+.stc{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:16px}
+.stc div{background:#fff;border-radius:14px;box-shadow:var(--sh);padding:12px 14px;cursor:pointer;border:1.5px solid transparent}
+.stc div.on{border-color:var(--o)}
+.stc div.zero{opacity:.55}
+.stc b{font-size:22px;font-weight:700;letter-spacing:-.03em;display:block}
+.stc span{font-size:11.5px;color:var(--g6);font-weight:600}
+.stc small{display:block;font-size:10.5px;color:var(--g4)}
+.panel{display:grid;grid-template-columns:minmax(0,1fr) 400px;gap:16px;align-items:start}
+.drawer{background:#fff;border-radius:var(--r);box-shadow:0 12px 48px rgba(0,0,0,.1);overflow:hidden;position:sticky;top:20px}
+.drawer .dh{padding:18px 20px;border-bottom:1px solid var(--g1)}
+.drawer .db{padding:16px 20px;max-height:640px;overflow:auto}
+.drawer .df{padding:12px 20px;border-top:1px solid var(--g1);display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.kv{display:grid;grid-template-columns:110px minmax(0,1fr);gap:8px 12px;font-size:12.5px}
+.kv dt{color:var(--g6);font-weight:600}
+.kv dd{font-weight:600}
+.chk{display:flex;align-items:center;gap:8px;font-size:12.5px;padding:6px 0}
+.chk i{width:18px;height:18px;border-radius:50%;background:var(--oks);color:var(--ok);display:grid;place-items:center;font-style:normal;font-size:11px;font-weight:800}
+.qrow{display:flex;align-items:center;gap:10px;padding:10px 0;border-top:1px solid var(--g1);font-size:12.5px}
+.qrow:first-child{border-top:0}
+.acc{border:1px solid var(--g2);border-radius:14px;margin-top:12px;background:#fff}
+.acc>.ah{display:flex;align-items:center;gap:10px;padding:14px 16px;cursor:pointer;font-weight:700}
+.acc>.ah::after{content:'⌄';margin-left:auto;color:var(--g4)}
+.acc>.ab{padding:0 16px 16px;display:none}
+.acc.open>.ab{display:block}
+.acc.open>.ah::after{content:'⌃'}
+.timeline{position:relative;padding-left:18px}
+.timeline::before{content:'';position:absolute;left:5px;top:6px;bottom:6px;width:2px;background:var(--g2)}
+.tl{position:relative;padding:8px 0}
+.tl::before{content:'';position:absolute;left:-17px;top:14px;width:10px;height:10px;border-radius:50%;background:#fff;border:2px solid var(--o)}
+.tl .dt{font-size:11.5px;color:var(--g6);font-weight:600}
+.tl .ti{display:flex;align-items:center;gap:10px;font-weight:600}
+.limit{display:grid;grid-template-columns:minmax(150px,1fr) minmax(140px,1.4fr) auto;gap:14px;align-items:center;padding:12px 0;border-top:1px solid var(--g1)}
+.limit:first-child{border-top:0}
+.meter{height:8px;border-radius:99px;background:var(--g1);overflow:hidden}
+.meter i{display:block;height:100%;background:var(--o)}
+.loc{position:relative;display:inline-flex;align-items:center;gap:3px;margin-left:auto;font-size:10.5px;font-weight:600;color:var(--info);background:var(--infos);border-radius:6px;padding:1px 7px;cursor:help;white-space:nowrap}
+.loc svg{width:11px;height:11px}
+.subh .loc,.ch .loc{margin-left:6px}
+.loc .tip{display:none;position:absolute;right:0;top:22px;z-index:40;width:210px;background:#fff;border-radius:12px;box-shadow:0 12px 40px rgba(0,0,0,.18);padding:10px;color:var(--ink);font-weight:500;white-space:normal}
+.loc:hover .tip{display:block}
+.tip b{font-size:11px;display:block;margin-bottom:6px}
+.wf{display:flex;flex-direction:column;gap:3px;border:1px solid var(--g2);border-radius:8px;padding:5px}
+.wf i{font-style:normal;font-size:9.5px;color:var(--g4);background:var(--g1);border-radius:4px;padding:3px 6px}
+.wf i:nth-child(2){padding:10px 6px}
+.wf i.on{background:var(--o);color:#fff;font-weight:700}
+.tip small{display:block;margin-top:6px;font-size:10.5px;color:var(--g6)}
+.tipnone{font-size:11px;color:var(--g6);background:var(--g1);border-radius:8px;padding:8px}
+.grp-off{margin-top:14px;border:1px dashed var(--g3);border-radius:14px;background:#FCFCFD}
+.grp-off>.ah{color:var(--g6)}
+.view{display:none;animation:fade .35s ease-out}
+.view.on{display:block}
+@keyframes fade{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+@media (max-width:960px){.app{grid-template-columns:1fr}.sb{position:relative;height:auto}.layout2,.panel{grid-template-columns:1fr}.toc,.drawer{position:relative;top:0}.f.w2{grid-column:auto}}
+</style>
+</head>
+<body>
+<div class="app">
+<aside class="sb">
+  <div class="logo">Re:<b>putation</b><span>운영</span></div>
+  <div class="env"><i></i>시험 운영 · MotionLabs</div>
+  <nav class="nav" id="nav"></nav>
+  <div class="sbft">
+    <div class="me"><div class="av">O</div><div>Owner<small>admin@motionlabs.kr</small></div><button class="lo">로그아웃</button></div>
+    <div class="ver">MotionLabs Inc. · v1.0 · <a href="https://motionlabs.kr" target="_blank" style="color:#7A7A82">motionlabs.kr ↗</a></div>
+  </div>
+</aside>
+<main class="main" id="main"></main>
+</div>
+
+<script>
+/* ---------- icons ---------- */
+const I={
+ home:'<path d="M3 11l9-7 9 7"/><path d="M5 10v10h14V10"/>',
+ hos:'<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M12 7v6M9 10h6M9 21v-4h6v4"/>',
+ task:'<path d="M9 11l3 3 8-8"/><path d="M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h9"/>',
+ lead:'<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
+ diag:'<circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3M11 8v6M8 11h6"/>',
+ plus:'<path d="M12 5v14M5 12h14"/>',
+ set:'<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>',
+ ext:'<path d="M14 3h7v7"/><path d="M10 14L21 3"/><path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5"/>',
+ copy:'<rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
+ more:'<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>',
+ photo:'<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/>',
+ warn:'<path d="M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/>',
+ file:'<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M9 15l2 2 4-4"/>',
+ doc:'<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M16 13H8M16 17H8"/>',
+ dl:'<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>',
+ up:'<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/>',
+ ref:'<path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.5 9a9 9 0 0 1 14.9-3.4L23 10M1 14l4.6 4.4A9 9 0 0 0 20.5 15"/>',
+ chk:'<path d="M20 6L9 17l-5-5"/>',
+ back:'<path d="M15 18l-6-6 6-6"/>',
+ chart:'<path d="M3 3v18h18"/><path d="M7 15l4-4 3 3 5-6"/>',
+ pen:'<path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>',
+ pin:'<path d="M21 10c0 7-9 13-9 13S3 17 3 10a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/>',
+ lock:'<rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>'
+};
+const ic=(n,c='')=>`<svg viewBox="0 0 24 24" class="${c}">${I[n]}</svg>`;
+const WF=['메뉴','첫 화면','진료시간','진료 영역','의료진','진료 원칙','자주 묻는 질문','기본 정보 · 오시는 길','모바일 하단 바'];
+const LOC={
+ name:['의료진 소개 · 이름',4],title:['의료진 소개 · 직함',4],spec:['의료진 소개 · 전문과목',4],bio:['의료진 소개 · 약력',4],dphoto:['의료진 소개 · 사진',4],phil:['의료진 소개 · 진료 철학',4],
+ treat:['진료 영역 · 항목 카드',3],addr:['기본 정보 · 오시는 길',7],tel:['메뉴 전화 · 하단 바 · 기본 정보',0],hours:['첫 화면 오늘 진료 · 진료시간',2],
+ home:['메뉴 · 공식 홈페이지',0],geo:['오시는 길 · 지도 위치',7],region:['기본 정보 · 지역 태그',7],
+ specs:['페이지 제목 · 검색 결과 제목',-1,'브라우저 탭 · 검색 결과 제목에 표시'],kw:['사이트 비표시',-1,'글 주제 · 언급률 측정 질문 기준'],rival:['사이트 비표시',-1,'비교 보고서 전용'],chk:['위치 확인 필요',-1,'표시 위치 개발팀 확인 필요'],chan:['기본 정보 · 병원 공식 채널',7],
+ ptitle:['진료 원칙 · 제목',5],pdesc:['진료 원칙 · 소개 문장',5],card:['진료 원칙 · 카드',5],park:['오시는 길 · 주차 안내',7],bus:['오시는 길 · 대중교통',7],
+ logo:['메뉴 · 로고',0],color:['버튼 · 강조 띠 색',1],prio:['첫 화면 · 정보 블록 순서',1],hero:['첫 화면 · 제목',1],herod:['첫 화면 · 설명',1],heroimg:['첫 화면 · 사진',1],art:['콘텐츠 글 이미지',-1,'공개 페이지 본문 아닌 콘텐츠 글 이미지 분위기'],photo:['첫 화면 · 의료진 · 병원 공간',1]
+};
+const locTag=k=>{const [t,i,n]=LOC[k];return `<span class="loc">${ic('pin')}${t}<span class="tip"><b>표시 위치</b>${i<0?`<div class="tipnone">${n}</div>`:`<div class="wf">${WF.map((w,j)=>`<i class="${j===i?'on':''}">${w}</i>`).join('')}</div><small>${t}</small>`}</span></span>`;};
+const pill=(t,k)=>`<span class="pill ${k}">${t}</span>`;
+const COL=['#FF3D00','#111114','#2563EB','#0F766E','#7C3AED','#B45309','#DB2777','#4B5563'];
+const hav=(n,i)=>`<div class="hav" style="background:${COL[i%COL.length]}">${n[0]}</div>`;
+const cp=u=>`<button class="cp" data-u="${u}" title="복사">${ic('copy')}</button>`;
+const url=(u,label)=>`<span class="url"><a href="https://${u}" target="_blank">${label||u} ↗</a>${cp('https://'+u)}</span>`;
+const prog=(a,b)=>`<span class="prog"><span class="pb"><i style="width:${b?Math.round(a/b*100):0}%"></i></span>${a}/${b}</span>`;
+const f=(label,val,o={})=>`<div class="f ${o.w2?'w2':''}"><label>${label}${o.rq?' <span class="rq">*</span>':''}${o.op?' <span class="op">선택</span>':''}${o.loc?locTag(o.loc):''}</label><div class="in ${o.ta?'ta':''} ${o.sel?'sel':''} ${val?'':'ph'} ${o.chg?'chg':''}">${val||o.ph||''}</div>${o.hint?`<span class="hint">${o.hint}</span>`:''}</div>`;
+const tags=(label,arr,hint,loc)=>`<div class="f w2"><label>${label}${loc?locTag(loc):''}</label><div class="tags">${arr.map(t=>`<span class="tag">${t}</span>`).join('')}<span class="add">입력 후 Enter</span></div>${hint?`<span class="hint">${hint}</span>`:''}</div>`;
+const card=(title,body,o={})=>`<section class="card" id="${o.id||''}"><div class="ch"><h2>${title}${o.small?`<small>${o.small}</small>`:''}</h2>${o.n!=null?`<span class="n">${o.n}</span>`:''}<span class="sp"></span>${o.right||''}</div>${o.desc?`<p class="desc">${o.desc}</p>`:''}${body}</section>`;
+const acc=(title,body,open,right='')=>`<div class="acc ${open?'open':''}"><div class="ah">${title}${right}</div><div class="ab">${body}</div></div>`;
+const savebar=(t)=>`<div class="savebar"><span class="t">${t}</span><button class="btn sm">되돌리기</button><button class="btn sm pri savebtn">모두 저장</button></div>`;
+
+/* ---------- data ---------- */
+const H=[
+ {n:'행복드림의원',cs:'2026.08.01',ae:'미지정',st:'ok',stt:'정상 운영',u:'ai.happydreamclinic.co.kr',pub:[9,12],plan:'스타터',men:'0.0%',rep:'미전달',todo:''},
+ {n:'365서귀포삼성정형외과의원',cs:'2026.09.01',ae:'Owner',st:'wa',stt:'확인 필요',u:'365seogwiposamseongjeonghyeongoegwayiweon.reputation.motionlabs.kr',ul:'365seogwipo…motionlabs.kr',pub:[7,12],ex:1,plan:'스타터',men:'—',todo:'예외 1 · 사진 1'},
+ {n:'노원탑365의원',cs:'2026.08.01',ae:'Owner',st:'ok',stt:'정상 운영',u:'ai.no1top365.co.kr',pub:[12,20],ex:1,plan:'리더',men:'—',todo:''},
+ {n:'다올연합의원',cs:'첫 발행 전',ae:'Owner',st:'info',stt:'준비 중 · 5개 남음',u:'',pub:[0,16],plan:'그로워',men:'—',todo:'예외 1 · 사진 4'},
+ {n:'연세유나유외과의원',cs:'첫 발행 전',ae:'Owner',st:'info',stt:'준비 중 · 5개 남음',u:'',pub:[0,16],plan:'그로워',men:'—',todo:'예외 1 · 사진 4'},
+ {n:'강심장내과의원',cs:'2026.10.01',ae:'Owner',st:'ok',stt:'정상 운영',u:'',pub:[8,12],ex:1,plan:'스타터',men:'—',todo:'보고 미전달'},
+ {n:'마포성모탑정형외과',cs:'2026.08.01',ae:'Owner',st:'ok',stt:'정상 운영',u:'',pub:[14,20],ex:1,plan:'리더',men:'—',todo:'보고 미전달'},
+ {n:'장이편한내과의원',cs:'2026.07.01',ae:'Owner',st:'off',stt:'일시 정지',u:'',pub:[0,12],plan:'스타터',men:'—',todo:'재개 확인'}
+];
+
+/* ---------- views ---------- */
+const V={};
+
+V.dash=()=>`
+<div class="top"><div><h1>오늘 운영 현황</h1><div class="d">2026. 11. 20.(금) 09:00 기준 · 병원 18곳</div></div><span class="sp"></span><button class="btn">${ic('ref')}새로고침</button><button class="btn pri" data-go="new">${ic('plus')}계약 등록</button></div>
+
+<div class="grid g5" style="margin-bottom:16px">
+ <div class="kpi hero" data-go="list"><div class="ki">${ic('hos')}</div><div class="l">운영 중 병원</div><div class="v">15<small>곳</small></div><div class="s">온보딩 2 · 일시 정지 1</div></div>
+ <div class="kpi wa"><div class="ki">${ic('photo')}</div><div class="l">사진 승인 대기</div><div class="v">11<small>장</small></div><div class="s">5곳</div></div>
+ <div class="kpi wa" data-go="ops"><div class="ki">${ic('warn')}</div><div class="l">예외 · 문제</div><div class="v">3<small>건</small></div><div class="s">처리 기한 지남 1</div></div>
+ <div class="kpi o" data-go="ops"><div class="ki">${ic('file')}</div><div class="l">10월 원장 보고 미전달</div><div class="v">12<small>곳</small></div><div class="s">전달 기록 0곳</div></div>
+ <div class="kpi" data-go="leads"><div class="ki">${ic('lead')}</div><div class="l">상담 요청</div><div class="v">17<small>건</small></div><div class="s">테스트 2건 제외</div></div>
+</div>
+
+<div class="grid" style="grid-template-columns:minmax(0,1.6fr) minmax(280px,1fr);margin-bottom:16px">
+ ${card('오늘 할 일',`
+  ${[
+   ['var(--bad)','다올연합의원','고객 인수 3일 경과 · 기본 정보 미완료','주소 · 전화번호 · 진료 항목 미입력',['병원 정보 입력','pri']],
+   ['var(--bad)','365서귀포삼성정형외과의원','콘텐츠 복구 재시도 중 · 처리 기한 7일 지남','근거 자료 보완 필요',['원인 보기','']],
+   ['var(--wa)','연세유나유외과의원','온보딩 진행 중','주소 · 전화번호 · 진료 항목 · 발행 요일',['병원 정보 입력','']],
+   ['var(--wa)','다올연합의원 외 4곳','사진 승인 대기 11장','권리 확인 후 공개',['사진 확인','']],
+   ['var(--o)','행복드림의원 외 11곳','10월 원장 보고 전달 기록 없음','PDF 검증 완료 · 전달 대기',['보고서 모아 보기','']],
+   ['var(--g3)','장이편한내과의원','일시 정지','재개 여부 결정',['상태 보기','']]
+  ].map((t,i)=>`<div class="task"><span class="bar" style="background:${t[0]}"></span>${hav(t[1],i)}<div><div class="tt">${t[1]}</div><div class="tm">${t[2]} · ${t[3]}</div></div><div class="acts"><button class="btn sm ${t[4][1]}">${t[4][0]}</button></div></div>`).join('')}
+ `,{n:6,right:'<button class="btn ghost sm" data-go="ops">처리 목록 전체</button>'})}
+ <div>
+ ${card('병원 상태',`
+   <div style="display:flex;align-items:baseline;gap:6px"><b style="font-size:30px;letter-spacing:-.04em">18</b><span class="muted">곳</span></div>
+   <div class="stbar"><i style="width:83.3%;background:var(--ok)"></i><i style="width:11.1%;background:var(--info)"></i><i style="width:5.6%;background:var(--g4)"></i></div>
+   <div class="legend"><span><i style="background:var(--ok)"></i>운영 중 15</span><span><i style="background:var(--info)"></i>온보딩 2</span><span><i style="background:var(--g4)"></i>일시 정지 1</span></div>
+ `)}
+ ${card('11월 발행',`
+   <div style="display:flex;align-items:center;gap:18px">
+    <div style="width:92px;height:92px;border-radius:50%;background:conic-gradient(var(--o) 0 62%,var(--g1) 62% 100%);display:grid;place-items:center;flex:none"><div style="width:70px;height:70px;border-radius:50%;background:#fff;display:grid;place-items:center;font-weight:800;font-size:18px">62%</div></div>
+    <div style="font-size:12.5px;line-height:1.9"><div><b>공개</b> <span class="muted">· 발행일 08:00 자동 공개</span></div><div><b>초안 생성 중</b> <span class="muted">· 자동 생성 대기</span></div><div><b>차단</b> <span class="muted">· 자동 복구 대기</span></div><span class="ex">예시 값</span></div>
+   </div>
+ `)}
+ ${''&&card('자동 작업 한도',`
+   <div class="legend" style="gap:8px;flex-direction:column">
+    <span style="justify-content:space-between;display:flex">콘텐츠 제작·검수 <b>73 / 500</b></span><div class="meter"><i style="width:14.6%"></i></div>
+    <span style="justify-content:space-between;display:flex;margin-top:6px">이미지 생성 <b>10 / 500</b></span><div class="meter"><i style="width:2%"></i></div>
+   </div>`,{right:pill('정상','ok')})}
+ </div>
+</div>
+
+${card('병원',`
+ <div style="display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap"><div class="seg"><span class="on">운영 · 준비 17</span><span>운영 중 15</span><span>준비 중 2</span><span>확인 필요 3</span><span>일시 정지 1</span><span>운영 종료 0</span></div><span class="sp"></span><div class="in ph" style="min-width:260px">병원명 · 공개 주소 · 도메인 검색</div></div>
+ ${listTable(H.filter(h=>h.st!=='off').slice(0,6))}
+`,{right:'<button class="btn ghost sm" data-go="list">전체 보기</button>'})}
+<p class="foot">발행 수 · 언급률 · 일부 주소는 예시 값. 병원명 · 상태 · 건수는 11월 20일 어드민 기준.</p>`;
+
+function listTable(rows){return `<div class="tw"><table>
+<thead><tr><th class="sort">병원</th><th>공개 주소</th><th class="sort">상태</th><th class="sort">이번 달 발행</th><th class="sort">AI 언급률</th><th>할 일</th><th class="sort">계약 시작일</th><th>요금제</th><th>담당</th><th></th></tr></thead><tbody>
+${rows.map((h,i)=>`<tr><td><div class="hn">${hav(h.n,i)}<div><b>${h.n}</b></div></div></td>
+<td>${h.u?url(h.u,h.ul):(h.st==='off'?'<span class="muted">공개 중지</span>':h.st==='info'?'<span class="muted">공개 전</span>':url(h.n.replace(/의원|정형외과|내과/g,'').slice(0,4)+'….reputation.motionlabs.kr','기본 주소')+'<span class="ex">예시</span>')}</td>
+<td>${pill(h.stt,h.st)}</td><td>${prog(h.pub[0],h.pub[1])}</td><td class="muted">${h.men}</td>
+<td>${h.todo?h.todo.split(' · ').map(t=>`<span class="chip ${/예외|미전달/.test(t)?'o':'wa'}">${t}</span>`).join(' '):'<span class="muted">—</span>'}</td>
+<td class="muted" style="white-space:nowrap">${h.cs}</td><td><span class="chip">${h.plan} · 월 ${h.pub[1]}편</span></td><td class="muted">${h.ae}</td><td><button class="btn sm" data-go="h_over">열기</button></td></tr>`).join('')}
+</tbody></table></div>`;}
+
+V.list=()=>`
+<div class="top"><div><h1>병원</h1><div class="d">운영 · 준비 17곳 · 일시 정지 · 운영 종료는 아래 별도 분류</div></div><span class="sp"></span><button class="btn pri" data-go="new">${ic('plus')}신규 병원 온보딩</button></div>
+<div class="card">
+ <div style="display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap"><div class="seg"><span class="on">운영 · 준비 17</span><span>운영 중 15</span><span>준비 중 2</span><span>보고 미전달 12</span><span>일시 정지 1</span><span>운영 종료 0</span></div><span class="sp"></span><div class="in ph" style="min-width:280px">병원명 · 공개 주소 · 도메인 검색</div></div>
+ ${listTable(H.filter(h=>h.st!=='off'))}
+ <div class="acc grp-off"><div class="ah">일시 정지 · 운영 종료 <span class="chip">일시 정지 1</span><span class="chip">운영 종료 0</span><span class="hint" style="font-weight:500">기본 목록 제외 · 별도 분류</span></div><div class="ab">${listTable(H.filter(h=>h.st==='off'))}</div></div>
+ <p class="foot">상태 배지 마우스 오버 시 세부 상태: 공개 서비스 · 콘텐츠 준비 · 자기 도메인(마지막 확인 · 응답 상태). 발행 수 · 언급률 일부 예시 값.</p>
+</div>`;
+
+/* hospital header */
+const HT=[['h_over','현황'],['h_info','병원 정보'],['h_page','공개 페이지'],['h_src','근거 자료'],['h_dom','도메인·검색'],['h_con','콘텐츠'],['h_rep','보고서']];
+const hhead=(cur)=>`
+<div class="crumb" data-go="list">${ic('back','')}<span>병원</span></div>
+<div class="hhead">
+ <div class="hrow">${hav('행복드림의원',0)}<h1>행복드림의원</h1>${pill('정상 운영','ok')}<span class="chip">스타터 · 월 12편 · 60만원 · 부가세 별도</span><span class="sp"></span>
+  <a class="btn pri" href="https://ai.happydreamclinic.co.kr" target="_blank" style="text-decoration:none">${ic('ext')}공개 사이트</a>
+  <button class="btn cpbtn" data-u="https://ai.happydreamclinic.co.kr">${ic('copy')}주소 복사</button>
+  <div class="menuw"><button class="ic mbtn">${ic('more')}</button><div class="menu"><div>요금제 변경</div><div>담당자 지정</div><div class="sep"></div><div class="danger">서비스 일시정지…</div></div></div>
+ </div>
+ <div class="hmeta">
+  <span class="it">운영 주소 ${url('ai.happydreamclinic.co.kr')}</span>
+  <span class="it">기본 주소 ${url('haengbogdeurimyiweon.reputation.motionlabs.kr','haengbogdeurimyiweon…motionlabs.kr')}</span>
+  <span class="it">공개 서비스 <b>공개 중</b></span><span class="it">콘텐츠 <b>자동 발행 중</b></span><span class="it">자기 도메인 <b>연결됨</b> · 11.20 09:00 응답 정상</span><span class="it">계약 시작 <b>2026.08.01</b></span><span class="it">담당 <b>미지정</b></span>
+ </div>
+ <div class="tabs">${HT.map(t=>`<a class="${t[0]===cur?'on':''}" data-go="${t[0]}">${t[1]}${t[0]==='h_rep'?'<span class="dot"></span>':''}</a>`).join('')}</div>
+</div>`;
+
+V.h_over=()=>hhead('h_over')+`
+<div class="grid g3" style="margin-bottom:16px">
+ <div class="kpi hero"><div class="ki">${ic('doc')}</div><div class="l">11월 발행</div><div class="v">9<small>/ 12편</small></div><div class="s">공개 9 · 발행 9 · 계획 12</div><div class="ring" style="background:conic-gradient(#fff 0 75%,rgba(255,255,255,.25) 75% 100%)" data-t="75%"></div></div>
+ <div class="kpi"><div class="ki">${ic('chart')}</div><div class="l">AI 언급률</div><div class="v">0.0<small>%</small></div><div class="s">측정 10 / 30회 진행</div></div>
+ <div class="kpi o"><div class="ki">${ic('file')}</div><div class="l">다음 보고서</div><div class="v">12.01</div><div class="s">10월분 전달 기록 없음</div></div>
+</div>
+<div class="grid" style="grid-template-columns:minmax(0,1.4fr) minmax(280px,1fr)">
+ <div>
+ ${card('할 일',`
+   <div class="task"><span class="bar" style="background:var(--o)"></span>${hav('보',2)}<div><div class="tt">10월 원장 보고 전달</div><div class="tm">원장 전달용 PDF 검증 완료 · 전달 기록 없음</div></div><div class="acts"><button class="btn sm">${ic('dl')}PDF 받기</button><button class="btn sm pri">전달 기록</button></div></div>
+   <div class="task"><span class="bar" style="background:var(--g3)"></span>${hav('결',1)}<div><div class="tt">사람 결정 항목</div><div class="tm">현재 없음</div></div><div class="acts"><button class="btn sm ghost" data-go="ops">처리 목록</button><button class="btn sm ghost">담당 지정</button></div></div>
+ `,{n:1})}
+ ${card('최근 공개 글',`<div class="timeline">
+   ${[['11.02','시술 안내','아이가 열이 날 때 진료실에서 확인하는 순서와 진행 단계'],['11.03','원장 칼럼','소아 탈수, 어느 전문의를 찾기 전에 부모가 답해볼 질문들'],['11.06','자주 묻는 질문','경산 내과 진료, 증상별로 확인 범위와 진행이 달라지는 이유']].map(r=>`<div class="tl"><div class="dt">${r[0]} 08:00 · ${r[1]}</div><div class="ti">${r[2]}<span class="sp"></span><button class="btn sm">${ic('ext')}공개 글</button></div></div>`).join('')}
+ </div>`,{right:'<button class="btn ghost sm" data-go="h_con">콘텐츠 전체</button>'})}
+ </div>
+ <div>
+ ${card('서비스 상태',`
+  <div class="qrow">${pill('공개 중','ok')}<b>공개 서비스</b><span class="sp"></span><span class="muted">남은 조건 없음</span></div>
+  <div class="qrow">${pill('자동 발행 중','ok')}<b>콘텐츠 준비</b><span class="sp"></span><span class="muted">남은 조건 없음</span></div>
+  <div class="qrow">${pill('연결됨','ok')}<b>자기 도메인</b><span class="sp"></span><span class="muted">11.20 09:00 응답 정상</span></div>
+  <p class="hint" style="margin-top:8px">준비 중 병원: 할 일 목록 + 바로가기(병원 주소 입력 → · 병원 전화번호 입력 → · 진료 항목 입력 → · 발행 요일 설정 →) + 시스템 처리 중 항목 표시</p>
+ `)}
+ ${card('운영 기준',`<dl class="kv"><dt>판 번호</dt><dd>v9</dd><dt>적용 시각</dt><dd>2026. 9. 1. 03:01</dd><dt>만든 방식</dt><dd>이전 승인본</dd><dt>입력 자료</dt><dd>23건</dd><dt>제외 자료</dt><dd>0건</dd><dt>근거 없어 뺀 문장</dt><dd>0건</dd><dt>충돌 정리 항목</dt><dd>0건</dd></dl><p class="hint" style="margin-top:10px">병원 정보 · 연결 채널 · 원장 인터뷰 설문 기반 자동 생성. 변경은 병원 정보 · 근거 자료에서.</p>`,{small:'시스템 기록'})}
+ </div>
+</div>`;
+
+const infoToc=(cur,items)=>`<nav class="toc">${items.map(g=>`<div class="t">${g[0]}</div>${g[1].map(x=>`<a class="${x[0]===cur?'on':''}">${x[0]}${x[1]==='c'?'<span class="chg"></span>':x[1]==='r'?'<span class="req">필수 ✓</span>':''}</a>`).join('')}`).join('')}</nav>`;
+
+V.h_info=()=>hhead('h_info')+`
+<div class="note">${ic('chk','')} 필수 항목 입력 완료 · 저장 시 공개 페이지 · 콘텐츠 기준 자동 갱신 · 칸 옆 <b>표시 위치</b> 마우스 오버 시 위치 미리보기 <span class="sp"></span><b style="cursor:pointer">병원 정보 자동 입력</b></div>
+<div class="layout2">
+ ${infoToc('병원·원장',[['기본',[['병원·원장','r'],['진료 항목','r'],['연락처·진료시간','c'],['공식 채널',''],['운영 기준','']]]])}
+ <div>
+ ${card('병원·원장',`
+  <div class="sub"><div class="subh">${hav('김',0)} 의료진 1 ${pill('대표','br')}<span class="sp"></span><button class="ic">↑</button><button class="ic">↓</button><button class="ic">×</button></div>
+   <div class="fs">${f('이름','김효진',{rq:1,ph:'예: 김민수',loc:'name'})}${f('직함','원장',{ph:'예: 대표원장',loc:'title'})}${f('전문과목','',{ph:'쉼표 구분 · 예: 외과, 대장항문외과',loc:'spec'})}${f('사진','김효진 원장 캐릭터 일러스트',{sel:1,hint:'공개 페이지 탭 원장 사진 중 선택',loc:'dphoto'})}
+   ${f('약력','현) 행복드림의원 원장 · 부산 좋은강안병원 수련의 · 전) 한국건강관리협회 …',{ta:1,w2:1,hint:'확인한 내용만',loc:'bio'})}
+   ${f('진료 철학',"어른과 아이 구분 없이 아프거나 마음이 지칠 때 편하게 찾을 수 있는 …",{ta:1,w2:1,op:1,hint:'출처 분명한 문장만',loc:'phil'})}</div>
+   <div class="acc open" style="margin-top:12px"><div class="ah">자격·경력 상세</div><div class="ab"><div class="fs">${f('의과대학','경상대학교 의과대학 졸업')}${f('면허번호','',{ph:'면허번호'})}${f('전문의 자격','',{ta:1,ph:'한 줄에 하나'})}${f('학회','대한일차진료학회 정회원 · 대한천식알레르기학회 정회원 · 대한내분비학회 정회원',{ta:1,hint:'한 줄에 하나'})}</div></div></div>
+   <div class="chk" style="margin-top:8px"><span class="sw on"></span>대표 의료진 · 복수 지정 가능</div>
+  </div>
+  <button class="btn sm" style="margin-top:12px">${ic('plus')}의료진 추가</button>
+ `,{desc:'근거: 인터뷰 · 기고문 · 소개 자료'})}
+ ${card('진료 항목',`<div class="fs c1">${[['수액치료','1인 수액실 7개와 2인실에서 진행. 탈수 정도와 컨디션 먼저 확인'],['영유아검진','생후 14일〜71개월 1〜8차 영유아 건강검진 · 구강검진'],['예방접종','어린이 국가예방접종 위탁의료기관'],['소아청소년 진료','발열, 구토·설사, 수족구 등'],['내과 진료','소화기 증상, 성인 발열·피로'],['이비인후과 진료','감기, 비염, 중이염, 편도염']].map((r,i)=>`<div style="display:grid;grid-template-columns:28px 200px minmax(0,1fr) 34px;gap:10px;align-items:center"><span class="muted" style="font-weight:700">${i+1}</span><div class="in">${r[0]}</div><div class="in">${r[1]}</div><button class="ic">×</button></div>`).join('')}</div><button class="btn sm" style="margin-top:12px">${ic('plus')}항목 추가</button>`,{desc:'시술 · 치료 안내, 질환 가이드 글의 기준 · 실제 진료 항목만',n:6,right:locTag('treat')})}
+ ${card('연락처·진료시간',`<div class="fs">${f('주소','경상북도 경산시 압량읍 압독3로 25',{rq:1,hint:'지도 좌표 기준',loc:'addr'})}${f('상세 주소 · 층·호','2층 (배스킨라빈스 경산신대점 건물)',{hint:'공개 페이지 표시용',loc:'addr'})}${f('전화번호','053-801-3007',{rq:1,chg:1,loc:'tel'})}</div>
+  <div class="sub" style="margin-top:14px"><div class="subh">진료시간 ${locTag('hours')}<span class="sp"></span><div class="in ph" style="min-height:32px;padding:5px 10px;font-size:12px">평일 공통 · 09:00 ~ 18:00 (점심 13:00 ~ 14:00)</div><button class="btn sm">월–금 한 번에</button></div>
+  <div class="hours">${[['월','08:00 ~ 18:30 (점심 12:30 ~ 14:00)'],['화','08:00 ~ 18:30 (점심 12:30 ~ 14:00)'],['수','08:00 ~ 13:00 (점심시간 없음)'],['목','08:00 ~ 18:30 (점심 12:30 ~ 14:00)'],['금','08:00 ~ 18:30 (점심 12:30 ~ 14:00)'],['토','08:00 ~ 13:00 (점심시간 없음)'],['일','08:00 ~ 13:00 (점심시간 없음)'],['공휴일','']].map(d=>`<span class="dl ${/토|일|공휴일/.test(d[0])?'we':''}">${d[0]}</span><div class="in ${d[1]?'':'ph'}">${d[1]||'휴진 또는 09:00 ~ 13:00'}</div><button class="btn sm ghost">휴진</button>`).join('')}</div>
+  <p class="hint" style="margin-top:8px">요일별 칸: 휴진 · 야간 진료 등 예외만 수정</p></div>`,{desc:'공개 페이지 · AI 답변에 그대로 노출 · 실제 영업 정보와 일치 확인'})}
+ ${card('공식 채널',`<div class="fs">${f('홈페이지 URL','',{ph:'https://',loc:'home'})}${f('블로그 URL','https://m.blog.naver.com/vortgfpb?tab=1')}${f('네이버 플레이스 URL','https://map.naver.com/p/entry/place/1953…',{loc:'chan'})}${f('카카오 채널 URL','',{ph:'https://pf.kakao.com/...'})}${f('구글 병원 정보 URL','https://maps.app.goo.gl/bowrvN2DZouzdPYF',{op:1})}${f('구글 지도 URL','https://maps.app.goo.gl/bowrvN2DZouzdPYF',{op:1})}</div>
+  ${acc('고급 · 위도/경도 직접 수정',`<div class="fs">${f('위도','35.841941',{loc:'geo'})}${f('경도','128.764516')}</div>`)}`,{desc:'저장 시 근거 자료 자동 등록'})}
+ ${card('운영 기준',`<div class="fs">${tags('지역',['경산','압량읍','대동','사동','계양동','신대리','부적리','진량'],'','region')}${tags('전문과목',['일반의원','내과 진료','소아청소년 진료','이비인후과 진료'],'','specs')}${tags('핵심 키워드',['수액치료','영유아검진','예방접종','소아 발열','소아 탈수','구토·설사'],'지역명 제외 · 지역은 지역 칸에','kw')}${tags('경쟁 병원',['사과나무소아청소년과의원','속보는종합내과의원','삼성바른내과의원'],'','rival')}</div>`,{desc:'글 주제 · 언급률 측정 질문 기준 · 경쟁 병원은 비교 보고서용'})}
+ ${savebar('<b>저장 안 된 변경 1건</b> · 연락처·진료시간')}
+ </div>
+</div>`;
+
+V.h_page=()=>hhead('h_page')+`
+<div class="layout2">
+ ${infoToc('레이아웃',[['공개 페이지',[['레이아웃',''],['페이지 문구','c'],['로고 · 색 · 첫 화면',''],['고급',''],['사진 · 사용 권리','']]]])}
+ <div>
+ ${card('사이트 레이아웃',`<div class="radio">${[['A · 여백형','큰 명조 제목 · 넓은 여백 · 짙은 안내 띠 하나'],['B · 정통형','가운데 정렬 명조 제목 · 짙은 안내 띠'],['C · 안내형','사진 첫 화면 · 오늘 진료 · 진료표 · 새 소식 우선']].map((r,i)=>`<div class="rc ${i===2?'on':''}"><div class="thumb" style="${i===2?'background:linear-gradient(180deg,#C9B79C 0 55%,#fff 55%)':''}"></div><b>${r[0]}</b><span>${r[1]}</span></div>`).join('')}</div>
+  <div style="display:flex;gap:10px;align-items:center;margin-top:12px;flex-wrap:wrap"><span class="hint"><b style="color:var(--ink)">지역 통계</b> · 경북 공개 병원 2곳 · A 0 · B 0 · <b style="color:var(--o)">C 1</b> · 미선택 1 · <span class="chip o">추천 A · B</span></span><span class="sp"></span><button class="btn sm ghost">기본으로 되돌리기</button><button class="btn sm pri">레이아웃 편집</button></div>`,{desc:'같은 정보 · 사진, 다른 틀 · 문구와 구조화 정보는 동일'})}
+ ${card('페이지 문구',`<div class="fs">${f('진료 원칙 제목','아이부터 어른까지, 가족이 함께 다니는 동네 의원',{w2:1,hint:'비우면 공통 기본 문구',loc:'ptitle'})}${f('진료 원칙 소개 문장','같은 열이나 구토·설사라도 나이, 탈수 정도, 이전 경과에 따라 필요한 …',{ta:1,w2:1,loc:'pdesc',hint:'원장 진료 철학처럼 환자에게 하는 말 한두 문장 · 비우면 지역 · 진료과 소개 문장'})}</div>
+  <div class="grid g3" style="margin-top:14px">${[['매일 오전 8시부터 진료합니다','월·화·목·금 오후 6시 30분까지(점심 12시 30분〜2시), 수요일 …'],['1인 수액실에서 수액치료를 받을 수 있습니다','1인 수액실 7개와 함께 오신 분과 쓸 수 있는 2인실 …'],['영유아검진과 국가예방접종을 함께 합니다','생후 14일부터 71개월까지 영유아 건강검진과 구강검진 …']].map((c,i)=>`<div class="sub" style="margin:0"><div class="subh"><span class="chip o">카드 ${i+1}</span></div><div class="fs c1">${f('제목',c[0],{chg:i===0,loc:'card'})}${f('설명',c[1],{ta:1})}</div></div>`).join('')}</div>
+  <p class="hint" style="margin-top:8px">제목 · 설명 모두 입력 시 표시 · 둘 다 비우면 기본 카드</p>
+  <div class="fs" style="margin-top:14px">${f('주차 안내','병원 건물 바로 옆 신대근린공원 공영주차장을 이용할 수 있습니다.',{ph:'예) 건물 뒤편 주차장 이용 가능',loc:'park'})}${f('대중교통 안내','신대근린공원 앞 정류장에서 내리면 병원 건물까지 걸어서 1분 거리입니다.',{ph:'예) ○○ 정류장 하차 후 도보 3분',loc:'bus'})}</div>`,{desc:'홈 진료 원칙 · 오시는 길 안내 · 비운 칸은 공통 문구 · 의료광고 금지 표현 저장 불가'})}
+ ${card('로고 · 색 · 첫 화면',`<div class="fs">
+   <div class="f"><label>공식 로고${locTag('logo')}</label><div class="drop" style="padding:12px;display:flex;align-items:center;gap:10px;text-align:left"><div class="hav" style="background:#D6A72C">행</div><div><b style="color:var(--ink)">업로드됨</b><br><span class="hint">PNG · JPG · WEBP · 1MB 이하</span></div><span class="sp"></span><button class="btn sm">교체</button></div></div>
+   <div class="f"><label>대표색${locTag('color')}</label><div class="in" style="display:flex;align-items:center;gap:10px"><span style="width:22px;height:22px;border-radius:6px;background:#D6A72C"></span>#D6A72C</div><span class="hint">대표색 하나로 밝기 단계 · 대비 색 자동 생성</span></div>
+   ${f('첫 화면 정보 우선순위','당일·야간 진료형 · 시간 · 전화 우선',{sel:1,hint:'자동 선택 · 당일·야간 진료형 · 예약·방문형 · 전문 진료형',loc:'prio'})}
+   ${f('첫 화면 카피','우리 가족 행복주치의 · 경산 압량읍 행복드림의원',{ta:1,hint:'의료광고 금지 표현 저장 불가',loc:'hero'})}
+   ${f('첫 화면 설명','내과와 소아청소년 진료를 함께 봅니다. 영유아검진 · 예방접종 · 수액치료 …',{ta:1,w2:1,hint:'방문 전 알아야 할 사실 위주',loc:'herod'})}</div>`,{desc:'다음 사이트 갱신 때 반영'})}
+ ${card('고급',`<div class="fs">
+   <div class="f"><label>포인트 컬러${locTag('color')}</label><div class="in" style="display:flex;align-items:center;gap:10px"><span style="width:22px;height:22px;border-radius:6px;background:#6F8A56"></span>#6F8A56</div></div>
+   ${f('대표 이미지 성격','실제 병원 공간 · 장소 확인 완료',{sel:1,hint:'자동 선택 · 실제 병원 공간 · 브랜드 그래픽',loc:'heroimg'})}
+   ${f('현재 대표 이미지','행복드림의원 대기 공간',{hint:'변경: 사진 목록의 대표 지정'})}
+   ${f('콘텐츠 이미지 아트 디렉션','',{ta:1,ph:'예: 지역 가족의 일상을 돌보는 따뜻한 의원. 밝은 자연광, 아이보리와 연두 …',hint:'콘텐츠 제목 · 진료 분야 · 원장 정보 참고',loc:'art'})}</div>`,{small:'포인트 컬러 · 대표 이미지 · 아트 디렉션'})}
+ ${card('사진 · 사용 권리',`
+  <div class="sub"><div class="subh">${ic('up','')} 사진 올리기</div><div class="fs">${f('사진 유형','사진 · 원장',{sel:1,hint:'원장 · 외관 · 내부 · 진료/시술실'})}${f('사진 소유자','',{ph:'예: 행복드림의원'})}${f('권리 근거','권리 근거 선택',{sel:1,hint:'라이선스 보유 · 촬영 대상·소유자 동의'})}${f('증빙 위치','',{ph:'계약 조항 · 동의서 파일명 등'})}</div>
+  <div class="drop" style="margin-top:12px"><b>파일 선택</b> 또는 끌어오기 · 여러 장 가능 · 파일별 제목 = 공개 페이지 사진 설명</div>
+  <div style="display:flex;align-items:center;gap:10px;margin-top:12px"><span class="sw on"></span><span>업로드 즉시 공개</span><span class="sp"></span><button class="btn sm dark">사진 저장</button></div></div>
+  <div class="photos" style="margin-top:14px">${[['진료/시술실','행복드림의원 수액실',''],['내부','행복드림의원 대기 공간','대표 이미지'],['외관','행복드림의원 외관 전경',''],['원장','김효진 원장 캐릭터 일러스트','의료진 사진 사용 중']].map(p=>`<div class="ph"><div class="im"><span class="chip">${p[0]}</span>${p[2]==='대표 이미지'?'<span class="chip star">대표</span>':''}</div><div class="bd"><b>${p[1]}</b><small>권리 확인 · 행복드림의원 · 촬영 대상·소유자 동의 · 시스템 자동</small>${p[2]&&p[2]!=='대표 이미지'?`<small style="color:var(--o)">${p[2]}</small>`:''}</div><div class="ft"><span class="sw on"></span>공개 중<span class="sp"></span>${p[2]?'':'<button class="btn sm ghost">대표 지정</button>'}<button class="btn sm ghost">제외</button></div></div>`).join('')}</div>
+  <p class="hint" style="margin-top:10px">공개 토글 · 대표 지정은 즉시 저장 · 권리 기록 불완전 사진 비공개 · 환자 후기 · 전후 사진 등록 불가</p>`,{n:4,desc:'권리 확인 사진 바로 공개',right:locTag('photo')})}
+ ${savebar('<b>저장 안 된 변경 1건</b> · 페이지 문구 · 카드 1')}
+ </div>
+</div>`;
+
+V.h_src=()=>hhead('h_src')+`
+<div class="layout2">
+ ${infoToc('원장 인터뷰 설문',[['근거 자료',[['원장 인터뷰 설문',''],['문서 올리기',''],['블로그 글 가져오기',''],['자료 목록 · 근거 노트',''],['원장 대화 메모','']]]])}
+ <div>
+ ${card('원장 인터뷰 설문',`<div class="grid g2">
+  <div class="sub" style="margin:0"><div class="subh">원장 작성 설문 링크</div><div class="chk"><span class="sw"></span>신규 개원 병원 · 개원 계기 문항 표시</div><button class="btn sm pri" style="margin-top:8px">링크 만들기</button><p class="hint" style="margin-top:8px">링크 복사 후 원장에게 직접 전달 · 자동 발송 없음 · 제출 답변 자동 반영</p></div>
+  <div class="sub" style="margin:0"><div class="subh">받은 설문 올리기</div><div class="drop" style="padding:12px">설문 파일 · PDF · DOCX</div><div style="display:flex;gap:8px;margin-top:8px"><div class="in ph" style="flex:1">설문 링크 · https://</div><button class="btn sm">링크 추가</button></div></div>
+ </div><p class="hint" style="margin-top:10px">등록 설문 없음</p>`,{desc:'진료 철학 · 병원 특성 근거로 자동 반영'})}
+ ${card('문서 올리기',`<div class="fs">${f('자료 유형','병원 홈페이지',{sel:1,hint:'병원 홈페이지 · 네이버 블로그 · 유튜브 · 원장 인터뷰 설문 · 랜딩 페이지 · 브로슈어 · 내부 메모 · 기타'})}<div class="f"><label>파일</label><div class="drop" style="padding:10px">PDF · DOCX · 여러 개 가능</div></div></div><div style="text-align:right;margin-top:10px"><button class="btn sm dark">문서 저장</button></div>`,{desc:'공식 채널은 병원 정보 저장 시 자동 등록'})}
+ ${card('네이버 블로그 글 가져오기',`<div style="display:grid;grid-template-columns:minmax(0,1fr) 150px auto;gap:10px;align-items:end">${f('병원 네이버 블로그 주소','',{ph:'https://blog.naver.com/...'})}${f('가져올 글 수','최근 5개',{sel:1})}<button class="btn pri">최근 글 가져오기</button></div><p class="hint" style="margin-top:8px">이미 가져온 글 자동 제외</p>`)}
+ ${card('자료 목록 · 근거 노트',`<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap"><span class="sw on"></span><b style="font-size:12.5px">제외 자료 숨김</b><span class="hint">제외 2건 · 숨김 상태 · 글 생성 · 운영 기준 미사용</span><span class="sp"></span><button class="btn sm ghost">제외 자료 보기</button></div><div class="tw"><table><thead><tr><th>유형</th><th>제목</th><th>근거 노트</th><th>처리 상태</th><th></th></tr></thead><tbody>
+  ${[['네이버 블로그','경산 행복드림의원 : 네이버 블로그',8],['네이버 블로그','네이버 블로그 vortgfpb 224472061986',36],['네이버 블로그','네이버 블로그 vortgfpb · 최근 글',12],['원장 인터뷰 설문','—',0],['병원 홈페이지','—',0]].slice(0,3).map(r=>`<tr><td><span class="chip">${r[0]}</span></td><td><b>${r[1]}</b></td><td>${r[2]}개</td><td>${pill('처리 완료','ok')}</td><td><button class="btn sm ghost">근거 노트</button><button class="btn sm ghost">제외</button></td></tr>`).join('')}
+  </tbody></table></div>
+  <div class="acc grp-off"><div class="ah">제외 자료 <span class="chip">2건</span><span class="hint" style="font-weight:500">기본 숨김</span></div><div class="ab">
+   <div class="qrow"><span class="chip">네이버 블로그</span><span style="flex:1;color:var(--g6)">신데렐라 주사 효과, 실제로 기대할 수 있는 것과 없는 것 · 제외됨</span><button class="btn sm ghost">복원</button><button class="btn sm ghost danger">영구 삭제…</button></div>
+   <div class="qrow"><span class="chip">근거 노트</span><span style="flex:1;color:var(--g6)">'특화' 표현 · 근거 없을 시 전문성 과장 소지 · 제외 자료 표시됨</span><button class="btn sm ghost">복원</button><button class="btn sm ghost danger">영구 삭제…</button></div>
+  </div></div>
+  <div class="acc open"><div class="ah">근거 노트 · 경산 행복드림의원 : 네이버 블로그 <span class="chip">8개</span></div><div class="ab">
+   ${[['환자 약속','경산 시민의 건강을 지키는 신뢰받는 병원이 되고자 최선을 다하겠습니다',88],['핵심 메시지','우리가족 행복주치의',85],['진료 설명 근거','〈수액 특화 치료 병원〉',85],['말투 기준','안녕하세요, 우리가족 행복주치의',70],['지역 맥락','경산 지역의 믿을 수 있는 종합 진료 병원, 행복드림의원입니다',90],['주의 표현',"'특화' 표현 · 근거 없을 시 전문성 과장 소지",50]].map(n=>`<div class="qrow"><span class="chip ${n[0]==='주의 표현'?'wa':''}">${n[0]}</span><span style="flex:1">${n[1]}</span><span class="muted">신뢰도 ${n[2]}%</span><button class="btn sm ghost">제외 자료 표시</button></div>`).join('')}
+   <p class="hint" style="margin-top:8px">분류: 의료진 철학 · 환자 약속 · 진료 설명 근거 · 말투 기준 · 핵심 메시지 · 근거 자료 · 지역 맥락 · 주의 표현</p>
+  </div></div>
+  <button class="btn sm" style="margin-top:12px">더 보기 · 전체 자료</button>`)}
+ ${card('원장 대화 메모',`<div class="fs">${f('관심 주제','',{ta:1,ph:'한 줄에 하나'})}${f('선호 표현','',{ta:1,ph:'한 줄에 하나'})}${f('피할 표현','',{ta:1,ph:'한 줄에 하나'})}${f('대화 날짜 · 보고서 참조','',{ph:'예: 11.20 통화 · 10월 보고'})}</div>`,{desc:'다음 글부터 반영 · 기존 글 재생성 없음 · 의료 사실은 병원 자료로 등록 · 안전 기준 우선',small:'보고서 탭에서 이동'})}
+ ${savebar('<b>변경 없음</b>')}
+ </div>
+</div>`;
+
+V.h_dom=()=>hhead('h_dom')+`
+${card('자기 도메인 연결',`
+ <div class="grid g2" style="margin-bottom:14px">
+  <div class="sub" style="margin:0"><div class="subh">기본 주소 ${pill('운영 중','ok')}</div>${url('haengbogdeurimyiweon.reputation.motionlabs.kr')}<p class="hint" style="margin-top:6px">기본 정보 · 공개 페이지 준비 완료 시 자동 운영</p></div>
+  <div class="sub" style="margin:0"><div class="subh">연결 도메인 ${pill('연결됨','ok')}</div>${url('ai.happydreamclinic.co.kr')}<p class="hint" style="margin-top:6px">마지막 확인 11.20 09:15 · 응답 정상</p></div>
+ </div>
+ <div class="fs">
+  <div class="f"><label>관리 방식</label><div class="seg"><span class="on">병원 직접 관리 · 권장</span><span>MotionLabs 구매·관리</span></div><span class="hint">병원 보유 도메인 → 병원 직접 관리</span></div>
+  <div class="f"><label>DNS 방식</label><div class="seg"><span class="on">서브도메인 CNAME · 권장</span><span>루트 도메인 A 레코드</span></div><span class="hint">루트 도메인 연결 → A 레코드</span></div>
+  ${f('연결 도메인','ai.happydreamclinic.co.kr',{ph:'ai.clinicname.co.kr'})}
+ </div>
+ <div class="sub" style="margin-top:14px"><div class="subh">DNS 레코드 미리보기</div>
+  <table class="dns"><thead><tr><th>타입</th><th>호스트</th><th>값</th><th>TTL</th></tr></thead><tbody><tr><td><b>CNAME</b></td><td>ai <span class="muted">· ai.happydreamclinic.co.kr</span></td><td>cname.reputation.motionlabs.kr. ${cp('cname.reputation.motionlabs.kr.')}</td><td>300 · 또는 등록기관 최소값</td></tr></tbody></table></div>
+ <div class="steps" style="margin-top:18px">${['도메인 저장','DNS 레코드 등록','DNS 확인','HTTPS 인증서 발급','운영 시작'].map((s,i)=>`<div class="st ${i<5?'done':''}" data-n="${i+1}">${s}</div>`).join('')}</div>
+ <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px"><button class="btn">도메인 저장</button><button class="btn pri">DNS 확인 · 운영 시작</button></div>
+`,{small:'선택',desc:'기본 주소 자동 운영 · 자기 도메인만 담당자 입력 · 확인'})}
+${card('검색엔진 소유 확인',`<div class="fs">${f('네이버 소유 확인 코드','3fb0e63f3f9e28b14525647466a447d663f9fbc3',{hint:'meta naver-site-verification의 content 값만'})}${f('다음 웹마스터 확인 문구','',{ph:'#DaumWebMasterTool:… 전체 한 줄',hint:'robots.txt 마지막 줄 자동 반영'})}</div><p class="hint" style="margin-top:10px">Google 소유 확인 · 플랫폼 배포 환경값으로 관리</p><div style="text-align:right;margin-top:10px"><button class="btn sm dark">소유 확인 값 저장</button></div>`)}
+`;
+
+V.h_con=()=>hhead('h_con')+`
+<div class="grid g2" style="margin-bottom:16px">
+ ${card('발행 일정',`<dl class="kv"><dt>월 발행 편수</dt><dd>스타터 · 월 12편</dd><dt>발행 요일</dt><dd>화 · 금</dd><dt>하루 최대</dt><dd>1편</dd><dt>시작일</dt><dd>2026-08-01</dd></dl>
+  <div class="acc"><div class="ah">일정 변경</div><div class="ab">
+   <div class="f"><label>발행 요일</label><div class="days">${['월','화','수','목','금','토','일'].map(d=>`<span class="${/화|금/.test(d)?'on':''}">${d}</span>`).join('')}</div></div>
+   <div class="f" style="margin-top:12px"><label>하루 최대 발행</label><div class="seg"><span class="on">1편</span><span>2편</span><span>3편</span></div><span class="hint">요일 부족 시에만 하루 여러 편</span></div>
+   <div class="f" style="margin-top:12px"><label>시작일</label><div class="in sel">2026년 12월</div></div>
+   <p class="hint" style="margin-top:8px">기존 원고 · 발행 이력 유지 · 미래 항목 예정일만 조정 · 요금제 변경은 계약 기록에서</p>
+   <div style="text-align:right;margin-top:10px"><button class="btn sm pri">일정 변경 확인</button></div></div></div>`,{right:pill('설정됨','ok')})}
+ ${card('콘텐츠 방향',`<p class="hint" style="margin-bottom:12px">주력 주제 지정 시 주제 미정 글부터 해당 환자 질문 우선 작성</p>
+  <div class="f"><label>1 · 주력 주제 <span class="op">최대 5개</span></label><div class="tags"><span class="add">예: 내시경, 갑상선초음파, 대상포진</span></div></div>
+  <div class="f" style="margin-top:12px"><label>2 · 기간</label><div class="seg"><span>1개월</span><span>2개월</span><span>3개월</span><span class="on">기간 없음</span></div><div class="fs" style="margin-top:8px">${f('시작 달','',{ph:'YYYY-MM'})}${f('끝 달','',{ph:'YYYY-MM'})}</div></div>
+  <div class="f" style="margin-top:12px"><label>3 · 비중</label><div class="seg"><span>30%</span><span>50%</span><span>70%</span><span>100%</span></div></div>
+  <div class="sub" style="margin-top:14px"><div class="subh">4 · 작성 지침 <span class="chip o">신규</span><span class="sp"></span><span class="hint" style="font-weight:500">콘텐츠 방향 켜짐 · 꺼짐 무관 · 항상 적용</span></div>
+   <div class="f"><label>병원별 작성 지침 <span class="op">한 줄에 하나</span></label><div class="in ta">근거 자료 머리말 · 출처 문구 본문 삽입 금지<br>원장 설문 원문 문장 그대로 인용 금지 · 글 말투로 다시 쓰기<br>원장 소개 문장 글마다 반복 금지</div></div>
+   <div class="f" style="margin-top:10px"><label>공통 지침 <span class="op">전 병원 적용 · 설정에서 관리</span></label><div style="display:flex;gap:6px;flex-wrap:wrap"><span class="chip">자료 머리말 삽입 금지</span><span class="chip">설문 원문 인용 금지</span><span class="chip">문체 통일</span><span class="chip">의료광고 금지 표현</span></div></div>
+   <div class="f" style="margin-top:10px"><label>적용 범위</label><div class="seg"><span class="on">새 글부터</span><span>초안 생성 대기 글 포함</span></div></div>
+  </div>
+  <p class="hint" style="margin-top:8px">발행 · 주제 확정 글 변경 없음 · 저장 후 새 글부터 · 측정 질문 · 결과 영향 없음</p>`,{right:pill('꺼짐','off')})}
+</div>
+<div class="stc">${[['공개 중',9,'공개 페이지 게시'],['초안 생성 중',3,'자동 생성 대기'],['예정',0,'발행일 08:00 자동 공개'],['공개 보류',0,'발행 · 공개 페이지 없음'],['차단',0,'자동 복구 대기'],['종료',0,'자동 생성 · 발행 제외']].map((s,i)=>`<div class="${i===0?'on':''} ${s[1]===0?'zero':''}"><span>${s[0]}</span><b>${s[1]}</b><small>${s[2]}</small></div>`).join('')}</div>
+<div class="panel">
+ ${card('콘텐츠',`<div style="display:flex;gap:8px;margin-bottom:12px"><div class="in sel" style="min-width:110px">2026년</div><div class="in sel" style="min-width:90px">11월</div><span class="sp"></span><span class="hint" style="align-self:center">안전 검사 · 발행 직전 재실행</span></div>
+ <div class="tw"><table><thead><tr><th>발행일</th><th>유형</th><th>제목</th><th>순번</th><th>상태</th><th></th></tr></thead><tbody>
+ ${[['11.02','시술 안내','아이가 열이 날 때 진료실에서 확인하는 순서와 진행 단계','ok','공개 중'],['11.03','원장 칼럼','소아 탈수, 어느 전문의를 찾기 전에 부모가 답해볼 질문들','ok','공개 중'],['11.06','자주 묻는 질문','경산 내과 진료, 증상별로 확인 범위와 진행이 달라지는 이유','ok','공개 중'],['11.10','질환 가이드','소아 발열, 어떤 전문의를 찾아야 할까요 — 진료과 선택 기준','ok','공개 중'],['11.24','—','제목 준비 중','info','초안 생성 중']].map((r,i)=>`<tr style="${i===0?'background:var(--os)':''}"><td><b>${r[0]}</b><br><small class="muted">08:00</small></td><td><span class="chip">${r[1]}</span></td><td style="font-weight:600">${r[2]}</td><td class="muted">${i+1}/12</td><td>${pill(r[4],r[3])}</td><td>${r[3]==='ok'?`<button class="btn sm">${ic('ext')}공개 글</button>`:''}</td></tr>`).join('')}
+ </tbody></table></div>`,{n:12})}
+ <aside class="drawer"><div class="dh"><span class="chip">시술 안내</span> ${pill('공개 중','ok')}<h3 style="font-size:16px;margin-top:8px;letter-spacing:-.03em">아이가 열이 날 때 진료실에서 확인하는 순서와 진행 단계</h3><div class="hint">2026.11.02 08:00 공개</div></div>
+  <div class="db">
+   <div class="subh">답변 노출 가이드</div><dl class="kv"><dt>연결 환자 질문</dt><dd>소아 발열 치료 비용이 얼마나 드는지 알려줘</dd><dt>노출 보완 작업</dt><dd class="muted">미연결</dd></dl>
+   <div class="subh" style="margin-top:16px">자동 안전검사</div>
+   <div class="chk"><i>✓</i>콘텐츠 운영 기준 · 통과</div><div class="chk"><i>✓</i>의료광고 금지 표현 · 미검출</div><div class="chk"><i>✓</i>참고 자료 · 1건 · <a href="https://health.kdca.go.kr" target="_blank" style="color:var(--info)">질병관리청 국가건강정보포털 ↗</a></div><div class="chk"><i>✓</i>작성 지침 · 자료 머리말 · 설문 원문 삽입 미검출</div><div class="chk"><i>✓</i>공개 상태 · 공개 중</div>
+   <div class="subh" style="margin-top:16px">검토 기록</div><div class="hint">AI 자동 검토 · 2026.11.03 03:13 확인 완료</div>
+   <div style="height:110px;border-radius:12px;background:linear-gradient(135deg,#EDE7DF,#D9D2C7);margin:14px 0"></div>
+   <div class="hint">본문 미리보기 · 소아 발열 치료 비용이 달라지는 이유 · 진행 단계 · 바로 확인이 필요한 경우 …</div>
+   <div class="acc"><div class="ah">${ic('pen','')} 편집</div><div class="ab"><div class="fs c1">${f('제목','아이가 열이 날 때 진료실에서 확인하는 순서와 진행 단계')}${f('검색 미리보기 설명','소아 발열 진료의 비용은 진료 목적, 검사 범위 …')}${f('본문 · 마크다운','이 진료는 아이의 열이 어떤 원인과 흐름에서 …',{ta:1})}${f('참고 자료 1 · 제목','질병관리청 국가건강정보포털 — 불명열')}${f('참고 자료 1 · URL','https://health.kdca.go.kr/…')}</div><button class="btn sm" style="margin-top:8px">${ic('plus')}참고 자료 추가</button><div style="display:flex;gap:6px;justify-content:flex-end;margin-top:10px"><button class="btn sm">취소</button><button class="btn sm pri">저장</button></div></div></div>
+  </div>
+  <div class="df"><a class="btn pri sm" href="https://ai.happydreamclinic.co.kr/contents/0efcfce1-bc25-4305-9f82-9944fe4f7d90" target="_blank" style="text-decoration:none">${ic('ext')}공개 글</a><button class="btn sm">${ic('pen')}편집</button><span class="sp"></span><div class="menuw"><button class="ic mbtn">${ic('more')}</button><div class="menu" style="top:auto;bottom:40px"><div class="danger">문제 발견 · 비공개 후 재생성…</div></div></div></div>
+ </aside>
+</div>
+<div class="grid g2" style="margin-top:16px">
+ ${card('이번 달 환자 질문',`${['경산 압량 일반의원 추천해줘','경산 압량 소아청소년 진료 병원 추천해줘','경산 압량에서 소아 발열 진료하는 병원 알려줘','경산 압량 내과 병원 어디가 좋은지 비교해줘'].map(q=>`<div class="qrow"><span style="flex:1">${q}</span><span class="chip">측정 대상</span><span class="muted">결과 없음</span></div>`).join('')}<button class="btn sm ghost" style="margin-top:6px">12개 전체</button>`,{n:12,desc:'측정 대상 질문만 측정'})}
+ ${card('노출 보완 제안',`${[['측정','첫 AI 언급률 측정','예방접종 치료하려면 어떤 전문의한테 가야 해?','연결 없음'],['콘텐츠','근거 콘텐츠 보강','소아 발열 치료 비용이 얼마나 드는지 알려줘','소아 발열 치료 비용 — 진료 목적과 검사 범위에 따른 안내'],['정보 구조','병원 정보 구조 보강','경산 일반의원 전문의 추천','경산 일반의원 전문의 추천 — 증상별 진료과 선택 기준']].map(r=>`<div class="qrow"><span class="chip">${r[0]}</span><div style="flex:1"><b>${r[1]}</b><div class="hint">${r[2]} · 연결 콘텐츠: ${r[3]}</div></div>${pill('대기','off')}</div>`).join('')}<button class="btn sm ghost" style="margin-top:6px">전체 보기</button>`,{desc:'참고 정보 · 언급이 적은 이유 제안'})}
+</div>`;
+
+V.h_rep=()=>hhead('h_rep')+`
+<div class="grid g3" style="margin-bottom:16px">
+ <div class="kpi"><div class="ki">${ic('file')}</div><div class="l">전달 전 검수 가능</div><div class="v">13</div></div>
+ <div class="kpi wa"><div class="ki">${ic('warn')}</div><div class="l">조치 필요</div><div class="v">8</div></div>
+ <div class="kpi o"><div class="ki">${ic('chk')}</div><div class="l">전달 기록</div><div class="v">0</div></div>
+</div>
+${card('최근 보고서 작업',`<div class="task" style="border:0"><span class="bar" style="background:var(--o)"></span>${hav('10',0)}<div><div class="tt">2026년 10월 · 원장 전달용 PDF 검증 완료 <span class="chip">버전 7 · 이전 보고서 보존</span></div><div class="tm">PDF 본문 · 근거 부록 · 한글 · 필수 안내 · 링크 확인 완료 · 최신 병원 자료 · 공개 상태 확인 후 전달</div></div><div class="acts"><button class="btn sm pri" data-go="rview">원장 전달 자료 확인</button><button class="btn sm">다시 만들기</button><button class="btn sm ghost">개발팀 문의 정보 복사</button></div></div>`,{right:pill('최종 확인 필요','wa')+' <button class="btn sm ghost">'+ic('ref')+'새로고침</button>'})}
+${card('보고서 목록',`<div class="tw"><table><thead><tr><th>기간</th><th>종류</th><th>버전</th><th>상태</th><th>생성일</th><th></th></tr></thead><tbody>
+ ${[['2026년 10월','월간','v7 · 이전 6개','ok','검수 가능','일부 반복 측정 모호 · 확정 표본만 반영','2026.11.10'],['2026년 9월','월간','v6 · 이전 5개','ok','검수 가능','약정 12편 중 11편 발행','2026.10.06'],['2026년 8월','월간','v6 · 이전 5개','bad','조치 필요','월간 측정 상태 확인 불가 · 약정 12편 중 7편 발행','2026.09.07'],['2026년 7월','월간','v1','bad','조치 필요','필수 질문 측정 미완료 · 이전 방식 보고서 미검증','2026.07.31'],['2026년 7월','초기 진단','v1','bad','조치 필요','검증된 초기 진단 PDF 없음 · 재실행은 처리 목록에서','2026.07.22']].map(r=>`<tr><td><b>${r[0]}</b></td><td><span class="chip">${r[1]}</span></td><td class="muted">${r[2]}</td><td>${pill(r[4],r[3])}<div class="hint" style="margin-top:4px">${r[5]}</div></td><td class="muted">${r[6]}</td><td style="white-space:nowrap"><button class="btn sm" data-go="rview">열기</button> <button class="btn sm ghost">${ic('dl')}PDF</button>${r[1]==='월간'?' <button class="btn sm ghost">다시 만들기</button>':''}</td></tr>`).join('')}
+ </tbody></table></div>
+ <div style="display:flex;gap:8px;align-items:center;margin-top:14px;flex-wrap:wrap"><span class="hint">보고서 없는 달 생성</span><div class="in sel" style="min-width:100px">2026년</div><div class="in sel" style="min-width:150px">10월 · 마감 후 달만</div><button class="btn sm dark">보고서 생성</button></div>`)}
+`;
+
+V.rview=()=>hhead('h_rep')+`
+<div class="crumb" data-go="h_rep">${ic('back','')}<span>보고서 목록</span></div>
+${card('2026년 10월 보고서',`
+ <div class="steps" style="margin-bottom:20px">${['원장용 파일','보고서 수정','전달 기록','전달 이력','경쟁 병원 반영'].map((s,i)=>`<div class="st ${i<1?'done':''}" data-n="${i+1}">${s}</div>`).join('')}</div>
+ <div class="grid g2">
+  <div class="sub" style="margin:0"><div class="subh">1 · 원장용 파일</div><p class="hint">여기서 받은 파일 = 원장 전달 파일 · 전달 기록 연결 대상</p><button class="btn sm pri" style="margin-top:10px">${ic('dl')}원장 전달용 PDF 받기</button></div>
+  <div class="sub" style="margin:0"><div class="subh">2 · 보고서 수정 <span class="op muted" style="font-weight:500">선택</span></div><p class="hint">글자 · 숫자 수정 · 삭제 시 새 버전 생성</p><button class="btn sm" style="margin-top:10px">${ic('pen')}보고서 수정</button></div>
+ </div>
+ <div class="sub"><div class="subh">3 · 전달 기록</div><div class="fs">${f('받은 분','',{ph:'예: 김 원장'})}${f('전달 방법','',{ph:'예: 대면, 이메일'})}${f('메모','',{ph:'예: 8월 보고',op:1})}</div><div style="text-align:right;margin-top:10px"><button class="btn sm" disabled style="opacity:.5">${ic('lock')}PDF 받은 뒤 기록 가능</button></div></div>
+ <div class="sub"><div class="subh">4 · 전달 이력</div><p class="hint">기록 없음 · 이력 삭제 불가 · 누적</p></div>
+ <div class="sub"><div class="subh">5 · 경쟁 병원 반영</div><p class="hint">등록 경쟁 병원 3곳 · 사과나무소아청소년과의원 · 속보는종합내과의원 · 삼성바른내과의원 · 저장된 AI 답변 84건 기준 경쟁 현황만 재계산 · 측정 숫자 변화 없음 · 새 버전은 재전달 필요</p><div style="display:flex;gap:8px;margin-top:10px"><button class="btn sm">경쟁 병원 반영 · 새 버전</button><button class="btn sm ghost" data-go="h_info">경쟁 병원 수정 → 병원 정보</button></div></div>
+ ${acc('내부 상태 · 원장 전달 금지',`<p class="hint">검수 대기 · 버전 7 · 최신</p>`)}
+`,{right:pill('검수 대기','wa')+' <span class="chip">버전 7 · 최신</span>'})}`;
+
+V.ops=()=>`
+<div class="top"><div><h1>처리 목록</h1><div class="d">자동 새로고침 · 긴급 작업 없음</div></div></div>
+<div class="grid g4" style="margin-bottom:16px">
+ ${[['문제·복구',2,'bad'],['월간 보고서',12,'o'],['신규·온보딩',2,'info'],['오늘의 운영',0,'']].map((t,i)=>`<div class="kpi ${i===0?'hero':t[2]==='o'?'o':''}"><div class="l">${t[0]}</div><div class="v">${t[1]}<small>건</small></div></div>`).join('')}
+</div>
+${card('문제·복구',`
+ <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px"><div class="in ph" style="min-width:150px">담당자 · 이름 또는 이메일</div><div class="in sel" style="min-width:120px">상태 · 전체</div><div class="in sel" style="min-width:110px">심각도 · 전체</div><div class="in sel" style="min-width:120px">처리 기한 · 전체</div><div class="in ph" style="min-width:180px">병원명 · 할 일 · 영향 찾기</div><button class="btn sm ghost">필터 초기화</button></div>
+ <div class="tw"><table><thead><tr><th>병원 · 문제</th><th>심각도</th><th>고객 영향</th><th>할 일 · 처리 기한</th><th>담당</th><th></th></tr></thead><tbody>
+  <tr><td><div class="hn">${hav('365',1)}<div><b>365서귀포삼성정형외과의원</b><small>복구 재시도 중</small></div></div></td><td>${pill('보통','wa')}</td><td class="muted" style="max-width:220px">발행 예정 콘텐츠 미저장 · 제때 공개 안 됨</td><td style="max-width:280px">승인 자료 보완 또는 콘텐츠 수정 · 참고 자료 추가<div class="hint" style="color:var(--bad)">기한 7일 지남 · 11.12 18:00</div></td><td class="muted">Owner</td><td><button class="btn sm">상세</button></td></tr>
+  <tr><td><div class="hn">${hav('다',3)}<div><b>다올연합의원</b><small>같은 원인 2건 · 영향 병원 2곳</small></div></div></td><td>${pill('보통','wa')}</td><td class="muted">공개 페이지 · 콘텐츠 운영 시작 안 됨</td><td>병원 정보 필수 항목 입력<div class="hint">기한 없음</div></td><td class="muted">Owner</td><td><button class="btn sm">상세</button></td></tr>
+ </tbody></table></div>
+ <p class="hint" style="margin-top:10px">자동 처리 중 · 예정 1건 · 행 선택 시 오른쪽 패널에 처리 순서 · 이력</p>
+ <p class="hint">상태 필터: 온보딩 진행 중 · 초기 진단 보고서 준비 중 · 공개 페이지 준비 중 · 공개 주소 확인 대기 · 운영 중 · 일시 정지 · 오늘 발행 예정 · 지난달 보고서 미생성 · 필수 측정 미완료 · 측정 집계 연결 오류 · 측정 집계 마감 대기 · 원장 전달용 PDF 없음 · PDF 검증 실패 · 보고서 전달 차단 · 원장 전달 …</p>
+`,{n:2})}`;
+
+V.leads=()=>`
+<div class="top"><div><h1>상담 요청</h1><div class="d">공개 페이지 문의 · 무료 AI 노출 진단 신청</div></div><span class="sp"></span><button class="btn">진단 생성 · 내부용</button></div>
+<div class="grid g3" style="margin-bottom:16px">
+ <div class="kpi"><div class="l">전체</div><div class="v">19</div><div class="s">실운영</div></div>
+ <div class="kpi o"><div class="l">확인 필요</div><div class="v">19</div></div>
+  <div class="kpi"><div class="l">테스트 데이터</div><div class="v">2</div><div class="s">기본 숨김</div></div>
+</div>
+<div class="panel">
+${card('접수 목록',`<div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap"><div class="seg"><span class="on">확인 필요</span><span>전체</span><span>테스트 포함</span></div></div>
+<div class="tw"><table><thead><tr><th>접수</th><th>병원</th><th>연락처</th><th>유형 · 진단</th><th>다음 할 일</th></tr></thead><tbody>
+ ${[['09.22 19:21','교하본정형외과의원','도입문의','031-946-7375','측정 완료 · 보고서 준비','보고서 다시 만들기'],['09.19 13:55','해누리내과의원','무료 진단 · 내과','010-3323-0515','측정 실패','다시 측정'],['09.18 18:02','수성나무재활의학과의원','무료 진단 · 재활의학과','010-8353-9943','발송 완료','계약 등록'],['09.18 12:25','속안심내과연합의원','무료 진단 · 내과','010-5789-0381','발송 완료 · 측정 일부 실패','계약 등록']].map((r,i)=>`<tr style="${i===1?'background:var(--os)':''}"><td><b>${r[0]}</b><div class="hint">${61-i*2}일 전</div></td><td><b>${r[1]}</b><div class="hint">${r[2]}</div></td><td class="muted">${r[3]}</td><td>${pill(r[4],/실패/.test(r[4])?'bad':/완료/.test(r[4])?'ok':'info')}</td><td><button class="btn sm">${r[5]}</button></td></tr>`).join('')}
+</tbody></table></div>`)}
+<aside class="drawer"><div class="dh"><span class="chip">무료 진단 신청</span> ${pill('측정 실패','bad')}<h3 style="font-size:16px;margin-top:8px">해누리내과의원</h3><div class="hint">2026.09.19 13:55 접수 · 61일 전 · 2026-09-19 · 1번째 자리</div></div>
+ <div class="db"><dl class="kv"><dt>진료과</dt><dd>내과</dd><dt>연락처</dt><dd>010-3323-0515</dd><dt>주소</dt><dd class="muted">미입력</dd><dt>원장명</dt><dd class="muted">미입력</dd><dt>홈페이지</dt><dd class="muted">미입력</dd><dt>문의 내용</dt><dd class="muted">없음</dd><dt>유입</dt><dd>무료 진단 신청</dd><dt>개인정보 동의</dt><dd>완료</dd><dt>운영 알림</dt><dd>완료</dd><dt>측정</dt><dd>재실패 · 보고서 미생성</dd><dt>고객 발송</dt><dd>대기</dd></dl>
+ <div class="note wa" style="margin-top:14px">고객 영향 · 정확한 진단 보고서 미수령 · 이전 복구 요청 미완료</div>
+ <button class="btn sm ghost">접수 원문</button></div>
+ <div class="df"><button class="btn sm pri">다시 측정</button><button class="btn sm">값 고쳐 다시 만들기</button><button class="btn sm">보고서 열기</button><button class="btn sm">1회 제한 해제</button><button class="btn sm">계약 등록</button><span class="sp"></span><div class="menuw"><button class="ic mbtn">${ic('more')}</button><div class="menu" style="top:auto;bottom:40px"><div class="danger">개인정보 파기…</div></div></div></div>
+</aside></div>`;
+
+V.diag=()=>`
+<div class="top"><div><h1>노출 진단</h1><div class="d">콜용 노출 진단 직접 생성 · 원장 자동 발송 없음</div></div></div>
+<div class="grid" style="grid-template-columns:minmax(0,1fr) minmax(300px,.9fr)">
+${card('진단 만들기',`<div class="note">${ic('diag','')} 환자 질문 3개 × ChatGPT · Gemini × 3회 = 18회 측정</div><div class="fs">${f('정식 병원명','',{rq:1,ph:'간판 표기 그대로',hint:'이 이름으로 언급 판정'})}${f('진료과','',{rq:1})}${f('지역','',{rq:1,ph:'지하철역 또는 동 이름'})}${f('핵심 진료 키워드','',{rq:1,ph:'쉼표 구분 · 최대 4개',hint:'병원명 제외'})}${f('연락처','',{ph:'병원 대표번호 가능'})}${f('원장 성함','')}${f('직접 만드는 이유','',{ta:1,w2:1,hint:'기록 보존 · 기존 진단 대체 시 문제점 기재'})}</div><div style="text-align:right;margin-top:14px"><button class="btn pri">진단 만들기</button></div>`)}
+${card('최근 콜용 진단',`${[['교하본정형외과의원','정형외과 · 파주동패동 · 허리통증, 발목인대 치료, 다리저림, 허리디스크','09.22 19:21'],['[테스트2] Re:putation 알림점검의원','내과 · 강남역 · 고혈압, 당뇨','09.28 16:16'],['[테스트] Re:putation 알림점검의원','내과 · 강남역 · 고혈압, 당뇨','09.28 15:52']].map((r,i)=>`<div class="qrow" style="align-items:flex-start"><div style="flex:1"><b>${r[0]}</b><div class="hint">${r[1]}</div><div style="display:flex;gap:4px;margin-top:6px">${pill('측정 완료','ok')}${pill('보고서 준비','ok')}${pill('내부 보관','off')}</div></div><div style="text-align:right"><div class="hint">${r[2]}</div><button class="btn sm" style="margin-top:6px">보고서</button></div></div>`).join('')}`,{right:'<button class="btn sm ghost">'+ic('ref')+'새로고침</button>'})}
+</div>`;
+
+V.new=()=>`
+<div class="crumb" data-go="list">${ic('back','')}<span>병원</span></div>
+<div class="top"><div><h1>계약 등록</h1><div class="d">병원 생성 · 계약 기록 · 담당 AE 인수 한 번에</div></div></div>
+${card('계약 정보',`<div class="fs">${f('병원명','',{rq:1})}${f('계약 시작일','',{rq:1,ph:'YYYY-MM-DD',hint:'첫 발행일 기준 · 콘텐츠 발행 일정 시작일 자동 연결'})}
+ <div class="f"><label>담당 AE <span class="rq">*</span></label><div class="in ph">이름 직접 입력 · 예: 김운영</div><span class="hint">입력한 이름 자동 저장 · 다음부터 자동 완성 · 문제 대응 · 보고서 전달 담당</span></div></div>
+ <div class="f" style="margin-top:16px"><label>요금제 <span class="rq">*</span></label><div class="radio">${[['스타터','월 12편','60만원'],['그로워','월 16편','90만원'],['리더','월 20편','120만원']].map((p,i)=>`<div class="rc ${i===0?'on':''}"><span class="chip ${i===0?'o':''}">${p[0]}</span><div style="font-size:24px;font-weight:700;letter-spacing:-.04em;margin-top:8px">${p[2]}<small style="font-size:12px;color:var(--g6)"> / 월</small></div><span>${p[1]} · 부가세 별도</span></div>`).join('')}</div></div>
+ <div class="note" style="margin-top:16px">${ic('chk','')} 사이트 레이아웃 칸 삭제 · 등록 직후 기본 레이아웃 자동 적용 · 병원 상세 › 공개 페이지 탭에서 조절</div>
+ <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:18px"><span class="hint" style="align-self:center">병원명 · 계약 시작일 · 담당 AE 입력 시 등록 가능</span><button class="btn pri">계약 등록</button></div>`)}`;
+
+V.set=()=>`
+<div class="top"><div><h1>설정</h1><div class="d">운영자 계정 · 자동 작업 한도</div></div></div>
+${card('운영자 계정',`<div class="tw"><table><thead><tr><th>운영자</th><th>권한</th><th>상태</th><th>마지막 로그인</th><th></th></tr></thead><tbody>
+ <tr><td><div class="hn"><div class="av">O</div><div><b>Owner <span class="chip o">내 계정</span></b><small>admin@motionlabs.kr</small></div></div></td><td>소유자</td><td>${pill('활성','ok')}</td><td class="muted">2026.11.20 08:30</td><td><div class="menuw"><button class="ic mbtn">${ic('more')}</button><div class="menu"><div>운영자로 변경</div><div>비밀번호 재설정</div><div class="sep"></div><div class="danger">정지…</div></div></div></td></tr>
+ <tr><td><div class="hn"><div class="av" style="background:var(--g4)">C</div><div><b>Codex E2E 임시 운영자 <span class="chip">운영 점검 · 실지표 제외</span></b><small>codex-e2e-20260818-094567@example.test</small></div></div></td><td>운영자</td><td>${pill('정지','off')}</td><td class="muted">2026.08.18 22:52</td><td><div class="menuw"><button class="ic mbtn">${ic('more')}</button><div class="menu"><div>소유자로 변경</div><div>활성화</div><div>비밀번호 재설정</div></div></div></td></tr>
+ </tbody></table></div>
+ ${acc('운영자 추가',`<div class="fs">${f('이메일','',{ph:'teammate@motionlabs.kr'})}${f('이름','',{ph:'예: 김운영'})}${f('권한','운영자 · 병원 운영 전체 · 계정 관리 불가',{sel:1,hint:'소유자 · 병원 운영 전체 + 계정 관리'})}${f('초기 비밀번호','',{ph:'14자 이상'})}</div><div style="text-align:right;margin-top:10px"><button class="btn sm pri">계정 만들기</button></div>`)}
+`,{desc:'계정 추가 · 정지 소유자 전용 · 모든 변경 감사 로그 기록',right:'<span class="hint">실운영 1 · 점검 1</span>'})}
+${card('자동 작업 한도',`<div class="note wa">비용 급증 시에만 사용 · 중지해도 진행 중 고객 작업 결과 유지</div>
+ <div class="limit"><b>전체 자동 작업</b><span class="hint">콘텐츠 · 이미지 · 언급률 측정</span><button class="btn sm danger">전체 중지…</button></div>
+ ${[['콘텐츠 제작·검수',73,500,'오늘 99건 · 월 866/4500'],['이미지 생성',10,500,'오늘 10건 · 월 138/6000'],['운영 기준 합성·검수',2,120,'오늘 0건 · 월 25/1200'],['AI 답변 언급률 측정',0,9000,'오늘 0건 · 월 670/9000'],['무료 진단',0,500,'오늘 0건 · 월 0/12000']].map(r=>`<div class="limit"><div><b>${r[0]}</b><div class="hint">${r[3]}</div></div><div><div style="display:flex;justify-content:space-between;font-size:12px;font-weight:700;margin-bottom:5px"><span>${r[1]} / ${r[2]}</span><span class="muted">${Math.round(r[1]/r[2]*100)}%</span></div><div class="meter"><i style="width:${Math.max(1,r[1]/r[2]*100)}%"></i></div></div><button class="btn sm">오늘 한도 2배</button></div>`).join('')}
+ <p class="hint" style="margin-top:8px">한도 2배 · 상향 사유 3자 이상 입력 필수</p>`,{right:pill('정상','ok'),small:'운영 센터에서 이동'})}`;
+
+/* ---------- nav & router ---------- */
+const NAV=[['grp','운영'],['dash','home','대시보드'],['list','hos','병원','18'],['ops','task','처리 목록','16','hot'],['grp','영업'],['leads','lead','상담 요청','17'],['diag','diag','노출 진단'],['new','plus','계약 등록'],['grp','관리'],['set','set','설정']];
+const navOf=v=>v.startsWith('h_')||v==='rview'?'list':v;
+function render(v){
+  document.getElementById('nav').innerHTML=NAV.map(n=>n[0]==='grp'?`<div class="grp">${n[1]}</div>`:`<a class="${navOf(v)===n[0]?'on':''}" data-go="${n[0]}">${ic(n[1])}${n[2]}${n[3]?`<span class="cnt ${n[4]||''}">${n[3]}</span>`:''}</a>`).join('');
+  document.getElementById('main').innerHTML=`<div class="view on">${V[v]()}</div>`;
+  location.hash=v; window.scrollTo(0,0);
+}
+document.addEventListener('click',e=>{
+  const g=e.target.closest('[data-go]'); if(g&&V[g.dataset.go]){e.preventDefault();render(g.dataset.go);return;}
+  const c=e.target.closest('.cp,.cpbtn'); if(c){try{navigator.clipboard.writeText(c.dataset.u)}catch(_){}c.classList.add('done');if(c.classList.contains('cpbtn')){const t=c.innerHTML;c.innerHTML=ic('chk')+'복사됨';setTimeout(()=>{c.innerHTML=t},1200)}setTimeout(()=>c.classList.remove('done'),1200);return;}
+  const m=e.target.closest('.mbtn'); document.querySelectorAll('.menu.on').forEach(x=>{if(!m||x!==m.nextElementSibling)x.classList.remove('on')}); if(m){m.nextElementSibling.classList.toggle('on');return;}
+  const a=e.target.closest('.acc>.ah'); if(a){a.parentElement.classList.toggle('open');return;}
+  const s=e.target.closest('.seg span'); if(s){[...s.parentElement.children].forEach(x=>x.classList.remove('on'));s.classList.add('on');return;}
+  const t=e.target.closest('.toc a'); if(t){t.parentElement.querySelectorAll('a').forEach(x=>x.classList.remove('on'));t.classList.add('on');return;}
+  const sv=e.target.closest('.savebtn'); if(sv){const bar=sv.closest('.savebar');bar.querySelector('.t').innerHTML='<b>저장 완료</b> · 다음 사이트 갱신 때 반영';document.querySelectorAll('.in.chg').forEach(x=>x.classList.remove('chg'));document.querySelectorAll('.toc .chg').forEach(x=>x.remove());return;}
+});
+render((location.hash||'#dash').slice(1) in V?(location.hash||'#dash').slice(1):'dash');
+</script>
+</body>
+</html>

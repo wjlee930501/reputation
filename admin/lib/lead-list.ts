@@ -63,7 +63,7 @@ export function leadEmptyState(attentionOnly: boolean, total: number) {
   if (attentionOnly) {
     return {
       title: `조건에 맞는 상담 요청이 없습니다 (전체 ${total}건)`,
-      detail: '확인 필요는 신규 요청이거나 첫 연락 기한을 넘긴 미연락 상담 요청입니다.',
+      detail: '확인 필요는 신규 요청이거나 접수 하루가 지나도 연락 기록이 없는 상담 요청입니다.',
     }
   }
   return {

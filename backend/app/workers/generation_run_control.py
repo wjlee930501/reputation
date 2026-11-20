@@ -48,38 +48,38 @@ from app.workers.generation_retry_policy import (
 
 logger = logging.getLogger(__name__)
 
-_SAFE_FAILURE_MESSAGE = "생성 작업이 완료되지 않았습니다. 운영 센터에서 원인을 확인해 주세요."
+_SAFE_FAILURE_MESSAGE = "생성 작업이 완료되지 않았습니다. 처리 목록에서 원인을 확인해 주세요."
 GENERATION_REFERENCE_REJECTION_MESSAGE = (
     "공신력 있는 참고 자료를 확보하지 못했습니다 — 실제 문서 확인을 통과한 출처가 없어 "
     "원고를 저장하지 않았습니다. 다음 자동 재시도가 검증된 문서를 다시 찾습니다."
 )
 _DEFAULT_REJECTION_MESSAGE = (
     "가격·지역·검색 구조 자동 검수 게이트가 재작성 후에도 통과되지 않았습니다. "
-    "운영 센터에서 차단 원인과 승인된 입력 자료를 확인해 주세요."
+    "처리 목록에서 차단 원인과 승인된 입력 자료를 확인해 주세요."
 )
 _REJECTION_MESSAGES = {
     "price": (
         "검증되지 않은 원화 가격·보험 범위 표현이 재작성 후에도 남았습니다. "
-        "운영 센터에서 승인된 가격 근거와 차단 문구를 확인해 주세요."
+        "처리 목록에서 승인된 가격 근거와 차단 문구를 확인해 주세요."
     ),
     "geo": (
         "지역·의료 근거 검수에 필요한 공신력 있는 참고 자료를 확보하지 못했습니다. "
-        "운영 센터에서 승인된 자료와 콘텐츠 주제를 확인해 주세요."
+        "처리 목록에서 승인된 자료와 콘텐츠 주제를 확인해 주세요."
     ),
     # 참고자료가 실제 문서 확인(빈 페이지·없는 문서·주제 불일치 제거)과 검증 목록 치유 뒤에도
     # 하나도 남지 않았다. 병원명·지역 누락(GEO) 거절과 원인이 달라 문구를 나눈다.
     "references": GENERATION_REFERENCE_REJECTION_MESSAGE,
     "seo": (
         "검색 문서 구조 검수가 재작성 후에도 통과되지 않았습니다. "
-        "운영 센터에서 제목과 문서 구조 차단 원인을 확인해 주세요."
+        "처리 목록에서 제목과 문서 구조 차단 원인을 확인해 주세요."
     ),
     "forbidden": (
         "의료광고 금지 표현이 재작성 후에도 남았습니다. "
-        "운영 센터에서 차단된 공개 필드를 확인해 주세요."
+        "처리 목록에서 차단된 공개 필드를 확인해 주세요."
     ),
     "faq": (
         "FAQ 공개 필수 항목이 재작성 후에도 완성되지 않았습니다. "
-        "운영 센터에서 질문과 답변 요약을 확인해 주세요."
+        "처리 목록에서 질문과 답변 요약을 확인해 주세요."
     ),
     "truncated": (
         "생성 출력이 잘려 완전한 원고를 받지 못했습니다. "
@@ -87,12 +87,23 @@ _REJECTION_MESSAGES = {
     ),
     "must_use": (
         "승인된 필수 문구가 재작성 후에도 원문 그대로 들어가지 않았습니다. "
-        "운영 센터에서 병원 정보 탭의 필수 문구를 확인해 주세요."
+        "처리 목록에서 병원 정보 탭의 필수 문구를 확인해 주세요."
     ),
     "exam_title": (
         "검사 이름에 '치료'를 붙인 제목이 재작성 후에도 남았습니다. "
         "다음 자동 재시도가 제목을 다시 씁니다."
     ),
+}
+# 2026-11-20 메뉴 이름이 「운영 센터」→「처리 목록」으로 바뀌었다. 그 전에 DB에 저장된 문구도
+# 같은 거절로 알아본다 — 허용 목록·분류가 글자 그대로 비교하므로, 옛 문구가 「기타」로 바뀌면 안 된다.
+def _legacy_operations_center_copy(message: str) -> str:
+    return message.replace("처리 목록에서", "운영 센터에서")
+
+
+_LEGACY_REJECTION_MESSAGES = {
+    _legacy_operations_center_copy(message): message
+    for message in (_DEFAULT_REJECTION_MESSAGE, *_REJECTION_MESSAGES.values())
+    if _legacy_operations_center_copy(message) != message
 }
 GENERATION_REJECTION_SAFE_MESSAGES = frozenset(
     {_DEFAULT_REJECTION_MESSAGE, *_REJECTION_MESSAGES.values()}
@@ -239,6 +250,8 @@ def safe_generation_rejection_message(message: str | None) -> str:
 
     if message in GENERATION_REJECTION_SAFE_MESSAGES:
         return message
+    if message in _LEGACY_REJECTION_MESSAGES:
+        return _LEGACY_REJECTION_MESSAGES[message]
     return _DEFAULT_REJECTION_MESSAGE
 
 
@@ -255,8 +268,9 @@ def _safe_rejection_message(error: ValueError) -> str:
 def rejection_kind_for_message(message: str | None) -> str:
     """저장된 운영자 문구에서 거절 라벨을 되짚는다(분류기가 만든 문구만 안다)."""
 
+    current = _LEGACY_REJECTION_MESSAGES.get(message or "", message)
     for kind, safe_message in _REJECTION_MESSAGES.items():
-        if message == safe_message:
+        if current == safe_message:
             return kind
     return GENERATION_REJECTION_OTHER
 

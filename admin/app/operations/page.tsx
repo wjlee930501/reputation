@@ -4,7 +4,6 @@ import { Suspense, useMemo } from 'react'
 
 import { partitionOperationsRows, selectCurrentAction } from '@/lib/operations-center'
 import { OperatorIssuePanel } from '@/app/_components/OperatorIssuePanel'
-import { CostGuardPanel } from './CostGuardPanel'
 import { CurrentActionStrip } from './CurrentActionStrip'
 import { OperationDetail } from './OperationDetail'
 import { OperationsFilters } from './OperationsFilters'
@@ -28,7 +27,7 @@ function OperationsCenter() {
       <header className="ops-header">
         <div>
           <p className="admin-eyebrow">MotionLabs 고객 운영 현황</p>
-          <h1 className="title2 mt-1 text-slate-950">운영 센터</h1>
+          <h1 className="title2 mt-1 text-slate-950">처리 목록</h1>
         </div>
         <p className="ops-refresh-note">화면은 자동으로 최신 상태를 확인합니다.</p>
       </header>
@@ -81,11 +80,10 @@ function OperationsCenter() {
         />
       </div>
 
-      <CostGuardPanel canRaiseLimit={center.canRaiseLimit} />
     </div>
   )
 }
 
 export default function OperationsPage() {
-  return <Suspense fallback={<div className="ops-page"><div className="ops-queue-state" role="status">운영 센터를 여는 중입니다.</div></div>}><OperationsCenter /></Suspense>
+  return <Suspense fallback={<div className="ops-page"><div className="ops-queue-state" role="status">처리 목록을 여는 중입니다.</div></div>}><OperationsCenter /></Suspense>
 }

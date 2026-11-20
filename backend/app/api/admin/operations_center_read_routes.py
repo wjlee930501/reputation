@@ -4,7 +4,7 @@ import uuid
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.admin.operations_center_actions import (
@@ -31,6 +31,7 @@ from app.api.admin.operations_center_serializers import (
 from app.core.database import get_db
 from app.models.admin_user import AdminUser
 from app.models.content import ContentItem
+from app.models.hospital import Hospital
 from app.models.operations import Incident, OperationRun
 from app.schemas.operations import (
     IncidentDetailResponse,
@@ -106,6 +107,40 @@ async def get_operations_overview(
         summaries.append(OperationsQueueSummary(queue=queue, total=total))
         items.extend(rows)
     return OperationsOverviewResponse(queues=summaries, items=items)
+
+
+@router.get("/nav-counts")
+async def get_nav_counts(
+    db: AsyncSession = Depends(get_db),
+    actor: AdminUser = Depends(require_operations_account),
+) -> dict[str, int]:
+    """메뉴 배지 숫자(2026-11-20 마케팅 요청) — 처리 목록·병원·상담 요청.
+
+    처리 목록 배지는 문제·복구 큐를 기본 필터로 읽은 total 그대로다. 그 total은
+    `is_operator_todo`를 통과한 사고의 원인 묶음 수라(자동 복구 중인 맥락 행은 total에
+    들지 않는다) 일일 요약의 「사람의 일」과 같다. 큐를 따로 세지 않고 같은 함수를 부른다.
+    병원 수는 전체 병원, 상담 요청은 운영 점검용을 뺀 실운영 수(`/admin/leads/summary`)다.
+    """
+    # leads 라우터는 무겁고 이 모듈보다 나중에 올라온다 — 순환을 피해 여기서 부른다.
+    from app.api.admin.leads import get_sales_lead_summary
+
+    todo_groups, _rows = await load_operations_queue(
+        db,
+        OperationsQueue.INCIDENTS,
+        OperationsFilters(),
+        page=1,
+        page_size=1,
+        overview=True,
+        actor=actor,
+    )
+    hospital_count = int((await db.execute(select(func.count(Hospital.id)))).scalar_one() or 0)
+    leads = await get_sales_lead_summary(db=db)
+    return {
+        "operator_todo_groups": int(todo_groups),
+        "hospital_count": hospital_count,
+        "lead_total": int(leads["total"]),
+        "lead_needs_attention": int(leads["needs_attention"]),
+    }
 
 
 @router.get("/queues/{queue}", response_model=OperationsQueueResponse)
