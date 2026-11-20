@@ -137,6 +137,16 @@ async function capture(page, name, { fullPage = true } = {}) {
   })
 }
 
+// Admin 콘텐츠 화면은 기본으로 '이번 달'만 보인다. 리허설 글은 날짜가 고정(2026-10)이라 그 달을 골라야
+// 목록에 나온다 — 고르지 않으면 달이 바뀐 뒤 글 버튼을 찾지 못하고 시간 초과로 끝난다.
+async function openAdminContentMonth(page) {
+  await page.goto(`${args['admin-url']}/hospitals/${fixture.hospitalId}/content`, { waitUntil: 'networkidle' })
+  const { year, month } = fixture.contentMonth ?? { year: 2026, month: 10 }
+  await page.locator('#content-year').selectOption(String(year))
+  await page.locator('#content-month').selectOption(String(month))
+  await page.waitForLoadState('networkidle')
+}
+
 async function authenticateAdmin(context, page) {
   await page.goto(`${args['admin-url']}/login`, { waitUntil: 'networkidle' })
   await page.getByLabel('관리자 이메일').fill('qa.owner@example.test')
@@ -273,7 +283,7 @@ try {
     const adminPage = await adminContext.newPage()
     observe(adminPage, 'admin-pass')
     await authenticateAdmin(adminContext, adminPage)
-    await adminPage.goto(`${args['admin-url']}/hospitals/${fixture.hospitalId}/content`, { waitUntil: 'networkidle' })
+    await openAdminContentMonth(adminPage)
     await adminPage.getByRole('button', { name: '검사 전 확인할 준비 사항 승인본' }).click()
     await adminPage.getByText('task16-approved-body', { exact: false }).waitFor()
     await capture(adminPage, 'admin-candidate-pass')
@@ -299,8 +309,7 @@ try {
     observe(adminPage, 'admin')
     await authenticateAdmin(adminContext, adminPage)
 
-    const contentUrl = `${args['admin-url']}/hospitals/${fixture.hospitalId}/content`
-    await adminPage.goto(contentUrl, { waitUntil: 'networkidle' })
+    await openAdminContentMonth(adminPage)
     await adminPage.getByRole('button', { name: fixture.oldTitle }).click()
     await adminPage.getByRole('button', { name: '편집', exact: true }).click()
     await adminPage.getByText('제목', { exact: true }).locator('..').locator('input').fill('검사 전 확인할 준비 사항 수정본')

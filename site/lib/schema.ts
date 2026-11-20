@@ -102,6 +102,11 @@ export function selectFaqEntries(
   hospitalRootUrl: string,
   limit: number = FAQ_MAX_ITEMS,
 ): FaqEntry[] {
+  // 같은 질문 문장의 FAQ 글이 여러 편 있으면(측정 질문 하나로 여러 달 글을 쓴 경우) 처음 것
+  // 하나만 싣는다 — 행복드림 홈에 '경산 내과 병원 추천해 주시겠어요?'가 세 번 나왔다(2026-11-20).
+  // 상한을 자르기 전에 걸러 빈자리를 다음 질문이 채운다. 비교는 띄어쓰기·문장부호만 접은
+  // 같은 문장뿐이다 — 비슷한 질문을 묶는 것은 승인된 질문을 고르는 일이라 하지 않는다.
+  const seen = new Set<string>()
   return contents
     .filter((c) => c.content_type === 'FAQ')
     .map((c) => ({
@@ -111,6 +116,14 @@ export function selectFaqEntries(
       url: `${hospitalRootUrl}/contents/${c.id}`,
     }))
     .filter((entry) => Boolean(entry.question && entry.answer))
+    .filter((entry) => {
+      const key = faqQuestionKey(entry.question)
+      // 문장부호·기호뿐이라 비교 키가 비면 중복으로 보지 않는다(서로 다른 질문을 하나로 묶지 않게).
+      if (!key) return true
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
     .slice(0, Math.max(0, limit))
 }
 
@@ -139,4 +152,33 @@ export function buildFaqPageJsonLd(
       },
     })),
   }
+}
+
+/**
+ * 질문 문장 비교 키 — 유니코드 정규화(NFKC), 소문자, 띄어쓰기·문장부호 제거.
+ * '경산 내과 병원 추천해 주시겠어요?'와 '경산 내과 병원  추천해 주시겠어요 ?'는 같은 질문이다.
+ */
+export function faqQuestionKey(question: string): string {
+  return question
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(/[\s\p{P}\p{S}]+/gu, '')
+}
+
+/**
+ * 홈의 질문 목록이 고를 수 있는 글 — FAQ 섹션이 가져간 글과, FAQ 섹션이 이미 보인 질문과 같은
+ * 문장의 글을 뺀다. 같은 질문의 FAQ 글이 중복이라 FAQ 섹션에서 빠지면, id만 보고 거르는 예전
+ * 규칙으로는 그 글이 질문 목록에 다시 나왔다.
+ */
+export function selectClusterContents<T extends Pick<ContentSummary, 'id' | 'faq_question' | 'title'>>(
+  contents: readonly T[],
+  faqEntries: readonly FaqEntry[],
+): T[] {
+  const entryIds = new Set(faqEntries.map((entry) => entry.id))
+  const shownQuestions = new Set(faqEntries.map((entry) => faqQuestionKey(entry.question)).filter(Boolean))
+  return contents.filter((content) => {
+    if (entryIds.has(content.id)) return false
+    const key = faqQuestionKey(content.faq_question || content.title || '')
+    return !key || !shownQuestions.has(key)
+  })
 }
