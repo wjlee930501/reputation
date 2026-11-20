@@ -22,12 +22,6 @@ import {
 
 const COPY = ADMIN_COPY.siteEditor
 
-const BACKGROUND_SWATCH: Record<SectionBackground, string> = {
-  default: 'bg-slate-50',
-  white: 'bg-white',
-  tint: 'bg-blue-50',
-  band: 'bg-slate-700',
-}
 
 export function sectionName(id: SectionId): string {
   return COPY.sections[id] ?? id
@@ -77,7 +71,6 @@ export function SectionList({
             } ${section.enabled ? 'bg-white' : 'bg-slate-50'}`}
           >
             <div className="flex items-center gap-2 px-2.5 py-2">
-              <span aria-hidden className={`h-6 w-1.5 shrink-0 rounded ${BACKGROUND_SWATCH[section.background]} border border-slate-200`} />
               <button
                 type="button"
                 onClick={() => onSelect(section.id)}
@@ -394,7 +387,8 @@ export function FaqSettings({
         label={COPY.faqMode}
         value={faq.mode}
         options={COPY.faqModes}
-        onChange={(mode) => onChange({ ...faq, mode })}
+        // 자동으로 바꾸면 고른 글을 비운다 — 서버는 자동 모드에서도 고른 글 id를 검사한다(내려간 글이 남으면 저장이 막힌다).
+        onChange={(mode) => onChange({ ...faq, mode, content_ids: mode === 'auto' ? [] : faq.content_ids })}
         disabled={disabled}
       />
       {!manual && (
@@ -419,10 +413,27 @@ export function FaqSettings({
           {faq.content_ids.length > 0 && (
             <div className="space-y-1">
               <p className="text-xs font-semibold text-slate-700">{COPY.faqPicked}</p>
-              <ol className="list-decimal space-y-0.5 pl-5 text-xs text-slate-700">
-                {faq.content_ids.map((id) => (
-                  <li key={id}>{byId.get(id)?.question ?? id}</li>
-                ))}
+              <ol className="list-decimal space-y-1 pl-5 text-xs text-slate-700">
+                {faq.content_ids.map((id) => {
+                  const candidate = byId.get(id)
+                  return (
+                    <li key={id}>
+                      <span className="flex items-start gap-2">
+                        <span className={`flex-1 break-keep ${candidate || candidates === null ? '' : 'text-red-700'}`}>
+                          {candidate?.question ?? (candidates === null ? COPY.loading : COPY.faqUnavailable)}
+                        </span>
+                        <button
+                          type="button"
+                          disabled={disabled}
+                          onClick={() => onChange({ ...faq, content_ids: faq.content_ids.filter((item) => item !== id) })}
+                          className="shrink-0 font-semibold text-blue-700 hover:underline disabled:opacity-50"
+                        >
+                          {COPY.faqRemove}
+                        </button>
+                      </span>
+                    </li>
+                  )
+                })}
               </ol>
             </div>
           )}

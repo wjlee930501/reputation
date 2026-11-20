@@ -125,6 +125,31 @@ export function useSiteConfigEditor(hospitalId: string) {
     return () => window.removeEventListener('beforeunload', guard)
   }, [dirty])
 
+  // 쓰기 뒤 다시 불러오기까지 잠금(busy)을 유지한다 — 재조회가 늦게 오면 그 사이 입력한 변경을 덮는다.
+  // 앱 안 링크(Next Link)는 문서를 떠나지 않아 beforeunload가 울리지 않는다 — 링크 누름을 먼저 가로챈다.
+  useEffect(() => {
+    if (!dirty) return
+    const guard = (event: MouseEvent) => {
+      if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
+      const anchor = (event.target as Element | null)?.closest?.('a[href]') as HTMLAnchorElement | null
+      if (!anchor || anchor.target === '_blank' || anchor.hasAttribute('download')) return
+      const next = new URL(anchor.href, window.location.href)
+      if (next.origin !== window.location.origin) return
+      if (next.pathname === window.location.pathname && next.search === window.location.search) return
+      if (!window.confirm(COPY.leaveConfirm)) {
+        event.preventDefault()
+        event.stopPropagation()
+      }
+    }
+    document.addEventListener('click', guard, true)
+    return () => document.removeEventListener('click', guard, true)
+  }, [dirty])
+
+  async function reloadAfter<T extends { warnings?: unknown } | null>(response: T): Promise<T> {
+    await load(readIssues(response?.warnings))
+    return response
+  }
+
   async function run<T>(kind: Exclude<EditorBusy, null>, request: () => Promise<T>): Promise<T | null> {
     setBusy(kind)
     setNotice(null)
@@ -189,12 +214,11 @@ export function useSiteConfigEditor(hospitalId: string) {
         method: 'POST',
         headers: { 'Idempotency-Key': key },
         body: JSON.stringify(draftExpectation(current)),
-      }),
+      }).then(reloadAfter),
     )
     if (!response) return
     publishKey.current = null
     const row = readRow(response.published)
-    await load(readIssues(response.warnings))
     setNotice({ tone: 'ok', text: COPY.published.replace('{version}', String(row?.version ?? '')) })
     return true
   }
@@ -202,9 +226,10 @@ export function useSiteConfigEditor(hospitalId: string) {
   async function discard() {
     if (!state?.draft) return
     const current = state.draft
-    const response = await run('discard', () => fetchAPI(discardDraftPath(hospitalId, current), { method: 'DELETE' }))
+    const response = await run('discard', () =>
+      fetchAPI<{ warnings?: unknown }>(discardDraftPath(hospitalId, current), { method: 'DELETE' }).then(reloadAfter),
+    )
     if (response === null) return
-    await load()
     setNotice({ tone: 'ok', text: COPY.discarded })
     return true
   }
@@ -215,10 +240,9 @@ export function useSiteConfigEditor(hospitalId: string) {
       fetchAPI<{ warnings: unknown }>(restorePath(hospitalId, versionId), {
         method: 'POST',
         body: JSON.stringify(draftExpectation(state.draft)),
-      }),
+      }).then(reloadAfter),
     )
     if (!response) return
-    await load(readIssues(response.warnings))
     setNotice({ tone: 'ok', text: COPY.restored })
     return true
   }
@@ -229,10 +253,9 @@ export function useSiteConfigEditor(hospitalId: string) {
       fetchAPI<{ warnings: unknown }>(siteConfigPath(hospitalId, '/reset'), {
         method: 'POST',
         body: JSON.stringify({ layout, ...draftExpectation(state.draft) }),
-      }),
+      }).then(reloadAfter),
     )
     if (!response) return
-    await load(readIssues(response.warnings))
     setNotice({ tone: 'ok', text: COPY.resetDone })
     return true
   }
