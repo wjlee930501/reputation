@@ -558,6 +558,8 @@ RESERVED_SITE_SLUGS = frozenset(
         "sitemap",
         "favicon",
         "survey",
+        # 섹션 설정 미리보기 화면 `/preview/{token}`(레이아웃 편집기 3b가 사이트 경로를 만든다).
+        "preview",
     }
 )
 
@@ -998,6 +1000,19 @@ async def update_profile(
         "transit_note",
     }
     update_data = body.model_dump(exclude_unset=True)
+    # 섹션 설정(레이아웃 편집기) 공개 판이 있는 병원은 레이아웃을 편집기의 공개 반영·초기화로만 바꾼다 —
+    # 두 곳에서 바꾸면 공개 판과 갈라져 설정이 꺼진다. 화면이 같은 값을 다시 보내는 것은 막지 않는다.
+    if "site_layout" in update_data and update_data["site_layout"] != h.site_layout:
+        from app.services.site_config_refs import published_config
+
+        if await published_config(db, h.id) is not None:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "SITE_LAYOUT_OWNED_BY_SITE_CONFIG",
+                    "message": "이 병원은 섹션 설정이 공개돼 있어 레이아웃은 섹션 설정 화면에서 바꿔 주세요.",
+                },
+            )
     submitted_address = update_data.get("address")
     address_changed = (
         isinstance(submitted_address, str)

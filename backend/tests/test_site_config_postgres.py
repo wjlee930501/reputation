@@ -238,6 +238,15 @@ async def test_draft_save_preview_publish_restore_reset_and_discard(db, client, 
     assert reused.status_code == 409
     await db.refresh(hospital)
     assert hospital.site_layout == "B"
+    # 공개 판이 있으면 병원 정보 PATCH로 레이아웃을 바꾸지 못한다(같은 값을 다시 보내는 것은 된다).
+    profile = f"/api/v1/admin/hospitals/{hospital_id}/profile"
+    moved = await client.patch(profile, headers=ADMIN, json={"site_layout": "C"})
+    assert moved.status_code == 409, moved.text
+    assert moved.json()["detail"]["code"] == "SITE_LAYOUT_OWNED_BY_SITE_CONFIG"
+    cleared = await client.patch(profile, headers=ADMIN, json={"site_layout": None})
+    assert cleared.status_code == 409
+    same = await client.patch(profile, headers=ADMIN, json={"site_layout": "B"})
+    assert same.status_code != 409, same.text
     # 공개 중이 아닌 병원은 재검증 intent 없이 저장만.
     assert await _count_runs(db, hospital_id, "SITE_REVALIDATION") == 0
     assert client.revalidated == []
