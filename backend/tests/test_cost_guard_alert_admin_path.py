@@ -39,3 +39,27 @@ def test_stored_cost_incident_points_at_the_settings_screen():
 def test_other_incidents_keep_their_guidance():
     assert current_incident_guidance("SITE_BUILD_FAILED", "그대로", "/hospitals/1") == ("그대로", "/hospitals/1")
     assert COST_GUARD_NEXT_ACTION.startswith("설정 화면")
+
+
+def test_stored_cost_incident_slack_link_points_at_settings():
+    import uuid
+
+    from app.services.notification_contracts import IncidentSlackProjection
+    from app.services.notification_messages import build_open_incident_notification
+
+    projection = IncidentSlackProjection(
+        incident_id=uuid.uuid4(),
+        hospital_name="비용 한도",
+        severity="HIGH",
+        customer_impact="자동 AI 호출이 차단됩니다.",
+        next_action="처리 목록의 비용 가드 사용량을 확인하세요.",
+        admin_path="/operations",
+        owner_label="담당자 미배정",
+        sla_label="기한 내",
+        incident_type="COST_GUARD_LIMIT_REACHED",
+    )
+    intent = build_open_incident_notification(projection, "https://admin.example.com")
+    text = str(intent.message.blocks) + intent.message.fallback_text
+    assert "https://admin.example.com/accounts" in text
+    assert "자동 작업 한도" in text
+    assert "/operations" not in text
