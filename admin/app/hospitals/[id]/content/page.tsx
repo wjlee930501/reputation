@@ -44,6 +44,7 @@ import { ContentFocusSection } from './ContentFocusSection'
 import { ReadOnlySignals } from './ReadOnlySignals'
 import { ScheduleSection } from './ScheduleSection'
 import { DangerMenu } from '@/app/_components/DangerMenu'
+import { formatActorLabel } from '@/lib/actor-display'
 
 const ESSENCE_LABELS: Record<string, { label: string; color: string }> = {
   ALIGNED: { label: '운영 기준 통과', color: 'bg-green-100 text-green-700' },
@@ -1343,7 +1344,7 @@ export default function ContentPage() {
                   <div className="flex flex-wrap gap-3">
                     {selected.post_publish_reviewed_at ? (
                       <div className="flex-1 min-w-48 rounded-lg border border-green-200 bg-green-50 px-4 py-2.5 text-center text-sm font-medium text-green-700">
-                        {selected.post_publish_reviewed_by ?? currentOperatorName ?? '운영자'} · {formatDateTime(selected.post_publish_reviewed_at)} 확인 완료
+                        {selected.post_publish_reviewed_by ? formatActorLabel(selected.post_publish_reviewed_by) : currentOperatorName ?? '운영자'} · {formatDateTime(selected.post_publish_reviewed_at)} 확인 완료
                       </div>
                     ) : selectedSample ? (
                       <button

@@ -438,10 +438,14 @@ export const ADMIN_COPY = {
     confirmNo: '취소',
     // {province}·{total}은 layoutDistributionLine이 채운다.
     distribution: '{province} 공개 병원 {total}곳',
+    // 병원 정보에서는 이 병원을 빼고 센다(`site_layout.layout_distribution`의 exclude) —
+    // 이미 고른 레이아웃이 0으로 보여 오류로 읽히지 않게 범위를 밝힌다(2026-11-20).
+    distributionOthers: '{province} 다른 공개 병원 {total}곳(이 병원 제외)',
     distributionUnset: '고르기 전',
     distributionUnknown: '지역을 읽지 못해 같은 지역 분포를 보여 줄 수 없습니다.',
     distributionNone: '{province}에 공개 중인 다른 병원이 아직 없습니다.',
     sameRegionCount: '{province} {count}곳 사용 중',
+    sameRegionCountOthers: '{province} 다른 병원 {count}곳 사용 중',
     loadFailed: '같은 지역 분포를 불러오지 못했습니다. 레이아웃은 그대로 고를 수 있습니다.',
   },
   // 공개 주소 링크·복사(2026-11-20 마케팅 요청 — 모든 주소 새 탭 링크 + 복사).
@@ -490,6 +494,49 @@ export const ADMIN_COPY = {
     unkillBody: '중지했던 자동 작업 다시 시작',
     unkillConfirm: '다시 시작',
   },
+  // 상담 요청 — 운영 점검용 접수(`is_operations_test`) 보기 전환(2026-11-20).
+  leads: {
+    showTestLeads: '운영 점검용 {count}건 숨김 · 보기',
+    hideTestLeads: '운영 점검용 {count}건 숨기기',
+  },
+  // 병원 상태 남은 조건 중 화면이 모르는 키(영문 키를 그대로 보이지 않는다).
+  unknownCondition: '확인 필요 항목',
+  // 보고서 주의·차단에 저장된 코드(`report-warning-labels.ts`). 모르는 코드는 unknown.
+  reportNoticeCodes: {
+    LEGACY_REPORT_UNVERIFIED: '이전 방식 보고서 · 미검증',
+    MANIFEST_OPEN: '측정 집계 마감 전',
+    MANIFEST_EMPTY: '측정 계획 없음',
+    MANIFEST_CELL_FAILURES: '일부 측정 실패',
+    CONFIGURED_PLATFORM_WITHOUT_CELLS: '측정 계획에서 빠진 AI 서비스 있음',
+    MEASUREMENT_SLOT_SET_INCOMPLETE: '측정 반복 기록 불완전',
+    MEASUREMENT_SAMPLE_LIMITED: '측정 표본 일부만 확정 · 제한된 결과',
+    MEASUREMENT_SAMPLE_UNAVAILABLE: '확정 측정 표본 없음',
+    MEASUREMENT_SLOTS_PENDING: '측정 진행 중',
+    DOCTOR_ARTIFACT_UNVALIDATED: '원장 전달용 PDF 검증 전',
+  } as Record<string, string>,
+  reportNoticeUnknown: '추가 확인 필요 항목',
+  // 워커가 남기는 `system:*` 행위자(`actor-display.ts`). 모르는 값은 fallback.
+  systemActors: {
+    'ai-review': 'AI 자동 검토',
+    'ai-review-noncritical': 'AI 자동 검토',
+    'ai-correction': 'AI 자동 교정',
+    'auto-publish': '자동 발행',
+    'essence-auto': '운영 기준 자동 생성',
+    'essence-auto-approval': '운영 기준 자동 적용',
+    'profile-autofill': '병원 정보 자동 입력',
+    'profile-facts': '병원 정보 자동 반영',
+    'profile-completion': '병원 정보 완료 자동 확인',
+    'doctor-survey': '원장 사전 설문',
+    'public-inquiry': '도입문의 자동 접수',
+    'domain-dns-poll': '도메인 자동 확인',
+    'topic-swap': '주제 자동 교체',
+    'daily-renewal': '자동 재작성',
+    'stall-detector': '정체 자동 복구',
+    'content-backlog-recovery': '밀린 글 자동 복구',
+  } as Record<string, string>,
+  systemActorFallback: '자동 처리',
+  // 병원 목록 배지 — 로고·대표색·첫 화면 문구·정보 우선순위의 값 누락(사진 아님).
+  visualItemsMissing: '공개 페이지 항목 입력 필요',
   // 병원 정보 > 진료시간의 공휴일 칸(2026-11-18 — 공휴일 휴진을 AI가 읽는 구조화 데이터에 싣는다).
   businessHours: {
     holiday: '공휴일',
