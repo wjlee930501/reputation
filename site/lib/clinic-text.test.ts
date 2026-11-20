@@ -68,3 +68,14 @@ test('inside a kept note, the time range is kept again so a narrow cell breaks b
   assert.deepEqual(innerKeepSegments('08:30 ~ 18:30'), [{ text: '08:30 ~ 18:30', keep: false }])
   assert.deepEqual(innerKeepSegments('(점심시간 없음,'), [{ text: '(점심시간 없음,', keep: false }])
 })
+
+test('commas without a following space and punctuation after a note are handled (Codex review)', () => {
+  assert.deepEqual(kept('08:30 ~ 18:30 (점심 13:00~14:00,접수 마감 18:00)'), [
+    '08:30 ~ 18:30',
+    '(점심 13:00~14:00,',
+    '접수 마감 18:00)',
+  ])
+  assert.deepEqual(kept('토요일 08:00 ~ 13:00 (점심시간 없음).'), ['08:00 ~ 13:00', '(점심시간 없음).'])
+  const text = '평일 (점심 13:00~14:00,접수 마감 18:00), 주말 휴진'
+  assert.equal(keepTogetherSegments(text).map((s) => s.text).join(''), text)
+})

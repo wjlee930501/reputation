@@ -210,13 +210,13 @@ export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
                 {WEEK_DAY_KEYS.map((key) => (
                   <li key={key} aria-current={key === today.key ? 'date' : undefined}>
                     <span>{dayShortLabel(key)}</span>
-                    <span>{hospital.business_hours?.[key] || '-'}</span>
+                    <span>{hospital.business_hours?.[key] ? <KeepTogether text={hospital.business_hours[key]} /> : '-'}</span>
                   </li>
                 ))}
                 {holiday ? (
                   <li>
                     <span>{HOLIDAY_LABEL}</span>
-                    <span>{holiday.value}</span>
+                    <span><KeepTogether text={holiday.value} /></span>
                   </li>
                 ) : null}
               </ul>
@@ -407,9 +407,12 @@ export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
                     <td>
                       <ul className={s.plainList}>
                         {WEEK_DAY_KEYS.map((key) => (
-                          <li key={key}>{dayShortLabel(key)} {hospital.business_hours?.[key] || '-'}</li>
+                          <li key={key}>
+                            {dayShortLabel(key)}{' '}
+                            {hospital.business_hours?.[key] ? <KeepTogether text={hospital.business_hours[key]} /> : '-'}
+                          </li>
                         ))}
-                        {holiday ? <li>{HOLIDAY_LABEL} {holiday.value}</li> : null}
+                        {holiday ? <li>{HOLIDAY_LABEL} <KeepTogether text={holiday.value} /></li> : null}
                       </ul>
                     </td>
                   </tr>

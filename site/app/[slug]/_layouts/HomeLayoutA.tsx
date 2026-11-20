@@ -333,14 +333,14 @@ export function HomeLayoutA({ model }: { model: ClinicHomeModel }) {
                   return (
                     <li key={key} aria-current={key === today.key ? 'date' : undefined}>
                       <span>{dayShortLabel(key)}요일</span>
-                      <span>{time || '-'}</span>
+                      <span>{time ? <KeepTogether text={time} /> : '-'}</span>
                     </li>
                   )
                 })}
                 {holiday ? (
                   <li>
                     <span>{HOLIDAY_LABEL}</span>
-                    <span>{holiday.value}</span>
+                    <span><KeepTogether text={holiday.value} /></span>
                   </li>
                 ) : null}
               </ul>

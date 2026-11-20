@@ -62,7 +62,8 @@ function segmentParenthetical(group: string, segments: TextSegment[]) {
     pushSegment(segments, group, true)
     return
   }
-  const clauses = group.split(/(?<=,)(\s+)/)
+  // 쉼표 뒤 공백이 없어도('…14:00,접수 마감') 쉼표 뒤에서 나눈다. 원문 글자는 그대로 둔다.
+  const clauses = group.split(/(?<=,)(\s*)/).filter(Boolean)
   for (const clause of clauses) {
     if (/^\s+$/.test(clause)) pushSegment(segments, clause, false)
     else if (clause.length <= KEEP_MAX_CHARS) pushSegment(segments, clause, true)
@@ -74,7 +75,8 @@ export function keepTogetherSegments(text: string, options: { compounds?: boolea
   const segments: TextSegment[] = []
   const compounds = options.compounds ?? false
   let cursor = 0
-  for (const match of text.matchAll(/\([^()]*\)/g)) {
+  // 괄호 바로 뒤의 쉼표·마침표도 묶음에 붙인다 — '(점심시간 없음).'의 '.'만 다음 줄로 떨어지지 않게.
+  for (const match of text.matchAll(/\([^()]*\)[,.]?/g)) {
     const start = match.index ?? 0
     segmentPlain(text.slice(cursor, start), compounds, segments)
     segmentParenthetical(match[0], segments)
