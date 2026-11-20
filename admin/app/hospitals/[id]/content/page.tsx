@@ -11,7 +11,6 @@ import { OperatorIssuePanel } from '@/app/_components/OperatorIssuePanel'
 import { isExpectedOperatorRequestFailure, safeOperatorError } from '@/lib/operations-journey'
 import {
   belongsToMonthView,
-  buildPublicContentUrl,
   getPublishNotificationPresentation,
   sortCarriedOverFirst,
 } from '@/lib/content'
@@ -21,6 +20,7 @@ import {
   blockedHint,
   canConfirmSample,
   describeRowState,
+  isVisibleOnPublicPage,
   matchesRowFilter,
   summarizeRows,
 } from '@/lib/content-rows'
@@ -34,7 +34,8 @@ import {
   saveDraftSnapshot,
 } from '@/lib/edit-draft-snapshot'
 import { formatDate, formatDateTime } from '@/lib/format'
-import { platformSubdomainHost } from '@/lib/platform-domain'
+import { publicContentUrl } from '@/lib/public-address'
+import { ADMIN_COPY } from '@/lib/admin-copy'
 import { fetchCurrentAccount } from '@/lib/current-account'
 import { resolveAuditActorName } from '@/lib/publishing'
 import { ContentItem, ContentReference, TYPE_LABELS } from '@/types'
@@ -136,12 +137,30 @@ function describeGuideLink(text: unknown, linkedId: string | null | undefined): 
   return linkedId ? '연결됨' : '미연결'
 }
 
+/** 목록 행의 「공개 글」 — 공개 페이지에 실제로 보이는 글이고 병원 주소가 열릴 때만. */
+function ArticleLink({ item, url }: { item: ContentItem; url: string | null }) {
+  if (!url || !isVisibleOnPublicPage(item)) return null
+  return (
+    <a
+      href={url}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="mr-1 inline-flex min-h-11 items-center rounded-md border border-blue-200 bg-blue-50 px-2.5 text-xs font-semibold text-blue-700 hover:bg-blue-100"
+    >
+      {ADMIN_COPY.address.openArticle} <span aria-hidden className="ml-0.5">↗</span>
+    </a>
+  )
+}
+
 export default function ContentPage() {
   const { id } = useParams<{ id: string }>()
   // 레이아웃이 이미 병원 정보를 들고 있다 — 공개 링크(aeo_domain/공개 주소)도 여기서 읽는다.
-  const { hospital, refetch: refetchHeader } = useHospitalHeader()
-  const aeoDomain = hospital?.aeo_domain ?? null
-  const publicHost = aeoDomain ?? platformSubdomainHost(hospital?.slug)
+  const { hospital, overview, refetch: refetchHeader } = useHospitalHeader()
+  // 공개 글 링크는 지금 열리는 주소로만 — 저장만 한 자기 도메인으로 만들지 않는다(public-address).
+  const publicAddressInput = hospital
+    ? { ...hospital, public_service_state: hospital.public_service_state ?? overview?.public_service }
+    : null
+  const articleUrl = (contentId: string) => (publicAddressInput ? publicContentUrl(publicAddressInput, contentId) : null)
 
   // Month filter
   const [year, setYear] = useState(new Date().getFullYear())
@@ -601,7 +620,7 @@ export default function ContentPage() {
 
   const selectedRow = selected ? describeRowState(selected.row_state, selected.scheduled_date) : null
   const selectedNotification = selected ? getPublishNotificationPresentation(selected) : null
-  const selectedPublicUrl = selected ? buildPublicContentUrl(publicHost, selected.id) : null
+  const selectedPublicUrl = selected ? articleUrl(selected.id) : null
   const selectedVisible = selected?.compliance?.public_visibility?.visible === true
   const selectedSample = selected ? canConfirmSample(selected) : false
   // 금지 표현 검출도 backend compliance가 단일 기준 (FAQ 분리 필드까지 포함해 검사한다).
@@ -753,6 +772,7 @@ export default function ContentPage() {
                       운영 센터에서 조치
                     </a>
                   )}
+                  <ArticleLink item={item} url={articleUrl(item.id)} />
                   {item.carried_over_from && (
                     <span className="mt-2 inline-flex rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700">
                       전월 이월 · 우선 처리
@@ -830,6 +850,7 @@ export default function ContentPage() {
                       )}
                     </td>
                     <td className="px-6 py-4 text-right">
+                      <ArticleLink item={item} url={articleUrl(item.id)} />
                       <button
                         onClick={() => openDetail(item)}
                         className={`inline-flex min-h-11 items-center rounded-md px-2.5 text-xs font-medium hover:bg-slate-100 ${canConfirmSample(item) ? 'text-blue-700' : 'text-slate-600'}`}

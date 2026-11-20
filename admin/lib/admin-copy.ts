@@ -444,6 +444,20 @@ export const ADMIN_COPY = {
     sameRegionCount: '{province} {count}곳 사용 중',
     loadFailed: '같은 지역 분포를 불러오지 못했습니다. 레이아웃은 그대로 고를 수 있습니다.',
   },
+  // 공개 주소 링크·복사(2026-11-20 마케팅 요청 — 모든 주소 새 탭 링크 + 복사).
+  address: {
+    copy: '복사',
+    copied: '복사됨',
+    copyFailed: '복사 실패',
+    opensInNewTab: '새 탭에서 열기',
+    notOpenYet: '아직 열리지 않는 주소',
+    live: '운영 주소',
+    platform: '기본 주소',
+    custom: '연결 도메인',
+    openSite: '공개 사이트',
+    notLive: '공개 전',
+    openArticle: '공개 글',
+  },
   // 병원 정보 > 진료시간의 공휴일 칸(2026-11-18 — 공휴일 휴진을 AI가 읽는 구조화 데이터에 싣는다).
   businessHours: {
     holiday: '공휴일',

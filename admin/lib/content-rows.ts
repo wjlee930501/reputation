@@ -89,6 +89,11 @@ export interface ContentRowItem {
   compliance?: { public_visibility?: { visible: boolean } }
 }
 
+/** 공개 페이지에 지금 실제로 있는 글 — 「공개 글」 버튼은 이 글에만 단다(숨긴 글은 404다). */
+export function isVisibleOnPublicPage(item: ContentRowItem): boolean {
+  return item.status === 'PUBLISHED' && item.compliance?.public_visibility?.visible === true
+}
+
 /** 사람이 손대는 유일한 대상 — 공개 페이지에 실제로 있고 아직 확인하지 않은 표본. */
 export function canConfirmSample(item: ContentRowItem): boolean {
   return (

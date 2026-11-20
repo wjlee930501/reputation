@@ -21,6 +21,8 @@ import {
   type StateTone,
 } from '@/lib/hospital-states'
 import { ADMIN_COPY } from '@/lib/admin-copy'
+import { readPublicAddresses } from '@/lib/public-address'
+import { AddressLink } from '@/app/_components/AddressLink'
 import { Hospital, HospitalOverview, PLAN_CONTRACT_LABELS } from '@/types'
 import { HospitalHeaderContext } from './hospital-context'
 
@@ -137,6 +139,14 @@ export default function HospitalLayout({
   // 주소는 주소만 말한다 — 마지막 확인 시각은 자기 도메인 상태가 한 번만 말한다.
   const domainStatus = hospital ? readHospitalDomainStatus(hospital) : null
   const publicAddress = domainStatus ? domainStatus.url ?? domainStatus.detail : null
+  // 링크는 지금 열리는 주소만(`public-address`) — 저장만 한 자기 도메인은 글자로만 보인다.
+  const addresses = hospital
+    ? readPublicAddresses({ ...hospital, public_service_state: hospital.public_service_state ?? overview?.public_service })
+    : null
+  // 운영 주소가 자기 도메인이면 기본 주소도 함께 보인다(둘 다 열린다).
+  const secondaryAddress =
+    addresses?.live && addresses.custom?.open && addresses.platform ? addresses.platform : null
+  const shownAddress = addresses?.live ?? addresses?.custom ?? addresses?.platform ?? null
   // 재개 가능 여부는 서버 게이트(활성화 조건·자기 도메인 DNS)가 결정한다 — 발행 요일 설정은 조건이 아니다(H-07).
   const lifecycleAction = getHospitalLifecycleAction(hospital?.status)
   const activeTab = MAIN_TABS.find((tab) => isTabActive(pathname, hospitalId, tab.path)) ?? MAIN_TABS[0]
@@ -178,13 +188,17 @@ export default function HospitalLayout({
               {/* 자기 도메인이 없다고 "준비 중"은 아니다 — 기본 플랫폼 주소로 이미
                   서비스 중인 병원이 대부분이고, 그걸 준비 중이라 하면 운영자가 살아
                   있는 주소를 없는 것으로 안다(O-7). 목록·패널과 같은 판정을 쓴다. */}
-              <p className="mt-0.5 truncate text-xs text-slate-500">
-                {publicAddress
-                  ? `공개 주소 ${publicAddress}`
-                  : loadError
-                    ? '병원 정보를 다시 불러와 주세요'
-                    : '공개 주소 확인 중'}
-              </p>
+              <div className="mt-0.5 flex min-w-0 text-xs text-slate-500">
+                {shownAddress ? (
+                  <AddressLink address={shownAddress} label={addresses?.live ? ADMIN_COPY.address.live : ADMIN_COPY.address.notLive} />
+                ) : publicAddress ? (
+                  <span className="truncate">공개 주소 {publicAddress}</span>
+                ) : loadError ? (
+                  '병원 정보를 다시 불러와 주세요'
+                ) : (
+                  '공개 주소 확인 중'
+                )}
+              </div>
             </div>
             {(overview || overviewFailed) && (
               <details className="group relative shrink-0">
@@ -235,6 +249,16 @@ export default function HospitalLayout({
                   {planLabel}
                 </span>
               )}
+              {addresses?.live && (
+                <a
+                  href={addresses.live.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex min-h-11 items-center rounded-lg bg-blue-600 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-700"
+                >
+                  {ADMIN_COPY.address.openSite} <span aria-hidden className="ml-1">↗</span>
+                </a>
+              )}
               {lifecycleAction && (
                 <button
                   type="button"
@@ -252,12 +276,23 @@ export default function HospitalLayout({
             </div>
             {publicAddress && (
               <div className="mt-1.5 flex flex-wrap items-center gap-2 text-xs text-slate-500 sm:gap-3">
-                <span className="inline-flex min-w-0 max-w-[280px] items-baseline gap-1">
-                  공개 주소{' '}
-                  <span className="truncate text-[var(--color-revisit-text-title)]" title={publicAddress}>
-                    {publicAddress}
+                {shownAddress ? (
+                  <AddressLink
+                    address={shownAddress}
+                    label={addresses?.live ? ADMIN_COPY.address.live : ADMIN_COPY.address.notLive}
+                    className="max-w-[360px]"
+                  />
+                ) : (
+                  <span className="inline-flex min-w-0 max-w-[280px] items-baseline gap-1">
+                    공개 주소{' '}
+                    <span className="truncate text-[var(--color-revisit-text-title)]" title={publicAddress}>
+                      {publicAddress}
+                    </span>
                   </span>
-                </span>
+                )}
+                {secondaryAddress && (
+                  <AddressLink address={secondaryAddress} label={ADMIN_COPY.address.platform} className="max-w-[360px]" />
+                )}
                 {/* 공개 중인지 아닌지는 공개 서비스 상태가 말한다 — 이 줄은 자기 도메인
                     사실만 덧붙인다. 자기 도메인이 없으면 아무 말도 하지 않는다. */}
                 {domainCard && overview && (
