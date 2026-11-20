@@ -4,6 +4,9 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { ApiError, fetchAPI } from '@/lib/api'
 import { fetchCurrentAccount, type CurrentAccount } from '@/lib/current-account'
+import { ADMIN_COPY } from '@/lib/admin-copy'
+import { ConfirmDialog } from '@/app/_components/ConfirmDialog'
+import { DangerMenu } from '@/app/_components/DangerMenu'
 
 type AdminAccount = {
   id: string
@@ -148,6 +151,9 @@ export default function AccountsPage() {
     }
   }
 
+  // 정지(이메일 재입력)·활성화 확인창 대상(2026-11-20 — 확인 없이 바로 정지되던 것을 막는다).
+  const [activeDialog, setActiveDialog] = useState<AdminAccount | null>(null)
+
   async function patchAccount(account: AdminAccount, patch: Record<string, unknown>, success: string) {
     resetBanners()
     setBusyId(account.id)
@@ -188,8 +194,30 @@ export default function AccountsPage() {
   const realAccountCount = accounts.filter((account) => !account.is_operations_test).length
   const operationsTestCount = accounts.length - realAccountCount
 
+  const suspending = activeDialog?.is_active === true
   return (
     <div className="mx-auto max-w-5xl px-6 py-8">
+      <ConfirmDialog
+        open={activeDialog !== null}
+        title={suspending ? ADMIN_COPY.dangerConfirm.suspendTitle : ADMIN_COPY.dangerConfirm.activateTitle}
+        description={`${activeDialog?.email ?? ''} · ${suspending ? ADMIN_COPY.dangerConfirm.suspendBody : ADMIN_COPY.dangerConfirm.activateBody}`}
+        confirmLabel={suspending ? ADMIN_COPY.dangerConfirm.suspendConfirm : ADMIN_COPY.dangerConfirm.activateConfirm}
+        typedConfirmation={suspending ? activeDialog?.email : null}
+        tone={suspending ? 'danger' : 'neutral'}
+        busy={activeDialog !== null && busyId === activeDialog.id}
+        onConfirm={() => {
+          const account = activeDialog
+          if (!account) return
+          void patchAccount(
+            account,
+            { is_active: !account.is_active },
+            account.is_active
+              ? `${account.email} 계정을 정지했습니다. 열려 있던 세션도 곧 끊깁니다.`
+              : `${account.email} 계정을 다시 활성화했습니다.`,
+          ).finally(() => setActiveDialog(null))
+        }}
+        onClose={() => setActiveDialog(null)}
+      />
       <header className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <p className="admin-eyebrow">운영 설정</p>
@@ -402,23 +430,26 @@ export default function AccountsPage() {
                             >
                               {account.role === 'OWNER' ? '운영자로' : '소유자로'}
                             </button>
-                            <button
-                              type="button"
-                              disabled={busy || (account.is_active && Boolean(lockReason))}
-                              title={account.is_active ? lockReason || undefined : undefined}
-                              onClick={() =>
-                                void patchAccount(
-                                  account,
-                                  { is_active: !account.is_active },
-                                  account.is_active
-                                    ? `${account.email} 계정을 정지했습니다. 열려 있던 세션도 곧 끊깁니다.`
-                                    : `${account.email} 계정을 다시 활성화했습니다.`,
-                                )
-                              }
-                              className="min-h-11 rounded-lg border border-slate-300 px-3 py-2 text-xs text-slate-700 hover:bg-slate-50 disabled:opacity-40"
-                            >
-                              {account.is_active ? '정지' : '활성화'}
-                            </button>
+                            {account.is_active ? (
+                              <DangerMenu
+                                items={[{
+                                  label: ADMIN_COPY.dangerConfirm.suspendItem,
+                                  danger: true,
+                                  disabled: busy || Boolean(lockReason),
+                                  title: lockReason || undefined,
+                                  onSelect: () => setActiveDialog(account),
+                                }]}
+                              />
+                            ) : (
+                              <button
+                                type="button"
+                                disabled={busy}
+                                onClick={() => setActiveDialog(account)}
+                                className="min-h-11 rounded-lg border border-slate-300 px-3 py-2 text-xs text-slate-700 hover:bg-slate-50 disabled:opacity-40"
+                              >
+                                활성화
+                              </button>
+                            )}
                             <button
                               type="button"
                               disabled={busy}
