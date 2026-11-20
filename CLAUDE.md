@@ -2,14 +2,14 @@
 
 ## 최신 운영 배포 — 2026-11-21 새벽 어드민 개편 1단계·레이아웃 편집기 3a (두 번)
 
-main `2241f431`(어드민 1단계 ①~⑥ PR #323·#330~#333·#342, 생성 품질 ⑦ PR #339)을 02:01~02:07 KST에, 이어 main `85754f20`(1단계 잔여 #344·#345·#347·#348, 설계 문서 #329,
+main `2241f431`(어드민 1단계 ①~⑥ PR #323·#330~#333·#341·#342, 생성 품질 ⑦ PR #339, 그리고 11-20엔 Site·Admin만 나간 #340의 원장 PDF 검증기 수정)을 02:01~02:07 KST에, 이어 main `85754f20`(1단계 잔여 #344·#345·#347·#348, 설계 문서 #329,
 **레이아웃 편집기 3a #349**)을 04:46~04:51 KST에 Backend·Admin에 배포했다(2차는 같은 날 두 번째 릴리스라 `--override-reason`, 사용자 지시 "완료되면 병합·배포까지").
 **현재 리비전은 api `00299-5cz`, worker `00292-dng`, beat `00287-nlk`, admin `00131-szn`**, site `00157-q7b` 그대로, **DB head `0100_add_hospital_site_configs`**(병원별 섹션 설정 표, 추가형).
 두 번 모두 readiness·공개 표면 확인 통과, 공개 병원 16곳 200·자기 도메인 hospital ID 일치, Admin 로그인 200, 배포 뒤 ERROR 0. 새 화면의 로그인 조작 확인은 하지 않았다.
 #339가 자동 Essence 정리 정책 판을 `2026-11-20.1`로 올려 1차 뒤 자동 판 10곳이 `T7_POLICY_UPGRADE`로 다시 만들어졌다(필수 문구 재선택, 공개 글은 숨지 않음).
-**레이아웃 편집기는 3b ①(#351, 기본값 수정 `DEFAULTS_VERSION 2026-11-21.2`)이 배포되기 전에는 운영에서 '공개 반영'하지 않는다** — 공개 판 `resolved`는 스냅샷이라 3a의 틀린 기본값이 영구히 남는다.
+**레이아웃 편집기는 3b ③(첫 화면 정보 블록·의료진 사진 기본값과 판 상향)이 배포되기 전에는 운영에서 '공개 반영'하지 않는다** — 공개 판 `resolved`는 스냅샷이라 틀린 기본값이 영구히 남는다(①#351이 나머지 기본값을 `DEFAULTS_VERSION 2026-11-21.2`로 고친다). Admin의 막음 `SITE_RENDERS_SITE_CONFIG`는 ③ 배포 뒤 푼다.
 사이트는 아직 `site_config`를 읽지 않고(3b 미배포), 편집 화면(3c #350·#353)도 없다. 미리보기 비밀 `SITE_PREVIEW_TOKEN_SECRET`은 선택 비밀로 더해졌지만 운영에 없다(토큰 발급 503, 미리보기를 쓸 때 대표 확인 뒤 만든다).
-마이그레이션을 더하는 PR은 CI 리허설의 하드코딩 head(`scripts/integrity_rehearsal/check.py`)도 올려야 한다. 롤백 좌표 `.omo/rollback-2nd1121/before.txt`(2차)·`.omo/rollback-admin1121/before.txt`(1차).
+마이그레이션을 더하는 PR은 CI 리허설의 하드코딩 head(`scripts/integrity_rehearsal/check.py`)도 올려야 한다. 롤백 좌표 `.omo/rollback-2nd1121/rollback.state`(2차)·`.omo/rollback-admin1121/rollback.state`(1차) — `DEPLOY_ROLLBACK_STATE_FILE`로 넘긴다.
 상세는 [배포 기록](docs/releases/2026-11-21-admin-revamp-production.md).
 
 ## 이전 운영 배포 — 2026-11-20 저녁 Site·Admin Next 16.4.6 보안 상향·병원 공개 페이지 개편 1단계
