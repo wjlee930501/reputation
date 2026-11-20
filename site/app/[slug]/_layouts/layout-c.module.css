@@ -948,3 +948,12 @@
   font-weight: 700;
   text-decoration: none;
 }
+
+/* 학회 — 한 줄에 하나(의료진 페이지와 같은 목록형, 2026-11-20). 표 칸 안과 밖 모두. */
+.doctorBody [data-role='society-list'],
+.doctorTable [data-role='society-list'] {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  line-height: 1.75;
+}
