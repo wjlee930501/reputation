@@ -1,5 +1,6 @@
 import Image from 'next/image'
 import Link from 'next/link'
+import { KeepTogether } from '../_components/KeepTogether'
 
 import { IconAftercare, IconExam, IconExplain } from '@/components/brand'
 import { resolveAssetUrl, TYPE_LABELS } from '@/lib/api'
@@ -78,17 +79,21 @@ export function HomeLayoutA({ model }: { model: ClinicHomeModel }) {
               {/* 승인 문구가 한 조각뿐이면 앞부분(lead)이 없다 — 그 조각을 큰 제목으로 쓴다. */}
               <span className={s.heroLead}>
                 {(headline.lead.length > 0 ? headline.lead : [headline.emphasis]).map((part, index) => (
-                  <span key={`${part}-${index}`}>{part}{' '}</span>
+                  <span key={`${part}-${index}`}><KeepTogether text={part} compounds />{' '}</span>
                 ))}
               </span>
-              {headline.lead.length > 0 ? <span className={s.heroEmphasis}>{headline.emphasis}</span> : null}
+              {headline.lead.length > 0 ? (
+                <span className={s.heroEmphasis}>
+                  <KeepTogether text={headline.emphasis} compounds />
+                </span>
+              ) : null}
             </h1>
             <a className={s.primaryButton} href={`tel:${hospital.phone}`}>
               전화 상담 {hospital.phone}
             </a>
             {todays ? (
               <p className={s.heroToday}>
-                오늘({today.label}) {todays.closed ? '휴진' : todays.time} ·{' '}
+                오늘({today.label}) {todays.closed ? '휴진' : <KeepTogether text={todays.time} />} ·{' '}
                 <a href="#facts">진료시간 전체 보기</a>
               </p>
             ) : null}
@@ -182,10 +187,10 @@ export function HomeLayoutA({ model }: { model: ClinicHomeModel }) {
               `오늘(${today.label})은 휴진입니다`
             ) : (
               <>
-                {`오늘(${today.label}) ${splitHoursNote(todays.time).main} 진료`}
+                오늘({today.label}) <KeepTogether text={splitHoursNote(todays.time).main} /> 진료
                 {/* 점심·접수 마감 같은 괄호 메모는 둘째 줄로 내려 큰 제목 중간에서 끊기지 않게 한다. */}
                 {splitHoursNote(todays.time).note ? (
-                  <span className={s.bandTitleNote}> {splitHoursNote(todays.time).note}</span>
+                  <span className={s.bandTitleNote}> <KeepTogether text={splitHoursNote(todays.time).note ?? ''} /></span>
                 ) : null}
               </>
             )}
