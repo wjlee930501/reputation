@@ -1,4 +1,5 @@
 import Image from 'next/image'
+import { formatSeoulDotDate } from '@/lib/clinic-dates'
 import Link from 'next/link'
 import type { ReactNode } from 'react'
 
@@ -42,20 +43,6 @@ import s from './layout-c.module.css'
 import { regionSentenceLabel } from '@/lib/clinic-region'
 
 const NEWS_LIMIT = 5
-
-function publishedDate(value: string | null): string {
-  if (!value) return ''
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return ''
-  const parts = new Intl.DateTimeFormat('ko-KR', {
-    timeZone: 'Asia/Seoul',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).formatToParts(date)
-  const get = (type: string) => parts.find((part) => part.type === type)?.value ?? ''
-  return `${get('year')}.${get('month')}.${get('day')}`
-}
 
 /**
  * 레이아웃 C — 일본 동네 내과 결(しおや内科・内視鏡クリニック 참고).
@@ -153,7 +140,7 @@ export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
               {news.map((content) => (
                 <li key={content.id}>
                   <Link href={`${hospitalRootUrl}/contents/${content.id}`}>
-                    <span className={s.newsDate}>{publishedDate(content.published_at)}</span>
+                    <span className={s.newsDate}>{formatSeoulDotDate(content.published_at)}</span>
                     <span className={s.badge}>{TYPE_LABELS[content.content_type] ?? content.content_type}</span>
                     <span className={s.newsTitle}>{content.title}</span>
                   </Link>
