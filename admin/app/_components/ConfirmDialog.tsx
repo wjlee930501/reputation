@@ -69,7 +69,12 @@ export function ConfirmDialog({
       const focusables = Array.from(
         panelRef.current?.querySelectorAll<HTMLElement>('input, button:not([disabled])') ?? [],
       )
-      if (focusables.length === 0) return
+      // 처리 중이라 누를 것이 없어도 포커스는 창 안에 둔다.
+      if (focusables.length === 0) {
+        event.preventDefault()
+        panelRef.current?.focus()
+        return
+      }
       const first = focusables[0]
       const last = focusables[focusables.length - 1]
       const active = document.activeElement
@@ -108,7 +113,7 @@ export function ConfirmDialog({
         if (event.target === event.currentTarget && !busy) onClose()
       }}
     >
-      <div ref={panelRef} className="mt-24 w-full max-w-md rounded-xl bg-white p-5 shadow-xl">
+      <div ref={panelRef} tabIndex={-1} className="mt-24 outline-none w-full max-w-md rounded-xl bg-white p-5 shadow-xl">
         <h3 id={titleId} className="text-base font-bold text-slate-900">{title}</h3>
         <p className="mt-2 whitespace-pre-line break-keep text-sm leading-6 text-slate-600">{description}</p>
         {typedConfirmation && (

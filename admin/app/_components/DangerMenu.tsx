@@ -44,6 +44,8 @@ export function DangerMenu({ items, label = ADMIN_COPY.dangerConfirm.more }: { i
       )
     }
     place()
+    // 열면 첫 항목으로 포커스를 옮긴다 — body로 띄운 메뉴라 Tab으로는 닿지 않는다.
+    menuRef.current?.querySelector<HTMLButtonElement>('button:not([disabled])')?.focus()
     window.addEventListener('resize', place)
     window.addEventListener('scroll', place, true)
     return () => {
@@ -60,10 +62,22 @@ export function DangerMenu({ items, label = ADMIN_COPY.dangerConfirm.more }: { i
     }
     // 캡처 단계에서 먼저 받아 멈춘다 — 콘텐츠 상세의 Escape(닫기)까지 가지 않게.
     function onKey(event: KeyboardEvent) {
-      if (event.key !== 'Escape') return
+      if (event.key === 'Escape') {
+        event.stopPropagation()
+        setOpen(false)
+        buttonRef.current?.focus()
+        return
+      }
+      // 메뉴 안에서는 Tab·화살표가 항목 사이만 돈다(바깥 창의 포커스 가둠과 다투지 않게).
+      if (event.key !== 'Tab' && event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
+      const items = Array.from(menuRef.current?.querySelectorAll<HTMLButtonElement>('button:not([disabled])') ?? [])
+      if (items.length === 0) return
+      event.preventDefault()
       event.stopPropagation()
-      setOpen(false)
-      buttonRef.current?.focus()
+      const index = items.indexOf(document.activeElement as HTMLButtonElement)
+      const backward = event.key === 'ArrowUp' || (event.key === 'Tab' && event.shiftKey)
+      const next = index < 0 ? 0 : (index + (backward ? items.length - 1 : 1)) % items.length
+      items[next].focus()
     }
     window.addEventListener('mousedown', onDown)
     window.addEventListener('keydown', onKey, true)
@@ -102,6 +116,8 @@ export function DangerMenu({ items, label = ADMIN_COPY.dangerConfirm.more }: { i
               disabled={item.disabled}
               title={item.title}
               onClick={() => {
+                // 메뉴가 사라지기 전에 ⋯ 버튼으로 포커스를 돌려 둔다 — 확인창이 닫히면 그 자리로 돌아온다.
+                buttonRef.current?.focus()
                 setOpen(false)
                 item.onSelect()
               }}
