@@ -43,6 +43,7 @@ from app.services.must_use_verbatim import (
     sentence_holds_must_use,
 )
 from app.services.openrouter import NON_RETRYABLE_LLM_ERRORS
+from app.services.query_target_structure import natural_patient_question
 from app.services.question_wellformed import (
     drop_treatment_after_exam,
     question_is_wellformed,
@@ -2184,7 +2185,9 @@ def _normalize_editorial_result(result: dict, content_type: ContentType) -> dict
     if content_type is ContentType.FAQ:
         question = _trim_or_none(normalized.get("faq_question"), 300)
         if question:
-            normalized["faq_question"] = f"{question.rstrip('?.!')}?"
+            # 작가가 측정 질의 문형(반말·추천 요청)을 그대로 옮겨도 존댓말 환자 질문으로 고친다
+            # (2026-11-20, 새 글부터). 이미 존댓말이면 그대로이고, 앞부분(키워드)은 글자 그대로다.
+            normalized["faq_question"] = natural_patient_question(f"{question.rstrip('?.!')}?")
     return normalized
 
 

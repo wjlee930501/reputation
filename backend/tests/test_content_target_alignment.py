@@ -75,7 +75,7 @@ def test_brief_exposes_target_keyword_question_and_region():
     brief = _brief()
 
     assert brief["target_keyword"] == "허리디스크"
-    assert brief["target_question"] == "강남역에서 허리디스크 치료하는 병원 알려주시겠어요?"
+    assert brief["target_question"] == "강남역에서 허리디스크 치료하는 병원은 어디인가요?"
     assert brief["target_region_terms"] == ["강남역"]
 
 
@@ -94,7 +94,7 @@ def test_brief_falls_back_to_the_longest_non_region_token():
 def test_faq_prompt_binds_the_measured_question():
     prompt = _fill_type_prompt(ContentType.FAQ, _hospital(), _brief())
 
-    assert "강남역에서 허리디스크 치료하는 병원 알려주시겠어요?" in prompt
+    assert "강남역에서 허리디스크 치료하는 병원은 어디인가요?" in prompt
     assert "faq_question 필드에는 위 '환자 질문 문장'을 그대로" in prompt
     # 병원 키워드 전체가 아니라 이 질문의 키워드만 들어간다.
     assert "진료 키워드: 허리디스크" in prompt
