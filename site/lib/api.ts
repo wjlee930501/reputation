@@ -166,6 +166,26 @@ export async function fetchContents(slug: string, limit?: number): Promise<Conte
   return typeof limit === 'number' ? contents.slice(0, limit) : contents
 }
 
+/** 섹션 설정 초안 미리보기(`/preview/[token]`)가 받는 값 — 병원 공개 응답 모양 + 초안 설정. */
+export interface SitePreview {
+  hospital: Hospital
+  /** 토큰 만료 epoch 초. */
+  expiresAt: number | null
+}
+
+/** 미리보기 토큰 → 병원·초안 설정. 토큰이 틀리거나 만료됐거나 초안이 바뀌었으면 null. 언제나 캐시하지 않는다. */
+export async function fetchSitePreview(token: string): Promise<SitePreview | null> {
+  if (!/^[A-Za-z0-9_.-]{1,500}$/.test(token)) return null
+  const res = await fetch(`${getApiBase()}/site-preview/${encodeURIComponent(token)}`, { cache: 'no-store' })
+  if (res.status === 404) return null
+  if (!res.ok) throw new Error(`Server error (${res.status}) when fetching site preview`)
+  const payload: unknown = await res.json()
+  const hospital = parseHospitalPayload(payload)
+  if (!hospital) throw new Error('Invalid site preview payload')
+  const preview = isRecord(payload) && isRecord(payload.preview) ? payload.preview : null
+  return { hospital, expiresAt: typeof preview?.expires_at === 'number' ? preview.expires_at : null }
+}
+
 /** 누적 500건을 넘은 병원도 llms.txt에서 발행 콘텐츠 전체를 발견할 수 있게 순회한다. */
 export async function fetchAllContents(
   slug: string,

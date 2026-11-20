@@ -141,7 +141,7 @@ test('both gallery surfaces pass an explicit policy so the component keeps no de
   assert.doesNotMatch(component, /minimumPhotoCount\s*=/)
   assert.doesNotMatch(component, /previewLimit\s*=/)
 
-  const home = readFileSync(join(HERE, '..', 'app', '[slug]', 'page.tsx'), 'utf8')
+  const home = readFileSync(join(HERE, '..', 'app', '[slug]', 'page.tsx'), 'utf8') + readFileSync(join(HERE, '..', 'app', '[slug]', '_layouts', 'HospitalHome.tsx'), 'utf8')
   const visit = readFileSync(join(HERE, '..', 'app', '[slug]', 'visit', 'page.tsx'), 'utf8')
   assert.match(home, /policy=\{clinicGalleryPolicy\('home', contentDensity\)\}/)
   assert.match(visit, /policy=\{clinicGalleryPolicy\('visit'\)\}/)
@@ -191,7 +191,7 @@ test('the home gallery links to the full library instead of only naming a number
   assert.match(component, /공간 사진 전체 \{countLabel\(selection\.total, '장'\)\} 보기/)
   assert.match(component, /className="clinic-tx-directory-more"/)
 
-  const home = readFileSync(join(HERE, '..', 'app', '[slug]', 'page.tsx'), 'utf8')
+  const home = readFileSync(join(HERE, '..', 'app', '[slug]', 'page.tsx'), 'utf8') + readFileSync(join(HERE, '..', 'app', '[slug]', '_layouts', 'HospitalHome.tsx'), 'utf8')
   assert.match(home, /allPhotosHref=\{`\$\{hospitalRootUrl\}\/visit#gallery`\}/)
   // 히어로가 쓰는 사진은 갤러리에서 뺀다 — 첫 화면과 같은 사진이 바로 아래 또 나온다.
   assert.match(home, /excludeUrl=\{heroPhotoUrl\}/)

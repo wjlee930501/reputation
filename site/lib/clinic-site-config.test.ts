@@ -278,7 +278,7 @@ function sourceFiles(dir: string): string[] {
 }
 
 test('the clinic JSON-LD and llms.txt never read the section config', () => {
-  const page = readFileSync(join(SLUG_DIR, 'page.tsx'), 'utf8')
+  const page = readFileSync(join(SLUG_DIR, '_layouts', 'HospitalHome.tsx'), 'utf8')
   const clinicJsonLd = page.slice(page.indexOf('const clinicJsonLd = {'), page.indexOf('const breadcrumbJsonLd'))
   assert.ok(clinicJsonLd.includes("'@type': ['MedicalClinic', 'LocalBusiness']"))
   assert.doesNotMatch(clinicJsonLd, /site_?[cC]onfig|plan\./)

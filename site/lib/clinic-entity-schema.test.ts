@@ -6,7 +6,7 @@ import test from 'node:test'
 // privacy 페이지처럼 렌더해서 검사할 수 없다 — 이 페이지들은 fetchHospital을 await 하는
 // async 서버 컴포넌트라 renderToStaticMarkup으로 렌더되지 않는다. 그래서 소스 텍스트로 계약을 고정한다.
 const visitPageSource = readFileSync(new URL('../app/[slug]/visit/page.tsx', import.meta.url), 'utf8')
-const hubPageSource = readFileSync(new URL('../app/[slug]/page.tsx', import.meta.url), 'utf8')
+const hubPageSource = readFileSync(new URL('../app/[slug]/_layouts/HospitalHome.tsx', import.meta.url), 'utf8')
 
 test('the hub and visit MedicalClinic nodes share one @id', () => {
   assert.match(hubPageSource, /'@id': `\$\{hospitalRootUrl\}#clinic`/)

@@ -514,3 +514,24 @@ def test_preview_token_round_trip_tamper_expiry_and_disabled(monkeypatch) -> Non
     monkeypatch.setattr(settings, "SITE_PREVIEW_TOKEN_SECRET", "preview-secret")
     for bad in ("body.한글", "a.b.c", "", "x" * 600, f"{body}.{signature}\n"):
         assert tokens.verify_preview_token(bad, now=1010) is None
+
+
+def test_preview_payload_points_assets_at_the_token_routes() -> None:
+    from app.api.public.site import _preview_asset_urls
+
+    payload = {
+        "logo_url": "/api/v1/public/hospitals/demo/logo",
+        "photos": [{"url": "/api/v1/public/hospitals/demo/assets/abc"}],
+        "physicians": [{"photo_url": "/api/v1/public/hospitals/demo/assets/def"}],
+        "hero_image_url": "https://storage.googleapis.com/x.png",
+        "other": "/api/v1/public/hospitals/other/assets/abc",
+        "contents": "/api/v1/public/hospitals/demo/contents",
+    }
+    out = _preview_asset_urls(payload, "demo", "tok")
+    assert out["logo_url"] == "/api/v1/public/site-preview/tok/logo"
+    assert out["photos"][0]["url"] == "/api/v1/public/site-preview/tok/assets/abc"
+    assert out["physicians"][0]["photo_url"] == "/api/v1/public/site-preview/tok/assets/def"
+    # 다른 병원·외부 주소·자산이 아닌 경로는 그대로.
+    assert out["hero_image_url"] == payload["hero_image_url"]
+    assert out["other"] == payload["other"]
+    assert out["contents"] == payload["contents"]
