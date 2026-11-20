@@ -7,7 +7,8 @@
 
 섹션 표는 2026-11-21 기준 사이트 홈 마크업을 그대로 옮긴 것이다(`site/app/[slug]/page.tsx`,
 `_layouts/HomeLayoutA.tsx`·`HomeLayoutC.tsx`). 기본 제목은 `site/lib/clinic-template-copy.ts`와
-같은 원문이다(`tests/test_site_defaults.py`가 사이트 파일과 대조한다).
+같은 원문이다(`tests/test_site_config.py`가 사이트 파일과 대조한다). 완성본 기본값은 `site/lib/site-config-defaults.json`과
+같아야 한다 — 사이트가 그 파일로 기본 순서·제목을 대조한다.
 
 - B(As-is 발전형)는 레이아웃 도입 전 화면과 같은 섹션·순서다. 독립 '진료시간' 섹션이 없어 첫 화면과
   기본 정보가 대신한다. 바로가기 메뉴(`section_index`)는 2026-11-20 결정 12a로 기본 꺼짐이다.
@@ -21,7 +22,7 @@ from __future__ import annotations
 import copy
 from typing import Any, Final
 
-DEFAULTS_VERSION: Final = "2026-11-21.1"
+DEFAULTS_VERSION: Final = "2026-11-21.2"
 SCHEMA_VERSION: Final = 1
 LAYOUTS: Final = ("A", "B", "C")
 
@@ -75,25 +76,27 @@ def _section(
 
 _SECTIONS: Final[dict[str, tuple[dict[str, Any], ...]]] = {
     "B": (
+        # B는 섹션 머리(.clinic-section-head)를 가운데로 놓는다(layout-b.module.css). 질문 목록(왼쪽 기둥)과
+        # 진료 원칙(왼쪽 머리 칸)은 자기 모양이라 왼쪽이다.
         _section("hero", None),
         _section("section_index", None, enabled=False),
-        _section("treatments", TREATMENT_SECTION_TITLE),
-        _section("doctor", DOCTOR_SECTION_TITLE),
+        _section("treatments", TREATMENT_SECTION_TITLE, align="center"),
+        _section("doctor", DOCTOR_SECTION_TITLE, align="center"),
         _section("care_principles", CARE_PRINCIPLES_TITLE),
-        _section("contents", "먼저 정리한 글"),
+        _section("contents", "먼저 정리한 글", align="center"),
         _section("questions", QUESTIONS_SECTION_TITLE),
-        _section("faq", FAQ_SECTION_TITLE),
-        _section("care_flow", CARE_FLOW_TITLE),
-        _section("gallery", GALLERY_SECTION_TITLE),
-        _section("facts", None),
-        _section("visit", "오시는 길·방문 안내"),
+        _section("faq", FAQ_SECTION_TITLE, align="center"),
+        _section("care_flow", CARE_FLOW_TITLE, align="center"),
+        _section("gallery", GALLERY_SECTION_TITLE, align="center"),
+        _section("facts", None, align="center"),
+        _section("visit", "오시는 길·방문 안내", align="center"),
     ),
     "A": (
         _section("hero", None),
         _section("treatments", TREATMENT_SECTION_TITLE, align="center"),
         _section("doctor", DOCTOR_SECTION_TITLE, align="center"),
         _section("care_principles", CARE_PRINCIPLES_TITLE, align="center"),
-        _section("hours", "오늘 진료", background="band"),
+        _section("hours", "오늘 진료", background="band", align="center"),
         _section("contents", QUESTIONS_SECTION_TITLE),
         _section("faq", FAQ_SECTION_TITLE),
         _section("care_flow", CARE_FLOW_TITLE, align="center"),
@@ -102,26 +105,27 @@ _SECTIONS: Final[dict[str, tuple[dict[str, Any], ...]]] = {
     ),
     "C": (
         _section("hero", None),
-        _section("news", "최근 의료 정보", attached_to="hero"),
-        _section("hours", "진료시간", attached_to="hero"),
+        _section("news", "최근 의료 정보", label=True, attached_to="hero"),
+        _section("hours", "진료시간", label=True, attached_to="hero"),
         _section("treatments", TREATMENT_SECTION_TITLE, background="tint", label=True),
         _section("doctor", DOCTOR_SECTION_TITLE, label=True),
-        _section("care_principles", CARE_PRINCIPLES_TITLE, background="band"),
-        _section("care_flow", CARE_FLOW_TITLE, background="band", attached_to="care_principles"),
+        _section("care_principles", CARE_PRINCIPLES_TITLE, background="band", label=True),
+        _section("care_flow", CARE_FLOW_TITLE, background="band", label=True, attached_to="care_principles"),
         _section("questions", QUESTIONS_SECTION_TITLE, label=True),
         _section("faq", FAQ_SECTION_TITLE, label=True),
         _section("gallery", GALLERY_SECTION_TITLE, label=True),
-        _section("facts", None),
+        _section("facts", None, label=True),
     ),
 }
 
 _COMMON: Final[dict[str, Any]] = {
     "hero": {
-        "arrangement": "overlay",
+        # 세 레이아웃 모두 지금 첫 화면은 글·사진 좌우 분할이고 사진에 덮개가 없다.
+        "arrangement": "split",
         "title_size": "m",
         "line_breaks": {},
         "blocks": ["today", "phone", "location", "hours"],
-        "image": {"focus": {"x": 0.5, "y": 0.5}, "veil": {"opacity": 0.6, "extent": "text"}},
+        "image": {"focus": {"x": 0.5, "y": 0.5}, "veil": {"opacity": 0.6, "extent": "none"}},
     },
     "copy": {},
     "treatments": {"show_description": True, "style": "cards"},
@@ -139,8 +143,10 @@ _COMMON: Final[dict[str, Any]] = {
         "steps": [{"title": title, "body": body} for title, body in CARE_STEPS],
     },
     "visit": {"order": ["parking", "transit"], "show_transit": True},
-    "faq": {"mode": "auto", "limit": 6, "content_ids": [], "merge_questions": False},
-    "region_tags": {"show": True, "separator": "comma"},
+    # 지금 홈 FAQ 상한(사이트 `schema.ts` FAQ_MAX_ITEMS)과 같다.
+    "faq": {"mode": "auto", "limit": 10, "content_ids": [], "merge_questions": False},
+    # 지금 화면은 진료 지역을 가운뎃점으로 잇는다(`region.join(' · ')`).
+    "region_tags": {"show": True, "separator": "dot"},
     "nav": {
         "items": ["treatments", "visit", "doctor", "contents", "website", "call"],
         "mobile_bar": ["call", "hours", "guide", "map"],
@@ -152,9 +158,10 @@ _COMMON: Final[dict[str, Any]] = {
 }
 
 _LAYOUT_OVERRIDES: Final[dict[str, dict[str, Any]]] = {
-    "A": {"hero": {"arrangement": "overlay"}},
-    "B": {"hero": {"arrangement": "overlay"}},
-    "C": {"hero": {"arrangement": "split"}},
+    # A·C는 진료 항목을 이름만 보인다(알약·타일). B 카드만 설명을 싣는다.
+    "A": {"treatments": {"show_description": False}},
+    "B": {},
+    "C": {"treatments": {"show_description": False}},
 }
 
 

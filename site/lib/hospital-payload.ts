@@ -1,4 +1,5 @@
 import { resolveBaseUrl } from './config.ts'
+import { normalizeSiteConfig, type ClinicSiteConfig } from './clinic-site-config.ts'
 import { safeExternalHref } from './safe-url.ts'
 
 export interface DirectorCredentials {
@@ -75,6 +76,11 @@ export interface Hospital {
   /** 오시는 길의 주차·대중교통 안내(0096). null이면 공통 기본 문구를 쓴다. */
   parking_note: string | null
   transit_note: string | null
+  /**
+   * 공개된 섹션 설정(레이아웃 편집기, 0100). null이면 지금 화면 그대로다 — 설정이 없거나, 형식이
+   * 틀리거나, 지금 레이아웃과 다른 판이면 null로 떨어진다(`clinic-site-config.ts`).
+   */
+  site_config: ClinicSiteConfig | null
   updated_at: string | null
   director_credentials: DirectorCredentials | null
   treatments: Array<{ name: string; description: string }>
@@ -146,6 +152,7 @@ export function normalizeCarePrinciples(value: unknown): CarePrinciplesCopy | nu
 type HospitalPayload = Omit<
   Hospital,
   | 'care_principles'
+  | 'site_config'
   | 'parking_note'
   | 'transit_note'
   | 'address'
@@ -178,6 +185,8 @@ type HospitalPayload = Omit<
   care_principles?: unknown
   parking_note?: unknown
   transit_note?: unknown
+  // 0100 신규 칸 — 모양이 어긋나면 정규화가 null로 버린다(병원 응답 전체를 막지 않는다).
+  site_config?: unknown
 }
 
 const DEV_ASSETS_BACKEND_BASE = 'http://localhost:8000'
@@ -403,6 +412,7 @@ function normalizeHospitalPayload(hospital: HospitalPayload): Hospital {
     care_principles: normalizeCarePrinciples(hospital.care_principles),
     parking_note: nonEmptyText(hospital.parking_note),
     transit_note: nonEmptyText(hospital.transit_note),
+    site_config: null,
     updated_at: hospital.updated_at ?? null,
   }
   for (const field of HOSPITAL_EXTERNAL_URL_FIELDS) {
@@ -415,6 +425,7 @@ function normalizeHospitalPayload(hospital: HospitalPayload): Hospital {
     .map((photo) => ({ ...photo, url: resolveAssetUrl(photo.url) }))
     .filter((photo): photo is HospitalPhoto => Boolean(photo.url))
   normalized.physicians = normalizePhysicians(hospital.physicians)
+  normalized.site_config = normalizeSiteConfig(hospital.site_config, normalized.site_layout)
   return normalized
 }
 
