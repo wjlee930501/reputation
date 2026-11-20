@@ -15,6 +15,12 @@ interface Props {
   publicAbout?: string | null
   /** 병원마다 바꾼 진료 원칙 문구. 소개 문장은 승인된 공개 서사보다 앞선다(마케터가 직접 쓴 문장). */
   custom?: CarePrinciplesCopy | null
+  /** 섹션 설정이 바꾼 제목(레이아웃 편집기). 없으면 병원 정보의 제목·공통 제목. */
+  title?: string | null
+  /** 보일 카드 수(섹션 설정). 없으면 전부. */
+  cardCount?: number | null
+  /** '공식 채널 보기'가 가는 곳. 오시는 길 섹션이 꺼진 홈은 하위 페이지로 보낸다. */
+  channelsHref?: string
 }
 
 // 백엔드가 오염된 public_about을 None으로 강등하기 전이라도, 내부 파이프라인 언어가
@@ -53,8 +59,12 @@ export function CarePrinciples({
   region,
   publicAbout,
   custom = null,
+  title,
+  cardCount,
+  channelsHref,
 }: Props) {
   const principles = resolveCarePrinciples(custom)
+  const cards = cardCount ? principles.cards.slice(0, cardCount) : principles.cards
   const specialtyText = specialties.filter(Boolean).join(', ')
   const regionText = regionSentenceLabel(region)
 
@@ -78,12 +88,12 @@ export function CarePrinciples({
         <div className="clinic-principles-band">
           <header className="clinic-principles-lead">
             <span className="clinic-principles-eyebrow">진료 원칙</span>
-            <h2 className="clinic-section-title">{principles.title}</h2>
+            <h2 className="clinic-section-title">{title ?? principles.title}</h2>
             <p className="clinic-principles-statement">{lede}</p>
           </header>
 
           <div className="clinic-belief-grid">
-            {principles.cards.map((principle) => (
+            {cards.map((principle) => (
               <BeliefCard
                 key={principle.key}
                 icon={BELIEF_ICONS[principle.key]}
@@ -96,7 +106,7 @@ export function CarePrinciples({
           <div className="clinic-principles-actions">
             <Link href={`${hospitalRootUrl}/doctor`}>의료진 보기</Link>
             <Link href={`${hospitalRootUrl}/contents`}>전체 글 보기</Link>
-            <Link href={`${hospitalRootUrl}#contact`}>공식 채널 보기</Link>
+            <Link href={channelsHref ?? `${hospitalRootUrl}#contact`}>공식 채널 보기</Link>
           </div>
         </div>
       </div>

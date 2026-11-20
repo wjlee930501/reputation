@@ -1,7 +1,7 @@
 import Image from 'next/image'
 import { formatSeoulDotDate } from '@/lib/clinic-dates'
 import Link from 'next/link'
-import type { ReactNode } from 'react'
+import { Fragment, type ReactNode } from 'react'
 import { KeepTogether } from '../_components/KeepTogether'
 
 import { resolveAssetUrl, TYPE_LABELS } from '@/lib/api'
@@ -21,11 +21,10 @@ import {
   WEEK_DAY_KEYS,
 } from '@/lib/clinic-layout'
 import { fullClinicAddress } from '@/lib/clinic-schema'
+import { limitCarePrincipleCards, type SiteSectionId } from '@/lib/clinic-site-config'
 import {
-  CARE_FLOW_NOTE,
   CARE_FLOW_TITLE,
   resolveCarePrinciples,
-  CARE_STEPS,
   DOCTOR_SECTION_TITLE,
   FACTS_SECTION_NOTE,
   FAQ_SECTION_NOTE,
@@ -51,7 +50,7 @@ const NEWS_LIMIT = 5
  * 시안: Design 캔버스 `SetC.dc.html`(docs/plans/assets/2026-11-13-clinic-layouts/layout-c.dc.html).
  */
 export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
-  const { hospital, hospitalRootUrl, physicians, faqEntries, clusterContents, contents, composition } = model
+  const { hospital, hospitalRootUrl, physicians, faqEntries, clusterContents, contents, composition, plan, careFlow } = model
   const principles = resolveCarePrinciples(hospital.care_principles)
   const specialtyLabel = displayClinicLabels(hospital.specialties).join(' · ')
   const locationLabel = regionSentenceLabel(hospital.region)
@@ -76,160 +75,163 @@ export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
   const address = fullClinicAddress(hospital.address, hospital.address_detail)
   const hasHours = WEEK_DAY_KEYS.some((key) => hospital.business_hours?.[key])
 
-  return (
-    <main id="main-content" className={s.home}>
-      <section className={`${s.hero}${model.heroPhotoUrl ? ` ${s.heroSplit}` : ` ${s.heroPlain}`}`} aria-label="첫 화면">
-        {model.heroPhotoUrl ? (
-          // 좌우 분할(2026-11-20 결정 N2): 사진은 오른쪽 절반(휴대폰은 위 4:3)에 덮개 없이 두고,
-          // 글은 대표색 바탕의 왼쪽(휴대폰은 아래)에 놓는다 — 사진이 가려지지 않고 흰 글자 대비가
-          // 사진 밝기와 무관하게 지켜진다.
-          <div className={s.heroMedia}>
-            <Image
-              src={model.heroPhotoUrl}
-              alt={model.mediaMode === 'brand-graphic' ? `${hospital.name} 브랜드 그래픽` : `${hospital.name} 진료 공간`}
-              fill
-              preload
-              quality={CLINIC_IMAGE_QUALITY}
-              sizes="(max-width: 900px) 100vw, 50vw"
-              style={{ objectFit: 'cover' }}
-            />
-          </div>
-        ) : null}
-        <div className={s.heroInner}>
-          <div className={s.heroCopy}>
-            {[locationLabel, specialtyLabel].filter(Boolean).length > 0 ? (
-              <p className={s.heroKicker}>{[locationLabel, specialtyLabel].filter(Boolean).join(' · ')}</p>
-            ) : null}
-            <h1 className={s.heroTitle}>
-              {/* 승인 문구가 한 조각뿐이면 앞부분(lead)이 없다 — 그 조각을 큰 제목으로 쓴다. */}
-              <span className={s.heroLead}>
-                {(headline.lead.length > 0 ? headline.lead : [headline.emphasis]).map((part, index) => (
-                  <span key={`${part}-${index}`}><KeepTogether text={part} compounds />{' '}</span>
-                ))}
-              </span>
-              {headline.lead.length > 0 ? (
-                <span className={s.heroEmphasis}>
-                  <KeepTogether text={headline.emphasis} compounds />
-                </span>
+  const sections: Partial<Record<SiteSectionId, ReactNode>> = {
+    hero: (
+      <>
+        <section className={`${s.hero}${model.heroPhotoUrl ? ` ${s.heroSplit}` : ` ${s.heroPlain}`}`} aria-label="첫 화면">
+          {model.heroPhotoUrl ? (
+            // 좌우 분할(2026-11-20 결정 N2): 사진은 오른쪽 절반(휴대폰은 위 4:3)에 덮개 없이 두고,
+            // 글은 대표색 바탕의 왼쪽(휴대폰은 아래)에 놓는다 — 사진이 가려지지 않고 흰 글자 대비가
+            // 사진 밝기와 무관하게 지켜진다.
+            <div className={s.heroMedia}>
+              <Image
+                src={model.heroPhotoUrl}
+                alt={model.mediaMode === 'brand-graphic' ? `${hospital.name} 브랜드 그래픽` : `${hospital.name} 진료 공간`}
+                fill
+                preload
+                quality={CLINIC_IMAGE_QUALITY}
+                sizes="(max-width: 900px) 100vw, 50vw"
+                style={{ objectFit: 'cover' }}
+              />
+            </div>
+          ) : null}
+          <div className={s.heroInner}>
+            <div className={s.heroCopy}>
+              {[locationLabel, specialtyLabel].filter(Boolean).length > 0 ? (
+                <p className={s.heroKicker}>{[locationLabel, specialtyLabel].filter(Boolean).join(' · ')}</p>
               ) : null}
-            </h1>
-          </div>
-          <div className={s.todayWidget}>
-            <div>
-              <p className={s.widgetLabel}>{today.month}월 {today.day}일 ({today.label})</p>
-              <p className={s.widgetValue}>오늘 진료</p>
-            </div>
-            <div>
-              <p className={s.widgetLabel}>{todays && !todays.closed ? '진료시간' : '안내'}</p>
-              <p className={s.widgetValue}>
-                {todaysTime ? <KeepTogether text={todaysTime.main} /> : todays ? '휴진' : '전화로 확인'}
-                {todaysTime?.note ? (
-                  <small className={s.widgetNote}>
-                    <KeepTogether text={todaysTime.note} />
-                  </small>
+              <h1 className={s.heroTitle}>
+                {/* 승인 문구가 한 조각뿐이면 앞부분(lead)이 없다 — 그 조각을 큰 제목으로 쓴다. */}
+                <span className={s.heroLead}>
+                  {(headline.lead.length > 0 ? headline.lead : [headline.emphasis]).map((part, index) => (
+                    <span key={`${part}-${index}`}><KeepTogether text={part} compounds />{' '}</span>
+                  ))}
+                </span>
+                {headline.lead.length > 0 ? (
+                  <span className={s.heroEmphasis}>
+                    <KeepTogether text={headline.emphasis} compounds />
+                  </span>
                 ) : null}
-              </p>
+              </h1>
             </div>
-            <a className={s.widgetCall} href={`tel:${hospital.phone}`}>
-              <span>전화 상담</span>
-              {hospital.phone}
-            </a>
+            <div className={s.todayWidget}>
+              <div>
+                <p className={s.widgetLabel}>{today.month}월 {today.day}일 ({today.label})</p>
+                <p className={s.widgetValue}>오늘 진료</p>
+              </div>
+              <div>
+                <p className={s.widgetLabel}>{todays && !todays.closed ? '진료시간' : '안내'}</p>
+                <p className={s.widgetValue}>
+                  {todaysTime ? <KeepTogether text={todaysTime.main} /> : todays ? '휴진' : '전화로 확인'}
+                  {todaysTime?.note ? (
+                    <small className={s.widgetNote}>
+                      <KeepTogether text={todaysTime.note} />
+                    </small>
+                  ) : null}
+                </p>
+              </div>
+              <a className={s.widgetCall} href={`tel:${hospital.phone}`}>
+                <span>전화 상담</span>
+                {hospital.phone}
+              </a>
+            </div>
           </div>
-        </div>
-      </section>
+        </section>
 
-      <div className={s.infoRow}>
-        {news.length > 0 ? (
-          <section id="contents" className={s.newsBlock}>
-            <div className={s.blockHead}>
-              <SectionTitle label="NEWS">최근 의료 정보</SectionTitle>
-              <Link className={s.moreLink} href={`${hospitalRootUrl}/contents`}>
-                {contents.length}편 모두 보기 →
-              </Link>
-            </div>
-            <ul className={s.newsList}>
-              {news.map((content) => (
-                <li key={content.id}>
-                  <Link href={`${hospitalRootUrl}/contents/${content.id}`}>
-                    <span className={s.newsDate}>{formatSeoulDotDate(content.published_at)}</span>
-                    <span className={s.badge}>{TYPE_LABELS[content.content_type] ?? content.content_type}</span>
-                    <span className={s.newsTitle}>{content.title}</span>
-                  </Link>
-                </li>
-              ))}
-            </ul>
-          </section>
-        ) : null}
+        <div className={s.infoRow}>
+          {plan.enabled('news') && news.length > 0 ? (
+            <section id="contents" className={s.newsBlock}>
+              <div className={s.blockHead}>
+                <SectionTitle label="NEWS">{plan.title('news', '최근 의료 정보')}</SectionTitle>
+                <Link className={s.moreLink} href={`${hospitalRootUrl}/contents`}>
+                  {contents.length}편 모두 보기 →
+                </Link>
+              </div>
+              <ul className={s.newsList}>
+                {news.map((content) => (
+                  <li key={content.id}>
+                    <Link href={`${hospitalRootUrl}/contents/${content.id}`}>
+                      <span className={s.newsDate}>{formatSeoulDotDate(content.published_at)}</span>
+                      <span className={s.badge}>{TYPE_LABELS[content.content_type] ?? content.content_type}</span>
+                      <span className={s.newsTitle}>{content.title}</span>
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ) : null}
 
-        {hasHours ? (
-          <section className={s.scheduleBlock} aria-label="진료시간">
-            <SectionTitle label="INFORMATION">진료시간</SectionTitle>
-            {grid ? (
-              <div className={s.tableScroll}>
-                <table className={s.schedule}>
-                  <thead>
-                    <tr>
-                      <th scope="col">진료시간</th>
-                      {WEEK_DAY_KEYS.map((key) => (
-                        <th key={key} scope="col" aria-current={key === today.key ? 'date' : undefined}>
-                          {dayShortLabel(key)}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {grid.rows.map((row) => (
-                      <tr key={row.label}>
-                        <th scope="row">{row.label}</th>
-                        {row.cells.map((cell, index) => (
-                          <td key={WEEK_DAY_KEYS[index]} data-state={cell.state}>
-                            {cell.state === 'open' ? '●' : cell.state === 'partial' ? '▲' : '—'}
-                            <span className="sr-only">
-                              {cell.state === 'open' ? ' 진료' : cell.state === 'partial' ? ' 일부 진료' : ' 진료 없음'}
-                            </span>
-                          </td>
+          {plan.enabled('hours') && hasHours ? (
+            <section className={s.scheduleBlock} aria-label="진료시간">
+              <SectionTitle label="INFORMATION">{plan.title('hours', '진료시간')}</SectionTitle>
+              {grid ? (
+                <div className={s.tableScroll}>
+                  <table className={s.schedule}>
+                    <thead>
+                      <tr>
+                        <th scope="col">진료시간</th>
+                        {WEEK_DAY_KEYS.map((key) => (
+                          <th key={key} scope="col" aria-current={key === today.key ? 'date' : undefined}>
+                            {dayShortLabel(key)}
+                          </th>
                         ))}
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            ) : (
-              <ul className={s.hourList}>
-                {WEEK_DAY_KEYS.map((key) => (
-                  <li key={key} aria-current={key === today.key ? 'date' : undefined}>
-                    <span>{dayShortLabel(key)}</span>
-                    <span>{hospital.business_hours?.[key] ? <KeepTogether text={hospital.business_hours[key]} /> : '-'}</span>
-                  </li>
-                ))}
-                {holiday ? (
-                  <li>
-                    <span>{HOLIDAY_LABEL}</span>
-                    <span><KeepTogether text={holiday.value} /></span>
-                  </li>
+                    </thead>
+                    <tbody>
+                      {grid.rows.map((row) => (
+                        <tr key={row.label}>
+                          <th scope="row">{row.label}</th>
+                          {row.cells.map((cell, index) => (
+                            <td key={WEEK_DAY_KEYS[index]} data-state={cell.state}>
+                              {cell.state === 'open' ? '●' : cell.state === 'partial' ? '▲' : '—'}
+                              <span className="sr-only">
+                                {cell.state === 'open' ? ' 진료' : cell.state === 'partial' ? ' 일부 진료' : ' 진료 없음'}
+                              </span>
+                            </td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <ul className={s.hourList}>
+                  {WEEK_DAY_KEYS.map((key) => (
+                    <li key={key} aria-current={key === today.key ? 'date' : undefined}>
+                      <span>{dayShortLabel(key)}</span>
+                      <span>{hospital.business_hours?.[key] ? <KeepTogether text={hospital.business_hours[key]} /> : '-'}</span>
+                    </li>
+                  ))}
+                  {holiday ? (
+                    <li>
+                      <span>{HOLIDAY_LABEL}</span>
+                      <span><KeepTogether text={holiday.value} /></span>
+                    </li>
+                  ) : null}
+                </ul>
+              )}
+              <p className={s.scheduleNote}>
+                {grid && holiday ? `${HOLIDAY_LABEL} ${holiday.closed ? '휴진' : holiday.value}. ` : ''}
+                {grid?.hasPartial ? '▲ 표시는 시간이 다른 날입니다. ' : ''}요일별 정확한 시간은 아래 기본 정보에서 확인하세요.
+              </p>
+              <div className={s.scheduleActions}>
+                <a className={s.primaryButton} href={`tel:${hospital.phone}`}>전화 상담</a>
+                {hospital.naver_place_url ? (
+                  <a className={s.secondaryButton} href={hospital.naver_place_url} target="_blank" rel="noopener noreferrer">길찾기</a>
                 ) : null}
-              </ul>
-            )}
-            <p className={s.scheduleNote}>
-              {grid && holiday ? `${HOLIDAY_LABEL} ${holiday.closed ? '휴진' : holiday.value}. ` : ''}
-              {grid?.hasPartial ? '▲ 표시는 시간이 다른 날입니다. ' : ''}요일별 정확한 시간은 아래 기본 정보에서 확인하세요.
-            </p>
-            <div className={s.scheduleActions}>
-              <a className={s.primaryButton} href={`tel:${hospital.phone}`}>전화 상담</a>
-              {hospital.naver_place_url ? (
-                <a className={s.secondaryButton} href={hospital.naver_place_url} target="_blank" rel="noopener noreferrer">길찾기</a>
-              ) : null}
-            </div>
-          </section>
-        ) : null}
-      </div>
-
-      {hospital.treatments.length > 0 ? (
+              </div>
+            </section>
+          ) : null}
+        </div>
+      </>
+    ),
+    treatments: (
+      hospital.treatments.length > 0 ? (
         <section id="treatments" className={s.tintSection}>
           <div className={s.inner}>
             <div className={s.centerHead}>
-              <SectionTitle label="MEDICAL">{TREATMENT_SECTION_TITLE}</SectionTitle>
-              <p className={s.note}>{TREATMENT_SECTION_NOTE}</p>
+              <SectionTitle label="MEDICAL">{plan.title('treatments', TREATMENT_SECTION_TITLE)}</SectionTitle>
+              <p className={s.note}>{plan.note('treatments', TREATMENT_SECTION_NOTE)}</p>
             </div>
             <ul className={s.tiles}>
               {hospital.treatments.map((treatment, index) => {
@@ -256,11 +258,13 @@ export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
             </p>
           </div>
         </section>
-      ) : null}
-
-      {physicians.length > 0 ? (
+      ) : null
+    ),
+    doctor: (
+      physicians.length > 0 ? (
         <section id="doctor" className={s.section}>
-          <SectionTitle label="DOCTOR">{DOCTOR_SECTION_TITLE}</SectionTitle>
+          <SectionTitle label="DOCTOR">{plan.title('doctor', DOCTOR_SECTION_TITLE)}</SectionTitle>
+          {plan.customNote('doctor') ? <p className={s.note}>{plan.customNote('doctor')}</p> : null}
           <div className={s.doctorList}>
             {physicians.map((physician) => (
               <PhysicianProfile
@@ -277,13 +281,14 @@ export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
           </div>
           <Link className={s.moreLink} href={`${hospitalRootUrl}/doctor`}>의료진 소개 전체 보기 →</Link>
         </section>
-      ) : null}
-
+      ) : null
+    ),
+    care_principles: (
       <section className={s.darkSection} aria-label="진료 원칙과 진료 과정">
         <div className={s.inner}>
-          <SectionTitle label="POLICY">{principles.title}</SectionTitle>
+          <SectionTitle label="POLICY">{plan.title('care_principles', principles.title)}</SectionTitle>
           <div className={s.policyGrid}>
-            {principles.cards.map((principle, index) => (
+            {limitCarePrincipleCards(principles.cards, model.siteConfig).map((principle, index) => (
               <div key={principle.key} className={s.policyCard}>
                 <span className={s.policyIndex} aria-hidden="true">{String(index + 1).padStart(2, '0')}</span>
                 <h3>{principle.title}</h3>
@@ -291,14 +296,14 @@ export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
               </div>
             ))}
           </div>
-          {composition.showCareFlow ? (
+          {plan.enabled('care_flow') && composition.showCareFlow ? (
             <>
-              <SectionTitle label="FLOW" className={s.flowTitle}>{CARE_FLOW_TITLE}</SectionTitle>
-              <p className={s.note}>{CARE_FLOW_NOTE}</p>
+              <SectionTitle label="FLOW" className={s.flowTitle}>{plan.title('care_flow', CARE_FLOW_TITLE)}</SectionTitle>
+              <p className={s.note}>{careFlow.note}</p>
               <ol className={s.flow}>
-                {CARE_STEPS.map((step) => (
+                {careFlow.steps.map((step) => (
                   <li key={step.label}>
-                    <span className={s.stepBadge}>STEP {step.label} · {step.aux}</span>
+                    <span className={s.stepBadge}>STEP {step.aux ? `${step.label} · ${step.aux}` : step.label}</span>
                     <h3>{step.title}</h3>
                     <p>{step.body}</p>
                   </li>
@@ -308,13 +313,15 @@ export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
           ) : null}
         </div>
       </section>
-
-      {questions.length > 0 ? (
-        <section className={s.section} aria-label="자주 확인하는 질문">
+    ),
+    questions: (
+      questions.length > 0 ? (
+        <section className={s.section} aria-label={plan.title('questions', QUESTIONS_SECTION_TITLE)}>
           <div className={s.blockHead}>
-            <SectionTitle label="Q&A">{QUESTIONS_SECTION_TITLE}</SectionTitle>
+            <SectionTitle label="Q&A">{plan.title('questions', QUESTIONS_SECTION_TITLE)}</SectionTitle>
             <Link className={s.moreLink} href={`${hospitalRootUrl}/contents`}>의료 정보 {contents.length}편 →</Link>
           </div>
+          {plan.customNote('questions') ? <p className={s.note}>{plan.customNote('questions')}</p> : null}
           <div className={s.qaGrid}>
             {questions.map((content) => (
               <Link key={content.id} className={s.qaCard} href={`${hospitalRootUrl}/contents/${content.id}`}>
@@ -328,12 +335,13 @@ export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
             ))}
           </div>
         </section>
-      ) : null}
-
-      {faqEntries.length > 0 ? (
+      ) : null
+    ),
+    faq: (
+      faqEntries.length > 0 ? (
         <section id="faq" className={s.section}>
-          <SectionTitle label="FAQ">{FAQ_SECTION_TITLE}</SectionTitle>
-          <p className={s.note}>{FAQ_SECTION_NOTE}</p>
+          <SectionTitle label="FAQ">{plan.title('faq', FAQ_SECTION_TITLE)}</SectionTitle>
+          <p className={s.note}>{plan.note('faq', FAQ_SECTION_NOTE)}</p>
           <dl className={s.faq}>
             {faqEntries.map((entry) => (
               <div key={entry.id} className={s.faqItem}>
@@ -352,14 +360,16 @@ export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
             ))}
           </dl>
         </section>
-      ) : null}
-
-      {gallery.photos.length >= galleryPolicy.minimumPhotoCount ? (
-        <section className={s.section} aria-label="병원 공간">
+      ) : null
+    ),
+    gallery: (
+      gallery.photos.length >= galleryPolicy.minimumPhotoCount ? (
+        <section className={s.section} aria-label={plan.title('gallery', GALLERY_SECTION_TITLE)}>
           <div className={s.blockHead}>
-            <SectionTitle label="CLINIC">{GALLERY_SECTION_TITLE}</SectionTitle>
+            <SectionTitle label="CLINIC">{plan.title('gallery', GALLERY_SECTION_TITLE)}</SectionTitle>
             <Link className={s.moreLink} href={`${hospitalRootUrl}/visit#gallery`}>사진 전체 보기 →</Link>
           </div>
+          {plan.customNote('gallery') ? <p className={s.note}>{plan.customNote('gallery')}</p> : null}
           <div className={s.gallery}>
             {gallery.photos.map((photo) => {
               const url = resolveAssetUrl(photo.url)
@@ -375,8 +385,9 @@ export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
             })}
           </div>
         </section>
-      ) : null}
-
+      ) : null
+    ),
+    facts: (
       <div id="contact">
         <section id="facts" className={`${s.section} ${s.factsSection}`}>
           <SectionTitle label="ACCESS">{factsSectionTitle(hospital.name)}</SectionTitle>
@@ -433,6 +444,19 @@ export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
           </div>
         </section>
       </div>
+    ),
+    // 최근 소식·진료시간은 첫 화면 아래 한 줄(infoRow)에, 진료 과정은 진료 원칙 섹션 안에 붙어 있다
+    // (붙은 섹션 — 끄기·제목만 되고 따로 옮기지 않는다). 그래서 따로 그리지 않는다.
+    news: null,
+    hours: null,
+    care_flow: null,
+  }
+
+  return (
+    <main id="main-content" className={s.home}>
+      {plan.order.map((id) => (
+        <Fragment key={id}>{sections[id]}</Fragment>
+      ))}
     </main>
   )
 }

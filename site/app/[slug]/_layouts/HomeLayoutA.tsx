@@ -1,5 +1,6 @@
 import Image from 'next/image'
 import Link from 'next/link'
+import { Fragment, type ReactNode } from 'react'
 import { KeepTogether } from '../_components/KeepTogether'
 
 import { IconAftercare, IconExam, IconExplain } from '@/components/brand'
@@ -19,11 +20,10 @@ import {
   WEEK_DAY_KEYS,
 } from '@/lib/clinic-layout'
 import { fullClinicAddress } from '@/lib/clinic-schema'
+import { limitCarePrincipleCards, type SiteSectionId } from '@/lib/clinic-site-config'
 import {
-  CARE_FLOW_NOTE,
   CARE_FLOW_TITLE,
   resolveCarePrinciples,
-  CARE_STEPS,
   DOCTOR_SECTION_TITLE,
   FACTS_SECTION_NOTE,
   FAQ_SECTION_NOTE,
@@ -48,7 +48,7 @@ const PRINCIPLE_ICONS = { explain: IconExplain, verified: IconExam, decide: Icon
  * 첫 화면 사진은 첫 화면용으로 승인된 병원 사진이다(원장 사진은 의료진 신원 용도뿐, 2026-11-13 결정).
  */
 export function HomeLayoutA({ model }: { model: ClinicHomeModel }) {
-  const { hospital, hospitalRootUrl, physicians, faqEntries, clusterContents, contents, composition } = model
+  const { hospital, hospitalRootUrl, physicians, faqEntries, clusterContents, contents, composition, plan, careFlow } = model
   const principles = resolveCarePrinciples(hospital.care_principles)
   const specialtyLabel = displayClinicLabels(hospital.specialties).join(' · ')
   const headline = buildClinicHeroHeadline({
@@ -70,8 +70,72 @@ export function HomeLayoutA({ model }: { model: ClinicHomeModel }) {
   const visibleLinks = model.factLinks.filter((link): link is { url: string; label: string } => Boolean(link.url))
   const address = fullClinicAddress(hospital.address, hospital.address_detail)
 
-  return (
-    <main id="main-content" className={s.home}>
+  const questionsBlock = questions.length > 0 ? (
+    <section className={s.section}>
+      <div className={s.sectionHead}>
+        <h2 className={s.bigTitle}>{plan.title('contents', QUESTIONS_SECTION_TITLE)}</h2>
+        <Link className={s.textLink} href={`${hospitalRootUrl}/contents`}>
+          의료 정보 {contents.length}편 모두 보기 ›
+        </Link>
+      </div>
+      {plan.customNote('contents') ? <p className={s.note}>{plan.customNote('contents')}</p> : null}
+      <div className={s.questionCards}>
+        {questions.slice(0, 3).map((content) => (
+          <Link key={content.id} className={s.questionCard} href={`${hospitalRootUrl}/contents/${content.id}`}>
+            <span className={s.kicker}>{TYPE_LABELS[content.content_type] ?? content.content_type}</span>
+            <h3 className={s.questionTitle}>{questionText(content)}</h3>
+            {questionSummary(content) ? <p className={s.questionSummary}>{questionSummary(content)}</p> : null}
+            <span className={s.more}>답변 읽기 ›</span>
+          </Link>
+        ))}
+      </div>
+      {questions.length > 3 ? (
+        <ol className={s.questionRows} aria-label="추가 질문">
+          {questions.slice(3).map((content) => (
+            <li key={content.id}>
+              <Link href={`${hospitalRootUrl}/contents/${content.id}`}>
+                <span>
+                  <span className={s.kicker}>{TYPE_LABELS[content.content_type] ?? content.content_type}</span>{' '}
+                  {questionText(content)}
+                </span>
+                <span aria-hidden="true">›</span>
+              </Link>
+            </li>
+          ))}
+        </ol>
+      ) : null}
+    </section>
+    ) : null
+
+  const faqBlock = faqEntries.length > 0 ? (
+    <section id="faq" className={s.section}>
+      <h2 className={s.bigTitle}>{plan.title('faq', FAQ_SECTION_TITLE)}</h2>
+      <p className={s.note}>{plan.note('faq', FAQ_SECTION_NOTE)}</p>
+      <dl className={s.faq}>
+        {faqEntries.map((entry) => (
+          <div key={entry.id} className={s.faqItem}>
+            <dt className={s.faqQuestion}>{entry.question}</dt>
+            <dd className={s.faqAnswer}>
+              <p>{entry.answer}</p>
+              <Link className={s.textLink} href={entry.url}>자세히 보기 ›</Link>
+            </dd>
+          </div>
+        ))}
+      </dl>
+      {questions.length === 0 && contents.length > 0 ? (
+        <p className={s.centered}>
+          <Link className={s.textLink} href={`${hospitalRootUrl}/contents`}>
+            의료 정보 {contents.length}편 모두 보기 ›
+          </Link>
+        </p>
+      ) : null}
+    </section>
+    ) : null
+
+  const faqWithContents = plan.adjacent('contents', 'faq')
+
+  const sections: Partial<Record<SiteSectionId, ReactNode>> = {
+    hero: (
       <section className={s.hero} aria-label="첫 화면">
         <div className={s.heroInner}>
           <div className={s.heroCopy}>
@@ -113,11 +177,12 @@ export function HomeLayoutA({ model }: { model: ClinicHomeModel }) {
           ) : null}
         </div>
       </section>
-
-      {hospital.treatments.length > 0 ? (
+    ),
+    treatments: (
+      hospital.treatments.length > 0 ? (
         <section id="treatments" className={s.centerSection}>
-          <h2 className={s.bigTitle}>{TREATMENT_SECTION_TITLE}</h2>
-          <p className={s.note}>{TREATMENT_SECTION_NOTE}</p>
+          <h2 className={s.bigTitle}>{plan.title('treatments', TREATMENT_SECTION_TITLE)}</h2>
+          <p className={s.note}>{plan.note('treatments', TREATMENT_SECTION_NOTE)}</p>
           <ul className={s.pillList}>
             {hospital.treatments.map((treatment) => {
               const slug = buildTreatmentSlug(treatment.name)
@@ -138,11 +203,13 @@ export function HomeLayoutA({ model }: { model: ClinicHomeModel }) {
             진료 항목 자세히 보기 ›
           </Link>
         </section>
-      ) : null}
-
-      {physicians.length > 0 ? (
+      ) : null
+    ),
+    doctor: (
+      physicians.length > 0 ? (
         <section id="doctor" className={s.section}>
-          <h2 className={`${s.bigTitle} ${s.centered}`}>{DOCTOR_SECTION_TITLE}</h2>
+          <h2 className={`${s.bigTitle} ${s.centered}`}>{plan.title('doctor', DOCTOR_SECTION_TITLE)}</h2>
+          {plan.customNote('doctor') ? <p className={`${s.note} ${s.centered}`}>{plan.customNote('doctor')}</p> : null}
           <div className={s.doctorList}>
             {physicians.map((physician, index) => (
               <PhysicianProfile
@@ -162,12 +229,13 @@ export function HomeLayoutA({ model }: { model: ClinicHomeModel }) {
             </Link>
           </p>
         </section>
-      ) : null}
-
+      ) : null
+    ),
+    care_principles: (
       <section className={s.centerSection} aria-label="진료 원칙">
-        <h2 className={s.bigTitle}>{principles.title}</h2>
+        <h2 className={s.bigTitle}>{plan.title('care_principles', principles.title)}</h2>
         <div className={s.principles}>
-          {principles.cards.map((principle) => {
+          {limitCarePrincipleCards(principles.cards, model.siteConfig).map((principle) => {
             const Icon = PRINCIPLE_ICONS[principle.key]
             return (
               <div key={principle.key} className={s.principle}>
@@ -179,11 +247,12 @@ export function HomeLayoutA({ model }: { model: ClinicHomeModel }) {
           })}
         </div>
       </section>
-
-      {todays ? (
+    ),
+    hours: (
+      todays ? (
         <section className={s.band} aria-label="오늘 진료">
           <h2 className={s.bandTitle}>
-            {todays.closed ? (
+            {plan.customTitle('hours') ?? (todays.closed ? (
               `오늘(${today.label})은 휴진입니다`
             ) : (
               <>
@@ -193,104 +262,52 @@ export function HomeLayoutA({ model }: { model: ClinicHomeModel }) {
                   <span className={s.bandTitleNote}> <KeepTogether text={splitHoursNote(todays.time).note ?? ''} /></span>
                 ) : null}
               </>
-            )}
+            ))}
           </h2>
           <p className={s.bandNote}>요일별 진료시간은 아래 기본 정보에서 확인할 수 있습니다.</p>
           <a className={s.bandButton} href={`tel:${hospital.phone}`}>
             {hospital.phone} 전화하기
           </a>
         </section>
-      ) : null}
-
-      {/* 글이 있으면 #contents는 언제나 있다 — 질문 목록이 꺼져도(글이 적거나 모두 FAQ로
-          쓰였을 때) 다른 섹션의 링크가 빈 곳을 가리키지 않게 FAQ까지 함께 감싼다. */}
+      ) : null
+    ),
+    // 글이 있으면 #contents는 언제나 있다 — 질문 목록이 꺼져도(글이 적거나 모두 FAQ로 쓰였을 때)
+    // 다른 섹션의 링크가 빈 곳을 가리키지 않게, 기본 순서처럼 FAQ가 바로 뒤에 오면 FAQ까지 함께 감싼다.
+    // 설정으로 둘이 떨어지면 #contents는 질문 목록 쪽에 남는다.
+    contents: (
       <div id={contents.length > 0 ? 'contents' : undefined}>
-      {questions.length > 0 ? (
-        <section className={s.section}>
-          <div className={s.sectionHead}>
-            <h2 className={s.bigTitle}>{QUESTIONS_SECTION_TITLE}</h2>
-            <Link className={s.textLink} href={`${hospitalRootUrl}/contents`}>
-              의료 정보 {contents.length}편 모두 보기 ›
-            </Link>
-          </div>
-          <div className={s.questionCards}>
-            {questions.slice(0, 3).map((content) => (
-              <Link key={content.id} className={s.questionCard} href={`${hospitalRootUrl}/contents/${content.id}`}>
-                <span className={s.kicker}>{TYPE_LABELS[content.content_type] ?? content.content_type}</span>
-                <h3 className={s.questionTitle}>{questionText(content)}</h3>
-                {questionSummary(content) ? <p className={s.questionSummary}>{questionSummary(content)}</p> : null}
-                <span className={s.more}>답변 읽기 ›</span>
-              </Link>
-            ))}
-          </div>
-          {questions.length > 3 ? (
-            <ol className={s.questionRows} aria-label="추가 질문">
-              {questions.slice(3).map((content) => (
-                <li key={content.id}>
-                  <Link href={`${hospitalRootUrl}/contents/${content.id}`}>
-                    <span>
-                      <span className={s.kicker}>{TYPE_LABELS[content.content_type] ?? content.content_type}</span>{' '}
-                      {questionText(content)}
-                    </span>
-                    <span aria-hidden="true">›</span>
-                  </Link>
-                </li>
-              ))}
-            </ol>
-          ) : null}
-        </section>
-      ) : null}
-
-      {faqEntries.length > 0 ? (
-        <section id="faq" className={s.section}>
-          <h2 className={s.bigTitle}>{FAQ_SECTION_TITLE}</h2>
-          <p className={s.note}>{FAQ_SECTION_NOTE}</p>
-          <dl className={s.faq}>
-            {faqEntries.map((entry) => (
-              <div key={entry.id} className={s.faqItem}>
-                <dt className={s.faqQuestion}>{entry.question}</dt>
-                <dd className={s.faqAnswer}>
-                  <p>{entry.answer}</p>
-                  <Link className={s.textLink} href={entry.url}>자세히 보기 ›</Link>
-                </dd>
-              </div>
-            ))}
-          </dl>
-          {questions.length === 0 && contents.length > 0 ? (
-            <p className={s.centered}>
-              <Link className={s.textLink} href={`${hospitalRootUrl}/contents`}>
-                의료 정보 {contents.length}편 모두 보기 ›
-              </Link>
-            </p>
-          ) : null}
-        </section>
-      ) : null}
+      {questionsBlock}
+      {faqWithContents ? faqBlock : null}
       </div>
-
-      {composition.showCareFlow ? (
+    ),
+    faq: faqWithContents ? null : faqBlock,
+    care_flow: (
+      composition.showCareFlow ? (
         <section className={s.centerSection} aria-label="진료 과정">
-          <h2 className={s.bigTitle}>{CARE_FLOW_TITLE}</h2>
-          <p className={s.note}>{CARE_FLOW_NOTE}</p>
+          <h2 className={s.bigTitle}>{plan.title('care_flow', CARE_FLOW_TITLE)}</h2>
+          <p className={s.note}>{careFlow.note}</p>
           <ol className={s.flow}>
-            {CARE_STEPS.map((step) => (
+            {careFlow.steps.map((step) => (
               <li key={step.label} className={s.flowStep}>
-                <span className={s.kicker}>{step.label} · {step.aux}</span>
+                <span className={s.kicker}>{step.aux ? `${step.label} · ${step.aux}` : step.label}</span>
                 <h3 className={s.flowTitle}>{step.title}</h3>
                 <p className={s.flowBody}>{step.body}</p>
               </li>
             ))}
           </ol>
         </section>
-      ) : null}
-
-      {gallery.photos.length >= galleryPolicy.minimumPhotoCount ? (
-        <section className={s.section} aria-label={GALLERY_SECTION_TITLE}>
+      ) : null
+    ),
+    gallery: (
+      gallery.photos.length >= galleryPolicy.minimumPhotoCount ? (
+        <section className={s.section} aria-label={plan.title('gallery', GALLERY_SECTION_TITLE)}>
           <div className={s.sectionHead}>
-            <h2 className={s.bigTitle}>{GALLERY_SECTION_TITLE}</h2>
+            <h2 className={s.bigTitle}>{plan.title('gallery', GALLERY_SECTION_TITLE)}</h2>
             <Link className={s.textLink} href={`${hospitalRootUrl}/visit#gallery`}>
               사진 전체 보기 ›
             </Link>
           </div>
+          {plan.customNote('gallery') ? <p className={s.note}>{plan.customNote('gallery')}</p> : null}
           <div className={s.gallery}>
             {gallery.photos.map((photo) => {
               const url = resolveAssetUrl(photo.url)
@@ -306,8 +323,9 @@ export function HomeLayoutA({ model }: { model: ClinicHomeModel }) {
             })}
           </div>
         </section>
-      ) : null}
-
+      ) : null
+    ),
+    facts: (
       <div id="contact" className={s.factsWrap}>
         <section id="facts" className={s.section}>
           <h2 className={s.bigTitle}>{factsSectionTitle(hospital.name)}</h2>
@@ -366,6 +384,14 @@ export function HomeLayoutA({ model }: { model: ClinicHomeModel }) {
           </div>
         </section>
       </div>
+    ),
+  }
+
+  return (
+    <main id="main-content" className={s.home}>
+      {plan.order.map((id) => (
+        <Fragment key={id}>{sections[id]}</Fragment>
+      ))}
     </main>
   )
 }

@@ -1,0 +1,277 @@
+// 병원 공개 페이지 섹션 설정(레이아웃 편집기) 3b — 공개 응답 `site_config` → 화면 계획.
+// 계약: docs/plans/2026-11-20-clinic-site-sections-design.md 1절(I1~I6)·6절.
+import assert from 'node:assert/strict'
+import { readdirSync, readFileSync, statSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import test from 'node:test'
+import { fileURLToPath } from 'node:url'
+
+import type { ContentSummary } from './api.ts'
+import {
+  buildHomeSectionPlan,
+  DEFAULT_DISABLED_SECTIONS,
+  DEFAULT_FAQ_LIMIT,
+  DEFAULT_MOBILE_BAR,
+  DEFAULT_NAV_ITEMS,
+  DEFAULT_SECTION_ORDER,
+  DEFAULT_SECTION_TITLES,
+  FIXED_SECTIONS,
+  limitCarePrincipleCards,
+  normalizeSiteConfig,
+  resolveCareFlow,
+  resolveHomeFaqEntries,
+} from './clinic-site-config.ts'
+import { CARE_FLOW_NOTE, CARE_STEPS } from './clinic-template-copy.ts'
+import { selectFaqEntries } from './schema.ts'
+
+const HERE = dirname(fileURLToPath(import.meta.url))
+const SLUG_DIR = join(HERE, '..', 'app', '[slug]')
+const DEFAULTS = JSON.parse(readFileSync(join(HERE, 'site-config-defaults.json'), 'utf8')) as {
+  defaults_version: string
+  schema_version: number
+  layouts: Record<'A' | 'B' | 'C', Record<string, any>>
+}
+const LAYOUTS = ['A', 'B', 'C'] as const
+const ROOT = 'https://clinic.example/demo'
+
+/** 공개 응답이 내는 모양 — 완성본 기본값 + 공개 정리(`site_config_public.py`)가 덧붙이는 칸. */
+function published(layout: 'A' | 'B' | 'C', patch: (config: Record<string, any>) => void = () => {}) {
+  const config = structuredClone(DEFAULTS.layouts[layout])
+  config.defaults_version = DEFAULTS.defaults_version
+  config.schema_version = DEFAULTS.schema_version
+  config.version = 1
+  config.faq.entries = null
+  patch(config)
+  return config
+}
+
+function faqContent(id: string, question: string): ContentSummary {
+  return {
+    id,
+    content_type: 'FAQ',
+    title: question,
+    faq_question: question,
+    faq_answer_summary: `${question}에 대한 답입니다.`,
+  } as unknown as ContentSummary
+}
+
+const CONTENTS = Array.from({ length: 12 }, (_, index) => faqContent(`faq-${index}`, `질문 ${index}번은 무엇인가요?`))
+
+// ── 기본값 = 지금 화면 ────────────────────────────────────────────────
+
+test('the site defaults equal the backend defaults fixture (order, titles, menus, FAQ limit)', () => {
+  for (const layout of LAYOUTS) {
+    const sections = DEFAULTS.layouts[layout].sections as Array<{ id: string; enabled: boolean; title: string | null }>
+    assert.deepEqual([...DEFAULT_SECTION_ORDER[layout]], sections.map((section) => section.id), layout)
+    for (const section of sections) {
+      assert.equal(DEFAULT_SECTION_TITLES[layout][section.id as never] ?? null, section.title, `${layout} ${section.id}`)
+      assert.equal(!DEFAULT_DISABLED_SECTIONS.has(section.id as never), section.enabled, `${layout} ${section.id}`)
+    }
+    assert.deepEqual([...DEFAULT_NAV_ITEMS], DEFAULTS.layouts[layout].nav.items)
+    assert.deepEqual([...DEFAULT_MOBILE_BAR], DEFAULTS.layouts[layout].nav.mobile_bar)
+    assert.equal(DEFAULT_FAQ_LIMIT, DEFAULTS.layouts[layout].faq.limit)
+  }
+  assert.deepEqual([...FIXED_SECTIONS].sort(), ['doctor', 'facts', 'hero', 'hours'])
+})
+
+test('the FAQ default limit is the current home FAQ limit', () => {
+  assert.equal(selectFaqEntries(CONTENTS, ROOT).length, DEFAULT_FAQ_LIMIT)
+})
+
+for (const layout of LAYOUTS) {
+  test(`a published default config for layout ${layout} plans the same screen as no config`, () => {
+    const config = normalizeSiteConfig(published(layout), layout)
+    assert.ok(config)
+    const withConfig = buildHomeSectionPlan(layout, config)
+    const without = buildHomeSectionPlan(layout, null)
+    assert.deepEqual(withConfig.order, without.order)
+    for (const id of DEFAULT_SECTION_ORDER[layout]) {
+      // 기본 제목은 '바꾼 제목'이 아니다 — 컴포넌트가 지금 제목(병원 정보 제목 등)을 그대로 쓴다.
+      assert.equal(withConfig.customTitle(id), null, id)
+      assert.equal(withConfig.customNote(id), null, id)
+    }
+    assert.deepEqual(
+      resolveHomeFaqEntries(CONTENTS, ROOT, config, withConfig),
+      resolveHomeFaqEntries(CONTENTS, ROOT, null, without),
+    )
+    assert.deepEqual(resolveCareFlow(config), resolveCareFlow(null))
+    assert.deepEqual(config.nav.items, [...DEFAULT_NAV_ITEMS])
+    assert.deepEqual(config.nav.mobileBar, [...DEFAULT_MOBILE_BAR])
+    assert.deepEqual(limitCarePrincipleCards([1, 2, 3], config), [1, 2, 3])
+  })
+}
+
+test('no config plans the current markup order (the hospitals without a layout use B)', () => {
+  assert.deepEqual(buildHomeSectionPlan(null, null).order, DEFAULT_SECTION_ORDER.B.filter((id) => id !== 'section_index'))
+  assert.equal(buildHomeSectionPlan(null, null).enabled('section_index'), false)
+})
+
+// ── 받은 값을 좁혀 쓴다 ───────────────────────────────────────────────
+
+test('missing, malformed, other-version or other-layout configs fall back to the current screen', () => {
+  assert.equal(normalizeSiteConfig(null, 'A'), null)
+  assert.equal(normalizeSiteConfig('x', 'A'), null)
+  assert.equal(normalizeSiteConfig(published('A', (c) => (c.schema_version = 2)), 'A'), null)
+  assert.equal(normalizeSiteConfig(published('A'), 'C'), null)
+  assert.equal(normalizeSiteConfig(published('B'), null), null)
+  assert.equal(normalizeSiteConfig(published('A', (c) => (c.sections = 'x')), 'A'), null)
+  assert.equal(normalizeSiteConfig(published('A', (c) => c.sections.push({ id: 'unknown' })), 'A'), null)
+})
+
+test('fixed sections stay on even if a config turns them off; the hero stays first', () => {
+  const config = normalizeSiteConfig(
+    published('A', (c) => {
+      for (const section of c.sections) if (['doctor', 'facts', 'hours', 'hero'].includes(section.id)) section.enabled = false
+      c.sections.push(c.sections.shift())
+    }),
+    'A',
+  )
+  const plan = buildHomeSectionPlan('A', config)
+  assert.equal(plan.order[0], 'hero')
+  for (const id of ['doctor', 'facts', 'hours'] as const) assert.ok(plan.enabled(id), id)
+})
+
+test('a turned-off section leaves the order and its title/note overrides apply to the rest', () => {
+  const config = normalizeSiteConfig(
+    published('B', (c) => {
+      c.sections.find((s: any) => s.id === 'gallery').enabled = false
+      c.sections.find((s: any) => s.id === 'treatments').title = '진료 과목'
+      c.copy = { 'treatments.note': '자주 찾는 진료입니다.' }
+      // 순서 바꾸기: 질문 목록과 FAQ 자리 맞바꿈.
+      const q = c.sections.findIndex((s: any) => s.id === 'questions')
+      const f = c.sections.findIndex((s: any) => s.id === 'faq')
+      ;[c.sections[q], c.sections[f]] = [c.sections[f], c.sections[q]]
+    }),
+    'B',
+  )
+  const plan = buildHomeSectionPlan('B', config)
+  assert.ok(!plan.order.includes('gallery'))
+  assert.ok(plan.order.indexOf('faq') < plan.order.indexOf('questions'))
+  assert.equal(plan.title('treatments', '진료 영역'), '진료 과목')
+  assert.equal(plan.note('treatments', '기본 안내'), '자주 찾는 진료입니다.')
+  assert.equal(plan.note('faq', '기본 안내'), '기본 안내')
+})
+
+test('A keeps questions and FAQ in one #contents wrapper only while they stay adjacent', () => {
+  assert.ok(buildHomeSectionPlan('A', null).adjacent('contents', 'faq'))
+  const apart = normalizeSiteConfig(
+    published('A', (c) => {
+      const faq = c.sections.findIndex((s: any) => s.id === 'faq')
+      const flow = c.sections.findIndex((s: any) => s.id === 'care_flow')
+      ;[c.sections[faq], c.sections[flow]] = [c.sections[flow], c.sections[faq]]
+    }),
+    'A',
+  )
+  assert.equal(buildHomeSectionPlan('A', apart).adjacent('contents', 'faq'), false)
+})
+
+// ── FAQ: 화면 = FAQPage (I2) ──────────────────────────────────────────
+
+test('turning the FAQ section off empties the FAQ (no FAQPage either)', () => {
+  const config = normalizeSiteConfig(published('C', (c) => (c.sections.find((s: any) => s.id === 'faq').enabled = false)), 'C')
+  assert.deepEqual(resolveHomeFaqEntries(CONTENTS, ROOT, config, buildHomeSectionPlan('C', config)), [])
+})
+
+test('auto FAQ keeps the current selection rule with the configured limit', () => {
+  const config = normalizeSiteConfig(published('B', (c) => (c.faq.limit = 4)), 'B')
+  const entries = resolveHomeFaqEntries(CONTENTS, ROOT, config, buildHomeSectionPlan('B', config))
+  assert.deepEqual(entries, selectFaqEntries(CONTENTS, ROOT, 4))
+})
+
+test('manual FAQ uses the server-read approved entries in the chosen order, never other posts', () => {
+  const config = normalizeSiteConfig(
+    published('B', (c) => {
+      c.faq.mode = 'manual'
+      c.faq.entries = [
+        { id: 'faq-9', question: '질문 9번은 무엇인가요?', answer: '답 9' },
+        { id: 'faq-2', question: '질문 2번은 무엇인가요?', answer: '답 2' },
+        { id: 'faq-x', question: '', answer: '빈 질문은 버린다' },
+      ]
+    }),
+    'B',
+  )
+  const entries = resolveHomeFaqEntries(CONTENTS, ROOT, config, buildHomeSectionPlan('B', config))
+  assert.deepEqual(
+    entries.map((entry) => [entry.id, entry.url]),
+    [
+      ['faq-9', `${ROOT}/contents/faq-9`],
+      ['faq-2', `${ROOT}/contents/faq-2`],
+    ],
+  )
+  const allDown = normalizeSiteConfig(published('B', (c) => ((c.faq.mode = 'manual'), (c.faq.entries = []))), 'B')
+  assert.deepEqual(resolveHomeFaqEntries(CONTENTS, ROOT, allDown, buildHomeSectionPlan('B', allDown)), [])
+})
+
+// ── 진료 과정·원칙 카드 ────────────────────────────────────────────────
+
+test('care flow keeps the default steps (with their aux line) and shows edited steps plainly', () => {
+  assert.deepEqual(resolveCareFlow(null), { note: CARE_FLOW_NOTE, steps: CARE_STEPS.map((step) => ({ ...step })) })
+  const config = normalizeSiteConfig(
+    published('B', (c) => {
+      c.care_flow.note = '예약 없이 오셔도 됩니다.'
+      c.care_flow.steps = [c.care_flow.steps[0], { title: '검사', body: '필요한 검사를 안내합니다.' }]
+    }),
+    'B',
+  )
+  const flow = resolveCareFlow(config)
+  assert.equal(flow.note, '예약 없이 오셔도 됩니다.')
+  assert.deepEqual(flow.steps[0], { ...CARE_STEPS[0] })
+  assert.deepEqual(flow.steps[1], { label: '02', aux: null, title: '검사', body: '필요한 검사를 안내합니다.' })
+})
+
+test('care principle cards are cut to the configured count', () => {
+  const config = normalizeSiteConfig(published('A', (c) => (c.care_principles.card_count = 2)), 'A')
+  assert.deepEqual(limitCarePrincipleCards(['a', 'b', 'c'], config), ['a', 'b'])
+})
+
+// ── 메뉴 ──────────────────────────────────────────────────────────────
+
+test('menu and mobile bar follow the config order and drop unknown or repeated items', () => {
+  const config = normalizeSiteConfig(
+    published('B', (c) => {
+      c.nav.items = ['doctor', 'faq', 'doctor', 'nope', 'call']
+      c.nav.mobile_bar = ['map', 'call']
+    }),
+    'B',
+  )
+  assert.deepEqual(config?.nav.items, ['doctor', 'faq', 'call'])
+  assert.deepEqual(config?.nav.mobileBar, ['map', 'call'])
+})
+
+// ── 구조화 정보·llms.txt는 설정을 읽지 않는다 (I1) ─────────────────────
+
+function sourceFiles(dir: string): string[] {
+  return readdirSync(dir).flatMap((name) => {
+    const path = join(dir, name)
+    return statSync(path).isDirectory() ? sourceFiles(path) : /\.(ts|tsx)$/.test(name) ? [path] : []
+  })
+}
+
+test('the clinic JSON-LD and llms.txt never read the section config', () => {
+  const page = readFileSync(join(SLUG_DIR, 'page.tsx'), 'utf8')
+  const clinicJsonLd = page.slice(page.indexOf('const clinicJsonLd = {'), page.indexOf('const breadcrumbJsonLd'))
+  assert.ok(clinicJsonLd.includes("'@type': ['MedicalClinic', 'LocalBusiness']"))
+  assert.doesNotMatch(clinicJsonLd, /site_?[cC]onfig|plan\./)
+  // 설정은 JSON-LD를 만든 뒤에 읽는다.
+  assert.ok(page.indexOf('const siteConfig = hospital.site_config') > page.indexOf('const clinicJsonLd = {'))
+  for (const file of sourceFiles(join(SLUG_DIR, 'llms.txt'))) {
+    assert.doesNotMatch(readFileSync(file, 'utf8'), /site_?[cC]onfig/, file)
+  }
+  for (const name of ['clinic-schema.ts', 'llms-text.ts']) {
+    try {
+      assert.doesNotMatch(readFileSync(join(HERE, name), 'utf8'), /site_?[cC]onfig/, name)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    }
+  }
+})
+
+test('every hospital page passes the same menu config to the header', () => {
+  const pages = sourceFiles(SLUG_DIR).filter((file) => readFileSync(file, 'utf8').includes('<ClinicHeader'))
+  assert.ok(pages.length >= 7)
+  for (const file of pages) {
+    const source = readFileSync(file, 'utf8')
+    const headers = source.split('<ClinicHeader').slice(1).map((part) => part.slice(0, part.indexOf('/>')))
+    for (const header of headers) assert.match(header, /siteConfig=\{\w+\.site_config\}/, file)
+  }
+})

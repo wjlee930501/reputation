@@ -138,6 +138,7 @@ export default async function DoctorPage({ params: paramsPromise }: Props) {
           logoUrl={hospital.logo_url}
           currentSection="doctor"
           googleMapsUrl={hospital.google_maps_url}
+          siteConfig={hospital.site_config}
         />
         <main id="main-content">
           <section className="clinic-library-hero">

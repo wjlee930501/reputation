@@ -1,0 +1,630 @@
+{
+  "defaults_version": "2026-11-21.2",
+  "schema_version": 1,
+  "layouts": {
+    "A": {
+      "layout": "A",
+      "sections": [
+        {
+          "id": "hero",
+          "enabled": true,
+          "title": null,
+          "background": "default",
+          "align": "left",
+          "label": false,
+          "attached_to": null
+        },
+        {
+          "id": "treatments",
+          "enabled": true,
+          "title": "진료 영역",
+          "background": "default",
+          "align": "center",
+          "label": false,
+          "attached_to": null
+        },
+        {
+          "id": "doctor",
+          "enabled": true,
+          "title": "의료진 소개",
+          "background": "default",
+          "align": "center",
+          "label": false,
+          "attached_to": null
+        },
+        {
+          "id": "care_principles",
+          "enabled": true,
+          "title": "증상의 원인부터 확인합니다",
+          "background": "default",
+          "align": "center",
+          "label": false,
+          "attached_to": null
+        },
+        {
+          "id": "hours",
+          "enabled": true,
+          "title": "오늘 진료",
+          "background": "band",
+          "align": "left",
+          "label": false,
+          "attached_to": null
+        },
+        {
+          "id": "contents",
+          "enabled": true,
+          "title": "자주 확인하는 질문",
+          "background": "default",
+          "align": "left",
+          "label": false,
+          "attached_to": null
+        },
+        {
+          "id": "faq",
+          "enabled": true,
+          "title": "자주 묻는 질문과 답변 요약",
+          "background": "default",
+          "align": "left",
+          "label": false,
+          "attached_to": null
+        },
+        {
+          "id": "care_flow",
+          "enabled": true,
+          "title": "첫 방문부터 경과 관리까지, 진료 4단계",
+          "background": "default",
+          "align": "center",
+          "label": false,
+          "attached_to": null
+        },
+        {
+          "id": "gallery",
+          "enabled": true,
+          "title": "병원 공간",
+          "background": "default",
+          "align": "left",
+          "label": false,
+          "attached_to": null
+        },
+        {
+          "id": "facts",
+          "enabled": true,
+          "title": null,
+          "background": "default",
+          "align": "left",
+          "label": false,
+          "attached_to": null
+        }
+      ],
+      "hero": {
+        "arrangement": "split",
+        "title_size": "m",
+        "line_breaks": {},
+        "blocks": [
+          "today",
+          "phone",
+          "location",
+          "hours"
+        ],
+        "image": {
+          "focus": {
+            "x": 0.5,
+            "y": 0.5
+          },
+          "veil": {
+            "opacity": 0.6,
+            "extent": "none"
+          }
+        }
+      },
+      "copy": {},
+      "treatments": {
+        "show_description": false,
+        "style": "cards"
+      },
+      "doctor": {
+        "photo_ratio": "portrait",
+        "photo_focus": {
+          "x": 0.5,
+          "y": 0.2
+        },
+        "title_position": "above",
+        "show_philosophy": false
+      },
+      "care_principles": {
+        "card_count": 3,
+        "use_default_cards": true
+      },
+      "care_flow": {
+        "note": "상담과 진료 확인을 바탕으로 단계적으로 진행합니다.",
+        "steps": [
+          {
+            "title": "상담·문진",
+            "body": "증상과 불편한 점, 생활 습관과 병력을 충분히 듣고 확인합니다."
+          },
+          {
+            "title": "진단·원인 확인",
+            "body": "진찰 소견을 바탕으로 필요한 검사를 안내하고 증상의 원인을 확인합니다."
+          },
+          {
+            "title": "치료 계획 상담",
+            "body": "확인된 결과를 바탕으로 치료 선택지를 설명하고 함께 결정합니다."
+          },
+          {
+            "title": "경과 확인·생활 관리",
+            "body": "치료 후 경과를 확인하고 일상에서의 관리 방법을 안내합니다."
+          }
+        ]
+      },
+      "visit": {
+        "order": [
+          "parking",
+          "transit"
+        ],
+        "show_transit": true
+      },
+      "faq": {
+        "mode": "auto",
+        "limit": 10,
+        "content_ids": [],
+        "merge_questions": false
+      },
+      "region_tags": {
+        "show": true,
+        "separator": "comma"
+      },
+      "nav": {
+        "items": [
+          "treatments",
+          "visit",
+          "doctor",
+          "contents",
+          "website",
+          "call"
+        ],
+        "mobile_bar": [
+          "call",
+          "hours",
+          "guide",
+          "map"
+        ],
+        "section_index": false
+      },
+      "share": {
+        "image_asset_id": null,
+        "description": null
+      },
+      "type": {
+        "body_size": "normal"
+      },
+      "article": {
+        "aside": "bottom"
+      }
+    },
+    "B": {
+      "layout": "B",
+      "sections": [
+        {
+          "id": "hero",
+          "enabled": true,
+          "title": null,
+          "background": "default",
+          "align": "left",
+          "label": false,
+          "attached_to": null
+        },
+        {
+          "id": "section_index",
+          "enabled": false,
+          "title": null,
+          "background": "default",
+          "align": "left",
+          "label": false,
+          "attached_to": null
+        },
+        {
+          "id": "treatments",
+          "enabled": true,
+          "title": "진료 영역",
+          "background": "default",
+          "align": "left",
+          "label": false,
+          "attached_to": null
+        },
+        {
+          "id": "doctor",
+          "enabled": true,
+          "title": "의료진 소개",
+          "background": "default",
+          "align": "left",
+          "label": false,
+          "attached_to": null
+        },
+        {
+          "id": "care_principles",
+          "enabled": true,
+          "title": "증상의 원인부터 확인합니다",
+          "background": "default",
+          "align": "left",
+          "label": false,
+          "attached_to": null
+        },
+        {
+          "id": "contents",
+          "enabled": true,
+          "title": "먼저 정리한 글",
+          "background": "default",
+          "align": "left",
+          "label": false,
+          "attached_to": null
+        },
+        {
+          "id": "questions",
+          "enabled": true,
+          "title": "자주 확인하는 질문",
+          "background": "default",
+          "align": "left",
+          "label": false,
+          "attached_to": null
+        },
+        {
+          "id": "faq",
+          "enabled": true,
+          "title": "자주 묻는 질문과 답변 요약",
+          "background": "default",
+          "align": "left",
+          "label": false,
+          "attached_to": null
+        },
+        {
+          "id": "care_flow",
+          "enabled": true,
+          "title": "첫 방문부터 경과 관리까지, 진료 4단계",
+          "background": "default",
+          "align": "left",
+          "label": false,
+          "attached_to": null
+        },
+        {
+          "id": "gallery",
+          "enabled": true,
+          "title": "병원 공간",
+          "background": "default",
+          "align": "left",
+          "label": false,
+          "attached_to": null
+        },
+        {
+          "id": "facts",
+          "enabled": true,
+          "title": null,
+          "background": "default",
+          "align": "left",
+          "label": false,
+          "attached_to": null
+        },
+        {
+          "id": "visit",
+          "enabled": true,
+          "title": "오시는 길·방문 안내",
+          "background": "default",
+          "align": "left",
+          "label": false,
+          "attached_to": null
+        }
+      ],
+      "hero": {
+        "arrangement": "split",
+        "title_size": "m",
+        "line_breaks": {},
+        "blocks": [
+          "today",
+          "phone",
+          "location",
+          "hours"
+        ],
+        "image": {
+          "focus": {
+            "x": 0.5,
+            "y": 0.5
+          },
+          "veil": {
+            "opacity": 0.6,
+            "extent": "none"
+          }
+        }
+      },
+      "copy": {},
+      "treatments": {
+        "show_description": true,
+        "style": "cards"
+      },
+      "doctor": {
+        "photo_ratio": "portrait",
+        "photo_focus": {
+          "x": 0.5,
+          "y": 0.2
+        },
+        "title_position": "above",
+        "show_philosophy": false
+      },
+      "care_principles": {
+        "card_count": 3,
+        "use_default_cards": true
+      },
+      "care_flow": {
+        "note": "상담과 진료 확인을 바탕으로 단계적으로 진행합니다.",
+        "steps": [
+          {
+            "title": "상담·문진",
+            "body": "증상과 불편한 점, 생활 습관과 병력을 충분히 듣고 확인합니다."
+          },
+          {
+            "title": "진단·원인 확인",
+            "body": "진찰 소견을 바탕으로 필요한 검사를 안내하고 증상의 원인을 확인합니다."
+          },
+          {
+            "title": "치료 계획 상담",
+            "body": "확인된 결과를 바탕으로 치료 선택지를 설명하고 함께 결정합니다."
+          },
+          {
+            "title": "경과 확인·생활 관리",
+            "body": "치료 후 경과를 확인하고 일상에서의 관리 방법을 안내합니다."
+          }
+        ]
+      },
+      "visit": {
+        "order": [
+          "parking",
+          "transit"
+        ],
+        "show_transit": true
+      },
+      "faq": {
+        "mode": "auto",
+        "limit": 10,
+        "content_ids": [],
+        "merge_questions": false
+      },
+      "region_tags": {
+        "show": true,
+        "separator": "comma"
+      },
+      "nav": {
+        "items": [
+          "treatments",
+          "visit",
+          "doctor",
+          "contents",
+          "website",
+          "call"
+        ],
+        "mobile_bar": [
+          "call",
+          "hours",
+          "guide",
+          "map"
+        ],
+        "section_index": false
+      },
+      "share": {
+        "image_asset_id": null,
+        "description": null
+      },
+      "type": {
+        "body_size": "normal"
+      },
+      "article": {
+        "aside": "bottom"
+      }
+    },
+    "C": {
+      "layout": "C",
+      "sections": [
+        {
+          "id": "hero",
+          "enabled": true,
+          "title": null,
+          "background": "default",
+          "align": "left",
+          "label": false,
+          "attached_to": null
+        },
+        {
+          "id": "news",
+          "enabled": true,
+          "title": "최근 의료 정보",
+          "background": "default",
+          "align": "left",
+          "label": true,
+          "attached_to": "hero"
+        },
+        {
+          "id": "hours",
+          "enabled": true,
+          "title": "진료시간",
+          "background": "default",
+          "align": "left",
+          "label": true,
+          "attached_to": "hero"
+        },
+        {
+          "id": "treatments",
+          "enabled": true,
+          "title": "진료 영역",
+          "background": "tint",
+          "align": "left",
+          "label": true,
+          "attached_to": null
+        },
+        {
+          "id": "doctor",
+          "enabled": true,
+          "title": "의료진 소개",
+          "background": "default",
+          "align": "left",
+          "label": true,
+          "attached_to": null
+        },
+        {
+          "id": "care_principles",
+          "enabled": true,
+          "title": "증상의 원인부터 확인합니다",
+          "background": "band",
+          "align": "left",
+          "label": true,
+          "attached_to": null
+        },
+        {
+          "id": "care_flow",
+          "enabled": true,
+          "title": "첫 방문부터 경과 관리까지, 진료 4단계",
+          "background": "band",
+          "align": "left",
+          "label": true,
+          "attached_to": "care_principles"
+        },
+        {
+          "id": "questions",
+          "enabled": true,
+          "title": "자주 확인하는 질문",
+          "background": "default",
+          "align": "left",
+          "label": true,
+          "attached_to": null
+        },
+        {
+          "id": "faq",
+          "enabled": true,
+          "title": "자주 묻는 질문과 답변 요약",
+          "background": "default",
+          "align": "left",
+          "label": true,
+          "attached_to": null
+        },
+        {
+          "id": "gallery",
+          "enabled": true,
+          "title": "병원 공간",
+          "background": "default",
+          "align": "left",
+          "label": true,
+          "attached_to": null
+        },
+        {
+          "id": "facts",
+          "enabled": true,
+          "title": null,
+          "background": "default",
+          "align": "left",
+          "label": true,
+          "attached_to": null
+        }
+      ],
+      "hero": {
+        "arrangement": "split",
+        "title_size": "m",
+        "line_breaks": {},
+        "blocks": [
+          "today",
+          "phone",
+          "location",
+          "hours"
+        ],
+        "image": {
+          "focus": {
+            "x": 0.5,
+            "y": 0.5
+          },
+          "veil": {
+            "opacity": 0.6,
+            "extent": "none"
+          }
+        }
+      },
+      "copy": {},
+      "treatments": {
+        "show_description": false,
+        "style": "cards"
+      },
+      "doctor": {
+        "photo_ratio": "portrait",
+        "photo_focus": {
+          "x": 0.5,
+          "y": 0.2
+        },
+        "title_position": "above",
+        "show_philosophy": false
+      },
+      "care_principles": {
+        "card_count": 3,
+        "use_default_cards": true
+      },
+      "care_flow": {
+        "note": "상담과 진료 확인을 바탕으로 단계적으로 진행합니다.",
+        "steps": [
+          {
+            "title": "상담·문진",
+            "body": "증상과 불편한 점, 생활 습관과 병력을 충분히 듣고 확인합니다."
+          },
+          {
+            "title": "진단·원인 확인",
+            "body": "진찰 소견을 바탕으로 필요한 검사를 안내하고 증상의 원인을 확인합니다."
+          },
+          {
+            "title": "치료 계획 상담",
+            "body": "확인된 결과를 바탕으로 치료 선택지를 설명하고 함께 결정합니다."
+          },
+          {
+            "title": "경과 확인·생활 관리",
+            "body": "치료 후 경과를 확인하고 일상에서의 관리 방법을 안내합니다."
+          }
+        ]
+      },
+      "visit": {
+        "order": [
+          "parking",
+          "transit"
+        ],
+        "show_transit": true
+      },
+      "faq": {
+        "mode": "auto",
+        "limit": 10,
+        "content_ids": [],
+        "merge_questions": false
+      },
+      "region_tags": {
+        "show": true,
+        "separator": "comma"
+      },
+      "nav": {
+        "items": [
+          "treatments",
+          "visit",
+          "doctor",
+          "contents",
+          "website",
+          "call"
+        ],
+        "mobile_bar": [
+          "call",
+          "hours",
+          "guide",
+          "map"
+        ],
+        "section_index": false
+      },
+      "share": {
+        "image_asset_id": null,
+        "description": null
+      },
+      "type": {
+        "body_size": "normal"
+      },
+      "article": {
+        "aside": "bottom"
+      }
+    }
+  }
+}

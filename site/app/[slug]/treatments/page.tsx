@@ -127,6 +127,7 @@ export default async function TreatmentsPage({ params: paramsPromise }: Props) {
           logoUrl={hospital.logo_url}
           currentSection="treatments"
           googleMapsUrl={hospital.google_maps_url}
+          siteConfig={hospital.site_config}
         />
         <main id="main-content">
           <section className="clinic-library-hero">

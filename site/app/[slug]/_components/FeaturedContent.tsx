@@ -14,6 +14,9 @@ interface Props {
   hospitalName: string
   directorName: string
   secondaryLimit?: number
+  /** 섹션 설정이 바꾼 제목·안내 문장(레이아웃 편집기). 없으면 지금 문구. */
+  title?: string | null
+  note?: string | null
 }
 
 const PRIORITY_TYPES = ['FAQ', 'DISEASE', 'TREATMENT', 'COLUMN', 'HEALTH', 'LOCAL', 'NOTICE']
@@ -40,6 +43,8 @@ export function FeaturedContent({
   hospitalName,
   directorName,
   secondaryLimit = 4,
+  title,
+  note,
 }: Props) {
   const { primary, rest } = selectFeatured(contents, secondaryLimit)
   if (!primary) return null
@@ -51,9 +56,13 @@ export function FeaturedContent({
     <section className="clinic-featured" aria-label="대표 의료 정보">
       <div className="clinic-featured-inner">
         <header className="clinic-section-head">
-          <h2 className="clinic-section-title">먼저 정리한 글</h2>
+          <h2 className="clinic-section-title">{title ?? '먼저 정리한 글'}</h2>
           <p className="clinic-section-note">
-            환자 질문에 답하기 위해 {hospitalName}에서 먼저 정리한 의료 정보입니다.
+            {note ?? (
+              <>
+                환자 질문에 답하기 위해 {hospitalName}에서 먼저 정리한 의료 정보입니다.
+              </>
+            )}
           </p>
         </header>
 
