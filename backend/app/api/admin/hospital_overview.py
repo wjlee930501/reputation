@@ -69,6 +69,8 @@ _CONDITIONS: dict[str, tuple[str, str, str | None]] = {
     "address": ("병원 주소 입력", "human", "/hospitals/{hospital_id}/info"),
     "phone": ("병원 전화번호 입력", "human", "/hospitals/{hospital_id}/info"),
     "treatments": ("진료 항목 입력", "human", "/hospitals/{hospital_id}/info"),
+    "name": ("병원명 입력", "human", "/hospitals/{hospital_id}/info"),
+    "slug": ("기본 주소 이름 입력", "human", "/hospitals/{hospital_id}/info"),
     # 링크는 실제로 그 값을 채우는 칸으로 보낸다. 화면 위쪽만 가리키면 사람이 다시 찾는다.
     "profile_complete": (
         "필수 병원 정보 입력",
@@ -92,12 +94,17 @@ _CONDITIONS: dict[str, tuple[str, str, str | None]] = {
 
 
 
+_UNKNOWN_CONDITION: tuple[str, str, str | None] = ("확인 필요 항목", "human", None)
+
+
 def _remaining(hospital_id: uuid.UUID, keys: tuple[str, ...]) -> list[RemainingCondition]:
     """`hospital_states`가 낸 조건 키(`sources:3` 포함)를 화면 문구로."""
     conditions: list[RemainingCondition] = []
     for key in keys:
         name, _, count = key.partition(":")
-        label, actor, href = _CONDITIONS[name]
+        # 공개 판정이 막힘 코드를 늘려도 현황 화면이 500으로 깨지지 않게 — 모르는 키는
+        # 사람이 확인할 항목으로 보이고 영문 키는 화면에 내지 않는다.
+        label, actor, href = _CONDITIONS.get(name, _UNKNOWN_CONDITION)
         conditions.append(
             RemainingCondition(
                 key=key,

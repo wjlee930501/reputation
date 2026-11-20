@@ -246,14 +246,16 @@ export default function HospitalsPage() {
                             {ADMIN_COPY.aeOwner} {h.ae_owner?.name ?? '미지정'}
                           </div>
                         </Link>
-                        {/* 사진 승인은 사람만 풀 수 있고, 여기서 보이지 않으면 병원을 열기
-                            전에는 알 수 없다 — 승인 화면으로 바로 간다(O-2). */}
+                        {/* 로고·대표색·첫 화면 문구·정보 우선순위는 사람만 채울 수 있고, 여기서 보이지
+                            않으면 병원을 열기 전에는 알 수 없다 — 그 칸으로 바로 간다(O-2). 사진은 들지
+                            않는다(`clinic_visual_readiness`). 옛 배지 이름이 사진으로 읽혀
+                            2026-11-20에 바꿨다. */}
                         {(h.visual_approval_missing?.length ?? 0) > 0 && (
                           <Link
-                            href={`/hospitals/${h.id}/info`}
+                            href={`/hospitals/${h.id}/info#info-brand`}
                             className="mt-1 inline-flex rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-800 hover:bg-amber-100"
                           >
-                            사진 승인 대기 {h.visual_approval_missing?.length}건
+                            {ADMIN_COPY.visualItemsMissing} {h.visual_approval_missing?.length}건
                           </Link>
                         )}
                       </td>

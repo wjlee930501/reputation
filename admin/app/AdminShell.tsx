@@ -123,10 +123,6 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
               <span className="text-[11px] font-semibold tracking-wider text-blue-300">운영</span>
             </div>
             <p className="mt-0.5 hidden text-[11px] text-slate-400 lg:block">MotionLabs 고객 운영 화면</p>
-            <span className="mt-2 hidden items-center gap-1 rounded-full bg-blue-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-blue-200 lg:inline-flex">
-              <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-blue-400" />
-              시험 운영
-            </span>
           </Link>
 
           <details className="group relative ml-auto lg:hidden">
@@ -234,7 +230,7 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
 
         <div className="hidden space-y-1 border-t border-slate-800 px-4 py-3 lg:block">
           <p className="text-[11px] font-medium text-slate-300">MotionLabs Inc.</p>
-          <p className="text-[10px] text-slate-500">v1.0 시험 운영 · 고객 운영 화면</p>
+          <p className="text-[10px] text-slate-500">v1.0 · 고객 운영 화면</p>
           <a
             href="https://motionlabs.kr"
             target="_blank"

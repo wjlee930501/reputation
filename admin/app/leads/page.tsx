@@ -11,7 +11,7 @@ import { SkeletonTable } from '@/app/components/Skeleton'
 import { type SalesLead } from '@/types'
 import { buildLeadOnboardingHref } from '@/lib/lead-onboarding'
 import { leadSourceLabel, safeOperatorError } from '@/lib/operations-journey'
-import { describeLeadAging, sortLeadsByAttention } from '@/lib/lead-aging'
+import { describeLeadAging } from '@/lib/lead-aging'
 import {
   hasStructuredInquiryDetails,
   isIntroductionInquiry,
@@ -34,6 +34,7 @@ import {
   needsAttention,
   recoveryAction,
 } from '@/lib/lead-diagnosis-status'
+import { formatActorLabel } from '@/lib/actor-display'
 
 // backend GET /admin/leads — limit(기본 50, 최대 200) + offset 지원.
 // "더 보기"는 offset append 방식이라 오래된 상담 요청(파기 워크플로 대상 포함)까지 도달 가능.
@@ -181,7 +182,7 @@ function readRefusalReasons(error: unknown): string[] {
 
 export default function LeadsPage() {
   const [leads, setLeads] = useState<SalesLead[]>([])
-  // 경과·기한은 지금 시각 기준이다. 렌더마다 Date.now()를 읽으면 같은 목록이 스크롤마다
+  // 경과 시간은 지금 시각 기준이다. 렌더마다 Date.now()를 읽으면 같은 목록이 스크롤마다
   // 다른 숫자를 보여주므로, 목록을 불러온 시점을 고정해서 쓴다.
   const [agingCheckedAt, setAgingCheckedAt] = useState(() => Date.now())
   const [loading, setLoading] = useState(true)
@@ -196,6 +197,9 @@ export default function LeadsPage() {
 
   // 무료 진단 — 확인 필요 필터 + 재발송/잠금 해제
   const [attentionOnly, setAttentionOnly] = useState(false)
+  // 운영 점검용 접수(`is_operations_test`)는 기본으로 숨긴다 — 실운영 목록에 섞이면 처리할
+  // 일처럼 보인다. 지우지 않고 보기만 바꾼다.
+  const [showTestLeads, setShowTestLeads] = useState(false)
   const [actionTarget, setActionTarget] = useState<ActionTarget | null>(null)
   const [actionReason, setActionReason] = useState('')
   const [ackDuplicateRisk, setAckDuplicateRisk] = useState(false)
@@ -496,9 +500,8 @@ export default function LeadsPage() {
 
   const realLoadedCount = leads.filter((lead) => !lead.is_operations_test).length
   const realTotal = summary?.total ?? realLoadedCount
-  const overdueLeadCount = summary?.overdue ?? leads.filter(
-    (lead) => !lead.is_operations_test && describeLeadAging(lead, agingCheckedAt).slaState === 'OVERDUE',
-  ).length
+  const testLoadedCount = leads.length - realLoadedCount
+  const visibleLeads = showTestLeads ? leads : leads.filter((lead) => !lead.is_operations_test)
   const emptyState = leadEmptyState(attentionOnly, realTotal)
 
   return (
@@ -529,8 +532,15 @@ export default function LeadsPage() {
           <div className="rounded-xl border border-slate-200 bg-white px-4 py-3 text-right shadow-sm">
             <p className="text-xs font-medium text-slate-500">불러온 상담 요청 · 실운영</p>
             <p className="mt-0.5 text-2xl font-bold text-slate-900">{realTotal}</p>
-            {overdueLeadCount > 0 && (
-              <p className="mt-0.5 text-[11px] font-semibold text-red-600">첫 연락 기한 초과 {overdueLeadCount}건</p>
+            {testLoadedCount > 0 && (
+              <button
+                type="button"
+                onClick={() => setShowTestLeads((current) => !current)}
+                aria-pressed={showTestLeads}
+                className="mt-1 min-h-8 text-[11px] font-medium text-slate-500 underline-offset-2 hover:underline"
+              >
+                {(showTestLeads ? ADMIN_COPY.leads.hideTestLeads : ADMIN_COPY.leads.showTestLeads).replace('{count}', String(testLoadedCount))}
+              </button>
             )}
           </div>
         </div>
@@ -552,20 +562,31 @@ export default function LeadsPage() {
         <div className="mb-4"><OperatorIssuePanel message={eraseError} surface="leads" onRetry={() => void loadLeads(0)} retryLabel="상담 요청 다시 불러오기" /></div>
       )}
 
-      {!loading && !error && leads.length === 0 && (
+      {!loading && !error && visibleLeads.length === 0 && (
         <div className="rounded-xl border border-dashed border-slate-300 bg-white px-6 py-16 text-center">
           <p className="text-base font-semibold text-slate-700">{emptyState.title}</p>
           <p className="mt-2 text-sm text-slate-500">{emptyState.detail}</p>
+          {/* 불러온 행이 모두 운영 점검용이어도 뒤에 실제 요청이 있을 수 있다 — 더 보기는 남긴다. */}
+          {hasMore && (
+            <button
+              type="button"
+              onClick={() => loadLeads(leads.length, { append: true })}
+              disabled={loadingMore}
+              className="mt-4 rounded-lg border border-slate-200 bg-white px-4 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+            >
+              {loadingMore ? '불러오는 중...' : '더 보기'}
+            </button>
+          )}
         </div>
       )}
 
-      {!loading && !error && leads.length > 0 && (
+      {!loading && !error && visibleLeads.length > 0 && (
         <div className="rounded-xl border border-slate-200 bg-white shadow-sm">
           <div className="admin-responsive-table-wrap overflow-x-auto">
           <table className="admin-responsive-table w-full min-w-0 text-sm lg:min-w-[1040px]">
             <thead className="border-b border-slate-200 bg-slate-50">
               <tr>
-                <th className="px-6 py-3 text-left font-medium text-slate-600">접수 · 첫 연락 기한</th>
+                <th className="px-6 py-3 text-left font-medium text-slate-600">접수</th>
                 <th className="px-6 py-3 text-left font-medium text-slate-600">병원</th>
                 <th className="px-6 py-3 text-left font-medium text-slate-600 sm:hidden lg:table-cell">연락처</th>
                 <th className="px-6 py-3 text-left font-medium text-slate-600 sm:hidden lg:table-cell">문의</th>
@@ -575,29 +596,11 @@ export default function LeadsPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {sortLeadsByAttention(leads, agingCheckedAt).map((lead) => (
+              {visibleLeads.map((lead) => (
                 <tr key={lead.id} className="transition-colors hover:bg-slate-50">
-                  <td className="px-6 py-4 text-xs text-slate-500" data-label="접수 · 첫 연락 기한">
-                    {(() => {
-                      const aging = describeLeadAging(lead, agingCheckedAt)
-                      return (
-                        <>
-                          <p className="whitespace-nowrap">{formatDateTime(lead.created_at)}</p>
-                          <p className="mt-0.5 whitespace-nowrap">{aging.elapsedLabel}</p>
-                          <p
-                            className={`mt-1 whitespace-nowrap font-medium ${
-                              aging.slaState === 'OVERDUE'
-                                ? 'text-red-600'
-                                : aging.slaState === 'DUE_SOON'
-                                  ? 'text-amber-700'
-                                  : 'text-slate-400'
-                            }`}
-                          >
-                            {aging.slaLabel}
-                          </p>
-                        </>
-                      )
-                    })()}
+                  <td className="px-6 py-4 text-xs text-slate-500" data-label="접수">
+                    <p className="whitespace-nowrap">{formatDateTime(lead.created_at)}</p>
+                    <p className="mt-0.5 whitespace-nowrap">{describeLeadAging(lead, agingCheckedAt).elapsedLabel}</p>
                   </td>
                   <td className="px-6 py-4" data-primary="true">
                     <p className="font-semibold whitespace-nowrap text-slate-900">{lead.clinic_name}</p>
@@ -730,7 +733,7 @@ export default function LeadsPage() {
                               {diagnosis.slot_date ?? '-'}
                               {diagnosis.slot_no ? ` · ${diagnosis.slot_no}번째 자리` : ''}
                               {diagnosis.lock_released_at
-                                ? ` · 잠금 해제됨(${diagnosis.lock_released_by ?? '-'})`
+                                ? ` · 잠금 해제됨(${diagnosis.lock_released_by ? formatActorLabel(diagnosis.lock_released_by) : '-'})`
                                 : ''}
                             </p>
                             {diagnosisReportHref(lead.id, diagnosis) && (
