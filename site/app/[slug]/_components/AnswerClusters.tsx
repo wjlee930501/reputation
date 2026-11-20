@@ -14,9 +14,12 @@ interface Props {
   treatments: Array<{ name: string; description: string }>
   region: string[]
   specialties: string[]
+  /** 섹션 설정이 바꾼 제목·안내 문장(레이아웃 편집기). 없으면 지금 문구. */
+  title?: string | null
+  note?: string | null
 }
 
-export function AnswerClusters({ contents, hospitalRootUrl, treatments, region, specialties }: Props) {
+export function AnswerClusters({ contents, hospitalRootUrl, treatments, region, specialties, title, note }: Props) {
   const questions = selectAnswerQuestions(contents, 6)
   if (questions.length === 0) return null
 
@@ -33,9 +36,13 @@ export function AnswerClusters({ contents, hospitalRootUrl, treatments, region, 
         <div className="clinic-answers-layout">
           <aside className="clinic-answers-rail">
             <span className="clinic-answers-eyebrow">진료 전 확인</span>
-            <h2 className="clinic-section-title">{QUESTIONS_SECTION_TITLE}</h2>
+            <h2 className="clinic-section-title">{title ?? QUESTIONS_SECTION_TITLE}</h2>
             <p className="clinic-section-note">
-              {regionText}에서 {specialtyText} 진료를 찾을 때 환자분들이 자주 묻는 질문을 모았습니다.
+              {note ?? (
+                <>
+                  {regionText}에서 {specialtyText} 진료를 찾을 때 환자분들이 자주 묻는 질문을 모았습니다.
+                </>
+              )}
             </p>
             <div className="clinic-answers-hint">
               <span className="clinic-answers-hint-icon" aria-hidden="true"><MessageIcon /></span>

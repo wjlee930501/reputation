@@ -18,6 +18,7 @@ from app.services.site_config_validation import (
 
 ROOT = Path(__file__).resolve().parents[2]
 TEMPLATE_COPY = ROOT / "site" / "lib" / "clinic-template-copy.ts"
+SITE_DEFAULTS = ROOT / "site" / "lib" / "site-config-defaults.json"
 
 HEADLINE = "365서귀포삼성정형외과 제주 서귀포 정형외과 전문의 진료"
 
@@ -33,6 +34,39 @@ def _codes(check) -> list[str]:
 
 
 # ── 기본값 ─────────────────────────────────────────────────────────
+
+
+def test_site_defaults_fixture_matches_backend_defaults() -> None:
+    """사이트는 이 파일로 기본 순서·제목을 대조한다 — 기본값을 바꾸면 파일도 같이 바꾼다(판도 올린다)."""
+
+    import json
+
+    fixture = json.loads(SITE_DEFAULTS.read_text(encoding="utf-8"))
+    assert fixture == {
+        "defaults_version": site_defaults.DEFAULTS_VERSION,
+        "schema_version": site_defaults.SCHEMA_VERSION,
+        "layouts": {layout: site_defaults.defaults(layout) for layout in site_defaults.LAYOUTS},
+    }
+
+
+def test_defaults_match_current_screens() -> None:
+    """기본값 = 지금 화면(3b 감사): 좌우 분할·덮개 없음, FAQ 10개, C안 영문 소제목 전부, A·C 진료 항목 설명 없음."""
+
+    for layout in site_defaults.LAYOUTS:
+        resolved = site_defaults.defaults(layout)
+        assert resolved["hero"]["arrangement"] == "split"
+        assert resolved["hero"]["image"]["veil"]["extent"] == "none"
+        assert resolved["faq"]["limit"] == 10
+        assert resolved["treatments"]["show_description"] is (layout == "B")
+        assert resolved["region_tags"]["separator"] == "dot"
+    b_align = {s["id"]: s["align"] for s in site_defaults.defaults("B")["sections"]}
+    assert {k for k, v in b_align.items() if v == "center"} == {
+        "treatments", "doctor", "contents", "faq", "care_flow", "gallery", "facts", "visit"
+    }
+    a_hours = next(s for s in site_defaults.defaults("A")["sections"] if s["id"] == "hours")
+    assert a_hours["align"] == "center"
+    c_labels = {s["id"]: s["label"] for s in site_defaults.defaults("C")["sections"]}
+    assert all(label for section_id, label in c_labels.items() if section_id != "hero")
 
 
 def test_default_titles_match_the_site_template_copy() -> None:
@@ -350,12 +384,25 @@ def test_changed_sections_lists_blocks_sections_and_order() -> None:
 # ── 공개 정리 ─────────────────────────────────────────────────────
 
 
-def _public(resolved, *, layout="B", ctx=None, faq_entries=None, version=3):
+def _public(resolved, *, layout="B", ctx=None, faq_entries=None, version=3, faq_available=None):
     return public_site_config(
         resolved,
         version=version,
-        ctx=PublicSiteConfigContext(layout=layout, texts=ctx or _ctx(), faq_entries=faq_entries or {}),
+        ctx=PublicSiteConfigContext(
+            layout=layout, texts=ctx or _ctx(), faq_entries=faq_entries or {}, faq_available=faq_available
+        ),
     )
+
+
+def test_faq_menu_item_is_dropped_when_the_home_faq_would_be_empty() -> None:
+    auto = site_defaults.resolve("B", {"nav": {"items": ["faq", "call"]}})
+    assert _public(auto, faq_available=False)["nav"]["items"] == ["call"]
+    assert _public(auto, faq_available=True)["nav"]["items"] == ["faq", "call"]
+    manual = site_defaults.resolve(
+        "B", {"nav": {"items": ["faq", "call"]}, "faq": {"mode": "manual", "content_ids": [str(uuid.uuid4())]}}
+    )
+    # 고른 글이 모두 내려가 직접 FAQ가 비면 메뉴에서 뺀다.
+    assert _public(manual)["nav"]["items"] == ["call"]
 
 
 def test_no_config_or_a_different_current_layout_is_null() -> None:

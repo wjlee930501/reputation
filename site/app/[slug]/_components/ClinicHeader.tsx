@@ -1,8 +1,16 @@
 import Link from 'next/link'
+import { Fragment } from 'react'
 import Image from 'next/image'
 
 import { VISIT_HOURS_ANCHOR } from '@/lib/business-hours'
 import { displayClinicLabels } from '@/lib/clinic-design'
+import {
+  DEFAULT_MOBILE_BAR,
+  DEFAULT_NAV_ITEMS,
+  type ClinicSiteConfig,
+  type SiteMobileBarItem,
+  type SiteNavItem,
+} from '@/lib/clinic-site-config'
 
 import { CalendarIcon, ClockIcon, ExternalIcon, MapPinIcon, PhoneIcon } from './icons'
 import { regionSentenceLabel } from '@/lib/clinic-region'
@@ -22,6 +30,13 @@ interface Props {
   currentSection?: ClinicSection
   /** 있으면 '길찾기'가 지도로 나간다. 없으면 오시는 길 안내로 보낸다. */
   googleMapsUrl?: string | null
+  /**
+   * 공개된 섹션 설정 — 메뉴 항목·순서와 모바일 하단 바. 없으면 지금 메뉴 그대로다. 메뉴는 하위 페이지로
+   * 가므로(홈 섹션을 꺼도 하위 페이지는 남는다) 모든 병원 페이지가 같은 값을 넘긴다.
+   */
+  siteConfig?: ClinicSiteConfig | null
+  /** 홈만 넘긴다 — 홈 FAQ가 비면 메뉴 'FAQ'를 뺀다(하위 페이지는 공개 응답이 이미 거른 값을 쓴다). */
+  faqAvailable?: boolean
 }
 
 export function ClinicHeader({
@@ -34,7 +49,13 @@ export function ClinicHeader({
   logoUrl,
   currentSection,
   googleMapsUrl = null,
+  siteConfig = null,
+  faqAvailable,
 }: Props) {
+  const menu: readonly SiteNavItem[] = (siteConfig?.nav.items ?? DEFAULT_NAV_ITEMS).filter(
+    (item) => item !== 'faq' || faqAvailable !== false,
+  )
+  const bar: readonly SiteMobileBarItem[] = siteConfig?.nav.mobileBar ?? DEFAULT_MOBILE_BAR
   // 진료과 표기는 프로파일의 specialties[]에서만 파생 — 하드코딩 금지.
   const specialtyLabel = displayClinicLabels(specialties).join('·')
   const subline = regionSentenceLabel(region)
@@ -57,20 +78,88 @@ export function ClinicHeader({
     return <Link href={href}>{label}</Link>
   }
 
+  function navItem(item: SiteNavItem) {
+    switch (item) {
+      case 'treatments':
+        return navLink('treatments', `${hospitalRootUrl}/treatments`, '진료 영역')
+      case 'visit':
+        return navLink('visit', `${hospitalRootUrl}/visit`, '진료시간·오시는 길')
+      case 'doctor':
+        return navLink('doctor', `${hospitalRootUrl}/doctor`, '의료진')
+      case 'contents':
+        return navLink('contents', `${hospitalRootUrl}/contents`, '의료 정보')
+      case 'faq':
+        return <Link href={`${hospitalRootUrl}#faq`}>자주 묻는 질문</Link>
+      case 'website':
+        return websiteUrl ? (
+          <a className="clinic-header-external-link" href={websiteUrl} target="_blank" rel="noopener noreferrer" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+            공식 홈페이지
+            <ExternalIcon className="clinic-icon clinic-icon--sm" style={{ color: 'currentColor' }} />
+          </a>
+        ) : null
+      default:
+        // 'call'은 메뉴 줄이 아니라 오른쪽 전화 상담 버튼이다.
+        return null
+    }
+  }
+
   const navItems = (
     <>
-      {navLink('treatments', `${hospitalRootUrl}/treatments`, '진료 영역')}
-      {navLink('visit', `${hospitalRootUrl}/visit`, '진료시간·오시는 길')}
-      {navLink('doctor', `${hospitalRootUrl}/doctor`, '의료진')}
-      {navLink('contents', `${hospitalRootUrl}/contents`, '의료 정보')}
-      {websiteUrl && (
-        <a className="clinic-header-external-link" href={websiteUrl} target="_blank" rel="noopener noreferrer" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-          공식 홈페이지
-          <ExternalIcon className="clinic-icon clinic-icon--sm" style={{ color: 'currentColor' }} />
-        </a>
-      )}
+      {menu.map((item) => (
+        <Fragment key={item}>{navItem(item)}</Fragment>
+      ))}
     </>
   )
+
+  function barItem(item: SiteMobileBarItem) {
+    switch (item) {
+      case 'call':
+        return (
+          <a href={`tel:${phone}`}>
+            <PhoneIcon className="clinic-icon" />
+            전화
+          </a>
+        )
+      case 'hours':
+        // /visit에서는 이 두 항목이 같은 페이지를 다시 열 뿐이었다. 진료시간은 이
+        // 페이지의 표로 내려가고, 길찾기는 라벨이 약속한 대로 지도로 나간다(S-1).
+        return currentSection === 'visit' ? (
+          <a href={`#${VISIT_HOURS_ANCHOR}`}>
+            <ClockIcon className="clinic-icon" />
+            진료시간
+          </a>
+        ) : (
+          <Link href={`${hospitalRootUrl}/visit#${VISIT_HOURS_ANCHOR}`}>
+            <ClockIcon className="clinic-icon" />
+            진료시간
+          </Link>
+        )
+      case 'guide':
+        return currentSection === 'treatments' ? (
+          <span className="clinic-mobile-actionbar-current" aria-current="page">
+            <CalendarIcon className="clinic-icon" />
+            진료안내
+          </span>
+        ) : (
+          <Link href={`${hospitalRootUrl}/treatments`}>
+            <CalendarIcon className="clinic-icon" />
+            진료안내
+          </Link>
+        )
+      case 'map':
+        return googleMapsUrl ? (
+          <a href={googleMapsUrl} target="_blank" rel="noopener noreferrer">
+            <MapPinIcon className="clinic-icon" />
+            길찾기
+          </a>
+        ) : (
+          <Link href={`${hospitalRootUrl}/visit#${VISIT_HOURS_ANCHOR}`}>
+            <MapPinIcon className="clinic-icon" />
+            오시는 길
+          </Link>
+        )
+    }
+  }
 
   return (
     <header className="clinic-header">
@@ -96,11 +185,13 @@ export function ClinicHeader({
           {navItems}
         </nav>
 
-        <a className="clinic-header-cta" href={`tel:${phone}`}>
-          <PhoneIcon className="clinic-icon clinic-icon--sm" style={{ color: 'currentColor' }} />
-          <span>전화 상담</span>
-          <strong>{phone}</strong>
-        </a>
+        {menu.includes('call') ? (
+          <a className="clinic-header-cta" href={`tel:${phone}`}>
+            <PhoneIcon className="clinic-icon clinic-icon--sm" style={{ color: 'currentColor' }} />
+            <span>전화 상담</span>
+            <strong>{phone}</strong>
+          </a>
+        ) : null}
       </div>
 
       {/* 모바일 전용 가로 스크롤 nav. desktop에선 숨김. */}
@@ -108,47 +199,18 @@ export function ClinicHeader({
         {navItems}
       </nav>
 
-      <nav className="clinic-mobile-actionbar" aria-label="빠른 병원 문의">
-        <a href={`tel:${phone}`}>
-          <PhoneIcon className="clinic-icon" />
-          전화
-        </a>
-        {/* /visit에서는 이 두 항목이 같은 페이지를 다시 열 뿐이었다. 진료시간은 이
-            페이지의 표로 내려가고, 길찾기는 라벨이 약속한 대로 지도로 나간다(S-1). */}
-        {currentSection === 'visit' ? (
-          <a href={`#${VISIT_HOURS_ANCHOR}`}>
-            <ClockIcon className="clinic-icon" />
-            진료시간
-          </a>
-        ) : (
-          <Link href={`${hospitalRootUrl}/visit#${VISIT_HOURS_ANCHOR}`}>
-            <ClockIcon className="clinic-icon" />
-            진료시간
-          </Link>
-        )}
-        {currentSection === 'treatments' ? (
-          <span className="clinic-mobile-actionbar-current" aria-current="page">
-            <CalendarIcon className="clinic-icon" />
-            진료안내
-          </span>
-        ) : (
-          <Link href={`${hospitalRootUrl}/treatments`}>
-            <CalendarIcon className="clinic-icon" />
-            진료안내
-          </Link>
-        )}
-        {googleMapsUrl ? (
-          <a href={googleMapsUrl} target="_blank" rel="noopener noreferrer">
-            <MapPinIcon className="clinic-icon" />
-            길찾기
-          </a>
-        ) : (
-          <Link href={`${hospitalRootUrl}/visit#${VISIT_HOURS_ANCHOR}`}>
-            <MapPinIcon className="clinic-icon" />
-            오시는 길
-          </Link>
-        )}
-      </nav>
+      {bar.length > 0 ? (
+        <nav
+          className="clinic-mobile-actionbar"
+          aria-label="빠른 병원 문의"
+          // 기본 4칸 격자(globals.css). 항목 수를 바꾼 병원만 칸 수를 맞춘다 — 빈 칸이 남지 않게.
+          style={bar.length === 4 ? undefined : { gridTemplateColumns: `repeat(${bar.length}, 1fr)` }}
+        >
+          {bar.map((item) => (
+            <Fragment key={item}>{barItem(item)}</Fragment>
+          ))}
+        </nav>
+      ) : null}
     </header>
   )
 }

@@ -24,12 +24,16 @@ const LAYOUTS = {
 }
 
 test('the page builds one home model from the same FAQ and question selections', () => {
-  assert.match(PAGE, /const faqEntries = selectFaqEntries\(contents, hospitalRootUrl\)/)
+  // FAQ 항목은 섹션 설정(자동·직접·꺼짐)을 거친 배열 하나다 — 화면·FAQPage·질문 목록이 함께 쓴다.
+  assert.match(PAGE, /const faqEntries = resolveHomeFaqEntries\(contents, hospitalRootUrl, siteConfig, plan\)/)
+  assert.match(PAGE, /const faqJsonLd = buildFaqPageJsonLdFromEntries\(faqEntries, hospitalRootUrl\)/)
+  assert.match(PAGE, /const clusterContents = selectClusterContents\(contents, faqEntries\)/)
   assert.match(PAGE, /const homeModel: ClinicHomeModel = \{[\s\S]*?faqEntries,[\s\S]*?clusterContents,[\s\S]*?\}/)
   assert.match(PAGE, /<HomeLayoutA model=\{homeModel\} \/>/)
   assert.match(PAGE, /<HomeLayoutC model=\{homeModel\} \/>/)
   // 레이아웃을 고르지 않은 병원(NULL)과 B는 레이아웃 도입 전 구성을 그대로 쓴다.
-  assert.match(PAGE, /layout === 'A' \?[\s\S]*?layout === 'C' \?[\s\S]*?<ClinicFaq entries=\{faqEntries\}/)
+  assert.match(PAGE, /layout === 'A' \?[\s\S]*?layout === 'C' \?[\s\S]*?sectionsB\[id\]/)
+  assert.match(PAGE, /<ClinicFaq\s+entries=\{faqEntries\}/)
 })
 
 for (const [name, source] of Object.entries(LAYOUTS)) {
@@ -86,9 +90,12 @@ for (const [name, source] of Object.entries(LAYOUTS)) {
       'FAQ_SECTION_TITLE',
       'FAQ_SECTION_NOTE',
       'GALLERY_SECTION_TITLE',
-      'factsSectionTitle(hospital.name)',
-      'FACTS_SECTION_NOTE',
     ]) {
+      // 섹션 설정이 바꾸지 않으면 원문 상수가 그대로 보인다(plan.title/note의 대체값).
+      assert.match(source, new RegExp(`plan\\.(title|note)\\('\\w+', ${constant}\\)`), `${constant}를 쓰지 않습니다`)
+    }
+    // 기본 정보 제목·안내는 편집기가 바꾸지 않는다.
+    for (const constant of ['factsSectionTitle(hospital.name)', 'FACTS_SECTION_NOTE']) {
       assert.ok(source.includes(`{${constant}}`), `${constant}를 쓰지 않습니다`)
     }
     // 장식 라벨(NEWS·FAQ …)이 제목 글자에 섞이면 h2 텍스트가 바뀐다.
@@ -131,8 +138,11 @@ test('the pre-layout home keeps rendering the template copy from the shared modu
   const flow = read(SLUG_DIR, '_components', 'CareFlow.tsx')
   // 병원마다 바꾼 문구(0096)도 공통 모듈의 resolveCarePrinciples가 기본 문구 위에 얹는다.
   assert.match(principles, /resolveCarePrinciples\(custom\)/)
-  assert.match(principles, /principles\.cards\.map/)
-  assert.match(flow, /CARE_STEPS\.map/)
+  assert.match(principles, /const cards = cardCount \? principles\.cards\.slice\(0, cardCount\) : principles\.cards/)
+  assert.match(principles, /cards\.map/)
+  // 단계는 섹션 설정이 없으면 공통 4단계(기본값 CARE_STEPS).
+  assert.match(flow, /steps = CARE_STEPS/)
+  assert.match(flow, /steps\.map/)
 })
 
 test('every page of a hospital follows the chosen layout shell', () => {

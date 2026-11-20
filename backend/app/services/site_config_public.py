@@ -41,6 +41,8 @@ class PublicSiteConfigContext:
     texts: SiteConfigContext
     # 공개 FAQ 글 id → {"question", "answer"} (지금 공개된 승인 질문·답).
     faq_entries: dict[uuid.UUID, dict[str, str]] = field(default_factory=dict)
+    # 자동 FAQ에 보일 글이 있는가(메뉴에 'FAQ'가 있을 때만 센다). None = 세지 않음.
+    faq_available: bool | None = None
 
 
 def _clean(value: str | None) -> str | None:
@@ -140,10 +142,15 @@ def public_site_config(
     # 메뉴 — 꺼진 섹션을 가리키는 항목은 뺀다.
     enabled = {section["id"] for section in out["sections"] if section.get("enabled")}
     nav = out.setdefault("nav", {})
+    # 메뉴 'FAQ'는 홈 #faq로 간다 — 직접 고른 글이 모두 내려갔거나 자동 FAQ에 보일 글이 없으면 뺀다.
+    faq_empty = (faq.get("mode") == "manual" and not entries) or (
+        faq.get("mode") != "manual" and ctx.faq_available is False
+    )
     nav["items"] = [
         item
         for item in nav.get("items") or []
-        if nav_target(layout, item) in enabled or item in {"website", "call"}
+        if (nav_target(layout, item) in enabled or item in {"website", "call"})
+        and not (item == "faq" and faq_empty)
     ]
 
     out["version"] = version

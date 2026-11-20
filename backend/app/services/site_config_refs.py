@@ -168,6 +168,11 @@ async def public_site_config_for(
     faq_entries: dict[uuid.UUID, dict[str, str]] = {}
     if faq.get("mode") == "manual" and faq.get("content_ids"):
         faq_entries = await public_faq_entries(db, hospital, ids=requested_faq_ids(resolved))
+    faq_available: bool | None = None
+    nav_items = (resolved.get("nav") or {}).get("items") or []
+    if faq.get("mode") != "manual" and "faq" in nav_items:
+        # 메뉴에 'FAQ'를 넣은 병원만 센다 — 하위 페이지 머리는 홈 FAQ를 모른다.
+        faq_available = bool(await public_faq_entries(db, hospital))
     return public_site_config(
         resolved,
         version=row.version,
@@ -175,6 +180,7 @@ async def public_site_config_for(
             layout=layout if layout is not None else getattr(hospital, "site_layout", None),
             texts=text_context(hospital, share_ids=share_image_ids(photos)),
             faq_entries=faq_entries,
+            faq_available=faq_available,
         ),
     )
 

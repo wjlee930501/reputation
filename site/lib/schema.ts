@@ -135,7 +135,17 @@ export function buildFaqPageJsonLd(
   hospitalRootUrl: string,
   pageUrl: string = hospitalRootUrl,
 ): Record<string, unknown> | null {
-  const entries = selectFaqEntries(contents, hospitalRootUrl)
+  return buildFaqPageJsonLdFromEntries(selectFaqEntries(contents, hospitalRootUrl), pageUrl)
+}
+
+/**
+ * 이미 고른 FAQ 항목으로 FAQPage를 만든다. 홈은 섹션 설정(자동·직접 고르기·꺼짐)을 거친 배열 하나를
+ * 화면 FAQ·이 함수·질문 목록 중복 제거에 함께 넘긴다 — 여기서 다시 고르지 않는다(화면 = FAQPage).
+ */
+export function buildFaqPageJsonLdFromEntries(
+  entries: readonly FaqEntry[],
+  pageUrl: string,
+): Record<string, unknown> | null {
   if (entries.length === 0) return null
 
   return {

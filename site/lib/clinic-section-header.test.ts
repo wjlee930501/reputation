@@ -26,7 +26,8 @@ test('the home treatment section title is visible, not screen-reader-only', () =
   assert.ok(header.length > 0, '진료 영역 섹션 헤더를 찾지 못했습니다')
   assert.doesNotMatch(header, /sr-only/)
   // 제목 글자는 레이아웃 A/B/C와 함께 쓰는 원문 상수에 있다.
-  assert.match(header, /<h2 className="clinic-section-title">\{TREATMENT_SECTION_TITLE\}<\/h2>/)
+  // 섹션 설정(레이아웃 편집기)이 제목을 바꾸지 않으면 원문 상수가 보인다.
+  assert.match(header, /<h2 className="clinic-section-title">\{title \?\? TREATMENT_SECTION_TITLE\}<\/h2>/)
   assert.match(TEMPLATE_COPY, /export const TREATMENT_SECTION_TITLE = '진료 영역'/)
 })
 

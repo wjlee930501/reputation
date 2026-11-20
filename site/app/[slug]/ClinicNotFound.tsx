@@ -53,6 +53,7 @@ export default function ClinicNotFound() {
         websiteUrl={hospital.website_url}
         logoUrl={hospital.logo_url}
         googleMapsUrl={hospital.google_maps_url}
+        siteConfig={hospital.site_config}
       />
       <main id="main-content" className="clinic-library-hero">
         <div className="clinic-library-hero-inner">
