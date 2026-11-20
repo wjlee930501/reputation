@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from typing import Any
 
 from app.models.content import ContentItem
@@ -72,9 +73,14 @@ def build_content_brief(
     target_query = (
         f"{focus['topic']}에 대해 알고 싶어요" if focus else _target_query(query_target, content_item)
     )
+    # 측정 질문도 제목도 없는 슬롯의 target_query는 내부 자리 표시다 — 키워드·환자 질문·진료 서술로
+    # 쓰면 작가가 그 글자를 제목에 넣는다(2026-11, 「ContentType.TREATMENT 안내」).
+    slot_placeholder = focus is None and is_slot_placeholder(target_query)
     treatment_name = (
         focus["treatment"]
         if focus
+        else None
+        if slot_placeholder
         else _first_present(
             getattr(query_target, "treatment", None),
             getattr(query_target, "condition_or_symptom", None),
@@ -88,9 +94,6 @@ def build_content_brief(
     )
     safety_policy = effective_safety_policy(philosophy)
     region_terms = _list(getattr(query_target, "region_terms", None))
-    # 측정 질문도 제목도 없는 슬롯의 target_query는 내부 자리 표시다 — 키워드·환자 질문으로 쓰면
-    # 작가가 그 글자를 제목에 넣는다(2026-11, 「ContentType.TREATMENT 안내」). 둘 다 비워 둔다.
-    slot_placeholder = target_query == _slot_placeholder(content_item) and focus is None
     target_keyword = (
         None
         if slot_placeholder
@@ -156,6 +159,14 @@ def _slot_placeholder(content_item: ContentItem) -> str:
     """측정 질문·제목이 없는 슬롯의 내부 자리 표시. enum은 값으로 쓴다 — str(ContentType.X)는
     파이썬 3.11에서 'ContentType.X'다."""
     return f"{enum_value(getattr(content_item, 'content_type', None)) or 'CONTENT'} content slot"
+
+
+_SLOT_PLACEHOLDER_RE = re.compile(r"^(?:ContentType\.)?[A-Z_]+ content slot$")
+
+
+def is_slot_placeholder(text: object) -> bool:
+    """브리프 target_query가 측정 질문 없는 슬롯의 내부 자리 표시인가(작가·검사에 보이지 않게)."""
+    return bool(_SLOT_PLACEHOLDER_RE.match(str(text or "").strip()))
 
 
 def _brief_carries_enum_repr(brief: dict) -> bool:

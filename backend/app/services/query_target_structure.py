@@ -430,9 +430,11 @@ _QUESTION_REWRITES: tuple[tuple[str, str], ...] = (
     ("전문의 추천", "전문의는 어디서 진료받을 수 있나요?"),
     ("추천해줘", "{topic} 어디로 가야 하나요?"),
     ("추천해 줘", "{topic} 어디로 가야 하나요?"),
-    ("알려줘", "알려 주실 수 있나요?"),
-    ("알려 줘", "알려 주실 수 있나요?"),
-    ("비교해줘", "어떻게 다른가요?"),
+    ("비용 알려줘", "비용은 얼마나 드나요?"),
+    ("증상 알려줘", "증상은 무엇인가요?"),
+    ("알려줘", "{topic} 어떻게 되나요?"),
+    ("알려 줘", "{topic} 어떻게 되나요?"),
+    ("비교해줘", "{topic} 어떻게 다른가요?"),
 )
 
 # 물음표로 끝나는 반말 어미 → 존댓말. 이미 존댓말(…요?·…니까?)이면 건드리지 않는다.
@@ -446,8 +448,8 @@ _CASUAL_QUESTION_ENDINGS: tuple[tuple[str, str], ...] = (
     ("없어?", "없나요?"),
     ("돼?", "되나요?"),
     ("해?", "하나요?"),
-    ("야?", "인가요?"),
     ("이야?", "인가요?"),
+    ("야?", "인가요?"),
 )
 
 
@@ -472,9 +474,12 @@ def natural_patient_question(query_text: str) -> str:
     text = " ".join((query_text or "").split())
     if not text:
         return ""
+    # 작가가 요청형 끝에 물음표만 붙인 꼴(「추천해줘?」)도 같은 규칙으로 본다.
+    bare = text[:-1].rstrip() if text.endswith("?") else text
     for suffix, replacement in _QUESTION_REWRITES:
-        if text.endswith(suffix):
-            head = text[: -len(suffix)].strip()
+        matched = text if text.endswith(suffix) else bare if bare.endswith(suffix) else None
+        if matched is not None:
+            head = matched[: -len(suffix)].strip()
             if "{topic}" in replacement:
                 if not head:
                     break

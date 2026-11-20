@@ -27,6 +27,7 @@ from app.models.content import ContentType
 from app.models.essence import HospitalContentPhilosophy
 from app.models.hospital import Hospital
 from app.services import llm_structured_output, openrouter
+from app.services.content_brief import is_slot_placeholder
 from app.services.content_similarity import normalize_topic_text
 from app.services.essence_engine import (
     MANDATORY_AVOID_MESSAGES,
@@ -1024,7 +1025,7 @@ def _build_content_brief_context(
 
     return f"""
 [승인된 콘텐츠 가이드]
-target_query: {content_brief.get('target_query') or ''}
+target_query: {'' if is_slot_placeholder(content_brief.get('target_query')) else content_brief.get('target_query') or ''}
 patient_intent: {content_brief.get('patient_intent') or ''}
 treatment_narrative: {_format_treatment_narrative(content_brief.get('treatment_narrative'))}
 must_use_messages:
@@ -2187,7 +2188,8 @@ def _normalize_editorial_result(result: dict, content_type: ContentType) -> dict
         if question:
             # 작가가 측정 질의 문형(반말·추천 요청)을 그대로 옮겨도 존댓말 환자 질문으로 고친다
             # (2026-11-20, 새 글부터). 이미 존댓말이면 그대로이고, 앞부분(키워드)은 글자 그대로다.
-            normalized["faq_question"] = natural_patient_question(f"{question.rstrip('?.!')}?")
+            # 물음표를 먼저 붙이면 「추천해줘」 같은 요청형 규칙이 걸리지 않는다 — 물음표는 그대로 넘긴다.
+            normalized["faq_question"] = natural_patient_question(question.rstrip(".!"))
     return normalized
 
 
@@ -2301,7 +2303,7 @@ def _validate_seo(
         primary_kw = str(content_brief.get("target_keyword") or "").strip()
         if not primary_kw:
             tq = (content_brief.get("target_query") or "").strip()
-            if tq:
+            if tq and not is_slot_placeholder(tq):
                 primary_kw = tq.split()[0]
     if not primary_kw and hospital.keywords:
         primary_kw = (hospital.keywords[0] or "").split()[0]

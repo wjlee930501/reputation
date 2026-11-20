@@ -279,6 +279,17 @@ def test_slot_without_question_or_title_never_steers_with_the_enum_name():
     assert brief["target_keyword"] is None
     assert brief["target_question"] == ""
     assert "ContentType" not in str(brief)
+    # 자리 표시는 진료 서술·작가 프롬프트·SEO 키워드로 새지 않는다.
+    assert brief["treatment_narrative"].get("treatment") != "TREATMENT content slot"
+    from app.services.content_engine import _validate_seo
+
+    findings = _validate_seo(
+        {"title": "허리 통증 안내", "body": "## 허리\n본문\n## 치료\n- 항목", "meta_description": ""},
+        _hospital(),
+        brief,
+        ContentType.TREATMENT,
+    )
+    assert not any("TREATMENT" in finding for finding in findings)
 
 
 def test_stored_brief_with_the_enum_name_is_rebuilt():
