@@ -358,12 +358,12 @@ async def notify_lead_purge_result(*, purged: int, skipped: int = 0, error: str 
                         prefixed_for_event("PRIVACY_RETENTION_FAILED", "🟥 *[개인정보 자동 파기]* 운영 확인 필요\n"
                         "무슨 문제인지: 보관기간이 지난 신청 정보의 파기 결과를 확정하지 못했습니다.\n"
                         "고객 영향: 일부 개인정보가 예정된 시간에 정리되지 않았을 수 있습니다.\n"
-                        "지금 할 일: 운영센터에서 개인정보 보관 항목의 안전 정보를 복사한 뒤 "
+                        "지금 할 일: 처리 목록에서 개인정보 보관 항목의 안전 정보를 복사한 뒤 "
                         "개발팀에 문의해 주세요.\n"
                         "개발팀 전달용 참조: `PRIVACY-RETENTION`")
                     )},
                 },
-                _admin_action_block(path="/operations?queue=INCIDENTS", label="운영센터에서 확인"),
+                _admin_action_block(path="/operations?queue=INCIDENTS", label="처리 목록에서 확인"),
             ],
         ))
     logger.info("PII retention sweep completed: purged=%s skipped=%s", purged, skipped)

@@ -278,7 +278,7 @@ async def retry_policy(db: AsyncSession, run: OperationRun) -> _TaskPolicy:
         raise operations_error(
             422,
             "OPERATION_NOT_RETRYABLE",
-            "이 작업 유형은 운영 센터에서 재시도할 수 없습니다.",
+            "이 작업 유형은 처리 목록에서 재시도할 수 없습니다.",
         )
     try:
         dispatch = operation_run_payloads.parse_stored_dispatch(

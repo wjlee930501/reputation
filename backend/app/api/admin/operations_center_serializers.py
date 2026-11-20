@@ -26,7 +26,7 @@ from app.schemas.operations import (
     OperationsSlackState,
 )
 from app.services import published_image_recertification as recertification
-from app.services.incident_cause_group import (  # 운영센터·일일 요약이 같은 묶음 규칙을 쓴다
+from app.services.incident_cause_group import (  # 처리 목록·일일 요약이 같은 묶음 규칙을 쓴다
     COST_LIMIT_CAUSE_CODE as _COST_LIMIT_CAUSE_CODE,
 )
 from app.services.incident_cause_group import (

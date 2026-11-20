@@ -27,6 +27,7 @@ export function SiteLayoutPicker({
   distributionError = false,
   brandColor,
   disabled = false,
+  excludesCurrent = false,
 }: {
   name: string
   value: SiteLayout | null
@@ -35,6 +36,8 @@ export function SiteLayoutPicker({
   distributionError?: boolean
   brandColor?: string | null
   disabled?: boolean
+  /** 분포가 이 병원을 빼고 센 것인지(병원 정보) — 문구에 범위를 밝힌다. */
+  excludesCurrent?: boolean
 }) {
   const brand = brandColor && HEX.test(brandColor) ? brandColor : '#334155'
   return (
@@ -42,7 +45,7 @@ export function SiteLayoutPicker({
       <div className="grid gap-3 sm:grid-cols-3" role="radiogroup" aria-label={COPY.title}>
         {SITE_LAYOUTS.map((layout) => {
           const option = COPY.options[layout]
-          const badge = sameRegionBadge(distribution, layout)
+          const badge = sameRegionBadge(distribution, layout, { excludesCurrent })
           const checked = value === layout
           return (
             <label
@@ -73,7 +76,7 @@ export function SiteLayoutPicker({
         })}
       </div>
       {distribution ? (
-        <p className="text-xs text-slate-600">{layoutDistributionLine(distribution)}</p>
+        <p className="text-xs text-slate-600">{layoutDistributionLine(distribution, { excludesCurrent })}</p>
       ) : distributionError ? (
         <p className="text-xs text-slate-500">{COPY.loadFailed}</p>
       ) : null}

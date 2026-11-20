@@ -23,7 +23,7 @@ async function check(name, fn) { await fn(); results.push({ name, status:'PASS' 
 async function read() { return page.evaluate(async p => { const r = await fetch(p); if (!r.ok) throw Error(`HTTP ${r.status}`); return r.json() }, resource) }
 async function action(button) { const result = page.waitForResponse(r => r.request().method() === 'POST' && r.url().includes(happy.report_id)); await button.click(); const r = await result; assert.equal(r.status(), 200, await r.text()) }
 const dialog = page.getByRole('dialog')
-async function download() { const result = page.waitForResponse(r => r.url().includes('/download?audience=doctor')); await dialog.getByRole('button', {name:'원장 전달용 보고서 열기',exact:true}).click(); const r = await result; assert.equal(r.status(),200); assert.equal(createHash('sha256').update(await r.body()).digest('hex'),happy.sha256); await dialog.getByText(/내려받은 파일 확인 번호/).waitFor() }
+async function download() { const result = page.waitForResponse(r => r.url().includes('/download?audience=doctor')); await dialog.getByRole('button', {name:'원장 전달용 PDF 받기',exact:true}).click(); const r = await result; assert.equal(r.status(),200); assert.equal(createHash('sha256').update(await r.body()).digest('hex'),happy.sha256); await dialog.getByText(/내려받은 파일 확인 번호/).waitFor() }
 try {
   await check('production login and real session', async () => {
     await page.goto(base+'/login'); await page.getByLabel('관리자 이메일').fill(fixture.email)

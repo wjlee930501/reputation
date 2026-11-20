@@ -180,7 +180,7 @@ export interface MutationBodyInput {
   slaDueAt?: string | null
 }
 
-/** 운영 센터가 쓰는 것과 같은 요청 본문. 화면마다 다른 몸통을 만들지 않는다. */
+/** 처리 목록이 쓰는 것과 같은 요청 본문. 화면마다 다른 몸통을 만들지 않는다. */
 export function mutationBodyFor(
   action: OperationsAction,
   input: MutationBodyInput,

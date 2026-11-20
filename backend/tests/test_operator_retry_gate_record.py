@@ -1,4 +1,4 @@
-"""운영센터 “작업 다시 시도”가 게이트의 원고 없음 기록에 막히지 않는다.
+"""처리 목록 “작업 다시 시도”가 게이트의 원고 없음 기록에 막히지 않는다.
 
 07:45·08:00 게이트는 빈 슬롯을 CONTENT_NOT_GENERATED(OPERATOR_REQUIRED, 기한 없음)로
 기록한다. 예산을 쓰지 않은 증상 기록이지만, 같은 생성 context에서는 워커의 동일 원인
@@ -129,7 +129,7 @@ def _install_item_lease(monkeypatch, item) -> list:
 def _press_retry(monkeypatch, item, moment, *, operator: bool) -> list:
     """`regenerate_content_item`을 실제로 돌린다.
 
-    operator=True는 운영센터 RETRY_RUN·Admin 재생성이 만든 실행이다 — 워커는
+    operator=True는 처리 목록 RETRY_RUN·Admin 재생성이 만든 실행이다 — 워커는
     `operation_run_id` 헤더와 claim 버전을 받고(`explicit_run_context`), 그 실행이 이 글을
     허가하는지(`explicit_run_matches`)는 별도 테스트가 고정한다. operator=False는 실행 없이
     서명만 된 배포(스케줄 저장 직후 생성·일회성 스크립트)다.

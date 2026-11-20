@@ -69,7 +69,7 @@ function copyForStage(stage: string): RunCopy {
         statusLabel: '보고서 전달 준비에 확인이 필요합니다',
         whatHappened: '보고서의 측정 결과, 원장 전달용 PDF 또는 콘텐츠 검수에서 차단 사유가 확인됐습니다.',
         customerImpact: '현재 파일은 원장님께 전달할\u00a0수\u00a0없습니다.',
-        nextAction: '운영 센터에서 실제 차단 사유와 자동 복구 상태를 확인해 주세요. 조치가 필요한 항목만 처리한 뒤 보고서를 다시 확인하세요.',
+        nextAction: '처리 목록에서 실제 차단 사유와 자동 복구 상태를 확인해 주세요. 조치가 필요한 항목만 처리한 뒤 보고서를 다시 확인하세요.',
         canRebuild: true,
         primaryAction: 'operations',
         attentionLabel: '조치 필요',
@@ -157,6 +157,23 @@ function parseReportRun(value: unknown): ReportRunView | null {
     requestedAt,
     completedAt: stringValue(value.completed_at),
   }
+}
+
+/**
+ * 같은 달 작업은 가장 최근 실행 하나만(2026-11-20 마케팅 요청 — 같은 10월 카드가 버전마다 반복됐다).
+ * 서버는 최근 실행을 요청 시각 내림차순으로 준다. 옛 실행의 「원장 전달 자료 확인」은 이전 판을 열 수
+ * 있어 남기지 않는다.
+ */
+export function latestRunPerPeriod(runs: readonly ReportRunView[]): ReportRunView[] {
+  const seen = new Set<string>()
+  const latest: ReportRunView[] = []
+  for (const run of [...runs].sort((a, b) => (a.requestedAt < b.requestedAt ? 1 : a.requestedAt > b.requestedAt ? -1 : 0))) {
+    const key = `${run.periodYear}-${run.periodMonth}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    latest.push(run)
+  }
+  return latest
 }
 
 export function parseReportRuns(value: unknown): readonly ReportRunView[] {

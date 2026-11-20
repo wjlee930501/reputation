@@ -218,19 +218,19 @@ _REVIEW_PENDING_COPY = ActionCopy(
 )
 _PROVIDER_OUTAGE_COPY = ActionCopy(
     "생성 서비스 일시 장애",
-    "콘텐츠 생성 서비스의 일시 장애로 원고를 만들지 못했습니다. 운영 센터에서 해당 글의 생성 "
+    "콘텐츠 생성 서비스의 일시 장애로 원고를 만들지 못했습니다. 처리 목록에서 해당 글의 생성 "
     "상태를 확인하고, 서비스가 복구됐으면 “작업 다시 시도”를 눌러 주세요.",
     "생성 상태 확인",
 )
 _GENERATION_ERROR_COPY = ActionCopy(
     "생성 서비스 오류",
-    "콘텐츠 생성 작업이 오류로 중단돼 원고를 만들지 못했습니다. 운영 센터에서 해당 글의 생성 "
+    "콘텐츠 생성 작업이 오류로 중단돼 원고를 만들지 못했습니다. 처리 목록에서 해당 글의 생성 "
     "상태를 확인하고, 오류가 풀렸으면 “작업 다시 시도”를 눌러 주세요.",
     "생성 상태 확인",
 )
 _NOT_GENERATED_COPY = ActionCopy(
     "발행용 원고 미생성",
-    "운영센터에서 해당 글의 생성 상태를 확인하고, 자동 재시도 중이 아니면 “작업 다시 시도”를 눌러 주세요.",
+    "처리 목록에서 해당 글의 생성 상태를 확인하고, 자동 재시도 중이 아니면 “작업 다시 시도”를 눌러 주세요.",
     "생성 상태 확인",
 )
 _TOPIC_SWAPPED_COPY = ActionCopy(
@@ -268,7 +268,7 @@ def test_no_draft_blocker_copy_is_pinned_sentence_for_sentence(code, expected) -
 
 def test_not_generated_slack_action_matches_the_incident_operator_action() -> None:
     # 게이트가 CONTENT_NOT_GENERATED로 기록한 슬롯은 OPERATOR_REQUIRED라 자동 재시도가
-    # 남아 있지 않다. Slack과 운영센터 인시던트가 같은 조치(다시 시도)를 가리켜야 한다.
+    # 남아 있지 않다. Slack과 처리 목록 인시던트가 같은 조치(다시 시도)를 가리켜야 한다.
     slack_action = blocker_copy("CONTENT_NOT_GENERATED").action
     incident_action = generation_operator_action("CONTENT_NOT_GENERATED")
 
@@ -567,7 +567,7 @@ def test_automatically_reused_images_do_not_pollute_the_action_digest() -> None:
     assert "가나의원" not in payload
     assert "다라의원" in payload and "발행 보류 1편" in payload
     assert "크레딧" not in payload
-    # 운영센터 링크는 요약에 이미 한 번 있으므로 두 번 넣지 않는다.
+    # 처리 목록 링크는 요약에 이미 한 번 있으므로 두 번 넣지 않는다.
     assert payload.count("/operations?queue=incidents&status=OPEN") == 1
 
 
