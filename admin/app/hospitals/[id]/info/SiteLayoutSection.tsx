@@ -1,5 +1,6 @@
 'use client'
 
+import Link from 'next/link'
 import { useEffect, useState } from 'react'
 
 import { SiteLayoutPicker } from '@/app/_components/SiteLayoutPicker'
@@ -13,9 +14,12 @@ import {
   type SiteLayout,
   type SiteLayoutDistribution,
 } from '@/lib/site-layout'
+import { siteConfigPath } from '@/lib/site-config'
+import { isRecord } from '@/lib/type-guards'
 import type { Hospital } from '@/types'
 
 const COPY = ADMIN_COPY.siteLayout
+const EDITOR = ADMIN_COPY.siteEditor
 
 /**
  * 병원 정보 화면의 사이트 레이아웃 변경. 레이아웃 하나만 따로 저장한다 — 다른 브랜드 칸의
@@ -72,6 +76,22 @@ export function SiteLayoutSection({
     }
   }, [address, regionKey, hospitalId])
 
+  // 공개된 레이아웃 설정이 있으면 레이아웃은 레이아웃 편집기가 맡는다(서버도 이 저장을 409로 막는다).
+  const [ownedByEditor, setOwnedByEditor] = useState(false)
+  useEffect(() => {
+    let cancelled = false
+    fetchAPI<unknown>(siteConfigPath(hospitalId))
+      .then((value) => {
+        if (!cancelled) setOwnedByEditor(isRecord(value) && isRecord(value.published))
+      })
+      .catch((cause: unknown) => {
+        if (!isExpectedOperatorRequestFailure(cause)) throw cause
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [hospitalId, saved])
+
   const live = hospital?.public_service_state?.kind !== 'not_live'
   const changed = choice !== null && choice !== saved
 
@@ -109,6 +129,8 @@ export function SiteLayoutSection({
         {!saved && <p className="mt-1 text-xs font-medium text-slate-700">{COPY.unset}</p>}
       </div>
 
+      {ownedByEditor && <p className="text-xs font-medium text-slate-700">{EDITOR.ownedByEditor}</p>}
+
       <SiteLayoutPicker
         excludesCurrent
         name={`site-layout-${hospitalId}`}
@@ -122,7 +144,7 @@ export function SiteLayoutSection({
         distribution={distribution}
         distributionError={distributionError}
         brandColor={hospital?.brand_primary_color}
-        disabled={saving}
+        disabled={saving || ownedByEditor}
       />
 
       {confirming ? (
@@ -147,14 +169,24 @@ export function SiteLayoutSection({
         </div>
       ) : (
         <div className="flex flex-wrap items-center gap-3">
-          <button
-            type="button"
-            onClick={() => (live ? setConfirming(true) : void save())}
-            disabled={!changed || saving}
-            className="inline-flex items-center rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-60"
-          >
-            {saving ? COPY.saving : COPY.save}
-          </button>
+          {!ownedByEditor && (
+            <button
+              type="button"
+              onClick={() => (live ? setConfirming(true) : void save())}
+              disabled={!changed || saving}
+              className="inline-flex items-center rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-60"
+            >
+              {saving ? COPY.saving : COPY.save}
+            </button>
+          )}
+          {saved && (
+            <Link
+              href={`/hospitals/${hospitalId}/info/layout`}
+              className="inline-flex items-center rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+            >
+              {EDITOR.open}
+            </Link>
+          )}
         </div>
       )}
       {feedback && <p className="text-sm font-semibold text-green-700">{feedback}</p>}

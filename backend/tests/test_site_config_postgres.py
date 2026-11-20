@@ -352,3 +352,27 @@ async def test_publishing_a_public_hospital_writes_one_intent_and_serves_site_co
     assert (await client.get(public_url)).json()["site_config"] is None
     warnings = (await client.get(_base(hospital_id), headers=ADMIN)).json()["warnings"]
     assert "SITE_LAYOUT_DIVERGED" in [w["code"] for w in warnings]
+
+
+async def test_faq_candidates_list_approved_public_faq_questions(db, client, monkeypatch):
+    hospital_id = await _hospital(db, layout="B")
+    first, second = uuid.uuid4(), uuid.uuid4()
+
+    async def fake_entries(db_, hospital, *, ids=None):
+        assert hospital.id == hospital_id and ids is None
+        return {
+            first: {"question": "무릎이 붓고 아프면 어떤 검사를 받나요?", "answer": "답"},
+            second: {"question": "도수치료는 몇 번 받나요?", "answer": "답"},
+        }
+
+    monkeypatch.setattr(admin_site_config.site_config_refs, "public_faq_entries", fake_entries)
+    response = await client.get(f"{_base(hospital_id)}/faq-candidates", headers=ADMIN)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["items"] == [
+        {"id": str(first), "question": "무릎이 붓고 아프면 어떤 검사를 받나요?"},
+        {"id": str(second), "question": "도수치료는 몇 번 받나요?"},
+    ]
+    assert "answer" not in body["items"][0]
+    missing = await client.get(f"/api/v1/admin/hospitals/{uuid.uuid4()}/site-config/faq-candidates", headers=ADMIN)
+    assert missing.status_code == 404
