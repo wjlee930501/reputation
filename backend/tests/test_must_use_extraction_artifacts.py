@@ -46,6 +46,10 @@ CLEAN = [
     "저는 무턱대고 수액을 권하기보다 지금 몸에서 무엇이 부족한지부터 꼼꼼히 확인하는 편입니다.",
     "아이가 소변을 잘 보고 있는지, 입술과 입안이 촉촉한지, 평소 활동량에 변화가 있는지 함께 확인해주세요.",
     "빠른 내시경이 아니라 바른 내시경 검사를 지향하며, 매주 회의를 통해 진료 과정을 점검합니다.",
+    # Codex 검토(오탐 방지): 한 음절 어절이 많은 정상 문장·환자 요청을 설명하는 문장.
+    "늘 더 잘 듣고 더 잘 설명하며 늘 곁에 있겠습니다.",
+    "한 분 한 분 더 잘 듣고 더 잘 설명하겠습니다.",
+    "환자의 요청에 따라 진료 내용을 자세히 설명합니다.",
 ]
 
 
@@ -75,6 +79,24 @@ def _approved(messages: list[str], metadata: dict | None = None) -> SimpleNamesp
         must_use_messages=messages,
         synthesis_metadata=metadata or {},
     )
+
+
+def test_legacy_approval_keeps_english_emphasis_and_short_sentences() -> None:
+    """옛 승인본에는 서술어 종결·깨진 추출·머리말만 본다 — 영어·강조·짧은 문장은 그대로 요구한다."""
+
+    messages = [
+        "We listen carefully and explain every step.",
+        "**환자의 이야기를 차분히 듣고 충분히 설명하겠습니다.**",
+        "짧은 문구입니다.",
+    ]
+    assert list(must_use_requirement(_approved(messages)).messages) == messages
+
+
+def test_forbidden_expression_reason_is_kept_for_memo_style() -> None:
+    from app.services.must_use_verbatim import EXCLUDED_FORBIDDEN_EXPRESSION
+
+    [item] = must_use_requirement(_approved(["저희 병원은 완치를 보장함"])).excluded
+    assert item.reason == EXCLUDED_FORBIDDEN_EXPRESSION
 
 
 def test_legacy_approval_drops_memo_style_and_keeps_clean_doctor_sentences() -> None:

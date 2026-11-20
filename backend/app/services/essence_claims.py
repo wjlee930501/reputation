@@ -86,9 +86,9 @@ _TEMPLATE_PREFIXES = (
 #: 2026-10-14.4: 설문 안내문·질문·조각 문장을 원문 문장으로 고르지 않는다(`is_not_doctor_statement`).
 #: 2026-10-14.5: 원장 목소리 노트(진료 철학·환자 약속·핵심 메시지)만, 약·검사 설명 문장 제외.
 #: 2026-11-20.1: PDF 추출로 글자 사이가 띄어진 문장(「검 사 장비 가 많 아서 … 합니 다 .」)·자료 머리말
-#:   (「원장님 요청에 따라 … 편집본입니다.」)·환자 요청 문장(「…추천해주세요」)을 고르지 않는다. 운영 확인
-#:   결과 자동 판 6곳이 이런 문장을 필수 문구로 골라 공개 글에 그대로 들어갔다(마케팅 요청 「자료 머리말·
-#:   설문 원문 혼입」).
+#:   (「원장님 요청에 따라 … 편집본입니다.」)·환자 추천 요청(「…추천해주세요」)을 고르지 않는다. 운영 확인
+#:   결과 자동 판 6곳이 이런 문장을 필수 문구로 골랐고 장이편한 공개 글 1편에 들어갔다(마케팅 요청 「자료
+#:   머리말·설문 원문 혼입」).
 AUTOMATIC_ESSENCE_POLICY_VERSION = "2026-11-20.1"
 
 # 원장의 답이 아니라 설문지가 원장에게 하는 말(안내·요청·질문)의 표지. 원장 자신의 문장에는 원장을
@@ -99,10 +99,6 @@ _INSTRUCTION_MARKERS = (
     "작성해", "작성 해", "기재", "적어 주", "적어주", "기입", "체크해", "선택해 주", "선택해주",
     "입력해 주", "입력해주", "원장님의", "원장님께", "원장님은", "원장님이", "원장님에",
     "원장님을", "원장님,", "말투로", "내부 인력", "최대한 자세히",
-    # 자료 머리말·편집 안내(2026-11-20 뉴플랜 v18 「원장님 요청에 따라 … 편집본입니다.」).
-    "편집본", "요청에 따라", "원장님 요청",
-    # 환자가 하는 요청(설문·FAQ에서 옮겨 온 질문) — 원장의 말이 아니다(뉴플랜 「…추천해주세요」).
-    "추천해주세요", "추천해 주세요",
 )
 _QUESTION_ENDING = re.compile(r"(?:까요|나요|습니까|인가요|는지요|을까|할까|될까)$")
 # 문장 앞머리가 접속사·연결 어미(앞 문장의 뒷부분)이면 조각이다("중요하며, 음주, …").
@@ -119,28 +115,43 @@ _MIN_DOCTOR_STATEMENT_CHARS = 12
 _DRUG_OR_EXAM_DESCRIPTION = re.compile(r"계열|처방하|복용이 편리|[(（]\s*[A-Za-z]")
 _QUOTE_TAIL = "\"'“”‘’「」『』)]）"
 # PDF 추출이 글자 사이를 띄운 문장의 표지: 마지막 음절(다·요)이 앞 글자와 떨어져 있다 —
-# 「… 합니 다」「… 있습니 다」. 정상 한국어 문장의 서술어 끝은 떨어지지 않는다.
+# 「… 합니 다」「… 있습니 다」. 정상 한국어 문장의 서술어 끝은 떨어지지 않는다. 한 음절 어절이
+# 많다는 것만으로는 판정하지 않는다(「늘 더 잘 듣고 더 잘 설명하며 늘 곁에 있겠습니다」는 정상).
 _DETACHED_FINAL = re.compile(r"\s(?:다|요|니다)$")
-_BROKEN_SPACING_MIN_TOKENS = 8
-_BROKEN_SPACING_SINGLE_RATIO = 0.5
+# 자료 편집 안내(머리말)와 환자가 하는 추천 요청 — 문장 전체가 그 말일 때만.
+_EDITORIAL_HEADER = re.compile(r"편집본(?:입니다|이다)?$|^원장님\s?요청에\s?따라")
+_PATIENT_REQUEST_ENDING = re.compile(r"추천해\s?주세요$")
+
+
+def _statement_body(sentence: str) -> str:
+    body = re.sub(r"\s+", " ", normalize_sentence(sentence))
+    return body.rstrip(".!。！…~ ").rstrip(_QUOTE_TAIL).rstrip(".!。！…~ ")
 
 
 def has_broken_spacing(sentence: str) -> bool:
-    """글자 사이가 띄어진 추출 잔재 문장인가(2026-11-20).
+    """글자 사이가 띄어진 추출 잔재 문장인가(2026-11-20) — 마지막 음절이 떨어져 있다."""
 
-    마지막 음절이 떨어져 있거나, 충분히 긴 문장에서 어절 절반 이상이 한 음절이면 깨진 것으로 본다.
-    「한 분 한 분 정성껏 상담해드리겠습니다.」처럼 짧은 반복은 어절 수가 모자라 통과한다.
-    """
+    return bool(_DETACHED_FINAL.search(_statement_body(sentence)))
 
-    body = re.sub(r"\s+", " ", normalize_sentence(sentence))
-    body = body.rstrip(".!。！…~ ").rstrip(_QUOTE_TAIL).rstrip(".!。！…~ ")
-    if _DETACHED_FINAL.search(body):
-        return True
-    tokens = body.split()
-    if len(tokens) < _BROKEN_SPACING_MIN_TOKENS:
+
+def is_editorial_or_request(sentence: str) -> bool:
+    """자료 머리말(「원장님 요청에 따라 … 편집본입니다」)이나 환자의 추천 요청 문장인가."""
+
+    body = _statement_body(sentence)
+    return bool(_EDITORIAL_HEADER.search(body) or _PATIENT_REQUEST_ENDING.search(body))
+
+
+def is_unfinished_korean_statement(sentence: str) -> bool:
+    """옛 승인본 문구 검사(2026-11-20) — 한국어 문장인데 서술어로 끝나지 않거나(메모체 「…필요함」·
+    명사구) 추출이 깨졌거나 머리말·요청이면 참. 영어 문장·마크다운 강조는 건드리지 않는다.
+    옛 승인본에는 자동 판 선택 규칙 전체(12자·접속사·약 설명 등)를 들이대지 않는다."""
+
+    body = _statement_body(re.sub(r"[*_`]+", "", sentence))
+    if not re.search(r"[가-힣]", body):
         return False
-    singles = sum(1 for token in tokens if len(token) == 1 and "가" <= token <= "힣")
-    return singles / len(tokens) >= _BROKEN_SPACING_SINGLE_RATIO
+    if has_broken_spacing(body) or is_editorial_or_request(body):
+        return True
+    return not _SENTENCE_FINAL.search(body)
 
 
 def is_not_doctor_statement(sentence: str) -> bool:
@@ -158,7 +169,7 @@ def is_not_doctor_statement(sentence: str) -> bool:
         return True
     if _DRUG_OR_EXAM_DESCRIPTION.search(folded):
         return True
-    if has_broken_spacing(folded):
+    if has_broken_spacing(folded) or is_editorial_or_request(folded):
         return True
     body = folded.rstrip(".!。！…~ ").rstrip(_QUOTE_TAIL).rstrip(".!。！…~ ")
     if folded.endswith(("?", "？")) or _QUESTION_ENDING.search(body):
@@ -375,6 +386,8 @@ __all__ = (
     "automatic_version_verbatim_texts",
     "is_not_doctor_statement",
     "has_broken_spacing",
+    "is_editorial_or_request",
+    "is_unfinished_korean_statement",
     "CLAIM_SUPPORT_RATIO",
     "GENERAL_SUPPORT_RATIO",
     "claim_is_supported",

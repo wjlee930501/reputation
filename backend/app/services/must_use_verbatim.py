@@ -38,7 +38,7 @@ from app.models.essence import PhilosophyStatus
 from app.services.essence_claims import (
     automatic_version_verbatim_texts,
     is_medical_claim,
-    is_not_doctor_statement,
+    is_unfinished_korean_statement,
     normalize_sentence,
 )
 from app.utils.medical_filter import check_forbidden
@@ -245,14 +245,6 @@ def must_use_requirement(philosophy: object | None) -> MustUseRequirement:
                 ExcludedMustUseMessage(index=index, reason=EXCLUDED_AUTOMATIC_POLICY)
             )
             continue
-        if verbatim_texts is None and is_not_doctor_statement(message):
-            # 옛 승인본(D33 이전)은 자동 판과 달리 문장 규칙을 거치지 않았다. 2026-11-20 운영 확인:
-            # 행복드림 v9의 「…즉시 상태 확인이 필요함」 같은 메모체 문구가 원문 그대로 글에 들어갔다.
-            # 자동 판과 같은 문장 규칙으로 걸러 원장의 완결된 문장만 원문 그대로 요구한다.
-            excluded.append(
-                ExcludedMustUseMessage(index=index, reason=EXCLUDED_NOT_DOCTOR_STATEMENT)
-            )
-            continue
         violations = check_forbidden(message)
         if violations:
             excluded.append(
@@ -261,6 +253,14 @@ def must_use_requirement(philosophy: object | None) -> MustUseRequirement:
                     reason=EXCLUDED_FORBIDDEN_EXPRESSION,
                     forbidden_expressions=tuple(violations),
                 )
+            )
+            continue
+        if verbatim_texts is None and is_unfinished_korean_statement(message):
+            # 옛 승인본(D33 이전)은 자동 판과 달리 문장 규칙을 거치지 않았다. 2026-11-20 운영 확인:
+            # 행복드림 v9의 「…즉시 상태 확인이 필요함」 같은 메모체 문구가 원문 그대로 글에 들어갔다.
+            # 서술어로 끝나지 않는 한국어 문장·깨진 추출·머리말만 뺀다(금지 표현 검사가 먼저다).
+            excluded.append(
+                ExcludedMustUseMessage(index=index, reason=EXCLUDED_NOT_DOCTOR_STATEMENT)
             )
             continue
         required.append(message)
