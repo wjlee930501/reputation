@@ -97,3 +97,17 @@ test('tones separate paused from not-live and problems from waiting', () => {
   assert.equal(stateTone('checking'), 'neutral')
   assert.equal(stateTone('unused'), 'neutral')
 })
+
+// 공개 판정 막힘 코드가 영문(`service_inactive`)으로 새고, 사람이 할 일이 「시스템 처리 중」에
+// 묶이던 문제(2026-11-20 마케팅 요청).
+test('publication blocker keys read in Korean and land on the right side', () => {
+  for (const key of ['service_inactive', 'public_permission_missing', 'site_not_built', 'name', 'slug', 'address', 'phone', 'treatments']) {
+    assert.doesNotMatch(remainingConditionLabel(key), /[A-Za-z_]/, key)
+  }
+  assert.equal(
+    describePublicService({ kind: 'not_live', remaining: ['service_inactive', 'address', 'site_not_built'] }).detail,
+    '할 일: 서비스 활성화 · 병원 주소 입력 · 시스템 처리 중: 공개 페이지 준비',
+  )
+  assert.equal(remainingConditionLabel('brand_new_blocker'), '확인 필요 항목')
+  assert.deepEqual(humanRemaining(['brand_new_blocker']).map((c) => c.key), ['brand_new_blocker'])
+})

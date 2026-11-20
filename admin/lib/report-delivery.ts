@@ -203,7 +203,7 @@ export function deliveryConflict(detail: unknown): DeliveryIssue {
       title: '최신 병원 자료 또는 측정 확인이 필요합니다',
       problem: serverProblem ?? '전달 직전 확인에서 필수 자료가 준비되지 않은 상태로 바뀌었습니다.',
       customerImpact: '현재 보고서는 원장님께 전달할 수 없습니다.',
-      nextAction: '운영 센터에서 차단 사유를 해결한 뒤 최신 보고서를 다시 확인해 주세요.',
+      nextAction: '처리 목록에서 차단 사유를 해결한 뒤 최신 보고서를 다시 확인해 주세요.',
       action: 'operations',
     }
   }

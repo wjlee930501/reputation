@@ -204,7 +204,7 @@ export function ReportDialog({
               <dl className="mt-3 grid gap-3 text-sm leading-6 md:grid-cols-3"><Copy label="무슨 문제인지" value={issue.problem} /><Copy label="고객 영향" value={issue.customerImpact} /><Copy label="지금 할 일" value={issue.nextAction} /></dl>
               <div className="mt-3 flex flex-col gap-2 sm:flex-row">
                 <button type="button" onClick={onRefresh} className="min-h-11 rounded-lg bg-[var(--color-revisit-primary-40)] px-4 text-sm font-bold text-white">최신 상태 다시 확인</button>
-                {issue.action === 'operations' && <Link href={reportOperationsHref(report.hospitalId, report.id, report.periodYear, report.periodMonth)} className="inline-flex min-h-11 items-center justify-center rounded-lg border border-[var(--color-revisit-coolgrey-20)] px-4 text-sm font-bold">운영 센터에서 차단 사유 확인</Link>}
+                {issue.action === 'operations' && <Link href={reportOperationsHref(report.hospitalId, report.id, report.periodYear, report.periodMonth)} className="inline-flex min-h-11 items-center justify-center rounded-lg border border-[var(--color-revisit-coolgrey-20)] px-4 text-sm font-bold">처리 목록에서 차단 사유 확인</Link>}
                 <button type="button" onClick={onCopyDeveloperInfo} className="min-h-11 rounded-lg border border-[var(--color-revisit-coolgrey-20)] px-4 text-sm font-bold">개발팀 문의용 정보 복사</button>
               </div>
             </div>

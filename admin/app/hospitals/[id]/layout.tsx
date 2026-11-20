@@ -7,8 +7,10 @@ import { ApiError, fetchAPI } from '@/lib/api'
 import {
   getHospitalLifecycleAction,
   hospitalLifecycleActionPath,
-  hospitalLifecycleConfirmMessage,
+  type HospitalLifecycleAction,
 } from '@/lib/hospital-lifecycle'
+import { ConfirmDialog } from '@/app/_components/ConfirmDialog'
+import { DangerMenu } from '@/app/_components/DangerMenu'
 import { readHospitalDomainStatus } from '@/lib/hospital-domain-status'
 import {
   describeContentState,
@@ -21,6 +23,8 @@ import {
   type StateTone,
 } from '@/lib/hospital-states'
 import { ADMIN_COPY } from '@/lib/admin-copy'
+import { readPublicAddresses } from '@/lib/public-address'
+import { AddressLink } from '@/app/_components/AddressLink'
 import { Hospital, HospitalOverview, PLAN_CONTRACT_LABELS } from '@/types'
 import { HospitalHeaderContext } from './hospital-context'
 
@@ -63,6 +67,8 @@ export default function HospitalLayout({
   const [loadErrorStatus, setLoadErrorStatus] = useState<number | null>(null)
   const [lifecycleLoading, setLifecycleLoading] = useState(false)
   const [lifecycleError, setLifecycleError] = useState<string | null>(null)
+  // 일시정지·재개 확인창. 일시정지는 병원명을 다시 입력해야 한다(2026-11-20).
+  const [lifecycleDialog, setLifecycleDialog] = useState<HospitalLifecycleAction | null>(null)
 
   const requestSeq = useRef(0)
 
@@ -137,13 +143,20 @@ export default function HospitalLayout({
   // 주소는 주소만 말한다 — 마지막 확인 시각은 자기 도메인 상태가 한 번만 말한다.
   const domainStatus = hospital ? readHospitalDomainStatus(hospital) : null
   const publicAddress = domainStatus ? domainStatus.url ?? domainStatus.detail : null
+  // 링크는 지금 열리는 주소만(`public-address`) — 저장만 한 자기 도메인은 글자로만 보인다.
+  const addresses = hospital
+    ? readPublicAddresses({ ...hospital, public_service_state: hospital.public_service_state ?? overview?.public_service })
+    : null
+  // 운영 주소가 자기 도메인이면 기본 주소도 함께 보인다(둘 다 열린다).
+  const secondaryAddress =
+    addresses?.live && addresses.custom?.open && addresses.platform ? addresses.platform : null
+  const shownAddress = addresses?.live ?? addresses?.custom ?? addresses?.platform ?? null
   // 재개 가능 여부는 서버 게이트(활성화 조건·자기 도메인 DNS)가 결정한다 — 발행 요일 설정은 조건이 아니다(H-07).
   const lifecycleAction = getHospitalLifecycleAction(hospital?.status)
   const activeTab = MAIN_TABS.find((tab) => isTabActive(pathname, hospitalId, tab.path)) ?? MAIN_TABS[0]
 
   async function handleLifecycleAction() {
     if (!hospital || !lifecycleAction) return
-    if (!confirm(hospitalLifecycleConfirmMessage(lifecycleAction))) return
     setLifecycleLoading(true)
     setLifecycleError(null)
     try {
@@ -151,6 +164,7 @@ export default function HospitalLayout({
         method: 'POST',
       })
       // 일시정지·재개는 공개 서비스 상태를 바꾼다 — 헤더의 3상태까지 같이 다시 받는다.
+      setLifecycleDialog(null)
       await refetch()
     } catch (e: unknown) {
       setLifecycleError(e instanceof Error ? e.message : '병원 상태 변경에 실패했습니다.')
@@ -161,6 +175,21 @@ export default function HospitalLayout({
 
   return (
     <HospitalHeaderContext.Provider value={{ hospital, overview, loading: headerLoading, refetch }}>
+    <ConfirmDialog
+      open={lifecycleDialog !== null}
+      title={lifecycleDialog === 'pause' ? ADMIN_COPY.dangerConfirm.pauseTitle : ADMIN_COPY.dangerConfirm.resumeTitle}
+      description={lifecycleDialog === 'pause' ? ADMIN_COPY.dangerConfirm.pauseBody : ADMIN_COPY.dangerConfirm.resumeBody}
+      confirmLabel={lifecycleDialog === 'pause' ? ADMIN_COPY.dangerConfirm.pauseConfirm : ADMIN_COPY.dangerConfirm.resumeConfirm}
+      typedConfirmation={lifecycleDialog === 'pause' ? hospital?.name : null}
+      tone={lifecycleDialog === 'pause' ? 'danger' : 'neutral'}
+      busy={lifecycleLoading}
+      error={lifecycleDialog ? lifecycleError : null}
+      onConfirm={() => void handleLifecycleAction()}
+      onClose={() => {
+        setLifecycleDialog(null)
+        setLifecycleError(null)
+      }}
+    />
     <div className="flex min-h-full flex-col">
       {/* Hospital header */}
       <header className="border-b border-slate-200 bg-white px-4 py-3 lg:px-8 lg:pb-0 lg:pt-5">
@@ -178,13 +207,17 @@ export default function HospitalLayout({
               {/* 자기 도메인이 없다고 "준비 중"은 아니다 — 기본 플랫폼 주소로 이미
                   서비스 중인 병원이 대부분이고, 그걸 준비 중이라 하면 운영자가 살아
                   있는 주소를 없는 것으로 안다(O-7). 목록·패널과 같은 판정을 쓴다. */}
-              <p className="mt-0.5 truncate text-xs text-slate-500">
-                {publicAddress
-                  ? `공개 주소 ${publicAddress}`
-                  : loadError
-                    ? '병원 정보를 다시 불러와 주세요'
-                    : '공개 주소 확인 중'}
-              </p>
+              <div className="mt-0.5 flex min-w-0 text-xs text-slate-500">
+                {shownAddress ? (
+                  <AddressLink address={shownAddress} label={addresses?.live ? ADMIN_COPY.address.live : ADMIN_COPY.address.notLive} />
+                ) : publicAddress ? (
+                  <span className="truncate">공개 주소 {publicAddress}</span>
+                ) : loadError ? (
+                  '병원 정보를 다시 불러와 주세요'
+                ) : (
+                  '공개 주소 확인 중'
+                )}
+              </div>
             </div>
             {(overview || overviewFailed) && (
               <details className="group relative shrink-0">
@@ -235,29 +268,51 @@ export default function HospitalLayout({
                   {planLabel}
                 </span>
               )}
-              {lifecycleAction && (
+              {addresses?.live && (
+                <a
+                  href={addresses.live.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex min-h-11 items-center rounded-lg bg-blue-600 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-700"
+                >
+                  {ADMIN_COPY.address.openSite} <span aria-hidden className="ml-1">↗</span>
+                </a>
+              )}
+              {lifecycleAction === 'resume' && (
                 <button
                   type="button"
-                  onClick={() => void handleLifecycleAction()}
+                  onClick={() => setLifecycleDialog('resume')}
                   disabled={lifecycleLoading}
-                  className={`inline-flex min-h-11 items-center rounded-lg border px-3 py-2 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
-                    lifecycleAction === 'pause'
-                      ? 'border-red-200 text-red-700 hover:bg-red-50'
-                      : 'border-green-200 text-green-700 hover:bg-green-50'
-                  }`}
+                  className="inline-flex min-h-11 items-center rounded-lg border border-green-200 px-3 py-2 text-xs font-medium text-green-700 transition-colors hover:bg-green-50 disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  {lifecycleLoading ? '처리 중...' : lifecycleAction === 'pause' ? '일시정지' : '재개'}
+                  {lifecycleLoading ? '처리 중...' : '재개'}
                 </button>
+              )}
+              {lifecycleAction === 'pause' && (
+                <DangerMenu
+                  items={[{ label: ADMIN_COPY.dangerConfirm.pauseItem, danger: true, disabled: lifecycleLoading, onSelect: () => setLifecycleDialog('pause') }]}
+                />
               )}
             </div>
             {publicAddress && (
               <div className="mt-1.5 flex flex-wrap items-center gap-2 text-xs text-slate-500 sm:gap-3">
-                <span className="inline-flex min-w-0 max-w-[280px] items-baseline gap-1">
-                  공개 주소{' '}
-                  <span className="truncate text-[var(--color-revisit-text-title)]" title={publicAddress}>
-                    {publicAddress}
+                {shownAddress ? (
+                  <AddressLink
+                    address={shownAddress}
+                    label={addresses?.live ? ADMIN_COPY.address.live : ADMIN_COPY.address.notLive}
+                    className="max-w-[360px]"
+                  />
+                ) : (
+                  <span className="inline-flex min-w-0 max-w-[280px] items-baseline gap-1">
+                    공개 주소{' '}
+                    <span className="truncate text-[var(--color-revisit-text-title)]" title={publicAddress}>
+                      {publicAddress}
+                    </span>
                   </span>
-                </span>
+                )}
+                {secondaryAddress && (
+                  <AddressLink address={secondaryAddress} label={ADMIN_COPY.address.platform} className="max-w-[360px]" />
+                )}
                 {/* 공개 중인지 아닌지는 공개 서비스 상태가 말한다 — 이 줄은 자기 도메인
                     사실만 덧붙인다. 자기 도메인이 없으면 아무 말도 하지 않는다. */}
                 {domainCard && overview && (

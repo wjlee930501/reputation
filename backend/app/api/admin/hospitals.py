@@ -795,6 +795,50 @@ async def _ae_owners(
     }
 
 
+@router.get("/month-metrics")
+async def list_hospital_month_metrics(
+    ids: list[uuid.UUID] | None = Query(default=None, max_length=200),
+    db: AsyncSession = Depends(get_db),
+):
+    """병원 목록·대시보드의 「이번 달 발행」·「AI 언급률」 칸(2026-11-20 마케팅 요청).
+
+    값은 현황 탭과 **같은 함수**(`hospital_overview._month_summary`)로 만든다 — 목록과 현황이 다른
+    숫자를 말하지 않게. 발행 = 이번 계약 월(이월 전 예정일) 공개 글, 계획 = 첫 달 안분·일정 반영 약속
+    편수, 언급률 = 최근 측정 주의 값(측정 없으면 null — 0과 다르다).
+
+    병원마다 그 함수를 한 번씩 부르므로 쿼리 수가 병원 수에 비례한다(2026-11 기준 18곳). 목록 API
+    (쿼리 수 고정 계약)와 분리해 목록이 먼저 뜬 뒤 따로 불러오게 한다. 병원이 크게 늘면 묶음 쿼리로
+    다시 쓴다.
+
+    `ids`를 주면 그 병원들만(목록의 「더 보기」로 불러온 201번째 이후 병원), 없으면 최근 등록 200곳.
+    """
+    from app.api.admin.hospital_overview import _month_summary
+
+    stmt = select(Hospital).order_by(Hospital.created_at.desc())
+    stmt = stmt.where(Hospital.id.in_(ids)) if ids else stmt.limit(200)
+    hospitals = (await db.execute(stmt)).scalars().all()
+    rows = []
+    for hospital in hospitals:
+        summary = await _month_summary(db, hospital)
+        rows.append(
+            {
+                "hospital_id": str(hospital.id),
+                "year": summary.year,
+                "month": summary.month,
+                "published_count": summary.published_count,
+                "public_count": summary.public_count,
+                "planned_total": summary.planned_total,
+                "mention_rate": summary.mention_rate,
+                "mention_rate_measured_at": (
+                    summary.mention_rate_measured_at.isoformat()
+                    if summary.mention_rate_measured_at
+                    else None
+                ),
+            }
+        )
+    return rows
+
+
 @router.get("/site-layout-distribution")
 async def get_site_layout_distribution(
     address: str | None = Query(default=None, max_length=300),

@@ -90,7 +90,7 @@ def test_missing_owner_is_not_a_fake_named_assignee(owner):
     text = build_open_incident_notification(
         incident(owner_label=owner), "https://admin.example.test"
     ).message.payload_json()
-    assert "담당: 병원 운영 담당자" in text and "처리 기한 운영 센터에서 확인" not in text
+    assert "담당: 병원 운영 담당자" in text and "처리 기한 처리 목록에서 확인" not in text
 
 
 def milestone(kind, *, actionable=False, period="2026년 8월"):

@@ -38,7 +38,7 @@ class StateCard(BaseModel):
 class ExceptionCard(BaseModel):
     """사람이 손대야 풀리는 건.
 
-    `actions`는 운영 센터가 이 인시던트에 대해 실제로 등록한 mutation 서술자 그대로다 —
+    `actions`는 처리 목록이 이 인시던트에 대해 실제로 등록한 mutation 서술자 그대로다 —
     카드가 자기만의 경로·조건을 만들면 버튼과 서버 인가가 갈린다. 지금 실행할 수 없는
     행동도 `enabled=False`로 함께 실어 왜 못 하는지 보여줄 수 있게 한다.
     `allowed_actions`는 그중 실행 가능한 코드만 담은 하위 호환 요약이다.

@@ -65,7 +65,7 @@ def _exhausted_incident(
         source_id=str(hospital_id),
         safe_error_code="SITE_BUILD_RETRIES_EXHAUSTED",
         safe_error_message="사이트 준비 자동 재실행이 하루치 예산을 모두 사용했습니다.",
-        next_action="병원 기본 정보와 공개 준비 오류를 확인하고 운영센터에서 다시 시도하세요.",
+        next_action="병원 기본 정보와 공개 준비 오류를 확인하고 처리 목록에서 다시 시도하세요.",
         admin_path=f"/hospitals/{hospital_id}",
         first_seen_at=now,
         last_seen_at=now,
@@ -249,7 +249,7 @@ async def test_operator_retry_failure_records_on_the_open_site_build_incident(
 ) -> None:
     """R1: 운영자 재시도의 실패는 이미 열린 최종 차단 한 건에 실린다.
 
-    sweep이 더 이상 고르지 않는 병원에서도 운영센터 재시도는 눌린다. 그 실패가 조용하면
+    sweep이 더 이상 고르지 않는 병원에서도 처리 목록 재시도는 눌린다. 그 실패가 조용하면
     누른 사람은 실패한 줄 모른다. 그렇다고 사고를 또 열면 같은 원인이 두 줄이 된다.
     """
     factory, hospital_id = signal_store

@@ -47,7 +47,7 @@ export function ReportList({
         <div className="rounded-xl border border-dashed border-[var(--color-revisit-coolgrey-20)] bg-white px-5 py-8 text-center">
           <p className="font-semibold text-[var(--color-revisit-text-title)]">아직 검수할 보고서가 없습니다.</p>
           <p className="mt-2 text-sm leading-6 text-[var(--color-revisit-text-helper)] [word-break:keep-all]">
-            위에서 대상 월을 선택해 보고서를 만들거나, 운영 센터에서 측정 차단 사유를 확인해 주세요.
+            위에서 대상 월을 선택해 보고서를 만들거나, 처리 목록에서 측정 차단 사유를 확인해 주세요.
           </p>
         </div>
       ) : (

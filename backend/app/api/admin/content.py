@@ -670,7 +670,7 @@ async def set_schedule(
                 safe_error_code="CONTENT_DISPATCH_FAILED",
                 problem="오늘 또는 내일 콘텐츠의 즉시 생성 작업을 시작하지 못했습니다.",
                 customer_impact="스케줄은 저장됐지만 가까운 발행 일정의 콘텐츠 준비가 늦어질 수 있습니다.",
-                next_action="야간 자동 생성 결과를 확인하고, 급한 항목만 운영센터에서 다시 시도하세요.",
+                next_action="야간 자동 생성 결과를 확인하고, 급한 항목만 처리 목록에서 다시 시도하세요.",
                 source_type="CONTENT_SCHEDULE",
                 hospital_name=hospital.name,
                 hospital_id=hospital.id,
@@ -2595,7 +2595,7 @@ def _build_compliance_summary(
 
 
 # 발행이 막힌 글이 만드는 durable run의 종류 — `content_publication_block_control`이
-# 여는 재생성/이미지 재생성과 공개 이미지 재인증. 운영 센터의 콘텐츠 관련 run 집합
+# 여는 재생성/이미지 재생성과 공개 이미지 재인증. 처리 목록의 콘텐츠 관련 run 집합
 # (`operations_center_today_queries` 289-300)과 같아야 같은 행을 가리킨다.
 _CONTENT_BLOCK_OPERATIONS: Final = (
     "REGENERATE_CONTENT",
@@ -2609,12 +2609,12 @@ async def _blocked_links_for(
     hospital_id: uuid.UUID,
     item_ids: Sequence[uuid.UUID],
 ) -> dict[uuid.UUID, dict[str, Any]]:
-    """글별 "운영 센터에서 조치" 링크 — 항목 수와 무관하게 쿼리 2회.
+    """글별 "처리 목록에서 조치" 링크 — 항목 수와 무관하게 쿼리 2회.
 
-    주소는 `operations_links`가 정한다 — 운영 센터 화면은 `/operations` 하나뿐이고
+    주소는 `operations_links`가 정한다 — 처리 목록 화면은 `/operations` 하나뿐이고
     상세는 질의값으로 연다. 화면마다 주소를 새로 지으면 링크는 없는 경로로 간다.
 
-    인시던트는 `requires_operator_action`(운영 센터 큐·현황 카드와 같은 정의)이 참일
+    인시던트는 `requires_operator_action`(처리 목록 큐·현황 카드와 같은 정의)이 참일
     때만 링크한다 — 약속한 시간 안에서 재시도 중인 인시던트는 자동 복구이고, 그것을
     사람의 할 일로 새어 나가게 하면 안 된다. run은 그 글의 **가장 최근** 실행만 본다.
     실패 뒤에 성공한 재시도가 있으면 지난 실패는 이미 지나간 일이다.
@@ -2693,7 +2693,7 @@ async def _blocked_links_for(
         }
     incident_links: dict[uuid.UUID, dict[str, Any]] = {}
     for source_id, incident_id, next_action, incident_state, sla_due_at, kind in incident_rows:
-        # 개발 담당 몫은 운영 센터 조치 링크를 만들지 않는다. 조용한 종류(사후검수 지적)는
+        # 개발 담당 몫은 처리 목록 조치 링크를 만들지 않는다. 조용한 종류(사후검수 지적)는
         # 운영자 큐에 올리지 않는 대신 콘텐츠 탭에서만 보이므로 사람의 일이면 링크한다.
         if not (
             is_operator_todo(kind, incident_state, sla_due_at, now)
