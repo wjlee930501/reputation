@@ -52,7 +52,7 @@ await check('blocked report cannot be recorded as delivered through its dialog',
   const dialog = page.getByRole('dialog')
   await dialog.waitFor()
   assert.ok(await dialog.getByRole('button', { name: '차단 항목을 해결한 뒤 기록할 수 있습니다' }).isDisabled())
-  assert.equal(await dialog.getByRole('button', { name: '원장 전달용 보고서 열기', exact: true }).count(), 0)
+  assert.equal(await dialog.getByRole('button', { name: '원장 전달용 PDF 받기', exact: true }).count(), 0)
   await page.screenshot({ path: path.join(root, 'ui', 'blocked-report-dialog.png'), fullPage: true })
   await dialog.getByRole('button', { name: '보고서 닫기' }).click()
 })
