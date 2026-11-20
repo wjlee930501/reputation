@@ -166,7 +166,7 @@ export default async function DoctorPage({ params: paramsPromise }: Props) {
             <section className="clinic-section">
               <div className="clinic-section-inner">
                 <header className="clinic-section-header">
-                  <h2 className="clinic-section-heading">원장이 전하는 진료 이야기</h2>
+                  <h2 className="clinic-section-heading">원장이 쓴 의료 정보</h2>
                   <p className="clinic-section-lede">
                     원장 칼럼·자주 묻는 질문·질환 정보를 우선 모았습니다.
                   </p>

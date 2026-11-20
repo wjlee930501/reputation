@@ -794,3 +794,52 @@ def test_dense_summary_is_one_page_and_complete_appendix_paginates(with_appendix
             assert "".join(row["query_text"].split()) in appendix
             assert "".join(row["cited_title"].split()) in appendix
         assert all("이번달" in "".join(page.extract_text().split()) for page in reader.pages[1:])
+
+
+def test_appendix_row_digit_cell_is_not_read_inside_another_number() -> None:
+    """검토 5-23: '검사15/6' 안의 '5/6'은 '5/6' 칸이 아니다."""
+    rows_in_order = report_artifact_validation._appendix_rows_in_order
+    assert not rows_in_order("검사15/6", [("검사", "5/6")])
+    assert rows_in_order("검사5/6", [("검사", "5/6")])
+    # 앞 칸이 숫자로 시작하고 그 자신이 다른 숫자 뒤에 붙어 있으면 인접 예외를 받지 않는다.
+    assert not rows_in_order("새1x115/6", [("1x", "1", "5/6")])
+    # 빈 앞 칸은 인접 근거가 아니다.
+    assert not rows_in_order("앞1x15/6", [("1x", "", "5/6")])
+
+
+def test_appendix_row_question_ending_in_digits_binds_to_the_table_cell() -> None:
+    """질문이 숫자로 끝나고 표 앞 목록에도 나오면, 표에서 질문 바로 뒤의 숫자 칸을 받는다."""
+    rows_in_order = report_artifact_validation._appendix_rows_in_order
+    question = "주차도 되는 곳이면 좋겠습니다 00"
+    text = "새로나온질문“주차도되는곳이면좋겠습니다00”ChatGPT부록표주차도되는곳이면좋겠습니다0010번중4번"
+    assert rows_in_order(text, [(question, "10번 중 4번")])
+    # 표의 질문 뒤에 다른 숫자가 끼면 여전히 거절한다.
+    broken = "새로나온질문“주차도되는곳이면좋겠습니다00”ChatGPT부록표주차도되는곳이면좋겠습니다00710번중4번"
+    assert not rows_in_order(broken, [(question, "10번 중 4번")])
+
+
+def test_appendix_rows_stay_bound_to_order_and_fail_fast() -> None:
+    rows_in_order = report_artifact_validation._appendix_rows_in_order
+    # 뒤 행의 글자가 앞에 있어도 순서가 바뀌면 거절한다.
+    assert not rows_in_order("나3/4가1/2", [("가", "1/2"), ("나", "3/4")])
+    # 칸이 반복되는 큰 표에서 마지막 칸 하나가 빠진 PDF도 곧바로 거절한다.
+    rows = [(f"질문{index}", "—", "ChatGPT", "10번 중 4번") for index in range(60)]
+    text = "".join(f"질문{index}—ChatGPT10번중4번" for index in range(60))
+    assert rows_in_order(text, rows)
+    import time
+
+    started = time.monotonic()
+    assert not rows_in_order(text[: -len("4번")], rows)
+    assert time.monotonic() - started < 2
+
+
+def test_appendix_row_search_has_no_recursion_limit_or_quadratic_blowup() -> None:
+    import time
+
+    rows_in_order = report_artifact_validation._appendix_rows_in_order
+    assert rows_in_order("가" * 1500, [("가",)] * 1500)
+    started = time.monotonic()
+    assert not rows_in_order("가" * 800, [("가",)] * 50 + [("나",)])
+    assert time.monotonic() - started < 1
+    # 빈 칸 뒤에서도 다른 숫자의 꼬리를 칸으로 읽지 않는다.
+    assert not rows_in_order("검사15/6", [("검사", "", "5/6")])

@@ -263,24 +263,14 @@ def validate_doctor_pdf(
 
     # Searching each word globally lets an earlier row hide a missing later row.
     # Bind table text to order and occurrence, including repeated labels.
-    cursor = 0
     # v4: 행 검사는 부록 쪽 텍스트 안에서만 한다 — 본문(히트맵·계획표)의 같은 키워드·칸이 부록 행을 대신 채우지 못하게.
     row_text = (
         "".join(normalized_pages[appendix_range[0] : appendix_range[1] + 1])
         if v4
         else normalized_text
     )
-    for row in expectation.required_appendix_rows:
-        for value in row:
-            text = _normalize_text(value)
-            position = row_text.find(text, cursor)
-            # 숫자 칸('5/6')이 앞 칸 바로 뒤(cursor)가 아니라 다른 숫자 뒤에서 시작하면 그 숫자의 일부다 —
-            # '검사15/6' 안의 '5/6'을 받지 않는다(검토 5-23). 공백을 지운 텍스트라 칸끼리는 붙어 있어도 된다.
-            while position > cursor and text[:1].isdigit() and row_text[position - 1].isdigit():
-                position = row_text.find(text, position + 1)
-            if position < 0:
-                raise DoctorPdfValidationError("DOCTOR_PDF_APPENDIX_TEXT_MISSING", "질문표의 행별 결과나 순서가 생성 입력과 일치하지 않습니다.")
-            cursor = position + len(text)
+    if not _appendix_rows_in_order(row_text, expectation.required_appendix_rows):
+        raise DoctorPdfValidationError("DOCTOR_PDF_APPENDIX_TEXT_MISSING", "질문표의 행별 결과나 순서가 생성 입력과 일치하지 않습니다.")
 
     glyph_count = sum("가" <= character <= "힣" for character in extracted_text)
     if glyph_count < 1:
@@ -320,6 +310,46 @@ def validate_doctor_pdf(
         sha256=digest,
         byte_size=len(pdf_bytes),
     )
+
+
+def _appendix_rows_in_order(row_text: str, rows: Any) -> bool:
+    """Some in-order placement of every row's cells satisfies the per-cell rule.
+
+    Each cell is found at or after the end of the previous cell. A cell starting with a
+    digit ('5/6') must not start right after another digit unless it sits exactly at the
+    previous cell's end — otherwise it is the tail of a different number ('검사15/6' is not
+    a '5/6' cell; 검토 5-23). Whitespace is stripped, so adjacent cells may touch.
+
+    The rule is unchanged from the greedy scan; only the choice of occurrence is searched.
+    A greedy scan bound a question to its first occurrence — the 「새로 나온 질문」 list
+    before the table — and then rejected the table's digit cell glued to a question that
+    ends in digits ('…00' + '10번 중 4번'). Every placement the greedy scan accepted is
+    still accepted, and nothing the per-cell rule forbids is.
+    """
+    # The set of cursors (ends of the previous cell) some valid placement can reach. A cell
+    # position is valid from some cursor c <= position unless it is glued to a number, and a
+    # glued position is valid only from c == position — so the earliest cursor decides the
+    # unglued positions and set membership decides the glued ones. One pass per cell, no
+    # recursion: O(cells × text) in the worst case.
+    cursors = {0}
+    for row in rows:
+        for value in row:
+            text = _normalize_text(value)
+            if not text:
+                continue  # an empty cell matches where it stands and moves no cursor
+            reached: set[int] = set()
+            position = row_text.find(text, min(cursors))
+            while position >= 0:
+                glued_to_number = (
+                    text[:1].isdigit() and position > 0 and row_text[position - 1].isdigit()
+                )
+                if not glued_to_number or position in cursors:
+                    reached.add(position + len(text))
+                position = row_text.find(text, position + 1)
+            if not reached:
+                return False
+            cursors = reached
+    return True
 
 
 def internal_markers_in(text: str) -> list[str]:
