@@ -7,6 +7,7 @@
  */
 import type { ContentSummary } from './api.ts'
 import { isClosedLabel } from './business-hours.ts'
+import { faqQuestionKey } from './schema.ts'
 
 export type ClinicLayout = 'A' | 'B' | 'C'
 
@@ -21,7 +22,9 @@ export function resolveClinicLayout(value: unknown): ClinicLayout | null {
  */
 export const QUESTION_PRIORITY = ['FAQ', 'DISEASE', 'TREATMENT', 'HEALTH', 'LOCAL', 'COLUMN', 'NOTICE']
 
-export function selectAnswerQuestions<T extends Pick<ContentSummary, 'content_type'>>(
+export function selectAnswerQuestions<
+  T extends Pick<ContentSummary, 'content_type'> & Partial<Pick<ContentSummary, 'faq_question' | 'title'>>,
+>(
   contents: readonly T[],
   limit: number,
 ): T[] {
@@ -29,7 +32,19 @@ export function selectAnswerQuestions<T extends Pick<ContentSummary, 'content_ty
     const index = QUESTION_PRIORITY.indexOf(type)
     return index === -1 ? 99 : index
   }
-  return [...contents].sort((a, b) => rank(a.content_type) - rank(b.content_type)).slice(0, limit)
+  // 질문 목록 안에서도 같은 질문 문장은 한 번만 — 상한을 자르기 전에 거른다.
+  const seen = new Set<string>()
+  return [...contents]
+    .sort((a, b) => rank(a.content_type) - rank(b.content_type))
+    .filter((content) => {
+      const text = content.faq_question || content.title || ''
+      if (!text) return true
+      const key = faqQuestionKey(text)
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+    .slice(0, limit)
 }
 
 /** 질문 목록 한 줄의 질문 문장 — 승인된 질문이 있으면 그것, 없으면 글 제목. */

@@ -21,7 +21,12 @@ import {
 import { getApiBase } from '@/lib/config'
 import { resolveClinicLayout } from '@/lib/clinic-layout'
 import { REVALIDATE_SECONDS } from '@/lib/fetch-policy'
-import { buildFaqPageJsonLd, buildPhysicianNode, selectFaqEntries } from '@/lib/schema'
+import {
+  buildFaqPageJsonLd,
+  buildPhysicianNode,
+  selectClusterContents,
+  selectFaqEntries,
+} from '@/lib/schema'
 import { canonicalBase, canonicalHospitalUrl } from '@/lib/site-url'
 
 import { AnswerClusters } from './_components/AnswerClusters'
@@ -224,8 +229,8 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
   // 우선순위 맨 앞에 놓고 뽑기 때문에, 같은 항목을 두 섹션이 나란히 반복해서
   // 보여주게 된다. FAQ 섹션이 질문과 답변을 모두 싣는 쪽이므로 그쪽에 남기고,
   // 질문 목록은 아직 답이 붙지 않은 나머지 읽을 거리를 안내한다.
-  const faqEntryIds = new Set(faqEntries.map((entry) => entry.id))
-  const clusterContents = contents.filter((content) => !faqEntryIds.has(content.id))
+  // 같은 질문 문장의 글도 뺀다 — 중복이라 FAQ 섹션에서 빠진 글이 질문 목록에 다시 나오지 않게.
+  const clusterContents = selectClusterContents(contents, faqEntries)
   const pageJsonLd = [clinicJsonLd, breadcrumbJsonLd, ...(faqJsonLd ? [faqJsonLd] : [])]
 
   const externalChannels = [

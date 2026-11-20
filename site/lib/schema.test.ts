@@ -4,7 +4,8 @@ import { dirname, join } from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 
-import { buildFaqPageJsonLd, selectFaqEntries } from './schema.ts'
+import { selectAnswerQuestions } from './clinic-layout.ts'
+import { buildFaqPageJsonLd, faqQuestionKey, selectClusterContents, selectFaqEntries } from './schema.ts'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 
@@ -183,11 +184,7 @@ test('the approved Q&A has one owner on the home, so no item renders twice', () 
   // 질문 목록(AnswerClusters)은 FAQ를 우선순위 맨 앞에 두고 뽑기 때문에, 같은
   // 항목을 FAQ 섹션과 나란히 반복해서 보여주게 된다.
   const page = readFileSync(join(HERE, '..', 'app', '[slug]', 'page.tsx'), 'utf8')
-  assert.match(page, /const faqEntryIds = new Set\(faqEntries\.map\(\(entry\) => entry\.id\)\)/)
-  assert.match(
-    page,
-    /const clusterContents = contents\.filter\(\(content\) => !faqEntryIds\.has\(content\.id\)\)/,
-  )
+  assert.match(page, /const clusterContents = selectClusterContents\(contents, faqEntries\)/)
   assert.match(page, /<AnswerClusters\s+contents=\{clusterContents\}/)
   // 질문 목록에 원본 contents를 그대로 넘기면 중복이 돌아온다.
   assert.doesNotMatch(page, /<AnswerClusters\s+contents=\{contents\}/)
@@ -206,11 +203,57 @@ test('the two home question surfaces never select the same content', () => {
 
   const entries = selectFaqEntries(contents, 'https://clinic.example')
   const entryIds = new Set(entries.map((entry) => entry.id))
-  const clusterContents = contents.filter((content) => !entryIds.has(content.id))
+  const clusterContents = selectClusterContents(contents, entries)
 
   assert.deepEqual([...entryIds], ['1', '2'])
   assert.deepEqual(clusterContents.map((content) => content.id), ['3', '4', '5'])
   for (const content of clusterContents) {
     assert.ok(!entryIds.has(content.id), `${content.id}가 두 섹션에 모두 나옵니다`)
   }
+})
+
+// 2026-11-20 마케팅 점검: 행복드림 홈 FAQ 10개 중 5개가 같은 질문(측정 질문 하나로 쓴 여러 달 글)이었다.
+function sameQuestionFaq(id: number, question: string) {
+  return { ...faq(id), faq_question: question, faq_answer_summary: `Answer ${id}` }
+}
+
+test('the same approved question is shown once, and the next question fills the gap', () => {
+  const contents = [
+    sameQuestionFaq(1, '경산 내과 병원 추천해 주시겠어요?'),
+    sameQuestionFaq(2, '경산 내과 병원 어디가 좋은가요?'),
+    sameQuestionFaq(3, '경산 내과 병원  추천해 주시겠어요 ?'),
+    sameQuestionFaq(4, '경산 내과 병원 추천해 주시겠어요?'),
+    sameQuestionFaq(5, '경산 내과 병원 어디가 좋은가요?'),
+    sameQuestionFaq(6, '예방접종 초기 증상이 무엇인가요?'),
+  ]
+  const entries = selectFaqEntries(contents, 'https://clinic.example', 3)
+  assert.deepEqual(entries.map((entry) => entry.id), ['1', '2', '6'])
+
+  // FAQPage는 화면과 같은 선택이다 — 같은 질문을 두 번 주장하지 않는다.
+  const jsonLd = buildFaqPageJsonLd(contents, 'https://clinic.example')
+  const names = (jsonLd?.mainEntity as Array<{ name: string }>).map((q) => q.name)
+  assert.deepEqual(names, selectFaqEntries(contents, 'https://clinic.example').map((e) => e.question))
+  assert.equal(new Set(names.map(faqQuestionKey)).size, names.length)
+})
+
+test('a duplicate FAQ dropped from the FAQ section does not come back in the question list', () => {
+  const contents = [
+    sameQuestionFaq(1, '경산 내과 병원 추천해 주시겠어요?'),
+    sameQuestionFaq(2, '경산 내과 병원 추천해 주시겠어요?'),
+    { ...faq(3), content_type: 'DISEASE', faq_question: null, faq_answer_summary: null, title: '감기 증상' },
+    { ...faq(4), content_type: 'HEALTH', faq_question: null, faq_answer_summary: null, title: '감기 증상' },
+  ]
+  const entries = selectFaqEntries(contents, 'https://clinic.example')
+  const clusterContents = selectClusterContents(contents, entries)
+  assert.deepEqual(clusterContents.map((c) => c.id), ['3', '4'])
+  // 질문 목록 안에서도 같은 문장은 한 번만.
+  assert.deepEqual(selectAnswerQuestions(clusterContents, 6).map((c) => c.id), ['3'])
+})
+
+test('similar but differently worded questions are left alone (decision #14)', () => {
+  const entries = selectFaqEntries(
+    [sameQuestionFaq(1, '예방접종 초기 증상이 무엇인가요?'), sameQuestionFaq(2, '예방접종 초기 증상이 뭔지 알려줘?')],
+    'https://clinic.example',
+  )
+  assert.equal(entries.length, 2)
 })

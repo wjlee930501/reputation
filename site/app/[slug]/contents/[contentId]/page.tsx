@@ -23,7 +23,7 @@ import {
   stripLeadingMarkdownH1,
 } from '@/lib/article-markdown'
 import { safeExternalHref } from '@/lib/safe-url'
-import { buildFaqPageJsonLd, selectFaqEntries } from '@/lib/schema'
+import { buildFaqPageJsonLd, faqQuestionKey, selectFaqEntries } from '@/lib/schema'
 import { canonicalHospitalUrl } from '@/lib/site-url'
 import { buildTreatmentSlug, inferPillarTreatment } from '@/lib/treatment-slug'
 
@@ -153,8 +153,18 @@ export default async function ContentDetailPage({ params: paramsPromise }: Props
   )
   const sameTypeRelated = [...sameTypeItems, ...relatedBackfill].slice(0, 3)
   const relatedAllSameType = sameTypeRelated.every((c) => c.content_type === content.content_type)
+  // 같은 질문 문장은 한 번만, 지금 글·관련 글과 같은 질문도 빼고 싣는다.
+  const shownQuestionKeys = new Set(
+    [content, ...sameTypeRelated].map((c) => faqQuestionKey(c.faq_question || c.title || '')),
+  )
   const paaQuestions = otherContents
     .filter((c) => c.content_type === 'FAQ' && !sameTypeRelated.some((s) => s.id === c.id))
+    .filter((c) => {
+      const key = faqQuestionKey(c.faq_question || c.title || '')
+      if (shownQuestionKeys.has(key)) return false
+      shownQuestionKeys.add(key)
+      return true
+    })
     .slice(0, 3)
   const referenceList = Array.isArray(content.references) ? content.references : []
   const referenceCountLabel =
