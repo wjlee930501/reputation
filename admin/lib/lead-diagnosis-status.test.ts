@@ -50,9 +50,10 @@ test('알 수 없는 상태는 영문 원문 대신 확인 필요로 표시한�
   assert.equal(badge.tone, 'muted')
 })
 
-test('리드 운영 화면은 SLA 대신 우리말 기한 표현을 쓴다', () => {
+test('리드 운영 화면은 SLA·첫 연락 기한을 보이지 않는다', () => {
   assert.doesNotMatch(LEADS_PAGE, /\bSLA\b/)
-  assert.match(LEADS_PAGE, /첫 연락 기한/)
+  // 2026-11-20 마케팅 요청(삭제 확정)
+  assert.doesNotMatch(LEADS_PAGE, /첫 연락 기한/)
 })
 
 test('복구 사유 최소 길이는 API 계약과 같은 3자다', () => {

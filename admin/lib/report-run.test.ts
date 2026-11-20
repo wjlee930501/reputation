@@ -105,7 +105,7 @@ test('blocked reports lead with the operations center before a rebuild', () => {
   )
   assert.equal(
     run?.nextAction,
-    '운영 센터에서 실제 차단 사유와 자동 복구 상태를 확인해 주세요. 조치가 필요한 항목만 처리한 뒤 보고서를 다시 확인하세요.',
+    '처리 목록에서 실제 차단 사유와 자동 복구 상태를 확인해 주세요. 조치가 필요한 항목만 처리한 뒤 보고서를 다시 확인하세요.',
   )
   assert.doesNotMatch(run?.whatHappened ?? '', /다시 만들기|측정이 부족/)
 })

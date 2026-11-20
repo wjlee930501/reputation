@@ -89,6 +89,11 @@ export interface ContentRowItem {
   compliance?: { public_visibility?: { visible: boolean } }
 }
 
+/** 공개 페이지에 지금 실제로 있는 글 — 「공개 글」 버튼은 이 글에만 단다(숨긴 글은 404다). */
+export function isVisibleOnPublicPage(item: ContentRowItem): boolean {
+  return item.status === 'PUBLISHED' && item.compliance?.public_visibility?.visible === true
+}
+
 /** 사람이 손대는 유일한 대상 — 공개 페이지에 실제로 있고 아직 확인하지 않은 표본. */
 export function canConfirmSample(item: ContentRowItem): boolean {
   return (
@@ -137,15 +142,15 @@ export function summarizeRows(items: ContentRowItem[]): RowSummary {
   return totals
 }
 
-/** 차단 카드의 힌트 — 갈 곳이 있을 때만 "운영 센터"라고 말한다.
+/** 차단 카드의 힌트 — 갈 곳이 있을 때만 "처리 목록"라고 말한다.
  *
- * 링크 없는 차단은 자동 복구가 도는 중이라는 뜻이다. 그 상태에 "운영 센터에서 조치"라고
- * 쓰면 AE는 갈 데 없는 지시를 읽고 운영 센터에서 빈 큐를 본다. */
+ * 링크 없는 차단은 자동 복구가 도는 중이라는 뜻이다. 그 상태에 "처리 목록에서 조치"라고
+ * 쓰면 AE는 갈 데 없는 지시를 읽고 처리 목록에서 빈 큐를 본다. */
 export function blockedHint(items: ContentRowItem[]): string {
   const routable = items.some(
     (item) => item.row_state.kind === 'blocked' && !!item.row_state.link?.href,
   )
-  return routable ? '운영 센터에서 조치' : '자동 복구 대기'
+  return routable ? '처리 목록에서 조치' : '자동 복구 대기'
 }
 
 export function matchesRowFilter(item: ContentRowItem, filter: ContentRowFilter): boolean {

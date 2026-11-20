@@ -46,20 +46,20 @@ def _measurement_copy(quality: str, availability: str | None = None) -> tuple[st
             "일부 측정 미완료",
             "계획한 측정 중 일부가 실패했습니다.",
             "이번 달 수치가 전체 계획을 충분히 대표하지 못해 원장님께 전달할 수 없습니다.",
-            "운영 센터에서 실패한 측정을 확인한 뒤 리포트를 다시 만들어 주세요.",
+            "처리 목록에서 실패한 측정을 확인한 뒤 리포트를 다시 만들어 주세요.",
         )
     if quality == "BLOCKED":
         return quality, OperatorCopy(
             "필수 측정 차단",
             "필수 질문 또는 AI 서비스 측정을 끝내지 못했습니다.",
             "이번 달 결과를 원장님께 전달할 수 없습니다.",
-            "운영 센터에서 차단 사유를 해결한 뒤 리포트를 다시 만들어 주세요.",
+            "처리 목록에서 차단 사유를 해결한 뒤 리포트를 다시 만들어 주세요.",
         )
     return "LEGACY_UNVERIFIED", OperatorCopy(
         "측정 기준 확인 필요",
         "이전 방식으로 만든 리포트라 측정 완료 여부를 확인할 수 없습니다.",
         "이 화면만으로 수치가 전체 계획을 대표한다고 단정할 수 없습니다.",
-        "운영 센터에서 측정 기록을 확인하고, 필요하면 최신 리포트를 만들어 주세요.",
+        "처리 목록에서 측정 기록을 확인하고, 필요하면 최신 리포트를 만들어 주세요.",
     )
 
 
@@ -81,7 +81,7 @@ def _notification_copy(state: str | None) -> tuple[str, OperatorCopy]:
             "운영팀 알림 전달 중",
             "이 리포트 작업에 연결된 Slack 알림이 아직 전달 중입니다.",
             "운영팀이 알림을 아직 확인하지 못했을 수 있습니다.",
-            "운영 센터에서 최신 알림 상태를 확인해 주세요.",
+            "처리 목록에서 최신 알림 상태를 확인해 주세요.",
         )
     if state in {NotificationOutboxState.HOLD.value, NotificationOutboxState.FAILED.value}:
         normalized = state or NotificationOutboxState.FAILED.value
@@ -89,13 +89,13 @@ def _notification_copy(state: str | None) -> tuple[str, OperatorCopy]:
             "운영팀 알림 확인 필요",
             "이 리포트 작업에 연결된 Slack 알림을 전달하지 못했습니다.",
             "운영팀이 새 리포트나 복구 결과를 놓칠 수 있습니다.",
-            "운영 센터에서 알림을 다시 시도하고, 계속 실패하면 개발팀에 문의해 주세요.",
+            "처리 목록에서 알림을 다시 시도하고, 계속 실패하면 개발팀에 문의해 주세요.",
         )
     return "NOT_INDIVIDUALLY_LINKED", OperatorCopy(
         "개별 알림 연결 기록 없음",
         "여러 병원을 묶은 요약 알림이라 이 리포트와 개별 연결 기록이 없습니다.",
         "이 화면만으로 Slack 알림 발송 성공을 단정할 수 없습니다.",
-        "운영 센터에서 최신 Slack 알림을 확인해 주세요.",
+        "처리 목록에서 최신 Slack 알림을 확인해 주세요.",
     )
 
 

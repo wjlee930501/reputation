@@ -189,5 +189,5 @@ def slo_summary_lines(slos: list[HospitalSlo], *, limit: int = SLO_SUMMARY_LINE_
             parts.append("지난달 보고서 전달 준비 안 됨")
         lines.append(f"• {slo.hospital_name[:70]} — " + " · ".join(parts))
     if len(misses) > limit:
-        lines.append(f"그 외 {len(misses) - limit}곳은 운영센터에서 볼 수 있습니다.")
+        lines.append(f"그 외 {len(misses) - limit}곳은 처리 목록에서 볼 수 있습니다.")
     return lines

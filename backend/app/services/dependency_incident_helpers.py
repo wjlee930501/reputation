@@ -87,7 +87,7 @@ def open_notice_exists_sync(db: Session, incident_id: uuid.UUID) -> bool:
 def safe_domain_next_action(reason: str) -> str:
     """Route the next action by observed failure, not an unproven DNS diagnosis."""
     if reason == "http_429":
-        return "DNS 설정을 변경하기 전에 운영 센터에서 요청 제한과 보안 정책을 확인해 주세요. 재점검에서도 반복되면 개발팀에 문의용 정보를 전달하세요."
+        return "DNS 설정을 변경하기 전에 처리 목록에서 요청 제한과 보안 정책을 확인해 주세요. 재점검에서도 반복되면 개발팀에 문의용 정보를 전달하세요."
     if reason.startswith("http_") or reason == "timeout":
         return "병원 공개 주소의 접속 상태를 확인해 주세요. 점검 실패만으로 DNS를 변경하지 말고, 반복되면 개발팀에 서버 응답과 문의용 정보를 전달하세요."
     if reason in {"tenant_marker_mismatch", "invalid_tenant_marker", "redirect_not_allowed"}:

@@ -357,7 +357,7 @@ async def _touch_incident(
             customer_impact=customer_impact,
             source_type=_SOURCE_TYPE,
             next_action=(
-                "운영 센터에서 개발팀 문의용 정보를 복사해 전달하세요. 발행 버튼을 다시 누르지 마세요."
+                "처리 목록에서 개발팀 문의용 정보를 복사해 전달하세요. 발행 버튼을 다시 누르지 마세요."
                 if terminal
                 else "시스템이 자동으로 다시 확인 중입니다. 다음 확인 시각까지 기다려 주세요."
             ),

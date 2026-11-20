@@ -176,7 +176,7 @@ export function competitorRefreshProgress(run: CompetitorRefreshRunView | null):
     }
     return {
       label: '새 버전을 만들지 못했습니다',
-      detail: `${counts}. 경쟁 현황만 바꾸는 조건(다른 숫자 보존·원장 PDF 검증)을 지키지 못해 새 버전을 만들지 않았습니다. 운영 센터에서 작업 기록을 확인해 주세요.`,
+      detail: `${counts}. 경쟁 현황만 바꾸는 조건(다른 숫자 보존·원장 PDF 검증)을 지키지 못해 새 버전을 만들지 않았습니다. 처리 목록에서 작업 기록을 확인해 주세요.`,
       tone: 'problem',
     }
   }

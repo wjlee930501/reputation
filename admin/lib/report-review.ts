@@ -1,4 +1,5 @@
 import { ADMIN_COPY } from './admin-copy.ts'
+import { reportNoticeLabels } from './report-warning-labels.ts'
 
 export type MeasurementCell = {
   queryKey: string
@@ -283,7 +284,7 @@ function parseContentOperations(value: unknown): ContentOperationsEvidence | nul
     pendingReviewCount: number(review?.pending_count),
     overdueReviewCount: number(review?.overdue_count),
     cutoffAt: text(review?.cutoff_at) || null,
-    deliveryWarnings: strings(operations.delivery_warnings),
+    deliveryWarnings: reportNoticeLabels(strings(operations.delivery_warnings)),
   }
 }
 
@@ -325,8 +326,8 @@ export function parseReport(value: unknown): ReportView | null {
     // 잘못 보여주는 쪽이 안전하다(전달 실행은 sha256 검사로 따로 막힌다).
     deliveryTracked: root.delivery_tracked !== false,
     deliveryReady: root.delivery_ready === true,
-    deliveryBlockers: strings(root.delivery_blockers),
-    deliveryWarnings: strings(root.delivery_warnings),
+    deliveryBlockers: reportNoticeLabels(strings(root.delivery_blockers)),
+    deliveryWarnings: reportNoticeLabels(strings(root.delivery_warnings)),
     doctorArtifact: {
       state: artifactState === 'VALID' || artifactState === 'INVALID' ? artifactState : 'MISSING',
       stateLabel: text(artifact?.state_label, '원장 전달용 PDF를 확인할 수 없습니다'),

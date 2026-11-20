@@ -94,8 +94,8 @@ def _run(report):
     ("quality", "label", "action_word"),
     [
         ("COMPLETE", "필수 측정 완료", "확인"),
-        ("DEGRADED", "일부 측정 미완료", "운영 센터"),
-        ("BLOCKED", "필수 측정 차단", "운영 센터"),
+        ("DEGRADED", "일부 측정 미완료", "처리 목록"),
+        ("BLOCKED", "필수 측정 차단", "처리 목록"),
         ("UNKNOWN", "측정 기준 확인 필요", "최신 리포트"),
     ],
 )

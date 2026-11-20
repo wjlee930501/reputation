@@ -2,7 +2,7 @@
 
 공개 여부는 공개 사이트와 같은 판정(`content_visibility.assess_public_visibility`)을
 그대로 쓴다. 이 파일이 더하는 것은 "그래서 사람이 볼 화면에 뭐라고 쓰는가"와
-"차단이면 운영 센터의 어디로 가는가"뿐이다. 화면이 자기만의 규칙으로 상태를 다시
+"차단이면 처리 목록의 어디로 가는가"뿐이다. 화면이 자기만의 규칙으로 상태를 다시
 계산하면 admin은 "공개 중"인데 공개 페이지에는 없는 글이 생긴다(H-01).
 """
 
@@ -35,7 +35,7 @@ ROW_STATE_LABELS: Final[dict[str, str]] = {
 
 @dataclass(frozen=True, slots=True)
 class RowState:
-    """행 하나의 판정 — 상태값, 사람이 읽을 사유, 운영 센터로 가는 링크."""
+    """행 하나의 판정 — 상태값, 사람이 읽을 사유, 처리 목록으로 가는 링크."""
 
     kind: RowStateKind
     reason: str | None

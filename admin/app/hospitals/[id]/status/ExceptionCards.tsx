@@ -102,7 +102,7 @@ function IncidentCard({
 
   async function submit(action: OperationsAction) {
     const targetId = exception.operation_run_id ?? exception.incident_id ?? exception.id
-    // 같은 대상·같은 사유의 재시도는 같은 요청으로 본다(운영 센터의 지문과 같은 값).
+    // 같은 대상·같은 사유의 재시도는 같은 요청으로 본다(처리 목록의 지문과 같은 값).
     const fingerprint = JSON.stringify([
       action.kind,
       action.path,
@@ -175,7 +175,7 @@ function IncidentCard({
           href={exception.href}
           className="inline-flex min-h-11 items-center rounded-lg border border-slate-300 px-3 text-xs font-medium text-slate-700 hover:bg-slate-50"
         >
-          운영 센터에서 보기
+          처리 목록에서 보기
         </Link>
         {buttons.enabled.map((action) => (
           <button

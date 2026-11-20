@@ -1462,7 +1462,7 @@ def test_generation_failure_classification_never_persists_exception_text(error, 
 
     assert code == expected_code
     assert str(error) not in message
-    assert "운영 센터" in message
+    assert "처리 목록" in message
 
 
 @pytest.mark.parametrize(
@@ -5784,7 +5784,7 @@ def test_body_repair_budget_survives_the_rewrite_that_replaces_the_summary():
 
 
 def test_scheduled_recovery_owns_body_repair_until_its_budget_is_spent():
-    """예산 안의 자동 수리는 RETRYING이다 — 운영센터의 할 일로 쌓이지 않는다."""
+    """예산 안의 자동 수리는 RETRYING이다 — 처리 목록의 할 일로 쌓이지 않는다."""
 
     item = SimpleNamespace(essence_check_summary={})
     assert scheduled_recovery_owns_blocker("FAQ_FIELDS_MISSING", item) is True
@@ -5859,7 +5859,7 @@ def test_a_blocker_no_sweep_will_pick_up_is_not_called_retrying():
 
     재시도 정책이 `next_retry_at: null`을 적었다는 것은 어떤 스윕도 이 슬롯을 다시
     집지 않는다는 뜻이다. 그런데 이 코드는 자동 복구 목록에 있어 인시던트가 RETRYING
-    으로 열렸고, 그래서 운영센터에도 Slack에도 아무도 나타나지 않았다.
+    으로 열렸고, 그래서 처리 목록에도 Slack에도 아무도 나타나지 않았다.
     """
 
     abandoned = SimpleNamespace(essence_check_summary={
