@@ -64,7 +64,7 @@ from app.services.essence_sources import (
 from app.services.essence_sources import (
     start_source_processing_best_effort as _start_source_processing_best_effort,
 )
-from app.services.evidence_noise import not_noise_note_predicate
+from app.services.evidence_noise import noise_note_predicate, not_noise_note_predicate
 from app.services.gcs_utils import get_signed_url
 from app.services.incident_types import IncidentFingerprint
 from app.services.knowledge_changes import (
@@ -498,9 +498,14 @@ async def list_sources(
 
     result = await db.execute(stmt)
     sources = result.scalars().all()
-    counts = await _note_counts(db, [source.id for source in sources])
+    source_ids = [source.id for source in sources]
+    counts = await _note_counts(db, source_ids)
+    noise_counts = await _note_counts(db, source_ids, noise=True)
     return [
-        _serialize_source(source, evidence_note_count=counts.get(source.id, 0))
+        {
+            **_serialize_source(source, evidence_note_count=counts.get(source.id, 0)),
+            "noise_note_count": noise_counts.get(source.id, 0),
+        }
         for source in sources
     ]
 
@@ -601,11 +606,19 @@ async def create_source(
 async def get_source(
     hospital_id: uuid.UUID,
     source_id: uuid.UUID,
+    include_noise: bool = Query(default=False),
     db: AsyncSession = Depends(get_db),
 ):
+    """자료 상세와 근거 노트.
+
+    `include_noise=true`면 「제외 자료로 표시」한 노트도 함께 돌려준다(2026-11-20). 기본은
+    종전대로 빼서 돌려주므로, 표시를 바꾼 노트가 새로고침 뒤 화면에서 사라져 되돌릴 수 없었다.
+    `evidence_note_count`는 어느 쪽이든 근거로 쓰이는(제외 표시 없는) 노트 수다.
+    """
     source = await _get_source_or_404(db, hospital_id, source_id)
-    notes = await _get_notes_for_source(db, source.id)
-    return _serialize_source(source, evidence_notes=notes, evidence_note_count=len(notes))
+    notes = await _get_notes_for_source(db, source.id, include_noise=include_noise)
+    counted = [note for note in notes if not _note_is_noise(note)] if include_noise else notes
+    return _serialize_source(source, evidence_notes=notes, evidence_note_count=len(counted))
 
 
 @router.post(
@@ -1731,7 +1744,15 @@ def _not_noise_predicate():
     return not_noise_note_predicate()
 
 
-async def _note_counts(db: AsyncSession, source_ids: list[uuid.UUID]) -> dict[uuid.UUID, int]:
+def _note_is_noise(note: HospitalSourceEvidenceNote) -> bool:
+    metadata = note.note_metadata if isinstance(note.note_metadata, dict) else {}
+    return metadata.get("is_noise") is True
+
+
+async def _note_counts(
+    db: AsyncSession, source_ids: list[uuid.UUID], *, noise: bool = False
+) -> dict[uuid.UUID, int]:
+    """제외되지 않은 자료의 노트 수. 기본은 근거로 쓰이는 노트, `noise=True`면 제외 표시한 노트."""
     if not source_ids:
         return {}
     result = await db.execute(
@@ -1743,7 +1764,7 @@ async def _note_counts(db: AsyncSession, source_ids: list[uuid.UUID]) -> dict[uu
         .where(
             HospitalSourceEvidenceNote.source_asset_id.in_(source_ids),
             HospitalSourceAsset.status != SourceStatus.EXCLUDED,
-            _not_noise_predicate(),
+            noise_note_predicate() if noise else _not_noise_predicate(),
         )
         .group_by(HospitalSourceEvidenceNote.source_asset_id)
     )
@@ -1763,9 +1784,21 @@ async def _count_notes_for_source(db: AsyncSession, source_id: uuid.UUID) -> int
 async def _get_notes_for_source(
     db: AsyncSession,
     source_id: uuid.UUID,
+    *,
+    include_noise: bool = False,
 ) -> list[HospitalSourceEvidenceNote]:
+    query = (
+        select(HospitalSourceEvidenceNote)
+        .join(
+            HospitalSourceAsset,
+            HospitalSourceAsset.id == HospitalSourceEvidenceNote.source_asset_id,
+        )
+        .where(HospitalSourceAsset.status != SourceStatus.EXCLUDED)
+        if include_noise
+        else _included_notes_query()
+    )
     result = await db.execute(
-        _included_notes_query()
+        query
         .where(HospitalSourceEvidenceNote.source_asset_id == source_id)
         .order_by(HospitalSourceEvidenceNote.created_at.asc())
     )
