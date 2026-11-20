@@ -12,6 +12,7 @@ import {
   reportYearOptions,
 } from '@/lib/report-period'
 import {
+  latestRunPerPeriod,
   parseReportRuns,
   reportRebuildFingerprint,
   reportRebuildIdempotencyKey,
@@ -120,7 +121,7 @@ export function ReportRunStatus({
       </div>
       {loading && <p className="mt-4 text-sm" role="status">작업 기록을 불러오는 중입니다.</p>}
       {error && <div className="mt-4 rounded-lg border border-[var(--color-revisit-red-50)] p-3 text-sm text-[var(--color-revisit-red-50)]" role="alert"><p className="break-keep text-pretty">{error}</p><div className="mt-3 flex flex-col gap-2 sm:flex-row"><button type="button" onClick={() => void refresh()} className="min-h-11 rounded-lg bg-[var(--color-revisit-primary-40)] px-4 font-bold text-white">작업 기록 다시 시도</button><button type="button" onClick={() => void copyPageError()} className="min-h-11 rounded-lg border border-[var(--color-revisit-coolgrey-20)] px-4 font-bold text-[var(--color-revisit-text-title)]">개발팀 문의용 정보 복사</button></div></div>}
-      <div className="mt-4 grid gap-3">{runs.slice(0, 3).map((run) => <ReportRunCard key={run.runId} run={run} disabled={busy} operationsHref={reportOperationsHref(hospitalId, run.reportId, run.periodYear, run.periodMonth)} onReview={() => run.reportId ? onReview(run.reportId) : setError('연결된 보고서를 찾지 못했습니다. 새로고침 후 계속 보이지 않으면 개발팀에 문의해 주세요.')} onRebuild={(reason) => void generate(run, reason)} onCopy={() => void copy(run)} />)}</div>
+      <div className="mt-4 grid gap-3">{latestRunPerPeriod(runs).slice(0, 3).map((run) => <ReportRunCard key={run.runId} run={run} disabled={busy} operationsHref={reportOperationsHref(hospitalId, run.reportId, run.periodYear, run.periodMonth)} onReview={() => run.reportId ? onReview(run.reportId) : setError('연결된 보고서를 찾지 못했습니다. 새로고침 후 계속 보이지 않으면 개발팀에 문의해 주세요.')} onRebuild={(reason) => void generate(run, reason)} onCopy={() => void copy(run)} />)}</div>
       {message && <p className="mt-3 text-sm text-[var(--color-revisit-text-helper)]" role="status">{message}</p>}
       <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-[var(--color-revisit-coolgrey-20)] pt-4">
         <span className="text-sm font-bold">보고서가 없다면 대상 월 선택</span>

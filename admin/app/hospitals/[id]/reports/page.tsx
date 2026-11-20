@@ -24,6 +24,10 @@ import { ReportList } from './ReportList'
 import { ReportDialog, type DeliveryAction } from './ReportDialog'
 import { ReportRunStatus } from './ReportRunStatus'
 
+// 요약 숫자·버전 묶음은 같은 달의 모든 판이 화면에 있어야 맞는다. 목록 API 기본 24행은
+// 버전이 많은 병원(행복드림 21판)에서 옛 달을 잘라 낸다 — 서버 상한 100까지 받는다.
+const REPORT_LIST_LIMIT = 100
+
 const LOAD_ERROR: DeliveryIssue = {
   title: '최신 보고서 상태를 불러오지 못했습니다',
   problem: '서버에서 이 보고서의 최신 검수 근거를 확인하지 못했습니다.',
@@ -73,13 +77,13 @@ export default function ReportsPage() {
   }, [applyReport, loadDetail])
 
   const loadReports = useCallback(async () => {
-    setReports(parseReports(await fetchAPI<unknown>(`/admin/hospitals/${hospitalId}/reports`)))
+    setReports(parseReports(await fetchAPI<unknown>(`/admin/hospitals/${hospitalId}/reports?limit=${REPORT_LIST_LIMIT}`)))
   }, [hospitalId])
 
   useEffect(() => {
     let active = true
     Promise.all([
-      fetchAPI<unknown>(`/admin/hospitals/${hospitalId}/reports`),
+      fetchAPI<unknown>(`/admin/hospitals/${hospitalId}/reports?limit=${REPORT_LIST_LIMIT}`),
       fetchCurrentAccount(),
     ]).then(([payload, account]) => {
       if (!active) return
