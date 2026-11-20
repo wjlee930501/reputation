@@ -457,6 +457,7 @@ export const ADMIN_COPY = {
     openSite: '공개 사이트',
     notLive: '공개 전',
     openArticle: '공개 글',
+  },
   // 위험 동작 ⋯ 메뉴 + 확인창(2026-11-20 마케팅 요청).
   dangerConfirm: {
     more: '더 보기 메뉴',
