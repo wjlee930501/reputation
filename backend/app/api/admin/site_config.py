@@ -260,6 +260,30 @@ async def list_site_config_faq_candidates(hospital_id: uuid.UUID, db: AsyncSessi
     }
 
 
+@router.get("/{hospital_id}/site-config/share-candidates")
+async def list_site_config_share_candidates(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    """공유 이미지 후보 — 검증과 같은 집합(공개 사진, 원장 사진은 실인물·신원 승인을 넘은 것만).
+
+    미리보기는 Admin 파일 경로(`…/essence/sources/{id}/file`)로 연다 — 사진 목록 화면과 같다.
+    """
+
+    await _hospital_or_404(db, hospital_id)
+    photos = await site_config_refs.public_photos(db, hospital_id)
+    allowed = site_config_refs.share_image_ids(photos)
+    return {
+        "items": [
+            {
+                "id": str(photo.id),
+                "title": photo.title,
+                "source_type": getattr(photo.source_type, "value", str(photo.source_type)),
+                "file_access_url": f"/api/admin/hospitals/{hospital_id}/essence/sources/{photo.id}/file",
+            }
+            for photo in photos
+            if photo.id in allowed
+        ]
+    }
+
+
 async def _write_draft(
     db: AsyncSession,
     hospital: Hospital,

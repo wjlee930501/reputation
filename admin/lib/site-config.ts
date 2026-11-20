@@ -382,16 +382,48 @@ export function readSiteConfigFailure(status: number, message: string, detail: u
   return { kind: 'other', message: text }
 }
 
-/** 오류 경로가 이 섹션을 가리키는가 — 서버 경로는 `sections[i].…`(저장 모양 기준 i)라 id로 다시 찾는다. */
+const SECTION_GROUPS = new Set(['hero', 'faq', 'care_flow', 'care_principles', 'treatments', 'doctor', 'visit'])
+const PAGE_GROUPS = new Set(['nav', 'share', 'region_tags', 'type', 'article'])
+
+/**
+ * 오류·경고 경로를 화면의 어느 칸이 보일지 — 섹션 id, 페이지 전체('page'), 모르면 null(위쪽 상자).
+ * 서버 경로는 `sections[i]`(저장 모양 기준 i)·`sections.{id}`(이어 보이는 묶음)·`copy.{섹션}.…`·
+ * `hero.line_breaks.{칸 경로}`(진료 원칙 칸은 진료 원칙 섹션) 모양이다.
+ */
+export function issueOwner(path: string, overrides: Record<string, unknown>): SectionId | 'page' | null {
+  // 검증 오류는 `sections[0]`, 스키마(pydantic) 오류는 `sections.0` 모양이다.
+  const indexed = /^sections(?:\[(\d+)\]|\.(\d+)(?=\.|$))/.exec(path)
+  if (indexed) {
+    const listed = Array.isArray(overrides.sections) ? overrides.sections : []
+    const entry = listed[Number(indexed[1] ?? indexed[2])]
+    return isRecord(entry) && typeof entry.id === 'string' ? (entry.id as SectionId) : null
+  }
+  const grouped = /^sections\.([a-z_]+)/.exec(path)
+  if (grouped) return grouped[1] as SectionId
+  if (path.startsWith('hero.line_breaks.care_principles')) return 'care_principles'
+  const copy = /^copy\.([a-z_]+)\./.exec(path)
+  if (copy) return copy[1] as SectionId
+  const head = /^([a-z_]+)/.exec(path)?.[1] ?? ''
+  if (SECTION_GROUPS.has(head)) return head as SectionId
+  if (PAGE_GROUPS.has(head)) return 'page'
+  return null
+}
+
+export function issuesFor(
+  issues: readonly SiteConfigIssue[],
+  overrides: Record<string, unknown>,
+  owner: SectionId | 'page' | null,
+): SiteConfigIssue[] {
+  return issues.filter((issue) => issueOwner(issue.path, overrides) === owner)
+}
+
+/** 섹션 칸만(목록 숫자·섹션 기본 설정용) — `issuesFor`의 섹션 버전. */
 export function issuesForSection(
   issues: readonly SiteConfigIssue[],
   overrides: Record<string, unknown>,
   id: SectionId,
 ): SiteConfigIssue[] {
-  const listed = Array.isArray(overrides.sections) ? overrides.sections : []
-  const index = listed.findIndex((entry) => isRecord(entry) && entry.id === id)
-  if (index < 0) return []
-  return issues.filter((issue) => issue.path.startsWith(`sections[${index}]`))
+  return issuesFor(issues, overrides, id)
 }
 
 /**
@@ -425,4 +457,110 @@ export function changeLabels(
     if (!labels.includes(label)) labels.push(label)
   }
   return labels
+}
+
+// --- 줄바꿈 지정(PC·모바일, 설계 3.3) — 서버 `site_config_validation`과 같은 규칙 ---
+
+export const LINE_MAX = 200
+export const LINES_MAX = 6
+
+/** 줄바꿈을 걸 수 있는 칸(서버 `LINE_BREAK_PATHS`와 같은 고정 목록). */
+export const LINE_BREAK_PATHS = [
+  'hero.headline',
+  'hero.description',
+  'care_principles.title',
+  'care_principles.lede',
+  'care_principles.cards[0].title',
+  'care_principles.cards[0].body',
+  'care_principles.cards[1].title',
+  'care_principles.cards[1].body',
+  'care_principles.cards[2].title',
+  'care_principles.cards[2].body',
+] as const
+export type LineBreakPath = (typeof LINE_BREAK_PATHS)[number]
+
+export interface LineBreakSourceInput {
+  hero_headline?: string | null
+  hero_description?: string | null
+  care_principles?: {
+    title?: string | null
+    lede?: string | null
+    cards?: ReadonlyArray<{ title?: string | null; body?: string | null } | null> | null
+  } | null
+}
+
+/** 줄바꿈을 거는 칸의 지금 원문. 병원 정보에 저장되지 않은 칸(기본 문구로 나가는 칸)은 null. */
+export function lineBreakSource(path: LineBreakPath, hospital: LineBreakSourceInput | null): string | null {
+  if (!hospital) return null
+  const pick = (value: string | null | undefined) => (value && value.trim() ? value : null)
+  if (path === 'hero.headline') return pick(hospital.hero_headline)
+  if (path === 'hero.description') return pick(hospital.hero_description)
+  const principles = hospital.care_principles ?? null
+  if (path === 'care_principles.title') return pick(principles?.title)
+  if (path === 'care_principles.lede') return pick(principles?.lede)
+  const match = /^care_principles\.cards\[(\d)\]\.(title|body)$/.exec(path)
+  if (!match) return null
+  const card = principles?.cards?.[Number(match[1])] ?? null
+  return pick(card?.[match[2] as 'title' | 'body'])
+}
+
+// 파이썬 `str.split()`·`str.strip()`이 공백으로 보는 글자(`str.isspace`). JS `\s`와 다르다 —
+// JS는 U+FEFF를 공백으로 보고 U+0085·U+001C~001F를 공백으로 보지 않는다.
+const PY_SPACE = '\\t\\n\\v\\f\\r\\x1c-\\x1f \\x85\\xa0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000'
+const PY_SPACES = new RegExp(`[${PY_SPACE}]+`)
+const PY_EDGE_SPACES = new RegExp(`^[${PY_SPACE}]+|[${PY_SPACE}]+$`, 'g')
+
+function pyStrip(text: string): string {
+  return text.replace(PY_EDGE_SPACES, '')
+}
+
+/** 여러 줄 글을 한 문장으로(공백·줄바꿈을 공백 하나로) — 서버 `joined`와 같다. */
+export function joinedText(text: string): string {
+  return text.split(PY_SPACES).filter(Boolean).join(' ')
+}
+
+/** 줄 나누기 — 파이썬 `str.splitlines`와 같은 줄 경계. */
+export function splitLines(value: string): string[] {
+  const lines = value.split(/\r\n|[\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029]/)
+  if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop()
+  const trimmed = lines.map(pyStrip)
+  return trimmed.length ? trimmed : ['']
+}
+
+/**
+ * 줄을 이으면 원문과 글자·띄어쓰기까지 같은가. 줄 경계는 원문의 공백 한 칸 자리이거나 단어 중간이어야
+ * 한다 — 줄바꿈 지정이 글자를 바꾸는 통로가 되지 않게(서버 `lines_match`).
+ */
+export function linesMatch(value: string, source: string): boolean {
+  const target = joinedText(source)
+  let position = 0
+  const lines = splitLines(value).map(joinedText)
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]
+    if (!line || !target.startsWith(line, position)) return false
+    position += line.length
+    if (index < lines.length - 1 && position < target.length && target[position] === ' ') position += 1
+  }
+  return position === target.length
+}
+
+export type LineBreakProblem = 'too_many' | 'mismatch' | null
+
+export function lineBreakProblem(value: string, source: string): LineBreakProblem {
+  const lines = splitLines(value)
+  if (lines.length > LINES_MAX || lines.some((line) => !line || line.length > LINE_MAX)) return 'too_many'
+  return linesMatch(value, source) ? null : 'mismatch'
+}
+
+// --- 섹션별 안내 문구 칸(서버 `COPY_KEYS`) ---
+
+export const COPY_KEYS_BY_SECTION: Partial<Record<SectionId, readonly string[]>> = {
+  treatments: ['treatments.note'],
+  doctor: ['doctor.note'],
+  contents: ['contents.note'],
+  questions: ['questions.note'],
+  faq: ['faq.note'],
+  gallery: ['gallery.note'],
+  visit: ['visit.note'],
+  hours: ['hours.weekend_label'],
 }

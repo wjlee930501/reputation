@@ -376,3 +376,29 @@ async def test_faq_candidates_list_approved_public_faq_questions(db, client, mon
     assert "answer" not in body["items"][0]
     missing = await client.get(f"/api/v1/admin/hospitals/{uuid.uuid4()}/site-config/faq-candidates", headers=ADMIN)
     assert missing.status_code == 404
+
+
+async def test_share_candidates_follow_the_share_image_rule(db, client, monkeypatch):
+    hospital_id = await _hospital(db, layout="B")
+    allowed_id, blocked_id = uuid.uuid4(), uuid.uuid4()
+    photos = [
+        SimpleNamespace(id=allowed_id, title="대기 공간", source_type=SimpleNamespace(value="PHOTO_INTERIOR")),
+        SimpleNamespace(id=blocked_id, title="원장 일러스트", source_type=SimpleNamespace(value="PHOTO_DOCTOR")),
+    ]
+
+    async def fake_photos(db_, hid):
+        assert hid == hospital_id
+        return photos
+
+    monkeypatch.setattr(admin_site_config.site_config_refs, "public_photos", fake_photos)
+    monkeypatch.setattr(admin_site_config.site_config_refs, "share_image_ids", lambda items: frozenset({allowed_id}))
+    response = await client.get(f"{_base(hospital_id)}/share-candidates", headers=ADMIN)
+    assert response.status_code == 200, response.text
+    assert response.json()["items"] == [
+        {
+            "id": str(allowed_id),
+            "title": "대기 공간",
+            "source_type": "PHOTO_INTERIOR",
+            "file_access_url": f"/api/admin/hospitals/{hospital_id}/essence/sources/{allowed_id}/file",
+        }
+    ]
