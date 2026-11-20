@@ -89,6 +89,8 @@ class SourceAssetResponse(BaseModel):
     is_public: bool = False
     photo_provenance: dict[str, Any] | None = None
     evidence_note_count: int = 0
+    # 「제외 자료로 표시」한 노트 수 — 전부 제외해도 화면이 노트를 펼쳐 되돌릴 수 있게(2026-11-20).
+    noise_note_count: int = 0
     evidence_notes: list[EvidenceNoteResponse] | None = None
 
 

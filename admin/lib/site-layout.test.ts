@@ -57,3 +57,13 @@ test('a card badge appears only for a layout already used in the same province',
   assert.equal(sameRegionBadge(null, 'A'), null)
   assert.equal(sameRegionBadge({ ...distribution, province: null }, 'A'), null)
 })
+
+// 병원 정보 화면은 이 병원을 빼고 센다 — 이미 C를 고른 병원에서 「C 0」이 오류로 읽혔다(2026-11-20).
+test('the hospital info screen says the count excludes this hospital', () => {
+  const distribution = { province: '경북', counts: { A: 1, B: 0, C: 0, unset: 2 }, total: 3 }
+  assert.equal(
+    layoutDistributionLine(distribution, { excludesCurrent: true }),
+    '경북 다른 공개 병원 3곳(이 병원 제외) — A 1 · B 0 · C 0 · 고르기 전 2',
+  )
+  assert.equal(sameRegionBadge(distribution, 'A', { excludesCurrent: true }), '경북 다른 병원 1곳 사용 중')
+})

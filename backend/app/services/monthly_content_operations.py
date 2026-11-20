@@ -99,7 +99,7 @@ def build_monthly_content_operations_snapshot(
     # 이 스냅샷은 전달을 막는 blocker를 만들지 않는다(e217e02). 닫힌 달의 운영 결과는
     # 뒤늦게 채워 지울 수 없고, 사후검수는 관찰용 표본일 뿐 두 번째 승인 큐가 아니다
     # (post_publish_review_policy.py). 전부 경고로만 남겨 AE가 원장 앞에서 설명하거나
-    # 운영 센터에서 뒤이어 정리하게 한다.
+    # 처리 목록에서 뒤이어 정리하게 한다.
     warnings: list[str] = []
     if plan_quota is None:
         warnings.append("요금제별 약정 콘텐츠 편수를 확인할 수 없습니다.")
@@ -150,7 +150,7 @@ def build_monthly_content_operations_snapshot(
                 else "운영량과 최소 검수 근거가 맞아 원장 보고 자료로 검토할 수 있습니다."
             ),
             "next_action": (
-                "리포트에 표시된 운영 경고를 확인하고, 필요하면 운영 센터에서 사후검수·복구 계획을 이어서 정리해 주세요."
+                "리포트에 표시된 운영 경고를 확인하고, 필요하면 처리 목록에서 사후검수·복구 계획을 이어서 정리해 주세요."
                 if warnings
                 else "측정 근거와 원장 전달용 PDF를 이어서 확인해 주세요."
             ),

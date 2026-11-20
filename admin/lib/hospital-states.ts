@@ -8,6 +8,7 @@
  * 할 일처럼 적으면 손댈 수 없는 항목이 계속 할 일 목록에 남는다.
  */
 import { domainLastCheckedLabel } from './hospital-domain-status.ts'
+import { ADMIN_COPY } from './admin-copy.ts'
 
 export type PublicServiceKind = 'live' | 'paused' | 'not_live'
 export type ContentKind = 'auto' | 'preparing' | 'exception'
@@ -70,32 +71,37 @@ const DOMAIN_LABELS: Record<DomainKind, string> = {
 
 // 목록 응답의 조건 키 → 문구. `overview`는 같은 표를 서버에서 이미 적용해 내려주므로
 // (`api/admin/hospital_overview.py`의 `_CONDITIONS`) 두 문구는 같아야 한다.
-const CONDITION_LABELS: Record<string, string> = {
-  profile_complete: '필수 병원 정보 입력',
-  site_built: '공개 페이지 준비',
-  schedule: '발행 요일 설정',
-  sources: '근거 자료 처리 {count}건',
-  essence_review: '콘텐츠 운영 기준 자동 생성',
-  // 자료가 하나도 없으면 자동 검수는 기다리기만 한다 — 사람이 채워야 다음이 있다.
-  sources_required: '공식 채널·근거 자료 등록',
-  // 공개 서비스 중이 아닌 병원은 자동 발행이 돌지 않는다.
-  service_paused: '서비스 재개',
-  public_service: '공개 서비스 시작 후 자동 발행',
-}
+type ConditionActor = 'human' | 'system'
 
-const HUMAN_CONDITIONS = new Set([
-  'profile_complete',
-  'schedule',
-  'sources_required',
-  'service_paused',
-])
+const CONDITIONS: Record<string, readonly [label: string, actor: ConditionActor]> = {
+  // 공개 판정(`hospital_lifecycle`)의 막힘 코드 — 목록에는 키 그대로 내려온다.
+  service_inactive: ['서비스 활성화', 'human'],
+  public_permission_missing: ['공개 노출 확인', 'human'],
+  site_not_built: ['공개 페이지 준비', 'system'],
+  name: ['병원명 입력', 'human'],
+  slug: ['기본 주소 이름 입력', 'human'],
+  address: ['병원 주소 입력', 'human'],
+  phone: ['병원 전화번호 입력', 'human'],
+  treatments: ['진료 항목 입력', 'human'],
+  profile_complete: ['필수 병원 정보 입력', 'human'],
+  site_built: ['공개 페이지 준비', 'system'],
+  schedule: ['발행 요일 설정', 'human'],
+  sources: ['근거 자료 처리 {count}건', 'system'],
+  essence_review: ['콘텐츠 운영 기준 자동 생성', 'system'],
+  // 자료가 하나도 없으면 자동 검수는 기다리기만 한다 — 사람이 채워야 다음이 있다.
+  sources_required: ['공식 채널·근거 자료 등록', 'human'],
+  // 공개 서비스 중이 아닌 병원은 자동 발행이 돌지 않는다.
+  service_paused: ['서비스 재개', 'human'],
+  public_service: ['공개 서비스 시작 후 자동 발행', 'system'],
+}
 
 /** `sources:2` 같은 목록 조건 키를 사람이 읽는 문구로. */
 export function remainingConditionLabel(key: string): string {
   const [name, count] = key.split(':')
-  const label = CONDITION_LABELS[name]
-  // 서버가 조건을 늘렸는데 화면이 빈칸이 되면 무엇이 남았는지 알 수 없다 — 키를 그대로 보인다.
-  if (!label) return key
+  const label = CONDITIONS[name]?.[0]
+  // 서버가 조건을 늘렸는데 화면이 빈칸이 되면 무엇이 남았는지 알 수 없다. 영문 키를
+  // 그대로 보이지는 않는다 — 운영자가 읽을 수 없는 말이다.
+  if (!label) return ADMIN_COPY.unknownCondition
   return label.replace('{count}', count ?? '')
 }
 
@@ -105,7 +111,8 @@ function toCondition(item: string | RemainingCondition): RemainingCondition {
   return {
     key: item,
     label: remainingConditionLabel(item),
-    actor: HUMAN_CONDITIONS.has(name) ? 'human' : 'system',
+    // 모르는 키는 사람이 확인할 항목이다 — 「시스템 처리 중」에 묻히면 아무도 보지 않는다.
+    actor: CONDITIONS[name]?.[1] ?? 'human',
     // 목록 행은 이동 경로를 받지 않는다. 링크는 `overview`의 사람 몫 조건에만 붙는다.
     href: null,
   }

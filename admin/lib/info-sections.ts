@@ -160,7 +160,7 @@ const SOURCE_ROW_STATUS: Record<string, { label: string; tone: SourceRowTone }> 
   PENDING: { label: '처리 대기 (자동)', tone: 'neutral' },
   PROCESSED: { label: '처리 완료', tone: 'good' },
   EXCLUDED: { label: '제외', tone: 'paused' },
-  ERROR: { label: '처리 실패 — 운영 센터 확인', tone: 'warn' },
+  ERROR: { label: '처리 실패 — 처리 목록 확인', tone: 'warn' },
 }
 
 /** 아직 본문을 받아오지 못한 채널 자료. PENDING이지만 처리 대기와 다른 단계다. */
@@ -170,7 +170,7 @@ const FETCH_ROW_STATUS: Record<string, { label: string; tone: SourceRowTone }> =
 }
 
 /*
-  주소에서 본문을 끝내 받지 못한 자료는 처리 실패가 아니고, 운영 센터에 예외도 열리지
+  주소에서 본문을 끝내 받지 못한 자료는 처리 실패가 아니고, 처리 목록에 예외도 열리지
   않는다(B2). 사람이 갈 곳은 이 자료 표 자체이므로 여기서 할 일을 그대로 말한다.
 */
 const FETCH_FAILED_ROW_STATUS: { label: string; tone: SourceRowTone } = {
@@ -196,7 +196,7 @@ export function sourceRowStatus(source: SourceRowLike): { label: string; tone: S
   return SOURCE_ROW_STATUS[source.status] ?? { label: '처리 상태 확인 필요', tone: 'neutral' }
 }
 
-/** 실제로 열린 예외가 있을 때만 운영 센터로 보낸다 — 없는 화면을 가리키지 않는다. */
+/** 실제로 열린 예외가 있을 때만 처리 목록으로 보낸다 — 없는 화면을 가리키지 않는다. */
 export function sourceIncidentHref(hospitalId: string, source: SourceRowLike): string | null {
   if (source.status !== 'ERROR' || !source.source_metadata?.incident_id) return null
   return `/operations?queue=incidents&hospital_id=${hospitalId}`

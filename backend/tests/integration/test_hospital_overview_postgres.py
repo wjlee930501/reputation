@@ -306,7 +306,7 @@ async def test_live_hospital_reports_states_exceptions_and_this_month(pg_async_s
     card = overview.exceptions[0]
     assert card.kind == "incident"
     assert card.id == str(incident.id)
-    # 카드가 싣는 행동 코드는 운영 센터 행이 낸 것과 같은 집합이다.
+    # 카드가 싣는 행동 코드는 처리 목록 행이 낸 것과 같은 집합이다.
     assert card.allowed_actions == [
         action.kind for action in (row.action, row.retry, row.resolve, row.assign)
         if action is not None and action.enabled
@@ -687,7 +687,7 @@ async def test_overview_query_count_is_constant_across_incidents_and_content(pg_
 
 
 async def test_exception_card_carries_the_actions_the_server_will_accept(pg_async_session):
-    """예외 카드는 운영 센터의 mutation 서술자를 그대로 싣는다 — 화면이 경로·권한을 새로 쓰지 않는다."""
+    """예외 카드는 처리 목록의 mutation 서술자를 그대로 싣는다 — 화면이 경로·권한을 새로 쓰지 않는다."""
     db = pg_async_session
     owner = await _operations_actor(db)
     operator = await _operations_actor(db, role=ROLE_OPERATOR)
@@ -737,3 +737,27 @@ async def test_exception_card_carries_the_actions_the_server_will_accept(pg_asyn
     assert operator_actions["RETRY_RUN"].enabled is False
     assert operator_card.allowed_actions == ["OPEN_INCIDENT"]
     assert owner_card.allowed_actions == ["OPEN_INCIDENT", "RETRY_RUN", "ASSIGN_INCIDENT"]
+
+
+async def test_list_month_metrics_match_the_overview_month(pg_async_session):
+    """병원 목록의 이번 달 발행·언급률 칸은 현황 탭과 같은 숫자다(2026-11-20)."""
+    from app.api.admin.hospitals import list_hospital_month_metrics
+
+    db = pg_async_session
+    hospital = await _hospital(db, "목록지표 의원")
+    await _content(db, hospital)
+    await _content(db, hospital, withheld=True)
+
+    overview = await _overview(db, hospital.id)
+    rows = await list_hospital_month_metrics(ids=None, db=db)
+    row = next(item for item in rows if item["hospital_id"] == str(hospital.id))
+    other = await _hospital(db, "다른지표 의원")
+    # 「더 보기」로 불러온 병원은 ids로 그 병원만 받는다.
+    only = await list_hospital_month_metrics(ids=[other.id], db=db)
+    assert [item["hospital_id"] for item in only] == [str(other.id)]
+    month = overview.month
+    assert row["published_count"] == month.published_count
+    assert row["public_count"] == month.public_count
+    assert row["planned_total"] == month.planned_total
+    assert row["mention_rate"] == month.mention_rate
+    assert (row["year"], row["month"]) == (month.year, month.month)

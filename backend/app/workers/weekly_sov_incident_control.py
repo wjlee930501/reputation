@@ -94,7 +94,7 @@ async def open_weekly_sov_capacity_digest(
                 severity=IncidentSeverity.MEDIUM,
                 customer_impact=capacity_message,
                 source_type=_SOURCE_TYPE,
-                next_action="운영센터에서 이번 주 쿼리 타깃과 변형 수를 한 번 검토하세요.",
+                next_action="처리 목록에서 이번 주 쿼리 타깃과 변형 수를 한 번 검토하세요.",
                 admin_path="/operations",
                 hospital_id=None,
                 operation_run_id=operation_run_id,
@@ -396,7 +396,7 @@ def _next_action(error_code: str, period_label: str) -> str:
     if error_code.endswith("COST_GUARD_BLOCKED"):
         return (
             "비용 한도가 회복되면 자동 복구가 남은 측정을 이어서 실행합니다. "
-            "한도 조정이 필요한지 운영센터에서 확인하세요."
+            "한도 조정이 필요한지 처리 목록에서 확인하세요."
         )
     return (
         "측정 질문 설정과 외부 측정 서비스 장애 여부를 확인한 뒤 "

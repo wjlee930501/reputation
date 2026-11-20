@@ -180,7 +180,7 @@ def ensure_activatable(hospital: Hospital) -> None:
     """ACTIVE로 바꿔도 되는 상태인지 확인한다. 아니면 `HospitalNotActivatable`.
 
     이미 ACTIVE면 통과(멱등). PAUSED 등 자동 전환 대상이 아닌 상태는 막는다 —
-    도메인 검증·운영센터·워커가 각자 status를 쓰면 일시정지가 우회된다.
+    도메인 검증·처리 목록·워커가 각자 status를 쓰면 일시정지가 우회된다.
     """
     if hospital.status is HospitalStatus.ACTIVE:
         return

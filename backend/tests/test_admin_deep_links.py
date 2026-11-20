@@ -2,7 +2,7 @@
 
 병원 화면은 `/hospitals/{id}` 아래 탭 4개(현황 · 병원 정보 · 콘텐츠 · 보고서)뿐이다.
 옛 8개 경로는 `admin/lib/route-redirects.ts`가 redirect만 해 주고 2026-10-09에 사라진다.
-그 뒤에도 인시던트·Slack·운영 센터 버튼이 옛 경로를 만들면 운영자가 누르는 링크가 404가
+그 뒤에도 인시던트·Slack·처리 목록 버튼이 옛 경로를 만들면 운영자가 누르는 링크가 404가
 된다. API 경로(`/admin/hospitals/...`, `/api/admin/hospitals/...`)는 대상이 아니다.
 """
 

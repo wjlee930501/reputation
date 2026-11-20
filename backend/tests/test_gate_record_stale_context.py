@@ -145,7 +145,7 @@ def test_a_slot_without_any_record_is_recorded_as_a_recoverable_symptom(monkeypa
 def test_an_already_frozen_current_context_record_is_not_released_by_this_deploy(monkeypatch):
     """운영에 이미 저장된 4건의 모양(지금 문맥·작가 0회·기한 없음)은 배포만으로 풀리지 않는다.
 
-    문맥(gate catalog)을 바꾸지 않았으므로 로더는 그대로 뺀다 — 운영센터 “작업 다시 시도”가
+    문맥(gate catalog)을 바꾸지 않았으므로 로더는 그대로 뺀다 — 처리 목록 “작업 다시 시도”가
     이 기록의 억제를 푸는 경로다(`test_operator_retry_gate_record.py`).
     """
 

@@ -29,6 +29,7 @@ import {
 } from '@/lib/hospital-activation'
 import { safeOperatorError } from '@/lib/operations-journey'
 import { customDomainLiveUrl } from '@/lib/domain-live-links'
+import { CopyAddressButton } from '@/app/_components/AddressLink'
 import {
   certificateIssuingCanBeRetried,
   certificateIssuingElapsedMinutes,
@@ -432,7 +433,7 @@ export function DomainSetupPanel({ hospitalId, profile, onProfileChange, onHeade
       }
       setDomainFeedback({
         tone: 'error',
-        message: safeOperatorError('onboarding', '공개 운영 시작을 다시 누르고, 계속 실패하면 운영 센터에서 도메인 작업을 확인하세요.'),
+        message: safeOperatorError('onboarding', '공개 운영 시작을 다시 누르고, 계속 실패하면 처리 목록에서 도메인 작업을 확인하세요.'),
       })
     } finally {
       setPlatformActivating(false)
@@ -465,18 +466,24 @@ export function DomainSetupPanel({ hospitalId, profile, onProfileChange, onHeade
               기본 주소 · {PLATFORM_ADDRESS_STATE_LABEL[platformMode]}
             </p>
             {platformAddressBrowsable ? (
-              <a
-                href={subdomainUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="mt-0.5 block break-all font-mono text-sm text-emerald-700 underline"
-              >
-                {subdomainUrl}
-              </a>
+              <div className="mt-0.5 flex flex-wrap items-center gap-2">
+                <a
+                  href={subdomainUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="break-all font-mono text-sm text-emerald-700 underline"
+                >
+                  {subdomainUrl} <span aria-hidden>↗</span>
+                </a>
+                <CopyAddressButton value={subdomainUrl} />
+              </div>
             ) : (
-              <p className="mt-0.5 break-all font-mono text-sm text-emerald-700" aria-label="활성화 전 기본 주소">
-                {subdomainUrl}
-              </p>
+              <div className="mt-0.5 flex flex-wrap items-center gap-2">
+                <p className="break-all font-mono text-sm text-emerald-700" aria-label="활성화 전 기본 주소">
+                  {subdomainUrl}
+                </p>
+                <CopyAddressButton value={subdomainUrl} />
+              </div>
             )}
             {platformMode === 'live' ? (
               <p className="mt-1 text-xs text-emerald-700/80">이 주소로 현재 공개 중입니다. 아래 자기 도메인 연결은 선택입니다.</p>
@@ -602,9 +609,12 @@ export function DomainSetupPanel({ hospitalId, profile, onProfileChange, onHeade
         {/* DM-F3: 롤백 버튼은 도메인이 저장되어 있으면 항상 표시 (ISSUING/FAILED도 탈출 가능) */}
         {profile.domain_cert_job_state === 'DONE' && customDomainUrl ? (
           <>
-            <a href={customDomainUrl} target="_blank" rel="noopener noreferrer" className="block rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800">
-              병원 공개 페이지 운영 중 · {currentDomain}
-            </a>
+            <div className="flex flex-wrap items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3">
+              <a href={customDomainUrl} target="_blank" rel="noopener noreferrer" className="text-sm font-semibold text-emerald-800 underline-offset-2 hover:underline">
+                병원 공개 페이지 운영 중 · {currentDomain} <span aria-hidden>↗</span>
+              </a>
+              <CopyAddressButton value={customDomainUrl} />
+            </div>
             <button
               type="button"
               onClick={handleRollbackDomain}

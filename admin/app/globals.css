@@ -269,7 +269,8 @@
   .ops-timeline b { color: var(--color-revisit-coolgrey-40); }
   .ops-timeline span { color: var(--color-revisit-text-helper); font-variant-numeric: tabular-nums; }
 
-  .ops-cost-panel { margin-top: 1.5rem; border: 1px solid var(--color-revisit-coolgrey-20); border-radius: var(--ops-panel-radius); background: var(--color-revisit-surface); }
+  /* 설정 화면으로 옮겨 와도 같은 모양이 나오게 처리 목록 화면의 변수를 패널이 직접 갖는다. */
+  .ops-cost-panel { --ops-control-height: 2.75rem; --ops-panel-radius: 0.75rem; --ops-panel-space: 1rem; margin-top: 1rem; border: 1px solid var(--color-revisit-coolgrey-20); border-radius: var(--ops-panel-radius); background: var(--color-revisit-surface); }
   .ops-cost-panel > summary { display: flex; cursor: pointer; list-style: none; align-items: center; justify-content: space-between; gap: 1rem; padding: 0 var(--ops-panel-space); color: var(--color-revisit-coolgrey-40); font-size: 0.875rem; }
   .ops-cost-panel > summary::-webkit-details-marker { display: none; }
   .ops-cost-panel small { display: block; margin-top: 0.125rem; color: var(--color-revisit-text-helper); font-size: 0.75rem; font-weight: 400; }

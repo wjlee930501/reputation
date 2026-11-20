@@ -3,8 +3,10 @@
 import { useState } from 'react'
 import { ADMIN_COPY } from '@/lib/admin-copy'
 import {
+  doctorReportFileName,
+  getDoctorDownload,
   reportStatusLabel,
-  reportSummaryCounts,
+  latestReportSummaryCounts,
   shouldShowDeliveryProblem,
 } from '@/lib/report-delivery'
 import type { ReportView } from '@/lib/report-review'
@@ -29,7 +31,7 @@ export function ReportList({
   onOpen: (report: ReportView) => void
   onRebuild: (report: ReportView, reason: string) => void
 }) {
-  const { delivered, ready, blocked } = reportSummaryCounts(reports)
+  const { delivered, ready, blocked } = latestReportSummaryCounts(reports)
   const versions = annotateReportVersions(reports)
   const rows = groupReportVersions(reports)
   const [expanded, setExpanded] = useState<Readonly<Record<string, boolean>>>({})
@@ -45,7 +47,7 @@ export function ReportList({
         <div className="rounded-xl border border-dashed border-[var(--color-revisit-coolgrey-20)] bg-white px-5 py-8 text-center">
           <p className="font-semibold text-[var(--color-revisit-text-title)]">아직 검수할 보고서가 없습니다.</p>
           <p className="mt-2 text-sm leading-6 text-[var(--color-revisit-text-helper)] [word-break:keep-all]">
-            위에서 대상 월을 선택해 보고서를 만들거나, 운영 센터에서 측정 차단 사유를 확인해 주세요.
+            위에서 대상 월을 선택해 보고서를 만들거나, 처리 목록에서 측정 차단 사유를 확인해 주세요.
           </p>
         </div>
       ) : (
@@ -142,6 +144,23 @@ function ReportRow({ report, info, loadingId, rebuildBusy, onOpen, onRebuild, to
         <button type="button" onClick={() => onOpen(report)} disabled={loadingId === report.id} className="min-h-11 rounded-lg bg-[var(--color-revisit-primary-40)] px-4 text-xs font-bold text-white disabled:opacity-50">
           {loadingId === report.id ? '여는 중' : '열기'}
         </button>
+        {!older && (() => {
+          // 목록에서 원장 전달용 PDF를 바로 저장(2026-11-20). 검증된 판·전달 가능할 때만 서버가 내준다.
+          // 이 파일은 전달 기록에 묶이지 않는다 — 전달 기록은 「열기」에서 받은 파일로 남긴다.
+          const pdfUrl = report.deliveryTracked
+            ? getDoctorDownload(report.hospitalId, report.id, report.doctorArtifact.state, report)
+            : null
+          return pdfUrl ? (
+            <a
+              href={pdfUrl}
+              download={doctorReportFileName(report.periodYear, report.periodMonth)}
+              title={ADMIN_COPY.reportFiles.listPdfHint}
+              className="ml-2 inline-flex min-h-11 items-center rounded-lg border border-[var(--color-revisit-coolgrey-20)] px-3 text-xs font-bold text-[var(--color-revisit-text-title)] hover:bg-[var(--color-revisit-coolgrey-90)]"
+            >
+              {ADMIN_COPY.reportFiles.listPdf}
+            </a>
+          ) : null
+        })()}
         {!older && (
           <ReportRebuildButton
             report={report}

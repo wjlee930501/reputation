@@ -250,7 +250,7 @@ export function recoveryAction(
       kind: 'support',
       enabled: false,
       label: '측정 결과 확인 필요',
-      description: '보고서를 만들 수 있는 측정 결과가 없어 운영 센터에서 확인해야 합니다.',
+      description: '보고서를 만들 수 있는 측정 결과가 없어 처리 목록에서 확인해야 합니다.',
       run: reportRun,
     }
   }

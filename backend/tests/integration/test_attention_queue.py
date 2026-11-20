@@ -789,7 +789,7 @@ async def test_prior_month_service_interval_controls_legacy_report_attention(pg_
     assert no_prior_service.name not in _names(result.reports.missing)
 
 
-# ── 통합 운영 센터 읽기 모델 ──────────────────────────────────────────
+# ── 통합 처리 목록 읽기 모델 ──────────────────────────────────────────
 
 
 async def _operations_actor(db, name: str = "AE QA", *, role: str = ROLE_OWNER) -> AdminUser:
@@ -2025,7 +2025,7 @@ async def test_incident_detail_offers_only_accounts_the_assign_route_will_accept
     assert {actor.id, teammate.id} <= listed
     assert retired.id not in listed
     assert qa_account.id not in listed
-    # 행에도 같은 행동이 실린다 — 운영 센터가 담당 지정 버튼을 그릴 근거다.
+    # 행에도 같은 행동이 실린다 — 처리 목록이 담당 지정 버튼을 그릴 근거다.
     assert detail.incident.assign is not None
     assert detail.incident.assign.kind == "ASSIGN_INCIDENT"
     assert detail.incident.assign.enabled is True
@@ -2046,3 +2046,34 @@ async def test_non_owner_sees_the_assign_action_disabled(pg_async_session):
 
     assert detail.incident.assign is not None
     assert detail.incident.assign.enabled is False
+
+
+async def test_nav_badge_equals_the_incident_queue_total(pg_async_session):
+    """메뉴 배지(처리 목록)는 문제·복구 큐 total과 같다 — 자동 복구 중인 건은 세지 않는다(2026-11-20)."""
+    from app.api.admin.operations_center_read_routes import get_nav_counts
+
+    db = pg_async_session
+    actor = await _operations_actor(db)
+    first = await _active_hospital(db, "배지 첫 의원")
+    second = await _active_hospital(db, "배지 둘째 의원")
+    await _incident(db, first, safe_error_code="PROVIDER_TIMEOUT")
+    await _incident(db, second, safe_error_code="PROVIDER_TIMEOUT")
+    await _incident(db, second, safe_error_code="SITE_BUILD_FAILED")
+    # 기한이 남은 자동 복구는 사람의 일이 아니다.
+    await _incident(
+        db,
+        first,
+        state="RETRYING",
+        sla_due_at=datetime.now(UTC) + timedelta(hours=6),
+        safe_error_code="LEGACY_SPEND_UNKNOWN",
+    )
+
+    counts = await get_nav_counts(db=db, actor=actor)
+    overview = await operations_center.get_operations_overview(db=db, actor=actor)
+    incidents_total = next(
+        summary.total for summary in overview.queues if summary.queue.value == "INCIDENTS"
+    )
+    assert counts["operator_todo_groups"] == incidents_total
+    assert counts["operator_todo_groups"] >= 1
+    assert counts["hospital_count"] >= 2
+    assert set(counts) == {"operator_todo_groups", "hospital_count", "lead_total", "lead_needs_attention"}

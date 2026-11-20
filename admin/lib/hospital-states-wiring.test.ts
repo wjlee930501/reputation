@@ -20,9 +20,11 @@ test('the hospital list reads the server states instead of judging its own', () 
   assert.match(hospitalsList, /describeDomainState\(h\.domain_state\)/)
   assert.match(hospitalsList, /h\.open_exception_count/)
   assert.match(hospitalsList, /h\.ae_owner\?\.name/)
-  // 사진 승인은 사람만 풀 수 있다 — 목록에서 사라지면 병원을 열기 전에는 알 수 없다(O-2).
+  // 공개 페이지 항목(로고·대표색·첫 화면 문구)은 사람만 채운다 — 목록에서 사라지면 병원을
+  // 열기 전에는 알 수 없다(O-2). 사진이 아니므로 「사진 승인 대기」라 부르지 않는다(2026-11-20).
   assert.match(hospitalsList, /visual_approval_missing\?\.length/)
-  assert.match(hospitalsList, /사진 승인 대기/)
+  assert.match(hospitalsList, /ADMIN_COPY\.visualItemsMissing/)
+  assert.doesNotMatch(hospitalsList, /사진 승인 대기/)
   assert.match(hospitalsList, /hospitals\/\$\{h\.id\}\/info/)
   // 링크는 사람이 결정할 문제에만 붙는다 — 연결됨·확인 중은 누를 곳이 아니다.
   assert.match(hospitalsList, /h\.domain_state\.kind === 'problem'/)

@@ -94,7 +94,8 @@ test('live marketer surfaces fail closed instead of rendering raw states or exce
   assert.match(content, /whitespace-nowrap break-keep/)
   assert.match(content, /min-h-11[\s\S]{0,180}전체 보기/)
   assert.match(content, /min-h-11[\s\S]{0,220}확인 완료/)
-  assert.match(content, /min-h-11[\s\S]{0,220}문제 발견/)
+  // 2026-11-20: 비공개 후 재생성은 ⋯ 메뉴 안(메뉴 항목도 min-h-11, `DangerMenu`).
+  assert.match(content, /DangerMenu[\s\S]{0,220}문제 발견/)
   assert.match(content, /setError\(null\)[\s\S]{0,240}isExpectedOperatorRequestFailure/)
   assert.doesNotMatch(globalError, /error\.message/)
   assert.match(globalError, /개발팀 문의용 정보 복사|OperatorIssuePanel/)
@@ -109,7 +110,7 @@ test('live marketer surfaces fail closed instead of rendering raw states or exce
   assert.match(shell, /break-keep text-pretty \[overflow-wrap:anywhere\]/)
   assert.match(leads, /font-semibold whitespace-nowrap text-slate-900/)
   assert.match(leads, /min-h-11 items-center justify-center whitespace-nowrap[\s\S]{0,500}병원 정보/)
-  assert.match(leads, /inline-flex min-h-11 items-center[\s\S]{0,160}운영 센터에서 상세 확인/)
+  assert.match(leads, /inline-flex min-h-11 items-center[\s\S]{0,160}처리 목록에서 상세 확인/)
   assert.match(leads, /inline-flex min-h-11 items-center[\s\S]{0,160}보고서 재발송/)
   assert.match(leads, /inline-flex min-h-11 items-center[\s\S]{0,160}1회 제한 해제/)
   assert.doesNotMatch(hospitalLayout, /hospital\?\.slug|\{hospital\.slug\}/)

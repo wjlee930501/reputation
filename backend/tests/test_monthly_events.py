@@ -117,7 +117,7 @@ def test_complete_coverage_without_artifact_is_internal_pending_not_customer_rea
         (MonthlyRunStage.RUNNING, "완료될 때까지 기다린 뒤 새 리포트를 검수해 주세요."),
         (
             MonthlyRunStage.BLOCKED,
-            "운영 센터에서 차단 사유를 확인하고 해결한 뒤 ‘리포트 다시 만들기’를 눌러 주세요.",
+            "처리 목록에서 차단 사유를 확인하고 해결한 뒤 ‘리포트 다시 만들기’를 눌러 주세요.",
         ),
         (
             MonthlyRunStage.ARTIFACT_VALIDATION_PENDING,

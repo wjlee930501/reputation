@@ -445,7 +445,7 @@ def _ops_email_lines(incident: Incident) -> tuple[str, ...]:
     return (
         "운영 Slack 웹훅이 알림을 받지 않습니다. Re:putation 운영 알림이 Slack에 전달되지 않고 보류되고 있습니다.",
         "Slack 웹훅 주소를 확인해 주세요. 주소가 살아나면 한 시간 안에 자동으로 복구되고, 보류된 알림을 다시 보냅니다.",
-        f"운영센터: {settings.ADMIN_BASE_URL.rstrip('/')}/operations",
+        f"처리 목록: {settings.ADMIN_BASE_URL.rstrip('/')}/operations",
     )
 
 

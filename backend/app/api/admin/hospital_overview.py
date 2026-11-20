@@ -2,7 +2,7 @@
 
 현황 화면이 상태·예외·이번 달을 각각 부르면 카드마다 다른 시각의 병원을 보여주고,
 호출 수가 화면 하나에 8~10개가 된다. 여기서 한 번에 조립한다 — 상태 판정은
-`services/hospital_states.py`, 예외는 운영 센터의 인시던트 로더, 공개 여부는
+`services/hospital_states.py`, 예외는 처리 목록의 인시던트 로더, 공개 여부는
 `content_visibility`로, 각각 다른 화면과 같은 함수를 쓴다.
 """
 
@@ -75,6 +75,8 @@ _CONDITIONS: dict[str, tuple[str, str, str | None]] = {
     "address": ("병원 주소 입력", "human", "/hospitals/{hospital_id}/info"),
     "phone": ("병원 전화번호 입력", "human", "/hospitals/{hospital_id}/info"),
     "treatments": ("진료 항목 입력", "human", "/hospitals/{hospital_id}/info"),
+    "name": ("병원명 입력", "human", "/hospitals/{hospital_id}/info"),
+    "slug": ("기본 주소 이름 입력", "human", "/hospitals/{hospital_id}/info"),
     # 링크는 실제로 그 값을 채우는 칸으로 보낸다. 화면 위쪽만 가리키면 사람이 다시 찾는다.
     "profile_complete": (
         "필수 병원 정보 입력",
@@ -98,12 +100,17 @@ _CONDITIONS: dict[str, tuple[str, str, str | None]] = {
 
 
 
+_UNKNOWN_CONDITION: tuple[str, str, str | None] = ("확인 필요 항목", "human", None)
+
+
 def _remaining(hospital_id: uuid.UUID, keys: tuple[str, ...]) -> list[RemainingCondition]:
     """`hospital_states`가 낸 조건 키(`sources:3` 포함)를 화면 문구로."""
     conditions: list[RemainingCondition] = []
     for key in keys:
         name, _, count = key.partition(":")
-        label, actor, href = _CONDITIONS[name]
+        # 공개 판정이 막힘 코드를 늘려도 현황 화면이 500으로 깨지지 않게 — 모르는 키는
+        # 사람이 확인할 항목으로 보이고 영문 키는 화면에 내지 않는다.
+        label, actor, href = _CONDITIONS.get(name, _UNKNOWN_CONDITION)
         conditions.append(
             RemainingCondition(
                 key=key,
@@ -123,9 +130,9 @@ async def _get_or_404(db: AsyncSession, hospital_id: uuid.UUID) -> Hospital:
 
 
 def _operations_href(hospital_id: uuid.UUID, row_id: str) -> str:
-    """운영 센터에서 이 행 하나를 펼친 상태의 주소.
+    """처리 목록에서 이 행 하나를 펼친 상태의 주소.
 
-    운영 센터 화면은 `detail` 질의값을 큐 행의 `id`와 그대로 맞춰 본다
+    처리 목록 화면은 `detail` 질의값을 큐 행의 `id`와 그대로 맞춰 본다
     (`admin/app/operations/useOperationsCenter.ts`). 그래서 백엔드가 만든 행 id를
     그대로 싣는다 — 단건은 `incident:<id>`, 같은 원인 묶음은 `cause:<key>`다.
     """
@@ -135,10 +142,10 @@ def _operations_href(hospital_id: uuid.UUID, row_id: str) -> str:
 async def _incident_cards(
     db: AsyncSession, hospital_id: uuid.UUID, actor: AdminUser
 ) -> list[ExceptionCard]:
-    """운영 센터 인시던트 큐를 이 병원으로 좁혀 그대로 읽는다.
+    """처리 목록 인시던트 큐를 이 병원으로 좁혀 그대로 읽는다.
 
-    현황 화면이 자기만의 인시던트 SQL을 쓰면 운영 센터와 다른 목록·다른 허용 행동을
-    보여준다. 행동 서술자도 운영 센터의 직렬화가 만든 것을 그대로 싣는다 — 요청 actor의
+    현황 화면이 자기만의 인시던트 SQL을 쓰면 처리 목록과 다른 목록·다른 허용 행동을
+    보여준다. 행동 서술자도 처리 목록의 직렬화가 만든 것을 그대로 싣는다 — 요청 actor의
     권한까지 서버가 판정하므로 화면이 인가 규칙을 다시 쓰지 않는다.
 
     자동 복구 중인 건(`requires_operator_action=False`)은 카드로 만들지 않는다 —

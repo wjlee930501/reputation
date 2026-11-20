@@ -51,7 +51,7 @@ def test_many_misses_fold_and_fit_the_slack_block() -> None:
     ]
     lines = slo_summary_lines(slos)
     assert len(lines) == SLO_SUMMARY_LINE_LIMIT + 1
-    assert lines[-1] == "그 외 3곳은 운영센터에서 볼 수 있습니다."
+    assert lines[-1] == "그 외 3곳은 처리 목록에서 볼 수 있습니다."
     report = WatchdogReport(
         observed_at=NOW,
         kst_date="2026-10-14",
