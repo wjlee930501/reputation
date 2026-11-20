@@ -27,6 +27,9 @@ interface Props {
   /** 병원 정보의 주차·대중교통 안내(0096). 없으면 기본 안내. */
   parkingNote?: string | null
   transitNote?: string | null
+  /** 섹션 설정이 바꾼 제목·안내 문장(레이아웃 편집기). 없으면 지금 문구. */
+  title?: string | null
+  note?: string | null
 }
 
 function hostOf(url: string): string {
@@ -66,6 +69,8 @@ export function ContactCard({
   hoursHref,
   parkingNote = null,
   transitNote = null,
+  title,
+  note,
 }: Props) {
   const visibleLinks = links.filter((link) => Boolean(link.url))
   const regionText = regionSentenceLabel(region)
@@ -75,9 +80,13 @@ export function ContactCard({
     <section id="contact" className="clinic-section clinic-section--alt">
       <div className="clinic-section-inner">
         <header className="clinic-section-head">
-          <h2 className="clinic-section-title">오시는 길·방문 안내</h2>
+          <h2 className="clinic-section-title">{title ?? '오시는 길·방문 안내'}</h2>
           <p className="clinic-section-note">
-            진료 예약·상담은 아래 병원 공식 채널을 이용해 주세요. 방문 전 확인하면 좋은 안내를 정리했습니다.
+            {note ?? (
+              <>
+                진료 예약·상담은 아래 병원 공식 채널을 이용해 주세요. 방문 전 확인하면 좋은 안내를 정리했습니다.
+              </>
+            )}
           </p>
         </header>
 

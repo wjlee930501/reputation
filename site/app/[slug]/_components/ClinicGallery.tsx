@@ -20,6 +20,9 @@ interface Props {
   excludeUrl?: string | null
   /** 전체 사진을 볼 수 있는 곳. 있으면 문장 대신 링크로 안내한다. */
   allPhotosHref?: string | null
+  /** 섹션 설정이 바꾼 제목·안내 문장(레이아웃 편집기). 없으면 지금 문구. */
+  title?: string | null
+  note?: string | null
 }
 
 export const GALLERY_TYPE_LABELS: Record<HospitalPhoto['source_type'], string> = {
@@ -29,7 +32,7 @@ export const GALLERY_TYPE_LABELS: Record<HospitalPhoto['source_type'], string> =
   PHOTO_TREATMENT_ROOM: '진료·시술실',
 }
 
-export function ClinicGallery({ photos, policy, excludeUrl = null, allPhotosHref = null }: Props) {
+export function ClinicGallery({ photos, policy, excludeUrl = null, allPhotosHref = null, title, note }: Props) {
   const selection = selectClinicGalleryPhotos(photos, policy.previewLimit, { excludeUrl })
   const visible = selection.photos
   if (visible.length < policy.minimumPhotoCount) return null
@@ -40,7 +43,8 @@ export function ClinicGallery({ photos, policy, excludeUrl = null, allPhotosHref
     <section className="clinic-section">
       <div className="clinic-section-inner">
         <header className="clinic-section-head">
-          <h2 className="clinic-section-title">{GALLERY_SECTION_TITLE}</h2>
+          <h2 className="clinic-section-title">{title ?? GALLERY_SECTION_TITLE}</h2>
+          {note ? <p className="clinic-section-note">{note}</p> : null}
         </header>
 
         <div className={`clinic-gallery-grid${visible.length < 3 ? ' clinic-gallery-grid--sparse' : ''}`}>

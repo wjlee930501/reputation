@@ -15,12 +15,15 @@ interface Treatment {
 interface Props {
   treatments: Treatment[]
   hospitalRootUrl: string
+  /** 섹션 설정이 바꾼 제목·안내 문장(레이아웃 편집기). 없으면 지금 문구. */
+  title?: string | null
+  note?: string | null
 }
 
 /** 홈에서 먼저 보여줄 대표 진료 영역 수. 열 수도 이 값 안에서 결정된다. */
 const LEAD_LIMIT = 4
 
-export function TreatmentGrid({ treatments, hospitalRootUrl }: Props) {
+export function TreatmentGrid({ treatments, hospitalRootUrl, title, note }: Props) {
   if (!treatments || treatments.length === 0) {
     return null
   }
@@ -40,8 +43,8 @@ export function TreatmentGrid({ treatments, hospitalRootUrl }: Props) {
         {/* P-A-3 — 이 제목은 sr-only였다. 다른 섹션은 모두 제목이 보이는데 첫
             섹션만 보이지 않아, 화면에서는 카드 네 장이 맥락 없이 시작됐다. */}
         <header className="clinic-section-head clinic-treatment-directory-head">
-          <h2 className="clinic-section-title">{TREATMENT_SECTION_TITLE}</h2>
-          <p className="clinic-section-note">{TREATMENT_SECTION_NOTE}</p>
+          <h2 className="clinic-section-title">{title ?? TREATMENT_SECTION_TITLE}</h2>
+          <p className="clinic-section-note">{note ?? TREATMENT_SECTION_NOTE}</p>
         </header>
 
         {/* 열 수를 항목 수에 맞춘다 — 4열로 고정하면 진료 항목이 1~3개인 병원에서

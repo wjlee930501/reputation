@@ -1,6 +1,7 @@
 import type { ContentSummary, Hospital } from '@/lib/api'
 import type { ClinicAccessMode, ClinicComposition, ClinicContentDensity, ClinicMediaMode } from '@/lib/clinic-design'
 import type { ClinicPhysician } from '@/lib/clinic-physicians'
+import type { CareFlowStepView, ClinicSiteConfig, HomeSectionPlan } from '@/lib/clinic-site-config'
 import type { FaqEntry } from '@/lib/schema'
 
 /**
@@ -26,4 +27,9 @@ export interface ClinicHomeModel {
   accessMode: ClinicAccessMode
   /** 공식 채널 — 스키마 sameAs·llms.txt와 같은 값. */
   factLinks: Array<{ url: string | null; label: string }>
+  /** 섹션 계획(레이아웃 편집기) — 켜진 섹션의 순서·제목·안내. 설정이 없으면 지금 마크업 순서다. */
+  plan: HomeSectionPlan
+  siteConfig: ClinicSiteConfig | null
+  /** 진료 과정 안내·단계(`resolveCareFlow`). */
+  careFlow: { note: string; steps: CareFlowStepView[] }
 }

@@ -298,6 +298,7 @@ export default async function ContentDetailPage({ params: paramsPromise }: Props
           logoUrl={hospital.logo_url}
           currentSection="contents"
           googleMapsUrl={hospital.google_maps_url}
+          siteConfig={hospital.site_config}
         />
         <main id="main-content">
           <div className="clinic-article-shell">

@@ -168,8 +168,9 @@ test('article schema uses supported, attributable publication fields', () => {
 
 test('the hospital home renders the same FAQ entries it declares in JSON-LD', () => {
   const page = readFileSync(join(HERE, '..', 'app', '[slug]', 'page.tsx'), 'utf8')
-  assert.match(page, /const faqEntries = selectFaqEntries\(contents, hospitalRootUrl\)/)
-  assert.match(page, /<ClinicFaq entries=\{faqEntries\}/)
+  assert.match(page, /const faqEntries = resolveHomeFaqEntries\(contents, hospitalRootUrl, siteConfig, plan\)/)
+  assert.match(page, /const faqJsonLd = buildFaqPageJsonLdFromEntries\(faqEntries, hospitalRootUrl\)/)
+  assert.match(page, /<ClinicFaq\s+entries=\{faqEntries\}/)
 
   const component = readFileSync(
     join(HERE, '..', 'app', '[slug]', '_components', 'ClinicFaq.tsx'),

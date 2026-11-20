@@ -20,6 +20,9 @@ interface Props {
   region: string[]
   contentCount: number
   priorityPhoto?: boolean
+  /** 섹션 설정이 바꾼 제목·안내 문장(레이아웃 편집기). 없으면 지금 문구. */
+  title?: string | null
+  note?: string | null
 }
 
 export function DoctorIntro({
@@ -28,6 +31,8 @@ export function DoctorIntro({
   region,
   contentCount,
   priorityPhoto = false,
+  title,
+  note,
 }: Props) {
   if (physicians.length === 0) return null
   const layout = clinicPhysicianLayout(physicians.length)
@@ -36,7 +41,8 @@ export function DoctorIntro({
     <section id="curator" className="clinic-section clinic-section--alt">
       <div className="clinic-section-inner">
         <header className="clinic-section-head">
-          <h2 className="clinic-section-title">{DOCTOR_SECTION_TITLE}</h2>
+          <h2 className="clinic-section-title">{title ?? DOCTOR_SECTION_TITLE}</h2>
+          {note ? <p className="clinic-section-note">{note}</p> : null}
         </header>
 
         <div className={`clinic-curator-grid clinic-curator-grid--${layout}`}>

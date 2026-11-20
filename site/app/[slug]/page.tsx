@@ -1,4 +1,5 @@
 import { Metadata } from 'next'
+import { Fragment, type ReactNode } from 'react'
 import { notFound } from 'next/navigation'
 
 import { fetchHospital, fetchContents, HospitalNotFoundError } from '@/lib/api'
@@ -22,11 +23,17 @@ import { getApiBase } from '@/lib/config'
 import { resolveClinicLayout } from '@/lib/clinic-layout'
 import { REVALIDATE_SECONDS } from '@/lib/fetch-policy'
 import {
-  buildFaqPageJsonLd,
+  buildFaqPageJsonLdFromEntries,
   buildPhysicianNode,
   selectClusterContents,
-  selectFaqEntries,
 } from '@/lib/schema'
+import {
+  buildHomeSectionPlan,
+  resolveCareFlow,
+  resolveHomeFaqEntries,
+  type SiteSectionId,
+} from '@/lib/clinic-site-config'
+import { resolveAssetUrl } from '@/lib/api'
 import { canonicalBase, canonicalHospitalUrl } from '@/lib/site-url'
 
 import { AnswerClusters } from './_components/AnswerClusters'
@@ -102,7 +109,14 @@ export async function generateMetadata({ params: paramsPromise }: Props): Promis
     const description = buildHospitalDescription(hospital)
     // 백엔드 자산 경로는 상대 URL일 수 있다 — 크롤러는 site origin 기준으로 잘못 해석하므로
     // 절대 URL로 변환해야 OG/구조화 데이터 이미지가 깨지지 않는다.
-    const ogImage = selectClinicDirectorImage(hospital) ?? '/landing/reputation-clinic-trust-interior.png'
+    // 섹션 설정의 공유 이미지·설명은 OG/트위터 메타만 바꾼다(검색 설명·JSON-LD `image`는 그대로, I1).
+    const share = hospital.site_config?.share
+    const shareImage = share?.imageAssetId
+      ? resolveAssetUrl(hospital.photos.find((photo) => photo.id === share.imageAssetId)?.url ?? null)
+      : null
+    const ogImage =
+      shareImage ?? selectClinicDirectorImage(hospital) ?? '/landing/reputation-clinic-trust-interior.png'
+    const shareDescription = share?.description ?? description
     // 커스텀 도메인이 연결된 병원은 해당 도메인이 canonical origin이 된다 (site-url.ts 정책).
     const canonicalUrl = canonicalHospitalUrl(hospital, params.slug)
     return {
@@ -111,7 +125,7 @@ export async function generateMetadata({ params: paramsPromise }: Props): Promis
       alternates: { canonical: canonicalUrl },
       openGraph: {
         title,
-        description,
+        description: shareDescription,
         url: canonicalUrl,
         type: 'website',
         images: ogImage
@@ -126,7 +140,7 @@ export async function generateMetadata({ params: paramsPromise }: Props): Promis
       twitter: {
         card: 'summary_large_image',
         title,
-        description,
+        description: shareDescription,
         images: ogImage ? [ogImage] : undefined,
       },
     }
@@ -220,10 +234,17 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
     hospitalRootUrl,
   )
 
+  // 마케터가 고른 레이아웃(A/B/C)과 공개된 섹션 설정(레이아웃 편집기). 설정이 없으면 지금 화면 그대로다
+  // (`clinic-site-config.ts`). 설정은 표현만 바꾼다 — 위의 병원 JSON-LD는 설정을 읽지 않는다(I1).
+  const layout = resolveClinicLayout(hospital.site_layout)
+  const siteConfig = hospital.site_config
+  const plan = buildHomeSectionPlan(layout, siteConfig)
+
   // 발행된 FAQ를 병원 단위 FAQPage로 집계 (개별 FAQ 페이지의 FAQPage와 별개).
-  // 화면 FAQ 섹션과 같은 선택 결과를 쓴다 — 구조화 데이터에만 있는 Q&A를 만들지 않는다.
-  const faqEntries = selectFaqEntries(contents, hospitalRootUrl)
-  const faqJsonLd = buildFaqPageJsonLd(contents, hospitalRootUrl)
+  // 화면 FAQ 섹션과 같은 배열 하나를 쓴다 — 구조화 데이터에만 있는 Q&A를 만들지 않는다. FAQ 섹션을 끄면
+  // 빈 배열이라 FAQPage도 없다(화면 = FAQPage, I2).
+  const faqEntries = resolveHomeFaqEntries(contents, hospitalRootUrl, siteConfig, plan)
+  const faqJsonLd = buildFaqPageJsonLdFromEntries(faqEntries, hospitalRootUrl)
 
   // 승인된 Q&A의 주인은 FAQ 섹션 하나다. 질문 목록(AnswerClusters)은 FAQ를
   // 우선순위 맨 앞에 놓고 뽑기 때문에, 같은 항목을 두 섹션이 나란히 반복해서
@@ -263,10 +284,10 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
     hasLogo: Boolean(hospital.logo_url),
   })
 
-  // 마케터가 고른 레이아웃(A/B/C). 비어 있으면 레이아웃 도입 전 화면이다 — 배포만으로 운영 중인
-  // 병원의 화면이 바뀌지 않는다. 데이터·구조화 데이터는 위에서 한 번만 만들고, 레이아웃은
-  // 같은 값을 그리기만 한다(FAQ 항목 = FAQPage, 질문 목록 = FAQ를 뺀 글).
-  const layout = resolveClinicLayout(hospital.site_layout)
+  // 레이아웃이 비어 있으면 레이아웃 도입 전 화면이다 — 배포만으로 운영 중인 병원의 화면이 바뀌지
+  // 않는다. 데이터·구조화 데이터는 위에서 한 번만 만들고, 레이아웃은 같은 값을 섹션 계획의 순서대로
+  // 그리기만 한다(FAQ 항목 = FAQPage, 질문 목록 = FAQ를 뺀 글).
+  const careFlow = resolveCareFlow(siteConfig)
   const homeModel: ClinicHomeModel = {
     hospital,
     hospitalRootUrl,
@@ -282,6 +303,159 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
     // 레이아웃 도입 전 화면은 블로그를 사실 패널이 아닌 연락 카드에 보였다 — A·C는 연락 카드가
     // 없으므로 공식 채널 목록에 블로그를 더해 화면에서 빠지지 않게 한다(sameAs에도 있다).
     factLinks: [...factLinks, { url: hospital.blog_url, label: '병원 블로그' }],
+    plan,
+    siteConfig,
+    careFlow,
+  }
+
+  // 레이아웃 도입 전 화면이자 레이아웃 B(As-is 발전형)의 섹션 — 섹션 계획(`plan.order`)의 순서대로 그린다.
+  // 설정이 없으면 계획은 지금 마크업 순서 그대로다. 섹션 안의 데이터 조건(진료 항목·글 수 등)은 그대로다.
+  const sectionsB: Partial<Record<SiteSectionId, ReactNode>> = {
+    hero: (
+      <ClinicHero
+        hospitalName={hospital.name}
+        hospitalRootUrl={hospitalRootUrl}
+        region={hospital.region}
+        specialties={hospital.specialties}
+        phone={hospital.phone}
+        directorName={hospital.director_name}
+        heroPhotoUrl={heroPhotoUrl}
+        address={hospital.address}
+        addressDetail={hospital.address_detail}
+        businessHours={hospital.business_hours}
+        accessMode={accessMode}
+        mediaMode={mediaMode}
+        heroHeadline={hospital.hero_headline}
+        heroDescription={hospital.hero_description}
+      />
+    ),
+    // 첫 화면 아래 바로가기 메뉴(.clinic-section-index)는 2026-11-20 결정 12a로 뺐다 — 상단 메뉴와
+    // 내용이 겹쳤고, 휴대폰에서는 상단 메뉴·바로가기·하단 바 세 겹 메뉴였다. 편집기에서 다시 켜는
+    // 'section_index'는 모양 설정 PR에서 그린다(스타일은 globals.css에 남아 있다).
+    treatments: (
+      <div className="clinic-anchor-target">
+        <TreatmentGrid
+          treatments={hospital.treatments}
+          hospitalRootUrl={hospitalRootUrl}
+          title={plan.customTitle('treatments')}
+          note={plan.customNote('treatments')}
+        />
+      </div>
+    ),
+    doctor: (
+      <div id="doctor" className="clinic-anchor-target">
+        <DoctorIntro
+          physicians={physicians}
+          specialties={hospital.specialties}
+          region={hospital.region}
+          contentCount={contents.length}
+          title={plan.customTitle('doctor')}
+          note={plan.customNote('doctor')}
+        />
+      </div>
+    ),
+    care_principles: (
+      <CarePrinciples
+        hospitalRootUrl={hospitalRootUrl}
+        hospitalName={hospital.name}
+        specialties={hospital.specialties}
+        region={hospital.region}
+        publicAbout={publicAbout}
+        custom={hospital.care_principles}
+        title={plan.customTitle('care_principles')}
+        cardCount={siteConfig?.carePrinciples.cardCount}
+        // '공식 채널 보기'는 오시는 길(#contact)로 간다 — 그 섹션이 꺼지면 하위 페이지로.
+        channelsHref={plan.enabled('visit') ? `${hospitalRootUrl}#contact` : `${hospitalRootUrl}/visit`}
+      />
+    ),
+    contents: (
+      <div id="contents" className="clinic-anchor-target">
+        <FeaturedContent
+          contents={contents}
+          hospitalRootUrl={hospitalRootUrl}
+          hospitalName={hospital.name}
+          directorName={hospital.director_name}
+          secondaryLimit={composition.featuredSecondaryLimit}
+          title={plan.customTitle('contents')}
+          note={plan.customNote('contents')}
+        />
+      </div>
+    ),
+    questions: composition.showAnswerClusters ? (
+      <AnswerClusters
+        contents={clusterContents}
+        hospitalRootUrl={hospitalRootUrl}
+        treatments={hospital.treatments || []}
+        region={hospital.region}
+        specialties={hospital.specialties}
+        title={plan.customTitle('questions')}
+        note={plan.customNote('questions')}
+      />
+    ) : null,
+    faq: (
+      <ClinicFaq
+        entries={faqEntries}
+        hospitalRootUrl={hospitalRootUrl}
+        title={plan.customTitle('faq')}
+        note={plan.customNote('faq')}
+      />
+    ),
+    care_flow: composition.showCareFlow ? (
+      <CareFlow
+        hospitalRootUrl={hospitalRootUrl}
+        hospitalName={hospital.name}
+        title={plan.customTitle('care_flow')}
+        note={careFlow.note}
+        steps={careFlow.steps}
+      />
+    ) : null,
+    gallery: (
+      <ClinicGallery
+        photos={hospital.photos ?? []}
+        policy={clinicGalleryPolicy('home', contentDensity)}
+        excludeUrl={heroPhotoUrl}
+        allPhotosHref={`${hospitalRootUrl}/visit#gallery`}
+        title={plan.customTitle('gallery')}
+        note={plan.customNote('gallery')}
+      />
+    ),
+    facts: (
+      <div id="facts" className="clinic-anchor-target">
+        <HospitalFacts
+          hospitalName={hospital.name}
+          address={hospital.address}
+          addressDetail={hospital.address_detail}
+          phone={hospital.phone}
+          businessHours={hospital.business_hours}
+          region={hospital.region}
+          specialties={hospital.specialties}
+          directorName={hospital.director_name}
+          hiraOrgId={hospital.hira_org_id}
+          links={factLinks}
+          googleMapsUrl={hospital.google_maps_url}
+        />
+      </div>
+    ),
+    visit: (
+      <div className="clinic-anchor-target">
+        <ContactCard
+          address={hospital.address}
+          addressDetail={hospital.address_detail}
+          phone={hospital.phone}
+          googleMapsUrl={hospital.google_maps_url}
+          links={externalChannels}
+          hospitalName={hospital.name}
+          hospitalRootUrl={hospitalRootUrl}
+          region={hospital.region}
+          parkingNote={hospital.parking_note}
+          transitNote={hospital.transit_note}
+          websiteUrl={hospital.website_url}
+          hoursHref={visitHoursHref(hospitalRootUrl, false)}
+          title={plan.customTitle('visit')}
+          note={plan.customNote('visit')}
+        />
+      </div>
+    ),
   }
 
   return (
@@ -301,6 +475,8 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
           logoUrl={hospital.logo_url}
           currentSection="home"
           googleMapsUrl={hospital.google_maps_url}
+          siteConfig={hospital.site_config}
+          faqAvailable={faqEntries.length > 0}
         />
         {layout === 'A' ? (
           <HomeLayoutA model={homeModel} />
@@ -309,117 +485,11 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
         ) : (
         <main id="main-content">
           {/* 레이아웃 도입 전 화면이자 레이아웃 B(As-is 발전형)의 구성. B는 같은 섹션·순서를
-              쓰고 생김새만 바꾼다(_layouts/layout-b.module.css). */}
-          {/* One shared hospital composition. Optional sections and their index links
-              follow available approved data; no placeholder content is fabricated. */}
-          <ClinicHero
-            hospitalName={hospital.name}
-            hospitalRootUrl={hospitalRootUrl}
-            region={hospital.region}
-            specialties={hospital.specialties}
-            phone={hospital.phone}
-            directorName={hospital.director_name}
-            heroPhotoUrl={heroPhotoUrl}
-            address={hospital.address}
-            addressDetail={hospital.address_detail}
-            businessHours={hospital.business_hours}
-            accessMode={accessMode}
-            mediaMode={mediaMode}
-            heroHeadline={hospital.hero_headline}
-            heroDescription={hospital.hero_description}
-          />
-
-          {/* 첫 화면 아래 바로가기 메뉴(.clinic-section-index)는 2026-11-20 결정 12a로 뺐다 — 상단 메뉴와
-              내용이 겹쳤고, 휴대폰에서는 상단 메뉴·바로가기·하단 바 세 겹 메뉴였다. 스타일은 레이아웃
-              편집기(섹션 'section_index')에서 다시 켤 수 있게 globals.css에 남긴다. 앵커는 그대로다. */}
-
-          <div className="clinic-anchor-target">
-            <TreatmentGrid treatments={hospital.treatments} hospitalRootUrl={hospitalRootUrl} />
-          </div>
-
-          <div id="doctor" className="clinic-anchor-target">
-          <DoctorIntro
-            physicians={physicians}
-            specialties={hospital.specialties}
-            region={hospital.region}
-            contentCount={contents.length}
-          />
-          </div>
-
-          <CarePrinciples
-            hospitalRootUrl={hospitalRootUrl}
-            hospitalName={hospital.name}
-            specialties={hospital.specialties}
-            region={hospital.region}
-            publicAbout={publicAbout}
-            custom={hospital.care_principles}
-          />
-
-          <div id="contents" className="clinic-anchor-target">
-          <FeaturedContent
-            contents={contents}
-            hospitalRootUrl={hospitalRootUrl}
-            hospitalName={hospital.name}
-            directorName={hospital.director_name}
-            secondaryLimit={composition.featuredSecondaryLimit}
-          />
-          </div>
-
-          {composition.showAnswerClusters ? (
-            <AnswerClusters
-              contents={clusterContents}
-              hospitalRootUrl={hospitalRootUrl}
-              treatments={hospital.treatments || []}
-              region={hospital.region}
-              specialties={hospital.specialties}
-            />
-          ) : null}
-
-          <ClinicFaq entries={faqEntries} hospitalRootUrl={hospitalRootUrl} />
-
-          {composition.showCareFlow ? (
-            <CareFlow hospitalRootUrl={hospitalRootUrl} hospitalName={hospital.name} />
-          ) : null}
-
-          <ClinicGallery
-            photos={hospital.photos ?? []}
-            policy={clinicGalleryPolicy('home', contentDensity)}
-            excludeUrl={heroPhotoUrl}
-            allPhotosHref={`${hospitalRootUrl}/visit#gallery`}
-          />
-
-          <div id="facts" className="clinic-anchor-target">
-          <HospitalFacts
-            hospitalName={hospital.name}
-            address={hospital.address}
-            addressDetail={hospital.address_detail}
-            phone={hospital.phone}
-            businessHours={hospital.business_hours}
-            region={hospital.region}
-            specialties={hospital.specialties}
-            directorName={hospital.director_name}
-            hiraOrgId={hospital.hira_org_id}
-            links={factLinks}
-            googleMapsUrl={hospital.google_maps_url}
-          />
-          </div>
-
-          <div className="clinic-anchor-target">
-          <ContactCard
-            address={hospital.address}
-            addressDetail={hospital.address_detail}
-            phone={hospital.phone}
-            googleMapsUrl={hospital.google_maps_url}
-            links={externalChannels}
-            hospitalName={hospital.name}
-            hospitalRootUrl={hospitalRootUrl}
-            region={hospital.region}
-            parkingNote={hospital.parking_note}
-            transitNote={hospital.transit_note}
-            websiteUrl={hospital.website_url}
-            hoursHref={visitHoursHref(hospitalRootUrl, false)}
-          />
-          </div>
+              쓰고 생김새만 바꾼다(_layouts/layout-b.module.css). 섹션은 `sectionsB` 표를 섹션 계획 순서로
+              그린다 — 선택 섹션은 승인된 데이터가 있을 때만 보이고, 빈 자리를 지어내지 않는다. */}
+          {plan.order.map((id) => (
+            <Fragment key={id}>{sectionsB[id]}</Fragment>
+          ))}
         </main>
         )}
         <ClinicFooter
