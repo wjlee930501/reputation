@@ -168,7 +168,7 @@ def _message(
                 header_block("monthly_report_gap_header", prefixed_for_event(event, header)),
                 section_block("monthly_report_gap_counts", counts_text),
                 section_block("monthly_report_gap_hospitals", detail),
-                action_block("monthly_report_gap_action", url, "운영 센터에서 확인"),
+                action_block("monthly_report_gap_action", url, "처리 목록에서 확인"),
             ),
             admin_url=url,
         ),
@@ -222,9 +222,9 @@ def build_monthly_report_gap_summary(
     detail = (
         f"대상: {_names(gaps)}\n"
         "이 병원은 자동 재측정 대상이 아니라 시스템이 풀지 못합니다. "
-        "운영 센터에서 원인을 확인해 해결한 뒤 ‘리포트 다시 만들기’를 눌러 주세요."
+        "처리 목록에서 원인을 확인해 해결한 뒤 ‘리포트 다시 만들기’를 눌러 주세요."
     )
-    tail = "자동 복구 대상이 아닙니다. 운영 센터에서 확인해 주세요."
+    tail = "자동 복구 대상이 아닙니다. 처리 목록에서 확인해 주세요."
     # 병원·월마다 한 건 — 다른 병원이 더해져도 이미 알린 병원은 다시 나가지 않는다.
     key = f"{MONTHLY_REPORT_GAP_SUMMARY_TYPE}:{period_key}:{_digest(*(gap.hospital_name for gap in gaps))}"
     message = _message(

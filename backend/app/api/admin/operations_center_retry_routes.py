@@ -142,7 +142,7 @@ async def _authorize_notification_retry(
     if actor.role == ROLE_OWNER:
         return
     # 이 행을 알리는 사고(incident_id) 또는 이 행의 전송 실패를 가리키는 사고(source_id)의
-    # 담당자면 재시도할 수 있다 — 같은 규칙으로 운영센터가 그 행을 보여 준다.
+    # 담당자면 재시도할 수 있다 — 같은 규칙으로 처리 목록이 그 행을 보여 준다.
     assigned = await db.scalar(
         select(func.count(Incident.id)).where(
             Incident.owner_id == actor.id,

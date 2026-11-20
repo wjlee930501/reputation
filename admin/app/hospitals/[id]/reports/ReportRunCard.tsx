@@ -41,7 +41,7 @@ export function ReportRunCard({
         <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:flex-wrap">
           {run.primaryAction === 'review' && <Action onClick={onReview} disabled={disabled} primary>원장 전달 자료 확인</Action>}
           {run.primaryAction === 'operations' && (
-            <Link href={operationsHref} className="inline-flex min-h-11 items-center justify-center rounded-lg bg-[var(--color-revisit-primary-40)] px-4 text-sm font-bold text-white">운영 센터에서 차단 사유 확인</Link>
+            <Link href={operationsHref} className="inline-flex min-h-11 items-center justify-center rounded-lg bg-[var(--color-revisit-primary-40)] px-4 text-sm font-bold text-white">처리 목록에서 차단 사유 확인</Link>
           )}
           {run.canRebuild && !reasonOpen && <Action onClick={() => setReasonOpen(true)} disabled={disabled} primary={run.primaryAction === 'rebuild'}>보고서 다시 만들기</Action>}
           <Action onClick={onCopy}>개발팀 문의용 정보 복사</Action>

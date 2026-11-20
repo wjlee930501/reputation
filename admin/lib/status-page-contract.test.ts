@@ -54,12 +54,12 @@ test('현황은 판정·버튼·요약을 공용 함수에서 받는다', () => 
   assert.match(page, /<AppliedEssencePanel/)
 })
 
-test('인시던트 행동은 운영 센터와 같은 배관을 쓴다', () => {
+test('인시던트 행동은 처리 목록과 같은 배관을 쓴다', () => {
   // 결과를 모른 채 같은 변경을 두 번 사지 않는다.
   assert.match(exceptionCards, /getOrCreatePendingActionKey/)
   assert.match(exceptionCards, /requires_idempotency_key/)
   assert.match(exceptionCards, /'Idempotency-Key'/)
-  // 충돌·권한 응답은 운영 센터와 같은 문구로 말한다.
+  // 충돌·권한 응답은 처리 목록과 같은 문구로 말한다.
   assert.match(exceptionCards, /interpretOperationsConflict/)
   assert.match(exceptionCards, /status === 403/)
   assert.match(exceptionCards, /권한 있는 담당자만/)

@@ -11,6 +11,8 @@
  * (2) 사람 이름일 수 없는 내부 식별자는 사람 이름 자리에 찍지 않는다.
  */
 
+import { ADMIN_COPY } from './admin-copy.ts'
+
 export type ActorKind =
   /** 로그인한 운영자 */
   | 'HUMAN'
@@ -41,6 +43,14 @@ const KNOWN_SYSTEM_ACTORS: Record<string, { label: string; kind: 'AI' | 'SYSTEM'
 }
 
 /**
+ * 백엔드 워커가 남기는 `system:*` 행위자(감사·검수·발행 기록). 소문자·콜론이라 아래
+ * 내부 식별자 규칙에 걸리지 않아 사람 이름처럼 「system:ai-review」가 그대로 보였다.
+ */
+const SYSTEM_PREFIX = 'system:'
+// AI가 판단한 일(검토·교정)과 시스템 작업을 구분한다. 문구는 `ADMIN_COPY.systemActors`.
+const AI_SYSTEM_ACTORS = new Set(['ai-review', 'ai-review-noncritical', 'ai-correction'])
+
+/**
  * 사람 이름일 수 없는 내부 식별자 판별.
  *
  * `bulk-restore-9f2c`, `backfill_2026_07`, `migration-0042`처럼 배치 작업이 남긴
@@ -68,6 +78,15 @@ export function describeActor(raw: string | null | undefined): ActorDisplay {
   const known = KNOWN_SYSTEM_ACTORS[value.toUpperCase()]
   if (known) {
     return { kind: known.kind, label: known.label, isAutomated: true }
+  }
+
+  if (value.toLowerCase().startsWith(SYSTEM_PREFIX)) {
+    const name = value.slice(SYSTEM_PREFIX.length).toLowerCase()
+    return {
+      kind: AI_SYSTEM_ACTORS.has(name) ? 'AI' : 'SYSTEM',
+      label: ADMIN_COPY.systemActors[name] ?? ADMIN_COPY.systemActorFallback,
+      isAutomated: true,
+    }
   }
 
   if (looksLikeInternalToken(value)) {
