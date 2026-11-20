@@ -160,9 +160,13 @@ async function fetchContentsPage(
   return contents
 }
 
-export async function fetchContents(slug: string, limit?: number): Promise<ContentSummary[]> {
-  // 일반 페이지는 항상 첫 500건 URL을 공유해 cache key를 하나로 유지한다.
-  const contents = await fetchContentsPage(slug, 0)
+export async function fetchContents(
+  slug: string,
+  limit?: number,
+  init?: RequestInit,
+): Promise<ContentSummary[]> {
+  // 일반 페이지는 항상 첫 500건 URL을 공유해 cache key를 하나로 유지한다. 미리보기만 `no-store`를 넘긴다.
+  const contents = await fetchContentsPage(slug, 0, init)
   return typeof limit === 'number' ? contents.slice(0, limit) : contents
 }
 

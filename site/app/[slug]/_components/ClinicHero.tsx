@@ -12,6 +12,7 @@ import { fullClinicAddress } from '@/lib/clinic-schema'
 import { HeroCallLabel, HeroScheduleCell, HeroTodayHours } from './HeroToday'
 import { CalendarIcon, ClockIcon, MapPinIcon, PhoneIcon } from './icons'
 import { regionSentenceLabel } from '@/lib/clinic-region'
+import { isPreviewAssetUrl } from '@/lib/site-preview-assets'
 
 interface Props {
   hospitalName: string
@@ -122,6 +123,7 @@ export function ClinicHero({
           {heroPhotoUrl ? (
             <Image
               src={heroPhotoUrl}
+              unoptimized={isPreviewAssetUrl(heroPhotoUrl)}
               alt={mediaMode === 'brand-graphic' ? `${hospitalName} 브랜드 그래픽` : `${hospitalName} 진료 공간`}
               fill
               preload

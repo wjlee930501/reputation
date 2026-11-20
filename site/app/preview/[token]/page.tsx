@@ -31,7 +31,7 @@ export default async function SitePreviewPage({ params }: { params: Promise<{ to
   // 글 목록은 공개 병원만 열린다 — 공개 전 병원은 글 없이 그린다(실제 공개 첫 화면과 같다).
   let contents: ContentSummary[] = []
   try {
-    contents = await fetchContents(hospital.slug, 60)
+    contents = await fetchContents(hospital.slug, 60, { cache: 'no-store' })
   } catch (error) {
     if (!(error instanceof HospitalNotFoundError)) throw error
   }

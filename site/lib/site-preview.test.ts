@@ -44,3 +44,30 @@ test('only /preview may be framed, and only by the admin origin; it is never cac
   assert.match(NEXT_CONFIG, /"frame-ancestors 'none'"/)
   assert.match(NEXT_CONFIG, /\{ key: 'X-Frame-Options', value: 'DENY' \}/)
 })
+
+test('preview photos skip the image optimizer and the optimizer refuses them', async () => {
+  const { isPreviewAssetUrl } = await import('./site-preview-assets.ts')
+  assert.equal(isPreviewAssetUrl('https://api.example/api/v1/public/site-preview/tok/assets/x'), true)
+  assert.equal(isPreviewAssetUrl('https://api.example/api/v1/public/hospitals/demo/assets/x'), false)
+  assert.equal(isPreviewAssetUrl(null), false)
+  const slug = join(HERE, '..', 'app', '[slug]')
+  for (const [dir, name] of [
+    ['_components', 'ClinicHero.tsx'],
+    ['_components', 'ClinicAvatar.tsx'],
+    ['_components', 'ClinicGallery.tsx'],
+    ['_layouts', 'HomeLayoutA.tsx'],
+    ['_layouts', 'HomeLayoutC.tsx'],
+  ]) {
+    const source = readFileSync(join(slug, dir, name), 'utf8')
+    const images = source.match(/<Image\b[\s\S]*?\/>/g) ?? []
+    assert.ok(images.length > 0, name)
+    for (const image of images) assert.match(image, /unoptimized=\{[^}]*isPreviewAssetUrl\(/, name)
+  }
+  const proxy = readFileSync(join(HERE, '..', 'proxy.ts'), 'utf8')
+  assert.match(proxy, /pathname === '\/_next\/image' && isPreviewAssetUrl\(request\.nextUrl\.searchParams\.get\('url'\)\)/)
+  assert.match(proxy, /matcher: \[[^\]]*'\/_next\/image'\]/)
+})
+
+test('the preview reads contents without the shared cache', () => {
+  assert.match(ROUTE, /fetchContents\(hospital\.slug, 60, \{ cache: 'no-store' \}\)/)
+})

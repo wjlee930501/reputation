@@ -39,6 +39,7 @@ import { buildTreatmentSlug } from '@/lib/treatment-slug'
 import { PhysicianProfile } from './PhysicianProfile'
 import type { ClinicHomeModel } from './model'
 import s from './layout-a.module.css'
+import { isPreviewAssetUrl } from '@/lib/site-preview-assets'
 
 const PRINCIPLE_ICONS = { explain: IconExplain, verified: IconExam, decide: IconAftercare } as const
 
@@ -166,6 +167,7 @@ export function HomeLayoutA({ model }: { model: ClinicHomeModel }) {
             <div className={s.heroPhoto}>
               <Image
                 src={model.heroPhotoUrl}
+                unoptimized={isPreviewAssetUrl(model.heroPhotoUrl)}
                 alt={model.mediaMode === 'brand-graphic' ? `${hospital.name} 브랜드 그래픽` : `${hospital.name} 진료 공간`}
                 fill
                 preload
@@ -315,7 +317,7 @@ export function HomeLayoutA({ model }: { model: ClinicHomeModel }) {
               return (
                 <figure key={photo.id} className={s.galleryItem}>
                   <span className={s.galleryImage}>
-                    <Image src={url} alt={photo.title} fill sizes={CLINIC_IMAGE_SIZES.gallery} loading="lazy" style={{ objectFit: 'cover' }} />
+                    <Image src={url} unoptimized={isPreviewAssetUrl(url)} alt={photo.title} fill sizes={CLINIC_IMAGE_SIZES.gallery} loading="lazy" style={{ objectFit: 'cover' }} />
                   </span>
                   <figcaption>{photo.title}</figcaption>
                 </figure>

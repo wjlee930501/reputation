@@ -276,6 +276,11 @@ _PREVIEW_HEADERS = {
 }
 
 
+# 미리보기 자산의 GCS 서명 URL 수명 — 토큰 수명(10분)과 같게. 공개 자산의 24시간 서명을 쓰면 토큰이
+# 만료·무효가 된 뒤에도 받아 둔 서명 주소로 하루 동안 사진을 받을 수 있다.
+_PREVIEW_SIGNED_URL_HOURS = 10 / 60
+
+
 def _preview_not_found() -> HTTPException:
     return HTTPException(status_code=404, detail="Preview not found", headers=_PREVIEW_HEADERS)
 
@@ -371,7 +376,12 @@ async def get_site_config_preview_asset(
     )
     if not asset or not asset.file_url:
         raise _preview_not_found()
-    response = public_asset_response(asset.file_url, hospital_id=h.id, media_type=asset.mime_type)
+    response = public_asset_response(
+        asset.file_url,
+        hospital_id=h.id,
+        media_type=asset.mime_type,
+        signed_url_hours=_PREVIEW_SIGNED_URL_HOURS,
+    )
     response.headers.update(_PREVIEW_HEADERS)
     return response
 
@@ -385,7 +395,9 @@ async def get_site_config_preview_logo(request: Request, token: str, db: AsyncSe
     stored = getattr(h, "logo_url", None)
     if not is_public_logo_ref(stored, h.id):
         raise _preview_not_found()
-    response = public_asset_response(stored, hospital_id=h.id, media_type=None)
+    response = public_asset_response(
+        stored, hospital_id=h.id, media_type=None, signed_url_hours=_PREVIEW_SIGNED_URL_HOURS
+    )
     response.headers.update(_PREVIEW_HEADERS)
     return response
 
