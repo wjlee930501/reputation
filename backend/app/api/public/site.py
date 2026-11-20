@@ -1,6 +1,7 @@
 import logging
 import re
 import uuid
+from typing import Any
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -275,18 +276,17 @@ _PREVIEW_HEADERS = {
 }
 
 
+# 미리보기 자산의 GCS 서명 URL 수명 — 토큰 수명(10분)과 같게. 공개 자산의 24시간 서명을 쓰면 토큰이
+# 만료·무효가 된 뒤에도 받아 둔 서명 주소로 하루 동안 사진을 받을 수 있다.
+_PREVIEW_SIGNED_URL_HOURS = 10 / 60
+
+
 def _preview_not_found() -> HTTPException:
     return HTTPException(status_code=404, detail="Preview not found", headers=_PREVIEW_HEADERS)
 
 
-@preview_router.get("/{token}")
-@limiter.limit(settings.PUBLIC_SITE_RATE_LIMIT)
-async def get_site_config_preview(request: Request, token: str, db: AsyncSession = Depends(get_db)):
-    """섹션 설정 초안 미리보기 — 병원 공개 응답과 같은 모양 + 초안 `site_config`.
-
-    공개 상태 검사 대신 토큰이 권한이다(공개 전 병원도 미리본다). 토큰은 병원·초안·revision에 묶여
-    있어 저장·공개 반영·버리기 뒤에는 열리지 않는다. 응답은 실패 포함 모두 no-store·noindex다.
-    """
+async def _load_preview(db: AsyncSession, token: str) -> tuple[HospitalSiteConfig, Hospital, int]:
+    """토큰 → (초안, 병원, 만료 epoch). 초안이 지금도 DRAFT이고 revision이 같아야 한다. 아니면 404."""
 
     claim = verify_preview_token(token)
     if claim is None:
@@ -304,6 +304,42 @@ async def get_site_config_preview(request: Request, token: str, db: AsyncSession
     )
     if h is None:
         raise _preview_not_found()
+    return draft, h, claim.expires_at
+
+
+def _preview_asset_urls(value: Any, slug: str, token: str) -> Any:
+    """응답 안의 공개 자산 주소(`/api/v1/public/hospitals/{slug}/assets/…`·`/logo`)를 토큰 자산 주소로 바꾼다.
+
+    공개 자산 경로는 공개 중인 병원만 열어(`_get_active_hospital`) 공개 전 병원의 미리보기에서 사진·로고가
+    빠졌다. 토큰 자산 경로는 같은 자산 판정으로 서빙하되 권한을 토큰이 대신한다.
+    """
+
+    public_prefix = f"/api/v1/public/hospitals/{slug}/"
+    preview_prefix = f"/api/v1/public/site-preview/{token}/"
+    if isinstance(value, str):
+        if value.startswith(public_prefix):
+            rest = value[len(public_prefix) :]
+            if rest == "logo" or rest.startswith("assets/"):
+                return preview_prefix + rest
+        return value
+    if isinstance(value, list):
+        return [_preview_asset_urls(item, slug, token) for item in value]
+    if isinstance(value, dict):
+        return {key: _preview_asset_urls(item, slug, token) for key, item in value.items()}
+    return value
+
+
+@preview_router.get("/{token}")
+@limiter.limit(settings.PUBLIC_SITE_RATE_LIMIT)
+async def get_site_config_preview(request: Request, token: str, db: AsyncSession = Depends(get_db)):
+    """섹션 설정 초안 미리보기 — 병원 공개 응답과 같은 모양 + 초안 `site_config`.
+
+    공개 상태 검사 대신 토큰이 권한이다(공개 전 병원도 미리본다). 토큰은 병원·초안·revision에 묶여
+    있어 저장·공개 반영·버리기 뒤에는 열리지 않는다. 응답은 실패 포함 모두 no-store·noindex다.
+    사진·로고 주소는 토큰 자산 경로로 바꿔 내려준다(공개 전 병원도 보이게).
+    """
+
+    draft, h, expires_at = await _load_preview(db, token)
     photos = await site_config_refs.public_photos(db, h.id)
     public_philosophy = await get_public_essence_readiness(db, h.id)
     payload = _serialize_hospital(h, photos, public_philosophy)
@@ -311,12 +347,59 @@ async def get_site_config_preview(request: Request, token: str, db: AsyncSession
     payload["site_config"] = await site_config_refs.public_site_config_for(
         db, h, draft, photos, layout=draft.layout
     )
+    payload = _preview_asset_urls(payload, h.slug, token)
     payload["preview"] = {
         "draft_id": str(draft.id),
         "revision": draft.revision,
-        "expires_at": claim.expires_at,
+        "expires_at": expires_at,
     }
     return JSONResponse(payload, headers=_PREVIEW_HEADERS)
+
+
+@preview_router.get("/{token}/assets/{source_id}")
+@limiter.limit(settings.PUBLIC_SITE_RATE_LIMIT)
+async def get_site_config_preview_asset(
+    request: Request, token: str, source_id: uuid.UUID, db: AsyncSession = Depends(get_db)
+):
+    """미리보기의 사진 — 공개 자산 경로와 같은 판정(공개 승인 사진), 권한은 토큰."""
+
+    _draft, h, _expires = await _load_preview(db, token)
+    asset = await db.scalar(
+        select(HospitalSourceAsset).where(
+            HospitalSourceAsset.id == source_id,
+            HospitalSourceAsset.hospital_id == h.id,
+            HospitalSourceAsset.is_public.is_(True),
+            HospitalSourceAsset.status != SourceStatus.EXCLUDED,
+            HospitalSourceAsset.source_type.in_(list(PHOTO_SOURCE_TYPES)),
+            HospitalSourceAsset.file_url.is_not(None),
+        )
+    )
+    if not asset or not asset.file_url:
+        raise _preview_not_found()
+    response = public_asset_response(
+        asset.file_url,
+        hospital_id=h.id,
+        media_type=asset.mime_type,
+        signed_url_hours=_PREVIEW_SIGNED_URL_HOURS,
+    )
+    response.headers.update(_PREVIEW_HEADERS)
+    return response
+
+
+@preview_router.get("/{token}/logo")
+@limiter.limit(settings.PUBLIC_SITE_RATE_LIMIT)
+async def get_site_config_preview_logo(request: Request, token: str, db: AsyncSession = Depends(get_db)):
+    """미리보기의 로고 — 공개 로고 경로와 같은 판정, 권한은 토큰."""
+
+    _draft, h, _expires = await _load_preview(db, token)
+    stored = getattr(h, "logo_url", None)
+    if not is_public_logo_ref(stored, h.id):
+        raise _preview_not_found()
+    response = public_asset_response(
+        stored, hospital_id=h.id, media_type=None, signed_url_hours=_PREVIEW_SIGNED_URL_HOURS
+    )
+    response.headers.update(_PREVIEW_HEADERS)
+    return response
 
 
 @router.get("/{slug}/assets/{source_id}")

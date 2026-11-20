@@ -213,6 +213,14 @@ async def test_draft_save_preview_publish_restore_reset_and_discard(db, client, 
     assert body["site_config"]["hero"]["line_breaks"]["hero.headline"]["pc"].startswith("편집기 검증")
     bad = await client.get("/api/v1/public/site-preview/not-a-token")
     assert bad.status_code == 404 and bad.headers["cache-control"] == "no-store"
+    # 사진·로고는 토큰 자산 경로로 — 병원 공개 여부가 아니라 토큰이 권한이다. 없는 자산·잘못된 토큰은 404.
+    missing = await client.get(f"/api/v1/public/site-preview/{token}/assets/{uuid.uuid4()}")
+    assert missing.status_code == 404 and missing.headers["cache-control"] == "no-store"
+    no_logo = await client.get(f"/api/v1/public/site-preview/{token}/logo")
+    assert no_logo.status_code == 404
+    forged = await client.get(f"/api/v1/public/site-preview/not-a-token/assets/{uuid.uuid4()}")
+    assert forged.status_code == 404
+    assert f"/api/v1/public/hospitals/{body['slug']}/" not in preview.text
 
     # 공개 반영 — 요청 키가 필수, 같은 키는 같은 결과, 다른 초안에 같은 키는 거절.
     no_key = await client.post(

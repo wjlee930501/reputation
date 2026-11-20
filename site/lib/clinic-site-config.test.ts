@@ -22,7 +22,7 @@ import {
   resolveHomeFaqEntries,
 } from './clinic-site-config.ts'
 import { CARE_FLOW_NOTE, CARE_STEPS } from './clinic-template-copy.ts'
-import { selectFaqEntries } from './schema.ts'
+import { buildFaqPageJsonLdFromEntries, selectFaqEntries } from './schema.ts'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const SLUG_DIR = join(HERE, '..', 'app', '[slug]')
@@ -198,6 +198,15 @@ test('manual FAQ uses the server-read approved entries in the chosen order, neve
       ['faq-2', `${ROOT}/contents/faq-2`],
     ],
   )
+  // 자동 모드에서 남은 개수(3)는 직접 고른 글을 자르지 않는다 — 고른 다섯 개가 화면·FAQPage에 모두 실린다.
+  const five = Array.from({ length: 5 }, (_, i) => ({ id: `m-${i}`, question: `고른 질문 ${i}번은 무엇인가요?`, answer: `답 ${i}` }))
+  const leftover = normalizeSiteConfig(
+    published('B', (c) => ((c.faq.mode = 'manual'), (c.faq.limit = 3), (c.faq.entries = five))),
+    'B',
+  )
+  const chosen = resolveHomeFaqEntries(CONTENTS, ROOT, leftover, buildHomeSectionPlan('B', leftover))
+  assert.deepEqual(chosen.map((entry) => entry.id), five.map((entry) => entry.id))
+  assert.equal((buildFaqPageJsonLdFromEntries(chosen, `${ROOT}/`)?.mainEntity as unknown[] | undefined)?.length, 5)
   const allDown = normalizeSiteConfig(published('B', (c) => ((c.faq.mode = 'manual'), (c.faq.entries = []))), 'B')
   assert.deepEqual(resolveHomeFaqEntries(CONTENTS, ROOT, allDown, buildHomeSectionPlan('B', allDown)), [])
 })
@@ -278,7 +287,7 @@ function sourceFiles(dir: string): string[] {
 }
 
 test('the clinic JSON-LD and llms.txt never read the section config', () => {
-  const page = readFileSync(join(SLUG_DIR, 'page.tsx'), 'utf8')
+  const page = readFileSync(join(SLUG_DIR, '_layouts', 'HospitalHome.tsx'), 'utf8')
   const clinicJsonLd = page.slice(page.indexOf('const clinicJsonLd = {'), page.indexOf('const breadcrumbJsonLd'))
   assert.ok(clinicJsonLd.includes("'@type': ['MedicalClinic', 'LocalBusiness']"))
   assert.doesNotMatch(clinicJsonLd, /site_?[cC]onfig|plan\./)

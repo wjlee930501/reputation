@@ -167,7 +167,8 @@ export function pendingEventsForTest(): ReadonlyArray<{ name: string; params: Re
  */
 /** 개인에게 발급된 링크(주소에 토큰이 든) 화면 — 분석 태그를 싣지 않는다. */
 export function isPrivateLinkPath(pathname: string | null | undefined): boolean {
-  return typeof pathname === 'string' && /^\/survey(?:\/|$)/.test(pathname)
+  // 원장 사전 설문(/survey)과 섹션 설정 미리보기(/preview) — 주소의 토큰이 GA·픽셀로 나가지 않게.
+  return typeof pathname === 'string' && /^\/(?:survey|preview)(?:\/|$)/.test(pathname)
 }
 
 export function trackPageView(path: string): void {

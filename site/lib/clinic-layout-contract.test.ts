@@ -17,7 +17,8 @@ const SLUG_DIR = join(HERE, '..', 'app', '[slug]')
 const LAYOUT_DIR = join(SLUG_DIR, '_layouts')
 const read = (...parts: string[]) => readFileSync(join(...parts), 'utf8')
 
-const PAGE = read(SLUG_DIR, 'page.tsx')
+// 홈 화면 본문은 `_layouts/HospitalHome.tsx`(공개 홈·미리보기 공용), 페이지는 데이터·메타데이터만.
+const PAGE = read(SLUG_DIR, 'page.tsx') + read(SLUG_DIR, '_layouts', 'HospitalHome.tsx')
 const LAYOUTS = {
   A: read(LAYOUT_DIR, 'HomeLayoutA.tsx'),
   C: read(LAYOUT_DIR, 'HomeLayoutC.tsx'),
@@ -147,7 +148,7 @@ test('the pre-layout home keeps rendering the template copy from the shared modu
 
 test('every page of a hospital follows the chosen layout shell', () => {
   const pages = [
-    ['page.tsx'],
+    ['_layouts', 'HospitalHome.tsx'],
     ['doctor', 'page.tsx'],
     ['treatments', 'page.tsx'],
     ['treatments', '[treatmentSlug]', 'page.tsx'],

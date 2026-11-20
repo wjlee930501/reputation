@@ -47,13 +47,18 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(payload, ensure_ascii=False)
 
 
-# 원장 사전 설문 링크는 주소 자체가 열쇠다(만료 없음). 접근 로그에 토큰이 남지 않게 가린다.
+# 원장 사전 설문 링크는 주소 자체가 열쇠다(만료 없음). 섹션 설정 미리보기 링크도 10분 동안 열쇠다.
+# 접근 로그에 토큰이 남지 않게 가린다.
 _SURVEY_TOKEN_RE = re.compile(r"(/doctor-survey/)[A-Za-z0-9_-]{16,}")
+_PREVIEW_TOKEN_RE = re.compile(r"(/site-preview/)[A-Za-z0-9_.-]{16,}")
 
 
 def redact_link_tokens(value: object) -> object:
-    if isinstance(value, str) and "/doctor-survey/" in value:
-        return _SURVEY_TOKEN_RE.sub(r"\1[token]", value)
+    if isinstance(value, str):
+        if "/doctor-survey/" in value:
+            value = _SURVEY_TOKEN_RE.sub(r"\1[token]", value)
+        if "/site-preview/" in value:
+            value = _PREVIEW_TOKEN_RE.sub(r"\1[token]", value)
     return value
 
 

@@ -5,6 +5,7 @@ import type { ReactNode } from 'react'
 import { CLINIC_IMAGE_QUALITY, CLINIC_IMAGE_SIZES } from '@/lib/clinic-image-delivery'
 import { useClinicImage } from '@/lib/use-clinic-image'
 import { isOffAllowlistExternalUrl } from '@/lib/image-policy'
+import { isPreviewAssetUrl } from '@/lib/site-preview-assets'
 
 interface Props {
   src: string | null
@@ -37,7 +38,7 @@ export function ClinicAvatar({ src, alt, wrapperClassName, fallbackClassName = '
           fill sizes={sizes} quality={CLINIC_IMAGE_QUALITY}
           fetchPriority={priority ? 'high' : 'auto'}
           loading={priority ? 'eager' : 'lazy'}
-          unoptimized={isOffAllowlistExternalUrl(src)}
+          unoptimized={isOffAllowlistExternalUrl(src) || isPreviewAssetUrl(src)}
           onError={onError} onLoad={onLoad}
           style={{ objectFit: 'cover' }} />
       )}

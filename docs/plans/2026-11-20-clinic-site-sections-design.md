@@ -330,3 +330,16 @@ gpt-6.1-sol high로 이 문서를 코드와 대조했다. 15건 모두 받아들
 | 받은 값 좁히기 | 형식이 틀리거나 판(`schema_version`)이 다르거나 병원의 지금 레이아웃과 다르면 설정 전체를 버리고 지금 화면 | 병원 응답 전체를 막지 않는다 |
 
 ①에서 하지 않은 것: 바로가기 메뉴(`section_index`)를 켰을 때의 마크업(지금은 켜도 그리지 않는다), `hours.weekend_label`, 진료 원칙 `use_default_cards` — 모두 ③.
+
+### 13-②. 미리보기 화면(2026-11-21, 브랜치 `claude/site-config-3b-preview`)
+
+| 항목 | 정한 것 | 이유 |
+|---|---|---|
+| 주소 | 플랫폼 호스트 `https://reputation.motionlabs.kr/preview/{token}`(`NEXT_PUBLIC_SITE_URL`). 병원 호스트에서도 `/preview`는 예약 경로(설문 `/survey`와 같다) | 토큰이 병원·초안·revision을 갖는다. 병원 주소는 공개 병원만 열린다 |
+| 그리기 | 홈 본문을 `_layouts/HospitalHome.tsx`로 옮겨 공개 홈과 미리보기가 같은 코드로 그린다(옮긴 뒤 main 대비 홈 HTML 21개 조합 바이트 동일). 공개 전 병원은 글 목록이 404라 글 없이 그린다. 위에 '미리보기' 띠 | 공개 반영 뒤 화면과 갈라지지 않게 |
+| 응답 | `force-dynamic`, 병원·글 조회 모두 `no-store`, `Cache-Control: no-store`, `X-Robots-Tag: noindex, nofollow`, `Referrer-Policy: no-referrer`, 분석 태그 없음. 토큰이 틀리거나 만료되면 안내 화면 | 토큰이 주소에 있다 |
+| iframe | `/preview/*`만 `frame-ancestors`에 어드민 주소(`SITE_PREVIEW_FRAME_ANCESTORS`, 기본 `https://admin.reputation.motionlabs.kr`), 그 경로는 `X-Frame-Options`를 싣지 않는다. 다른 경로는 그대로 `'none'`+`DENY`(빌드한 서버에서 확인) | 설계 5절 |
+| 사진·로고 | 미리보기 응답의 공개 자산 주소를 토큰 자산 경로(`/public/site-preview/{token}/assets/{id}`·`/logo`)로 바꾼다 — 공개 자산과 같은 판정, 권한은 토큰. GCS 서명 주소는 10분(공개 자산은 24시간). Next 이미지 최적화기를 거치지 않고(`unoptimized`), 프록시가 최적화기 요청에 이 주소가 들면 404 | 최적화 결과는 공용 캐시 하루라 토큰 만료 뒤에도 사진이 나간다(Codex) |
+| 로그 | 백엔드 접근 로그에서 `/site-preview/{token}`을 가린다(설문과 같은 필터) | Codex |
+
+②에서 하지 않은 것: 로드밸런서·Cloud Run 요청 로그의 경로 마스킹(설문 `/survey/{token}`과 같은 상태 — 토큰 10분으로 완화), 미리보기 안 링크를 누르면 iframe 안에서 공개 사이트로 가며 그 사이트는 iframe을 막는다(어드민이 새 탭 열기를 함께 둔다).

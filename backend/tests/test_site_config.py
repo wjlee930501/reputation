@@ -514,3 +514,55 @@ def test_preview_token_round_trip_tamper_expiry_and_disabled(monkeypatch) -> Non
     monkeypatch.setattr(settings, "SITE_PREVIEW_TOKEN_SECRET", "preview-secret")
     for bad in ("body.한글", "a.b.c", "", "x" * 600, f"{body}.{signature}\n"):
         assert tokens.verify_preview_token(bad, now=1010) is None
+
+
+def test_preview_payload_points_assets_at_the_token_routes() -> None:
+    from app.api.public.site import _preview_asset_urls
+
+    payload = {
+        "logo_url": "/api/v1/public/hospitals/demo/logo",
+        "photos": [{"url": "/api/v1/public/hospitals/demo/assets/abc"}],
+        "physicians": [{"photo_url": "/api/v1/public/hospitals/demo/assets/def"}],
+        "hero_image_url": "https://storage.googleapis.com/x.png",
+        "other": "/api/v1/public/hospitals/other/assets/abc",
+        "contents": "/api/v1/public/hospitals/demo/contents",
+    }
+    out = _preview_asset_urls(payload, "demo", "tok")
+    assert out["logo_url"] == "/api/v1/public/site-preview/tok/logo"
+    assert out["photos"][0]["url"] == "/api/v1/public/site-preview/tok/assets/abc"
+    assert out["physicians"][0]["photo_url"] == "/api/v1/public/site-preview/tok/assets/def"
+    # 다른 병원·외부 주소·자산이 아닌 경로는 그대로.
+    assert out["hero_image_url"] == payload["hero_image_url"]
+    assert out["other"] == payload["other"]
+    assert out["contents"] == payload["contents"]
+
+
+def test_preview_tokens_are_redacted_from_logs() -> None:
+    from app.core.observability import redact_link_tokens
+
+    line = '"GET /api/v1/public/site-preview/eyJoIjoiMSJ9.abcdefghijABCDEFGHIJ0123456789_-abcdefghijk/assets/x HTTP/1.1" 200'
+    redacted = redact_link_tokens(line)
+    assert "eyJoIjoiMSJ9" not in redacted
+    assert "/site-preview/[token]/assets/x" in redacted
+    assert redact_link_tokens("/doctor-survey/abcdefghijklmnopqrstu") == "/doctor-survey/[token]"
+
+
+def test_preview_assets_use_signed_urls_no_longer_than_the_token(monkeypatch) -> None:
+    from app.api.public import assets
+    from app.api.public import site as public_site
+
+    seen = {}
+
+    def fake_signed_url(ref, expiration_hours=24, response_disposition=None):
+        seen["hours"] = expiration_hours
+        return "https://storage.googleapis.com/b/x?sig=1"
+
+    monkeypatch.setattr(assets, "get_signed_url", fake_signed_url)
+    response = assets.public_asset_response(
+        "gs://bucket/x.png",
+        hospital_id=uuid.uuid4(),
+        media_type=None,
+        signed_url_hours=public_site._PREVIEW_SIGNED_URL_HOURS,
+    )
+    assert response.status_code == 302
+    assert seen["hours"] * 60 <= 10

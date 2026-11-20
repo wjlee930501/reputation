@@ -108,7 +108,7 @@ def _sign_blob_url(
 
 def get_signed_url(
     gcs_path: str | None,
-    expiration_hours: int = 24,
+    expiration_hours: float = 24,
     response_disposition: str | None = None,
 ) -> str:
     """gs://bucket/path → signed URL 변환. 레거시 URL 또는 빈 값은 그대로 통과.

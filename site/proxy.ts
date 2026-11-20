@@ -11,6 +11,7 @@ import {
   resolveRequestHost,
   shouldFailClosedCustomHost,
 } from './lib/host-routing.ts'
+import { isPreviewAssetUrl } from './lib/site-preview-assets.ts'
 
 // 병원 커스텀 도메인(CNAME → 플랫폼 LB) 요청을 /{slug} 허브로 rewrite하는 어댑터.
 // 판정 로직은 lib/host-routing.ts(순수 함수)에 있고 여기서는 호스트 해석만 한다.
@@ -103,6 +104,13 @@ export function __setDomainSlugCacheEntryForTest(hostname: string, entry: CacheE
 }
 
 export async function proxy(request: NextRequest) {
+  // 미리보기 사진은 이미지 최적화기로 받지 않는다 — 최적화 결과는 공용 캐시(하루)라 토큰이 만료된 뒤에도
+  // 사진을 내준다. 미리보기 화면은 이 주소를 최적화 없이 쓴다(`isPreviewAssetUrl`).
+  if (request.nextUrl.pathname === '/_next/image' && isPreviewAssetUrl(request.nextUrl.searchParams.get('url'))) {
+    const res = new NextResponse('Not found', { status: 404 })
+    res.headers.set('cache-control', 'no-store')
+    return res
+  }
   const host = request.headers.get('host')
   const primaryHostnames = getPrimaryHostnames(process.env.NEXT_PUBLIC_SITE_URL)
   const effectiveHost = resolveRequestHost(
@@ -162,5 +170,6 @@ export async function proxy(request: NextRequest) {
 
 export const config = {
   // 정적 자산은 미들웨어 자체를 건너뛴다 (예약 경로 판정은 isReservedPath가 한 번 더 수행).
-  matcher: ['/((?!_next/static|_next/image|favicon.ico|landing/).*)'],
+  // `/_next/image`는 미리보기 사진 거절만 본다(위 첫 분기) — 다른 이미지 요청은 곧바로 통과한다.
+  matcher: ['/((?!_next/static|_next/image|favicon.ico|landing/).*)', '/_next/image'],
 }
