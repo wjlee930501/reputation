@@ -1,6 +1,16 @@
 # Re:putation — 현재 프로젝트 개발 안내
 
-## 최신 운영 배포 — 2026-11-19 저녁 원장 사전 설문(원장이 링크에서 직접 작성)
+## 최신 운영 배포 — 2026-11-20 저녁 Site·Admin Next 16.4.6 보안 상향·병원 공개 페이지 개편 1단계
+
+main `b6888300`(PR #340 Next 16.4.6 — 16.3.8의 인증 없는 원격 코드 실행 권고 수정)을 19:15~19:23 KST에 Site·Admin에만 배포했다(사용자 지시).
+Site에는 병합만 돼 있던 병원 공개 페이지 개편 1단계(PR #324~#328, #334~#338 — FAQ 중복 제거·원장 사진·줄바꿈·'의료 정보' 이름·C안 첫 화면 분할·B안 부제·바로가기 메뉴 빼기·글 보조 칸)가 함께 올라갔다.
+**현재 리비전은 api `00297-vs5`, worker `00290-ztm`, beat `00285-6vp`, site `00157-q7b`, admin `00129-8zc`**, **DB head `0099_add_content_schedule_daily_max_superseded`**.
+Backend는 바꾸지 않았다 — #340의 원장 PDF 검증기 수정은 다음 Backend 배포부터다. 공개 병원 16곳 200, Admin 로그인 200, 새 리비전 ERROR 0(생성 뒤 약 8분 관찰, 30분 관찰·화면 검증은 안 함).
+1차 시도는 Site 이미지 푸시 시간 초과와 Admin `gcloud run deploy`의 프로젝트 미지정(Site·Admin 배포 명령에 `--project`가 없어 gcloud 기본 프로젝트에 기댄다 — `CLOUDSDK_CORE_PROJECT`로 넘겼다)으로
+운영 변경 없이 멈췄다. 같은 날 02:01에는 main `c1d6e179`(PR #322 일정 시작일·하루 최대 발행 편수, 0099)를 Backend·Admin에 배포했다(별도 기록 없음, 롤백 `.omo/rollback-schedule/{backend,admin}`).
+롤백 좌표 `.omo/rollback-sitesec/before`(되돌리면 원격 코드 실행 권고가 다시 열린다). 상세는 [배포 기록](docs/releases/2026-11-20-site-admin-next-security-production.md).
+
+## 이전 운영 배포 — 2026-11-19 저녁 원장 사전 설문(원장이 링크에서 직접 작성)
 
 main `e8f769ec`(PR #318 링크·작성·제출·설문 근거 자료, #319 사진·로고·인증서 올리기, #320 사실 답을 AE가 골라 병원 정보에 반영)를
 18:47~18:55 KST에 `deploy.sh all`로 5개 서비스에 배포했다(그날 첫 릴리스). **현재 리비전은 api `00296-l9c`, worker `00289-w4p`, beat `00284-7dm`,
@@ -346,7 +356,7 @@ BaseEssence의 일반 자료 추가 drift는 재합성하지 않는다. 명시�
 Site/Admin IAM 분리는 단계적으로 적용한다. 구 revision 종료 전 legacy grants를 회수하지 않는다.
 
 
-문서 버전: **2.35** · 갱신일: **2026-11-19 (Asia/Seoul)**
+문서 버전: **2.36** · 갱신일: **2026-11-20 (Asia/Seoul)**
 소스 기준선: **`4db1b69` 이후 커밋 이력 정합성 보완**
 구현 상태: **체크포인트 2(`a774851`) 운영 배포 완료. 그 뒤 main의 stable-base Essence(`8c59141`) 등 31개 커밋과 콘텐츠 수율 버전업 v2.7(`claude/system-performance-review-x6vtn4`, [계획](docs/plans/2026-09-12-content-yield-versionup-plan.md))은 미배포**
 
