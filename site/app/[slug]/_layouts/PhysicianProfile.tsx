@@ -95,7 +95,16 @@ export function PhysicianProfile({
                 <tr><th scope="row">경력</th><td>{careerNode}</td></tr>
               ) : null}
               {societies.length > 0 ? (
-                <tr><th scope="row">학회</th><td>{societies.join(' · ')}</td></tr>
+                <tr>
+                  <th scope="row">학회</th>
+                  <td>
+                    <ul data-role="society-list">
+                      {societies.map((society) => (
+                        <li key={society}>{society}</li>
+                      ))}
+                    </ul>
+                  </td>
+                </tr>
               ) : null}
             </tbody>
           </table>
@@ -103,7 +112,14 @@ export function PhysicianProfile({
           <>
             {careerNode}
             {boardCerts.length > 0 ? <p data-role="credentials">{boardCerts.join(' · ')}</p> : null}
-            {societies.length > 0 ? <p data-role="societies">{societies.join(' · ')}</p> : null}
+            {/* 학회는 의료진 페이지처럼 한 줄에 하나 — '·'로 이으면 긴 한 문장이 됐다(2026-11-20). */}
+            {societies.length > 0 ? (
+              <ul data-role="society-list">
+                {societies.map((society) => (
+                  <li key={society}>{society}</li>
+                ))}
+              </ul>
+            ) : null}
           </>
         )}
       </div>

@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import { KeepTogether } from './KeepTogether'
 
 import { nextOpenDay, weekendHoursCard, weeklyRestDayLabel } from '@/lib/business-hours'
 import { seoulToday, todayHours } from '@/lib/clinic-layout'
@@ -26,7 +27,7 @@ function useSeoulTodayKey(renderedKey: string): string {
 export function HeroTodayHours({ businessHours, renderedTodayKey }: { businessHours: Hours; renderedTodayKey: string }) {
   const key = useSeoulTodayKey(renderedTodayKey)
   const today = todayHours(businessHours, key)
-  return <>{today ? (today.closed ? '오늘 휴진' : today.time) : '방문 전 전화 확인'}</>
+  return today ? (today.closed ? <>오늘 휴진</> : <KeepTogether text={today.time} />) : <>방문 전 전화 확인</>
 }
 
 /** 전화 버튼 글자 — 오늘 휴진이면 사실을 먼저 말한다(S-8). */
@@ -52,10 +53,12 @@ export function HeroScheduleCell({ businessHours, renderedTodayKey }: { business
         {restDay
           ? restDay
           : upcoming
-            ? `${upcoming.label} ${upcoming.time}`
+            ? <>{upcoming.label} <KeepTogether text={upcoming.time} /></>
             : weekend.sunday
-              ? <>토 {weekend.value}<br />일 {weekend.sunday}</>
-              : weekend.value || '방문 전 전화 확인'}
+              ? <>토 <KeepTogether text={weekend.value ?? ''} /><br />일 <KeepTogether text={weekend.sunday} /></>
+              : weekend.value
+                ? <KeepTogether text={weekend.value} />
+                : '방문 전 전화 확인'}
       </dd>
     </>
   )

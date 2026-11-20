@@ -1,4 +1,5 @@
 import Link from 'next/link'
+import { formatSeoulDate } from '@/lib/clinic-dates'
 
 import { resolveAssetUrl, TYPE_LABELS, type ContentSummary } from '@/lib/api'
 import { CLINIC_IMAGE_SIZES } from '@/lib/clinic-image-delivery'
@@ -14,13 +15,6 @@ function contentDate(content: ContentSummary): number {
   const value = content.published_at || content.scheduled_date
   const parsed = value ? new Date(value).getTime() : NaN
   return Number.isNaN(parsed) ? 0 : parsed
-}
-
-function formatDate(value: string | null | undefined, fallback: string) {
-  if (!value) return fallback
-  const parsed = new Date(value)
-  if (Number.isNaN(parsed.getTime())) return fallback
-  return parsed.toLocaleDateString('ko-KR', { year: 'numeric', month: 'long', day: 'numeric' })
 }
 
 export interface ContentsFeedViewProps {
@@ -55,7 +49,7 @@ export function ContentsFeedView({ contents, hospitalRootUrl, directorName, acti
     return (
       <div className="clinic-empty">
         <span className="clinic-empty-title">아직 발행된 콘텐츠가 없습니다</span>
-        <p>진료 안내와 건강 정보 글을 준비하고 있습니다.</p>
+        <p>진료 안내와 의료 정보 글을 준비하고 있습니다.</p>
       </div>
     )
   }
@@ -103,7 +97,7 @@ export function ContentsFeedView({ contents, hospitalRootUrl, directorName, acti
           <span className="clinic-feed-featured-meta">
             <strong>{directorName} 원장</strong>
             <span className="clinic-content-card-meta-dot" aria-hidden="true" />
-            <span>{formatDate(featured.published_at, featured.scheduled_date)}</span>
+            <span>{formatSeoulDate(featured.published_at, featured.scheduled_date)}</span>
             <span className="clinic-content-card-meta-dot" aria-hidden="true" />
             <span>{featured.reading_minutes ?? 1}분 분량</span>
           </span>
@@ -132,7 +126,7 @@ export function ContentsFeedView({ contents, hospitalRootUrl, directorName, acti
                   </span>
                   <span className="clinic-feed-row-aside">
                     <span className="clinic-feed-row-date">
-                      {formatDate(content.published_at, content.scheduled_date)}
+                      {formatSeoulDate(content.published_at, content.scheduled_date)}
                     </span>
                     <ChevronRightIcon className="clinic-icon clinic-feed-row-arrow" aria-hidden="true" />
                   </span>
