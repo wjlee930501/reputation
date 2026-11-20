@@ -71,3 +71,11 @@ test('preview photos skip the image optimizer and the optimizer refuses them', a
 test('the preview reads contents without the shared cache', () => {
   assert.match(ROUTE, /fetchContents\(hospital\.slug, 60, \{ cache: 'no-store' \}\)/)
 })
+
+test('links inside the preview do not navigate the admin iframe away (in-page # only)', () => {
+  const guard = readFileSync(join(HERE, '..', 'app', 'preview', '[token]', 'PreviewLinkGuard.tsx'), 'utf8')
+  assert.match(ROUTE, /<PreviewLinkGuard \/>/)
+  assert.match(guard, /document\.addEventListener\('click', onClick, true\)/)
+  assert.match(guard, /if \(href\.startsWith\('#'\)\) return/)
+  assert.match(guard, /event\.preventDefault\(\)/)
+})

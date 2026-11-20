@@ -4,6 +4,8 @@ import { fetchContents, fetchSitePreview, HospitalNotFoundError, type ContentSum
 
 import { HospitalHome } from '../../[slug]/_layouts/HospitalHome'
 
+import { PreviewLinkGuard } from './PreviewLinkGuard'
+
 /*
  * 섹션 설정(레이아웃 편집기) 초안 미리보기 — 설계 5절·13절.
  *
@@ -41,6 +43,7 @@ export default async function SitePreviewPage({ params }: { params: Promise<{ to
         미리보기 — 아직 공개 반영되지 않은 화면입니다. 링크는 10분 동안만 열립니다.
       </p>
       <HospitalHome hospital={hospital} contents={contents} slug={hospital.slug} />
+      <PreviewLinkGuard />
     </>
   )
 }
