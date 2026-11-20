@@ -51,8 +51,9 @@ def test_public_service_mirrors_the_serving_gate():
         )
     )
     assert not_live.kind == "not_live"
-    # 자동 공개를 기다리는 병원의 서비스·공개 권한 막힘은 한 줄(시스템 몫)로 접힌다.
-    assert not_live.remaining == ("auto_activation_pending", "site_not_built")
+    # 자동 공개를 기다리는 병원의 서비스·공개 권한 막힘은 한 줄(시스템 몫)로 접힌다. 자동 공개가
+    # 기다리는 필수 병원 정보(profile_complete)는 사람 몫으로 함께 보인다.
+    assert not_live.remaining == ("auto_activation_pending", "profile_complete", "site_not_built")
 
 
 def test_public_service_separates_auto_activation_custom_domain_and_withdrawn():

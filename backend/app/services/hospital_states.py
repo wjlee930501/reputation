@@ -140,6 +140,11 @@ def _public_remaining(hospital: Any, status: Any, blockers: tuple[str, ...]) -> 
         key = service_key if code in _SERVICE_BLOCKERS else code
         if key not in remaining:
             remaining.append(key)
+        # 자동 공개는 필수 병원 정보 완료(`profile_complete`)도 기다린다(`activation_requirements`).
+        # 최소 공개 사실만 갖춘 병원이 시스템 몫 조건만 보이면 사람이 채울 일이 사라진다.
+        if key == AUTO_ACTIVATION_PENDING and not bool(getattr(hospital, "profile_complete", False)):
+            if "profile_complete" not in remaining:
+                remaining.append("profile_complete")
     return tuple(remaining)
 
 
