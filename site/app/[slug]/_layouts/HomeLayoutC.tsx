@@ -75,6 +75,24 @@ export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
   const address = fullClinicAddress(hospital.address, hospital.address_detail)
   const hasHours = WEEK_DAY_KEYS.some((key) => hospital.business_hours?.[key])
 
+  // 진료 과정은 진료 원칙 섹션 안에 붙어 있다. 원칙을 끄고 과정만 켜면 같은 띠에 과정만 그린다.
+  const flowBlock =
+    plan.enabled('care_flow') && composition.showCareFlow ? (
+      <>
+        <SectionTitle label="FLOW" className={s.flowTitle}>{plan.title('care_flow', CARE_FLOW_TITLE)}</SectionTitle>
+        <p className={s.note}>{careFlow.note}</p>
+        <ol className={s.flow}>
+          {careFlow.steps.map((step) => (
+            <li key={step.label}>
+              <span className={s.stepBadge}>STEP {step.label}{step.aux ? <> · {step.aux}</> : null}</span>
+              <h3>{step.title}</h3>
+              <p>{step.body}</p>
+            </li>
+          ))}
+        </ol>
+      </>
+    ) : null
+
   const sections: Partial<Record<SiteSectionId, ReactNode>> = {
     hero: (
       <>
@@ -296,21 +314,7 @@ export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
               </div>
             ))}
           </div>
-          {plan.enabled('care_flow') && composition.showCareFlow ? (
-            <>
-              <SectionTitle label="FLOW" className={s.flowTitle}>{plan.title('care_flow', CARE_FLOW_TITLE)}</SectionTitle>
-              <p className={s.note}>{careFlow.note}</p>
-              <ol className={s.flow}>
-                {careFlow.steps.map((step) => (
-                  <li key={step.label}>
-                    <span className={s.stepBadge}>STEP {step.aux ? `${step.label} · ${step.aux}` : step.label}</span>
-                    <h3>{step.title}</h3>
-                    <p>{step.body}</p>
-                  </li>
-                ))}
-              </ol>
-            </>
-          ) : null}
+          {flowBlock}
         </div>
       </section>
     ),
@@ -449,7 +453,12 @@ export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
     // (붙은 섹션 — 끄기·제목만 되고 따로 옮기지 않는다). 그래서 따로 그리지 않는다.
     news: null,
     hours: null,
-    care_flow: null,
+    care_flow:
+      !plan.enabled('care_principles') && flowBlock ? (
+        <section className={s.darkSection} aria-label="진료 과정">
+          <div className={s.inner}>{flowBlock}</div>
+        </section>
+      ) : null,
   }
 
   return (

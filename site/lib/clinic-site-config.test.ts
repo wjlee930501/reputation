@@ -238,6 +238,36 @@ test('menu and mobile bar follow the config order and drop unknown or repeated i
   assert.deepEqual(config?.nav.mobileBar, ['map', 'call'])
 })
 
+test('the FAQ menu item disappears when the home FAQ is off or every chosen FAQ is down', () => {
+  const off = normalizeSiteConfig(
+    published('B', (c) => {
+      c.nav.items = ['faq', 'call']
+      c.sections.find((s: any) => s.id === 'faq').enabled = false
+    }),
+    'B',
+  )
+  assert.deepEqual(off?.nav.items, ['call'])
+  const empty = normalizeSiteConfig(
+    published('B', (c) => ((c.nav.items = ['faq', 'call']), (c.faq.mode = 'manual'), (c.faq.entries = []))),
+    'B',
+  )
+  assert.deepEqual(empty?.nav.items, ['call'])
+  const shown = normalizeSiteConfig(published('B', (c) => (c.nav.items = ['faq', 'call'])), 'B')
+  assert.deepEqual(shown?.nav.items, ['faq', 'call'])
+})
+
+test('C draws the care flow on its own band when the principles are off', () => {
+  const source = readFileSync(join(SLUG_DIR, '_layouts', 'HomeLayoutC.tsx'), 'utf8')
+  assert.match(source, /care_flow:\s*!plan\.enabled\('care_principles'\) && flowBlock \?/)
+})
+
+test('step labels keep the same text nodes as before (label, " · ", aux)', () => {
+  for (const name of ['HomeLayoutA.tsx', 'HomeLayoutC.tsx']) {
+    const source = readFileSync(join(SLUG_DIR, '_layouts', name), 'utf8')
+    assert.match(source, /\{step\.label\}\{step\.aux \? <> · \{step\.aux\}<\/> : null\}/, name)
+  }
+})
+
 // ── 구조화 정보·llms.txt는 설정을 읽지 않는다 (I1) ─────────────────────
 
 function sourceFiles(dir: string): string[] {

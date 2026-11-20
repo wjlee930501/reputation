@@ -76,25 +76,27 @@ def _section(
 
 _SECTIONS: Final[dict[str, tuple[dict[str, Any], ...]]] = {
     "B": (
+        # B는 섹션 머리(.clinic-section-head)를 가운데로 놓는다(layout-b.module.css). 질문 목록(왼쪽 기둥)과
+        # 진료 원칙(왼쪽 머리 칸)은 자기 모양이라 왼쪽이다.
         _section("hero", None),
         _section("section_index", None, enabled=False),
-        _section("treatments", TREATMENT_SECTION_TITLE),
-        _section("doctor", DOCTOR_SECTION_TITLE),
+        _section("treatments", TREATMENT_SECTION_TITLE, align="center"),
+        _section("doctor", DOCTOR_SECTION_TITLE, align="center"),
         _section("care_principles", CARE_PRINCIPLES_TITLE),
-        _section("contents", "먼저 정리한 글"),
+        _section("contents", "먼저 정리한 글", align="center"),
         _section("questions", QUESTIONS_SECTION_TITLE),
-        _section("faq", FAQ_SECTION_TITLE),
-        _section("care_flow", CARE_FLOW_TITLE),
-        _section("gallery", GALLERY_SECTION_TITLE),
-        _section("facts", None),
-        _section("visit", "오시는 길·방문 안내"),
+        _section("faq", FAQ_SECTION_TITLE, align="center"),
+        _section("care_flow", CARE_FLOW_TITLE, align="center"),
+        _section("gallery", GALLERY_SECTION_TITLE, align="center"),
+        _section("facts", None, align="center"),
+        _section("visit", "오시는 길·방문 안내", align="center"),
     ),
     "A": (
         _section("hero", None),
         _section("treatments", TREATMENT_SECTION_TITLE, align="center"),
         _section("doctor", DOCTOR_SECTION_TITLE, align="center"),
         _section("care_principles", CARE_PRINCIPLES_TITLE, align="center"),
-        _section("hours", "오늘 진료", background="band"),
+        _section("hours", "오늘 진료", background="band", align="center"),
         _section("contents", QUESTIONS_SECTION_TITLE),
         _section("faq", FAQ_SECTION_TITLE),
         _section("care_flow", CARE_FLOW_TITLE, align="center"),
@@ -143,7 +145,8 @@ _COMMON: Final[dict[str, Any]] = {
     "visit": {"order": ["parking", "transit"], "show_transit": True},
     # 지금 홈 FAQ 상한(사이트 `schema.ts` FAQ_MAX_ITEMS)과 같다.
     "faq": {"mode": "auto", "limit": 10, "content_ids": [], "merge_questions": False},
-    "region_tags": {"show": True, "separator": "comma"},
+    # 지금 화면은 진료 지역을 가운뎃점으로 잇는다(`region.join(' · ')`).
+    "region_tags": {"show": True, "separator": "dot"},
     "nav": {
         "items": ["treatments", "visit", "doctor", "contents", "website", "call"],
         "mobile_bar": ["call", "hours", "guide", "map"],

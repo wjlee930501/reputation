@@ -253,6 +253,14 @@ export function normalizeSiteConfig(value: unknown, siteLayout: ClinicLayout | n
 
   const nav = isRecord(value.nav) ? value.nav : {}
   const share = isRecord(value.share) ? value.share : {}
+  // 메뉴 'FAQ'는 홈 #faq로 간다 — FAQ 섹션이 꺼졌거나 직접 고른 글이 모두 내려가 FAQ가 비면 뺀다
+  // (빈 곳을 가리키지 않게). 자동 선택의 빈 FAQ는 하위 페이지가 글 목록을 모르므로 홈 맨 위로 간다.
+  const faqShown =
+    sections.some((section) => section.id === 'faq' && section.enabled) &&
+    !(mode === 'manual' && (entries ?? []).length === 0)
+  const navItems = itemsOf<SiteNavItem>(nav.items, NAV_ITEMS, DEFAULT_NAV_ITEMS).filter(
+    (item) => item !== 'faq' || faqShown,
+  )
 
   return {
     layout,
@@ -263,7 +271,7 @@ export function normalizeSiteConfig(value: unknown, siteLayout: ClinicLayout | n
     careFlow: { note: text(flow.note), steps },
     faq: { mode, limit, entries },
     nav: {
-      items: itemsOf<SiteNavItem>(nav.items, NAV_ITEMS, DEFAULT_NAV_ITEMS),
+      items: navItems,
       mobileBar: itemsOf<SiteMobileBarItem>(nav.mobile_bar, MOBILE_BAR_ITEMS, DEFAULT_MOBILE_BAR),
     },
     share: { imageAssetId: text(share.image_asset_id), description: text(share.description) },

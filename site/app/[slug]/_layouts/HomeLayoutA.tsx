@@ -289,7 +289,7 @@ export function HomeLayoutA({ model }: { model: ClinicHomeModel }) {
           <ol className={s.flow}>
             {careFlow.steps.map((step) => (
               <li key={step.label} className={s.flowStep}>
-                <span className={s.kicker}>{step.aux ? `${step.label} · ${step.aux}` : step.label}</span>
+                <span className={s.kicker}>{step.label}{step.aux ? <> · {step.aux}</> : null}</span>
                 <h3 className={s.flowTitle}>{step.title}</h3>
                 <p className={s.flowBody}>{step.body}</p>
               </li>

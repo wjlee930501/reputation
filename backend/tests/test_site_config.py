@@ -58,6 +58,13 @@ def test_defaults_match_current_screens() -> None:
         assert resolved["hero"]["image"]["veil"]["extent"] == "none"
         assert resolved["faq"]["limit"] == 10
         assert resolved["treatments"]["show_description"] is (layout == "B")
+        assert resolved["region_tags"]["separator"] == "dot"
+    b_align = {s["id"]: s["align"] for s in site_defaults.defaults("B")["sections"]}
+    assert {k for k, v in b_align.items() if v == "center"} == {
+        "treatments", "doctor", "contents", "faq", "care_flow", "gallery", "facts", "visit"
+    }
+    a_hours = next(s for s in site_defaults.defaults("A")["sections"] if s["id"] == "hours")
+    assert a_hours["align"] == "center"
     c_labels = {s["id"]: s["label"] for s in site_defaults.defaults("C")["sections"]}
     assert all(label for section_id, label in c_labels.items() if section_id != "hero")
 

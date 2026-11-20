@@ -46,7 +46,7 @@
           "enabled": true,
           "title": "오늘 진료",
           "background": "band",
-          "align": "left",
+          "align": "center",
           "label": false,
           "attached_to": null
         },
@@ -171,7 +171,7 @@
       },
       "region_tags": {
         "show": true,
-        "separator": "comma"
+        "separator": "dot"
       },
       "nav": {
         "items": [
@@ -227,7 +227,7 @@
           "enabled": true,
           "title": "진료 영역",
           "background": "default",
-          "align": "left",
+          "align": "center",
           "label": false,
           "attached_to": null
         },
@@ -236,7 +236,7 @@
           "enabled": true,
           "title": "의료진 소개",
           "background": "default",
-          "align": "left",
+          "align": "center",
           "label": false,
           "attached_to": null
         },
@@ -254,7 +254,7 @@
           "enabled": true,
           "title": "먼저 정리한 글",
           "background": "default",
-          "align": "left",
+          "align": "center",
           "label": false,
           "attached_to": null
         },
@@ -272,7 +272,7 @@
           "enabled": true,
           "title": "자주 묻는 질문과 답변 요약",
           "background": "default",
-          "align": "left",
+          "align": "center",
           "label": false,
           "attached_to": null
         },
@@ -281,7 +281,7 @@
           "enabled": true,
           "title": "첫 방문부터 경과 관리까지, 진료 4단계",
           "background": "default",
-          "align": "left",
+          "align": "center",
           "label": false,
           "attached_to": null
         },
@@ -290,7 +290,7 @@
           "enabled": true,
           "title": "병원 공간",
           "background": "default",
-          "align": "left",
+          "align": "center",
           "label": false,
           "attached_to": null
         },
@@ -299,7 +299,7 @@
           "enabled": true,
           "title": null,
           "background": "default",
-          "align": "left",
+          "align": "center",
           "label": false,
           "attached_to": null
         },
@@ -308,7 +308,7 @@
           "enabled": true,
           "title": "오시는 길·방문 안내",
           "background": "default",
-          "align": "left",
+          "align": "center",
           "label": false,
           "attached_to": null
         }
@@ -388,7 +388,7 @@
       },
       "region_tags": {
         "show": true,
-        "separator": "comma"
+        "separator": "dot"
       },
       "nav": {
         "items": [
@@ -596,7 +596,7 @@
       },
       "region_tags": {
         "show": true,
-        "separator": "comma"
+        "separator": "dot"
       },
       "nav": {
         "items": [
