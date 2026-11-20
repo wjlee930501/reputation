@@ -18,7 +18,7 @@ test('an uncertain POST reuses its key and a confirmed POST can start a new atte
   assert.notEqual(confirmedNextAttempt, first)
 })
 
-// 콘텐츠 화면에는 재생성 요청이 없다 — 그 조작은 운영 센터가 맡는다.
+// 콘텐츠 화면에는 재생성 요청이 없다 — 그 조작은 처리 목록이 맡는다.
 test('operations and report generation share the pending action key contract', () => {
   const operations = readFileSync(new URL('../app/operations/useOperationsCenter.ts', import.meta.url), 'utf8')
   const reports = readFileSync(new URL('../app/hospitals/[id]/reports/ReportRunStatus.tsx', import.meta.url), 'utf8')

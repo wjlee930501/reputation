@@ -110,7 +110,7 @@ def test_withheld_published_row_keeps_the_blocked_link():
 
 
 def test_withheld_row_link_is_a_routable_operations_address():
-    """공개 보류 행의 링크는 실제로 열리는 운영 센터 주소여야 한다."""
+    """공개 보류 행의 링크는 실제로 열리는 처리 목록 주소여야 한다."""
     link = {
         "kind": "run",
         "href": "/operations?queue=incidents&hospital_id=h",

@@ -361,19 +361,29 @@ try {
     for (let index = 0; index < 3; index += 1) {
       await openButtons.nth(index).click()
       await adminPage.getByRole('dialog').waitFor()
-      await adminPage.getByRole('button', { name: '원장 전달용 보고서 열기' }).waitFor()
+      // 원장 전달용 PDF는 새 탭으로 열지 않고 파일로 저장한다(ADMIN_COPY.reportFiles.saveDoctorPdf, 2026-11-20).
+      const saveDoctorPdf = adminPage.getByRole('button', { name: '원장 전달용 PDF 받기' })
+      await saveDoctorPdf.waitFor()
       if (index === 0) {
-        const popupPromise = adminContext.waitForEvent('page')
-        await adminPage.getByRole('button', { name: '원장 전달용 보고서 열기' }).click()
-        const popup = await popupPromise
+        const downloadPromise = adminPage.waitForEvent('download')
+        await saveDoctorPdf.click()
+        const download = await downloadPromise
         await adminPage.getByText(/내려받은 파일 확인 번호/).waitFor()
         const hashPrefix = await adminPage.getByText(/내려받은 파일 확인 번호/).textContent()
+        // 전달 기록이 묶는 확인 번호는 실제로 저장된 파일의 SHA-256이어야 한다.
+        const savedPath = await download.path()
+        const savedSha256 = createHash('sha256').update(await fs.readFile(savedPath)).digest('hex')
+        if (!hashPrefix?.includes(savedSha256.slice(0, 12))) {
+          throw new Error(`saved doctor PDF hash ${savedSha256.slice(0, 12)} does not match dialog ${hashPrefix ?? '<missing>'}`)
+        }
+        if (!download.suggestedFilename().endsWith('.pdf')) {
+          throw new Error(`unexpected doctor PDF filename: ${download.suggestedFilename()}`)
+        }
         await adminPage.getByLabel('받은 분').fill('김바른 원장')
         await adminPage.getByLabel('전달 방법').fill('대면')
         await adminPage.getByRole('button', { name: '이 파일의 원장 전달 기록 남기기' }).click()
         await adminPage.getByText('원장 전달 기록을 남겼습니다.', { exact: true }).waitFor()
-        actions.push({ action: 'report-download-and-deliver', hashPrefix })
-        await popup.close()
+        actions.push({ action: 'report-download-and-deliver', hashPrefix, savedSha256Prefix: savedSha256.slice(0, 12) })
       }
       if (index === 0) {
         const internal = adminPage.locator('details[data-report-section="internal"]')

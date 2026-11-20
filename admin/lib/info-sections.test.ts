@@ -165,7 +165,7 @@ test('자료 상태는 사람이 누를 일이 아니라 지금 상태로만 말
   assert.deepEqual(sourceRowStatus({ status: 'EXCLUDED' }), { label: '제외', tone: 'paused' })
   // ERROR는 자동 재시도가 끝난 자리다 — 하지 않는 일을 한다고 말하지 않는다.
   assert.deepEqual(sourceRowStatus({ status: 'ERROR' }), {
-    label: '처리 실패 — 운영 센터 확인',
+    label: '처리 실패 — 처리 목록 확인',
     tone: 'warn',
   })
   // 모르는 상태도 화면이 비지 않는다.
@@ -191,11 +191,11 @@ test('본문을 아직 못 받은 채널 자료는 처리 대기와 다른 단�
 test('오류 상태에 실패 원문을 붙이지 않는다', () => {
   assert.equal(
     sourceRowStatus({ status: 'ERROR', process_error: 'TimeoutError' } as { status: string }).label,
-    '처리 실패 — 운영 센터 확인',
+    '처리 실패 — 처리 목록 확인',
   )
 })
 
-test('운영 센터 링크는 실제로 열린 예외가 있을 때만 만든다', () => {
+test('처리 목록 링크는 실제로 열린 예외가 있을 때만 만든다', () => {
   assert.equal(
     sourceIncidentHref('h-1', { status: 'ERROR', source_metadata: { incident_id: 'i-1' } }),
     '/operations?queue=incidents&hospital_id=h-1',
@@ -210,7 +210,7 @@ test('운영 센터 링크는 실제로 열린 예외가 있을 때만 만든다
 })
 
 test('fetch 실패로 굳은 자료는 예외 링크 없이 할 일을 그대로 말한다', () => {
-  // 정리 pass가 링크를 걷어 낸 행 — 운영 센터에는 볼 것이 없다.
+  // 정리 pass가 링크를 걷어 낸 행 — 처리 목록에는 볼 것이 없다.
   const retired = {
     status: 'ERROR',
     source_metadata: { fetch_state: 'FAILED', incident_retired_at: '2026-09-15T00:00:00+00:00' },
@@ -224,7 +224,7 @@ test('fetch 실패로 굳은 자료는 예외 링크 없이 할 일을 그대로
   // 본문이 있는데 처리에서 실패한 자료(SOURCE_PROCESSING_FAILED)는 그대로다.
   assert.equal(
     sourceRowStatus({ status: 'ERROR', source_metadata: { incident_id: 'i-1' } }).label,
-    '처리 실패 — 운영 센터 확인',
+    '처리 실패 — 처리 목록 확인',
   )
 })
 

@@ -142,7 +142,7 @@ async def load_onboarding_queue(
             sla_due_at=_pending_acceptance_due_at(handoff),
             sla_state=sla_state(_pending_acceptance_due_at(handoff), now),
             next_action=(
-                "운영 센터의 “온보딩 계속”을 눌러 표시된 다음 단계의 저장 또는 승인을 "
+                "처리 목록의 “온보딩 계속”을 눌러 표시된 다음 단계의 저장 또는 승인을 "
                 f"완료하세요. 다음 단계: {next_onboarding_step(hospital)} "
                 "표시된 조치가 없으면 개발팀에 병원명과 현재 화면의 문구를 전달하세요."
             ),

@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import {
   deliveryEventLabel,
+  doctorReportFileName,
   getDoctorDownload,
   getInternalReportLabel,
   isEffectivelyDelivered,
@@ -158,25 +159,21 @@ export function ReportDialog({
 
   function openDoctorReport() {
     if (!doctorUrl || downloading) return
-    // 팝업 차단을 피하려면 클릭과 같은 순간에 탭을 열어야 한다. 내려받기가 끝난 뒤 주소를 넣는다.
-    const tab = window.open('', '_blank')
+    // 2026-11-20: 새 탭에 띄우지 않고 파일로 바로 저장한다. 빈 탭을 먼저 여는 방식은 크롬에서
+    // 「인터넷 연결 없음」으로 끝난 사례가 있었다(10-15). 저장하는 파일은 해시한 바로 그 바이트이고,
+    // 전달 기록은 저장이 끝난 뒤에만 열린다(onDownloaded).
     setDownloading(true)
     setDownloadError(null)
     sha256OfDownloadedPdf(doctorUrl, (blob) => {
       const objectUrl = URL.createObjectURL(blob)
-      if (tab) tab.location.href = objectUrl
-      else {
-        // 탭이 막힌 브라우저에서는 같은 바이트를 파일로 내려준다.
-        const link = document.createElement('a')
-        link.href = objectUrl
-        link.download = `${report.periodYear}-${String(report.periodMonth).padStart(2, '0')}-doctor-report.pdf`
-        link.click()
-      }
+      const link = document.createElement('a')
+      link.href = objectUrl
+      link.download = doctorReportFileName(report.periodYear, report.periodMonth)
+      link.click()
       window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000)
     })
       .then(onDownloaded)
       .catch(() => {
-        tab?.close()
         setDownloadError('원장 전달용 파일을 내려받지 못했습니다. 잠시 뒤 다시 눌러 주세요.')
       })
       .finally(() => setDownloading(false))
@@ -207,7 +204,7 @@ export function ReportDialog({
               <dl className="mt-3 grid gap-3 text-sm leading-6 md:grid-cols-3"><Copy label="무슨 문제인지" value={issue.problem} /><Copy label="고객 영향" value={issue.customerImpact} /><Copy label="지금 할 일" value={issue.nextAction} /></dl>
               <div className="mt-3 flex flex-col gap-2 sm:flex-row">
                 <button type="button" onClick={onRefresh} className="min-h-11 rounded-lg bg-[var(--color-revisit-primary-40)] px-4 text-sm font-bold text-white">최신 상태 다시 확인</button>
-                {issue.action === 'operations' && <Link href={reportOperationsHref(report.hospitalId, report.id, report.periodYear, report.periodMonth)} className="inline-flex min-h-11 items-center justify-center rounded-lg border border-[var(--color-revisit-coolgrey-20)] px-4 text-sm font-bold">운영 센터에서 차단 사유 확인</Link>}
+                {issue.action === 'operations' && <Link href={reportOperationsHref(report.hospitalId, report.id, report.periodYear, report.periodMonth)} className="inline-flex min-h-11 items-center justify-center rounded-lg border border-[var(--color-revisit-coolgrey-20)] px-4 text-sm font-bold">처리 목록에서 차단 사유 확인</Link>}
                 <button type="button" onClick={onCopyDeveloperInfo} className="min-h-11 rounded-lg border border-[var(--color-revisit-coolgrey-20)] px-4 text-sm font-bold">개발팀 문의용 정보 복사</button>
               </div>
             </div>
@@ -220,7 +217,7 @@ export function ReportDialog({
             </p>
             <div className="mt-4 grid gap-2">
               {doctorUrl ? (
-                <button type="button" onClick={openDoctorReport} disabled={downloading} className="inline-flex min-h-11 items-center justify-center rounded-lg bg-[var(--color-revisit-primary-40)] px-4 text-sm font-bold text-white disabled:opacity-40">{downloading ? '원장 전달용 보고서를 내려받는 중' : '원장 전달용 보고서 열기'}</button>
+                <button type="button" onClick={openDoctorReport} disabled={downloading} className="inline-flex min-h-11 items-center justify-center rounded-lg bg-[var(--color-revisit-primary-40)] px-4 text-sm font-bold text-white disabled:opacity-40">{downloading ? '원장 전달용 보고서를 내려받는 중' : ADMIN_COPY.reportFiles.saveDoctorPdf}</button>
               ) : (
                 <div className="rounded-lg bg-[var(--color-revisit-coolgrey-90)] p-3 text-sm leading-6">
                   <strong>문제:</strong> 검증된 원장 전달용 보고서를 열 수 없습니다.<br />

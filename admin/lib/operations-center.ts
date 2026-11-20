@@ -332,7 +332,7 @@ const UNKNOWN_SAFE_CAUSE = '원인 설명을 확인할 수 없습니다. 아래 
 export const SAFE_CAUSE_CODE_MESSAGES: Record<string, string> = {
   // 초기 진단(V0) 측정
   V0_REPORT_RETRIES_EXHAUSTED: '외부 답변 측정 재시도를 모두 사용했지만 초기 진단을 완료하지 못했습니다.',
-  V0_REPORT_FAILED: '초기 노출 진단이 자동 재실행 3회 뒤에도 끝나지 않았습니다. 운영센터에서 "작업 다시 시도"로 다시 돌리거나 측정 기준 변경 여부를 확인하세요.',
+  V0_REPORT_FAILED: '초기 노출 진단이 자동 재실행 3회 뒤에도 끝나지 않았습니다. 처리 목록에서 "작업 다시 시도"로 다시 돌리거나 측정 기준 변경 여부를 확인하세요.',
   V0_COST_DEFERRED: '비용·자동 작업 안전장치가 이번 초기 진단 측정을 다음 실행으로 미뤘습니다.',
   V0_PROVIDER_AUTH_OR_MODEL: '답변 측정 서비스의 인증 또는 모델 설정을 확인해야 합니다.',
   V0_PROVIDER_UNAVAILABLE: '외부 답변 측정 서비스가 응답하지 않거나 일시적으로 제한되었습니다.',
@@ -381,8 +381,8 @@ export const SAFE_CAUSE_CODE_MESSAGES: Record<string, string> = {
   // 보고서·병원 공개 페이지·도메인
   MONTHLY_MEASUREMENT_INCOMPLETE: '필수 측정이 완료되지 않아 실패한 항목만 복구해야 합니다.',
   MONTHLY_REPORT_FAILED: '월간 보고서를 만드는 중 작업이 완료되지 않았습니다.',
-  SITE_BUILD_RETRIES_EXHAUSTED: '병원 공개 페이지 준비가 하루 안에 세 번 실패해 자동 재시도를 멈췄습니다. 실패한 작업의 원인을 해결한 뒤 운영 센터에서 다시 시도하세요.',
-  SITE_BUILD_FAILED: '병원 공개 페이지 준비 작업이 실패했습니다. 실패한 작업의 원인을 해결한 뒤 운영 센터에서 다시 시도하세요.',
+  SITE_BUILD_RETRIES_EXHAUSTED: '병원 공개 페이지 준비가 하루 안에 세 번 실패해 자동 재시도를 멈췄습니다. 실패한 작업의 원인을 해결한 뒤 처리 목록에서 다시 시도하세요.',
+  SITE_BUILD_FAILED: '병원 공개 페이지 준비 작업이 실패했습니다. 실패한 작업의 원인을 해결한 뒤 처리 목록에서 다시 시도하세요.',
   SITE_BUILD_DISPATCH_FAILED: '공개 정보 갱신 작업을 처리 대기열에 넣지 못했습니다.',
   CACHE_REVALIDATION_FAILED: '공개 사이트의 내용 갱신을 확인하지 못했습니다.',
   DOMAIN_UNHEALTHY: '공개 주소가 정상으로 응답하지 않습니다.',
@@ -425,7 +425,7 @@ export function safeCauseText(value: string | null | undefined): string {
 /**
  * 알려진 원인이 있으면 그 설명, 없으면 null.
  *
- * 운영 센터의 큐에는 사건만 있는 것이 아니다 — 온보딩 진행, 오늘 발행, 보고서 준비처럼
+ * 처리 목록의 큐에는 사건만 있는 것이 아니다 — 온보딩 진행, 오늘 발행, 보고서 준비처럼
  * 예정된 일감은 원인이라는 개념 자체가 없어 서버가 `safe_cause`를 비워 보낸다. 그 자리를
  * 늘 채우면 정상 행까지 `원인 설명을 확인할 수 없습니다`가 붙어 전부 장애처럼 읽히고,
  * 그 문구는 조치가 아니라 개발팀 문의를 가리킨다(G-1). 없을 때는 없다고 말한다.
@@ -464,7 +464,7 @@ export function buildDevelopmentSupportSummary(
   const code = detail.run?.safe_error_code ?? row.slack?.safe_error_code ?? '기록되지 않음'
   const description = effectiveSafeCause(detail)
   return [
-    '[운영 센터 개발팀 문의]',
+    '[처리 목록 개발팀 문의]',
     `병원: ${row.customer.name}`,
     `병원 ID: ${row.customer.hospital_id}`,
     `현상: ${operationStatusLabel(row.status)}`,

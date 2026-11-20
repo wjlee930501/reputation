@@ -56,12 +56,15 @@ export function readLayoutDistribution(value: unknown): SiteLayoutDistribution |
 const COPY = ADMIN_COPY.siteLayout
 
 /** 분포 위 한 줄. 시·도를 모르면 그렇다고 말하고, 다른 공개 병원이 없으면 그렇다고 말한다. */
-export function layoutDistributionLine(distribution: SiteLayoutDistribution): string {
+export function layoutDistributionLine(
+  distribution: SiteLayoutDistribution,
+  { excludesCurrent = false }: { excludesCurrent?: boolean } = {},
+): string {
   if (!distribution.province) return COPY.distributionUnknown
   if (distribution.total === 0) return COPY.distributionNone.replace('{province}', distribution.province)
   const parts = SITE_LAYOUTS.map((layout) => `${layout} ${distribution.counts[layout]}`)
   if (distribution.counts.unset > 0) parts.push(`${COPY.distributionUnset} ${distribution.counts.unset}`)
-  return `${COPY.distribution
+  return `${(excludesCurrent ? COPY.distributionOthers : COPY.distribution)
     .replace('{province}', distribution.province)
     .replace('{total}', String(distribution.total))} — ${parts.join(' · ')}`
 }
@@ -70,9 +73,10 @@ export function layoutDistributionLine(distribution: SiteLayoutDistribution): st
 export function sameRegionBadge(
   distribution: SiteLayoutDistribution | null,
   layout: SiteLayout,
+  { excludesCurrent = false }: { excludesCurrent?: boolean } = {},
 ): string | null {
   if (!distribution?.province) return null
   const count = distribution.counts[layout]
   if (count <= 0) return null
-  return COPY.sameRegionCount.replace('{province}', distribution.province).replace('{count}', String(count))
+  return (excludesCurrent ? COPY.sameRegionCountOthers : COPY.sameRegionCount).replace('{province}', distribution.province).replace('{count}', String(count))
 }

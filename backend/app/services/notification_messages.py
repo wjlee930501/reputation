@@ -200,7 +200,7 @@ def build_summary_notification(
             _block("section", f"summary_incidents_{index}", {"type": "mrkdwn", "text": chunk})
             for index, chunk in enumerate(chunks)
         ),
-        _action_block("summary_action", url, "운영 센터에서 모아보기"),
+        _action_block("summary_action", url, "처리 목록에서 모아보기"),
     )
     return NotificationIntent(
         dedupe_key=f"INCIDENT_SUMMARY:{digest}",
@@ -209,7 +209,7 @@ def build_summary_notification(
         message=_message(
             prefixed_for_event("INCIDENT_SUMMARY", f"[조치 필요] 운영 이슈 {len(ordered)}건 | " + " / ".join(
                 f"{_safe_text(item.hospital_name, 50)}: {incident_copy(item.incident_type).title}" for item in ordered[:5]
-            ) + " | 운영센터에서 담당 항목을 확인해 주세요."),
+            ) + " | 처리 목록에서 담당 항목을 확인해 주세요."),
             blocks,
             url,
         ),

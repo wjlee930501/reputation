@@ -1299,7 +1299,7 @@ async def test_undelivered_alerts_are_emailed_once_per_episode(monkeypatch, emai
         "외부 감시가 개발 담당 경보를 Slack에 전달하지 못해 메일로 알립니다.",
         "감지된 조건: 예약 실행기(Beat) 정지",
         "경보 번호: watchdog:developer:2026-10-11T00:00:00+00:00",
-        "같은 경보 동안 이 메일은 한 번만 보냅니다. 지금 상태와 건수는 운영센터와 Cloud Run 로그에서 확인해 주세요.",
+        "같은 경보 동안 이 메일은 한 번만 보냅니다. 지금 상태와 건수는 처리 목록과 Cloud Run 로그에서 확인해 주세요.",
     )
     # 전달은 DB 기록(정본)에 남는다.
     sent = [k for a, k, _, _ in email_store.rows if a == pipeline_watchdog._EMAIL_SENT_ACTION]

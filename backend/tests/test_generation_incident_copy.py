@@ -235,7 +235,7 @@ def test_the_not_generated_action_no_longer_promises_the_overnight_sweeps():
     assert action == CONTENT_NOT_GENERATED_OPERATOR_ACTION
     assert action == (
         "예약된 자동 복구는 이 글의 원고 생성을 다시 시도하지 않습니다(운영 기준이 새로 승인되는 등 "
-        "생성 조건이 바뀔 때만 다시 시도합니다). 운영 센터에서 해당 항목의 “작업 다시 시도”를 누르세요."
+        "생성 조건이 바뀔 때만 다시 시도합니다). 처리 목록에서 해당 항목의 “작업 다시 시도”를 누르세요."
     )
     assert "만듭니다" not in action  # 결과(원고)를 약속하지 않는다 — 시도만 말한다
     assert "01시·04시·07시·07시 45분" not in action
@@ -298,7 +298,7 @@ async def test_a_slot_a_sweep_still_owns_names_the_stored_next_attempt(monkeypat
 
     assert request.next_action == (
         f"자동 복구가 {display_time(due)}에 이 글의 원고 생성을 다시 시도합니다. 그 전에는 “작업 다시 "
-        "시도”를 눌러도 원고를 만들지 않으니, 그 뒤 운영 센터에서 결과를 확인하세요."
+        "시도”를 눌러도 원고를 만들지 않으니, 그 뒤 처리 목록에서 결과를 확인하세요."
     )
     assert "09/16 12:00 KST" in request.next_action
 
@@ -311,7 +311,7 @@ def test_the_exhausted_environment_action_tells_the_operator_what_to_do():
 
     assert action == (
         "자동 재시도 횟수를 모두 사용해 예약된 자동 복구가 이 글의 원고를 더 만들지 않습니다. "
-        "외부 서비스가 정상인지 확인한 뒤 운영 센터에서 해당 항목의 “작업 다시 시도”를 누르세요."
+        "외부 서비스가 정상인지 확인한 뒤 처리 목록에서 해당 항목의 “작업 다시 시도”를 누르세요."
     )
     # #182 뒤에는 환경 실패 기록도 “작업 다시 시도”가 바로 푼다 — 게이트를 기다리라고 하지 않는다.
     assert "기다리" not in action and "07시 45분" not in action
@@ -347,8 +347,8 @@ async def test_a_provider_failure_with_budget_left_names_the_button_like_the_dig
     request, _incident_row = await _open(monkeypatch, item, "PROVIDER_TIMEOUT")
 
     assert request.next_action == (
-        "일시적인 응답 지연입니다. 다음 예약 배치가 자동으로 다시 시도합니다. 서비스가 복구됐으면 운영 "
-        "센터에서 해당 항목의 “작업 다시 시도”를 눌러 지금 바로 다시 시도할 수 있습니다."
+        "일시적인 응답 지연입니다. 다음 예약 배치가 자동으로 다시 시도합니다. 서비스가 복구됐으면 처리 "
+        "목록에서 해당 항목의 “작업 다시 시도”를 눌러 지금 바로 다시 시도할 수 있습니다."
     )
     assert "기다리세요" not in request.next_action
     assert "서비스가 복구됐으면" in blocker_copy("PROVIDER_TIMEOUT").action
@@ -486,12 +486,14 @@ _TOUCHED_ACTIONS = {
 
 @pytest.mark.parametrize("name", sorted(_TOUCHED_ACTIONS))
 def test_touched_actions_spell_the_operations_center_one_way(name):
-    # #187 2차: 이 PR이 쓰거나 고친 문구는 '운영 센터'(띄어쓰기)로 쓴다.
+    # #187 2차: 이 PR이 쓰거나 고친 문구는 한 가지로 쓴다. 2026-11-20 메뉴 이름이 「운영 센터」에서
+    # 「처리 목록」으로 바뀌어, 옛 이름(붙여 쓴 것 포함)이 남지 않았는지 본다.
     assert "운영센터" not in _TOUCHED_ACTIONS[name]
+    assert "운영 센터" not in _TOUCHED_ACTIONS[name]
 
 
 def test_touched_actions_that_name_the_operations_center_use_the_spaced_spelling():
-    naming = {name for name, action in _TOUCHED_ACTIONS.items() if "운영 센터" in action}
+    naming = {name for name, action in _TOUCHED_ACTIONS.items() if "처리 목록" in action}
     assert naming == {
         "not_generated",
         "not_generated_scheduled",
@@ -555,7 +557,7 @@ def test_every_quoted_control_exists_in_admin(action, source):
 # 두 문구는 리뷰가 정한 그대로다(한 글자도 바꾸지 않는다). 새 인시던트와 재사용된 원인 양쪽에서
 # 본문 유무로 고르고, 본문이 있는 글은 종전 문구를 그대로 쓴다.
 
-C1_UNWRITTEN_OPERATOR_DECIDES = "아직 원고가 없는 글입니다. 운영 센터의 “작업 다시 시도”를 눌러도 이 글은 쓰이지 않습니다. 콘텐츠 탭에서 이 글의 “콘텐츠 수정”을 눌러 제목·본문을 새로 써서 저장해 주세요. 진료비·병원 선택 글로 쓰려면 주장을 직접 뒷받침하는 공공·학술 기관 문서를 “참고 자료 추가”로 함께 넣어야 하며, 병원 누리집과 검증된 문서 목록의 문서는 저장이 거절됩니다. 질환·검사 안내 글로 쓰면 참고 자료 없이 저장해도 자동 복구가 참고 자료를 찾습니다. 그대로 두면 생성 조건이 바뀌기 전에는 자동 복구가 이 글을 쓰지 않고, 참고 자료 없이는 발행되지 않습니다."
+C1_UNWRITTEN_OPERATOR_DECIDES = "아직 원고가 없는 글입니다. 처리 목록의 “작업 다시 시도”를 눌러도 이 글은 쓰이지 않습니다. 콘텐츠 탭에서 이 글의 “콘텐츠 수정”을 눌러 제목·본문을 새로 써서 저장해 주세요. 진료비·병원 선택 글로 쓰려면 주장을 직접 뒷받침하는 공공·학술 기관 문서를 “참고 자료 추가”로 함께 넣어야 하며, 병원 누리집과 검증된 문서 목록의 문서는 저장이 거절됩니다. 질환·검사 안내 글로 쓰면 참고 자료 없이 저장해도 자동 복구가 참고 자료를 찾습니다. 그대로 두면 생성 조건이 바뀌기 전에는 자동 복구가 이 글을 쓰지 않고, 참고 자료 없이는 발행되지 않습니다."
 C2_HARD_FINDING_UNWRITTEN = "아직 원고가 없는 글입니다. “작업 다시 시도”나 승인 자료 추가만으로는 다시 쓰이지 않고, 운영 기준이 새로 승인되는 등 생성 조건이 바뀔 때 자동 복구가 다시 시도합니다. 지금 준비하려면 “콘텐츠 수정”으로 제목·본문을 직접 쓰고 근거 문서를 “참고 자료 추가”로 넣어 저장하세요. 저장한 글은 독립 검수를 다시 받습니다."
 _WRITTEN_OPERATOR_DECIDES_ACTION = (
     "콘텐츠 탭에서 이 글의 “콘텐츠 수정”을 눌러 둘 중 하나를 하세요. 글의 주장을 직접 "
@@ -795,12 +797,12 @@ def test_the_untimed_scheduled_actions_name_no_time_and_promise_no_attempt():
         "있습니다."
     )
     assert CONTENT_NOT_GENERATED_UNSCHEDULED_CLOSED_ACTION == (
-        "예약된 자동 복구가 이 글의 원고 생성을 다시 시도할 시각이 정해져 있지 않습니다. 운영 센터에서 "
+        "예약된 자동 복구가 이 글의 원고 생성을 다시 시도할 시각이 정해져 있지 않습니다. 처리 목록에서 "
         "이 글의 상태를 확인하세요."
     )
     assert CONTENT_NOT_GENERATED_UNSCHEDULED_RELEASABLE_ACTION == (
         "예약된 자동 복구가 이 글의 원고 생성을 다시 시도할 시각이 정해져 있지 않습니다. 원인이 "
-        "풀렸으면 운영 센터에서 해당 항목의 “작업 다시 시도”를 눌러 지금 바로 다시 시도할 수 있습니다."
+        "풀렸으면 처리 목록에서 해당 항목의 “작업 다시 시도”를 눌러 지금 바로 다시 시도할 수 있습니다."
     )
     for action in (
         CONTENT_NOT_GENERATED_UNSCHEDULED_ACTION,
@@ -988,3 +990,17 @@ def test_a_reused_unwritten_hard_cause_a_sweep_owns_keeps_its_action(monkeypatch
     )
 
     assert cause.next_action == "앞선 원인의 조치"
+
+
+def test_rejection_copy_saved_before_the_menu_rename_is_still_recognized():
+    """2026-11-20 「운영 센터」→「처리 목록」 — DB에 남은 옛 문구도 같은 거절로 알아본다."""
+    from app.workers.generation_run_control import (
+        _REJECTION_MESSAGES,
+        rejection_kind_for_message,
+        safe_generation_rejection_message,
+    )
+
+    for kind, message in _REJECTION_MESSAGES.items():
+        legacy = message.replace("처리 목록에서", "운영 센터에서")
+        assert safe_generation_rejection_message(legacy) == message, kind
+        assert rejection_kind_for_message(legacy) == kind, kind

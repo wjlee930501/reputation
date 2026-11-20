@@ -40,7 +40,7 @@ ONE_MICROSECOND = timedelta(microseconds=1)
 # (이름, 토큰 있음, claim 시각) — 경계는 TTL 정각(살아 있음)과 그보다 1µs 이전(만료)이다.
 CLAIM_SHAPES = [
     ("no-claim", False, None),
-    ("token-only", True, None),  # 운영센터의 claim 해제는 claim 시각만 비운다(operations.py)
+    ("token-only", True, None),  # 처리 목록의 claim 해제는 claim 시각만 비운다(operations.py)
     ("tokenless-recent", False, NOW - timedelta(minutes=10)),
     ("tokenless-old", False, NOW - timedelta(hours=3)),
     ("tokenless-past-grace", False, NOW - timedelta(minutes=45)),
@@ -174,7 +174,7 @@ def test_the_claim_filter_itself_matches_python_at_the_cutoff(pg_conn, pg_sessio
 
 
 def test_topic_swap_treats_a_token_without_a_claim_time_as_inactive(pg_conn, pg_session):
-    """운영센터의 claim 해제(operations.py)는 claim 시각만 비우고 토큰을 남긴다. Python은 그 행을
+    """처리 목록의 claim 해제(operations.py)는 claim 시각만 비우고 토큰을 남긴다. Python은 그 행을
     살아 있지 않다고 보므로(로더도 claim한다) 주제 교체의 비활성 술어도 같아야 한다."""
 
     ids = _seed_shapes(pg_conn)

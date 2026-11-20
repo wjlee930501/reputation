@@ -32,11 +32,18 @@ test('hospital status chips count and filter the exact same row sets', () => {
     hospital('onboarding', 'ONBOARDING'),
     hospital('paused', 'PAUSED'),
   ]
+  const gaps = new Set(['active-review', 'paused'])
 
-  assert.deepEqual(hospitalStatusCounts(rows), { total: 4, active: 2, onboarding: 1 })
+  assert.deepEqual(hospitalStatusCounts(rows, gaps), {
+    total: 4, default: 3, active: 2, onboarding: 1, paused: 1, reportGap: 2,
+  })
   const ids = (filter: HospitalStatusFilter) =>
-    rows.filter((row) => hospitalMatchesStatus(row, filter)).map((row) => row.id)
+    rows.filter((row) => hospitalMatchesStatus(row, filter, gaps)).map((row) => row.id)
   assert.deepEqual(ids('active'), ['active', 'active-review'])
   assert.deepEqual(ids('onboarding'), ['onboarding'])
   assert.deepEqual(ids('all'), ['active', 'active-review', 'onboarding', 'paused'])
+  // 기본 목록은 일시 정지 병원을 빼고 아래 묶음으로 둔다(2026-11-20).
+  assert.deepEqual(ids('default'), ['active', 'active-review', 'onboarding'])
+  assert.deepEqual(ids('paused'), ['paused'])
+  assert.deepEqual(ids('reportGap'), ['active-review', 'paused'])
 })
