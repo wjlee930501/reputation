@@ -3388,10 +3388,16 @@ summary:focus-visible {
   font-size: 14px;
 }
 
-.clinic-aside-meta li {
+/* 글 상세의 병원 정보 박스는 <address> 안에 <span> 줄을 쓴다 — 예전 선택자(li)만 있어 줄이
+   인라인으로 남았고 라벨 너비(56px)가 먹지 않아 '주소경상북도…'처럼 라벨과 값이 붙었다(2026-11-20). */
+.clinic-aside-meta > :is(li, span) {
   display: flex;
   gap: 10px;
   align-items: flex-start;
+}
+
+.clinic-aside-address {
+  font-style: normal;
 }
 
 .clinic-aside-meta-label {

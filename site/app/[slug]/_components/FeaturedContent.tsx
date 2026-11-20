@@ -1,4 +1,5 @@
 import { CLINIC_IMAGE_SIZES } from '@/lib/clinic-image-delivery'
+import { formatSeoulDate } from '@/lib/clinic-dates'
 import Link from 'next/link'
 
 import { resolveAssetUrl, TYPE_LABELS, type ContentSummary } from '@/lib/api'
@@ -16,13 +17,6 @@ interface Props {
 }
 
 const PRIORITY_TYPES = ['FAQ', 'DISEASE', 'TREATMENT', 'COLUMN', 'HEALTH', 'LOCAL', 'NOTICE']
-
-function formatDate(value: string | null | undefined, fallback: string) {
-  if (!value) return fallback
-  const parsed = new Date(value)
-  if (Number.isNaN(parsed.getTime())) return fallback
-  return parsed.toLocaleDateString('ko-KR', { year: 'numeric', month: 'long', day: 'numeric' })
-}
 
 function selectFeatured(
   contents: ContentSummary[],
@@ -51,7 +45,7 @@ export function FeaturedContent({
   if (!primary) return null
 
   const primaryTypeLabel = TYPE_LABELS[primary.content_type] ?? primary.content_type
-  const primaryDate = formatDate(primary.published_at, primary.scheduled_date)
+  const primaryDate = formatSeoulDate(primary.published_at, primary.scheduled_date)
 
   return (
     <section className="clinic-featured" aria-label="대표 의료 정보">
@@ -94,7 +88,7 @@ export function FeaturedContent({
             <ol className="clinic-lead-list">
               {rest.map((content) => {
                 const typeLabel = TYPE_LABELS[content.content_type] ?? content.content_type
-                const date = formatDate(content.published_at, content.scheduled_date)
+                const date = formatSeoulDate(content.published_at, content.scheduled_date)
                 return (
                   <li key={content.id}>
                     <Link
