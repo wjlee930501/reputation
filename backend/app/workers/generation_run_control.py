@@ -94,6 +94,17 @@ _REJECTION_MESSAGES = {
         "다음 자동 재시도가 제목을 다시 씁니다."
     ),
 }
+# 2026-11-20 메뉴 이름이 「운영 센터」→「처리 목록」으로 바뀌었다. 그 전에 DB에 저장된 문구도
+# 같은 거절로 알아본다 — 허용 목록·분류가 글자 그대로 비교하므로, 옛 문구가 「기타」로 바뀌면 안 된다.
+def _legacy_operations_center_copy(message: str) -> str:
+    return message.replace("처리 목록에서", "운영 센터에서")
+
+
+_LEGACY_REJECTION_MESSAGES = {
+    _legacy_operations_center_copy(message): message
+    for message in (_DEFAULT_REJECTION_MESSAGE, *_REJECTION_MESSAGES.values())
+    if _legacy_operations_center_copy(message) != message
+}
 GENERATION_REJECTION_SAFE_MESSAGES = frozenset(
     {_DEFAULT_REJECTION_MESSAGE, *_REJECTION_MESSAGES.values()}
 )
@@ -239,6 +250,8 @@ def safe_generation_rejection_message(message: str | None) -> str:
 
     if message in GENERATION_REJECTION_SAFE_MESSAGES:
         return message
+    if message in _LEGACY_REJECTION_MESSAGES:
+        return _LEGACY_REJECTION_MESSAGES[message]
     return _DEFAULT_REJECTION_MESSAGE
 
 
@@ -255,8 +268,9 @@ def _safe_rejection_message(error: ValueError) -> str:
 def rejection_kind_for_message(message: str | None) -> str:
     """저장된 운영자 문구에서 거절 라벨을 되짚는다(분류기가 만든 문구만 안다)."""
 
+    current = _LEGACY_REJECTION_MESSAGES.get(message or "", message)
     for kind, safe_message in _REJECTION_MESSAGES.items():
-        if message == safe_message:
+        if current == safe_message:
             return kind
     return GENERATION_REJECTION_OTHER
 

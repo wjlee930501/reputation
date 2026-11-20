@@ -990,3 +990,17 @@ def test_a_reused_unwritten_hard_cause_a_sweep_owns_keeps_its_action(monkeypatch
     )
 
     assert cause.next_action == "앞선 원인의 조치"
+
+
+def test_rejection_copy_saved_before_the_menu_rename_is_still_recognized():
+    """2026-11-20 「운영 센터」→「처리 목록」 — DB에 남은 옛 문구도 같은 거절로 알아본다."""
+    from app.workers.generation_run_control import (
+        _REJECTION_MESSAGES,
+        rejection_kind_for_message,
+        safe_generation_rejection_message,
+    )
+
+    for kind, message in _REJECTION_MESSAGES.items():
+        legacy = message.replace("처리 목록에서", "운영 센터에서")
+        assert safe_generation_rejection_message(legacy) == message, kind
+        assert rejection_kind_for_message(legacy) == kind, kind
