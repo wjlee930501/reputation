@@ -195,14 +195,17 @@ export default function SiteLayoutEditorPage() {
             selected={selected}
             onSelect={setSelected}
             onChange={setSections}
-            issueCount={(id) => issuesForSection(issues, overrides, id).length}
+            issueCount={(id) =>
+              issuesForSection(issues, overrides, id).length +
+              (id === 'hero' ? groupIssues('hero').length : id === 'faq' ? groupIssues('faq').length : 0)
+            }
             disabled={locked}
           />
         </Card>
 
-        <div className="space-y-4">
-          <Card title={COPY.sectionSettings}>
-            {current ? (
+        <Card title={COPY.sectionSettings}>
+          {current ? (
+            <div className="space-y-6">
               <SectionSettings
                 section={current}
                 defaultTitle={defaults.sections.find((section) => section.id === current.id)?.title ?? null}
@@ -210,23 +213,29 @@ export default function SiteLayoutEditorPage() {
                 onChange={(next) => setSections(sections.map((section) => (section.id === next.id ? next : section)))}
                 disabled={locked}
               />
-            ) : (
-              <p className="text-xs text-slate-500">{COPY.pickSection}</p>
-            )}
-          </Card>
-          <Card title={COPY.heroTitle}>
-            <HeroSettings hero={hero} issues={groupIssues('hero')} onChange={(next) => update({ hero: next })} disabled={locked} />
-          </Card>
-          <Card title={COPY.faqTitle}>
-            <FaqSettings
-              hospitalId={hospitalId}
-              faq={faq}
-              issues={groupIssues('faq')}
-              onChange={(next) => update({ faq: next })}
-              disabled={locked}
-            />
-          </Card>
-        </div>
+              {current.id === 'hero' && (
+                <div className="space-y-3 border-t border-slate-100 pt-4">
+                  <h4 className="text-sm font-semibold text-slate-800">{COPY.heroTitle}</h4>
+                  <HeroSettings hero={hero} issues={groupIssues('hero')} onChange={(next) => update({ hero: next })} disabled={locked} />
+                </div>
+              )}
+              {current.id === 'faq' && (
+                <div className="space-y-3 border-t border-slate-100 pt-4">
+                  <h4 className="text-sm font-semibold text-slate-800">{COPY.faqTitle}</h4>
+                  <FaqSettings
+                    hospitalId={hospitalId}
+                    faq={faq}
+                    issues={groupIssues('faq')}
+                    onChange={(next) => update({ faq: next })}
+                    disabled={locked}
+                  />
+                </div>
+              )}
+            </div>
+          ) : (
+            <p className="text-xs text-slate-500">{COPY.pickSection}</p>
+          )}
+        </Card>
       </div>
 
       <div className="grid gap-4 lg:grid-cols-2">
