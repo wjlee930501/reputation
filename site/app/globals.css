@@ -9069,6 +9069,16 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
   overflow-wrap: break-word;
 }
 
+/* ══ 2026-11-20 마케팅 수정 요청 — 줄바꿈 묶음 ════════════════════════
+   시간 범위·괄호·전화번호·제목의 가운뎃점 낱말은 한 줄에서 끊지 않는다(KeepTogether,
+   lib/clinic-text.ts). inline-block이라 줄에 들어가면 통째로 넘어가고, 칸보다 길면(390px 반 폭
+   칸) 넘치지 않고 그 안에서만 줄을 바꾼다. 선택자를 .clinic-shell로 올려 제목 조각의 span 규칙
+   (--lines의 display: block)이 묶음에 번지지 않게 한다. */
+.clinic-shell .clinic-keep {
+  display: inline-block;
+  max-width: 100%;
+}
+
 .clinic-shell :is(section[id], .clinic-anchor-target, .clinic-article-body [id]) {
   scroll-margin-top: var(--clinic-sticky-clearance);
 }
@@ -9651,14 +9661,4 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
 .clinic-shell .clinic-curator-figure .clinic-curator-portrait--monogram {
   aspect-ratio: 1 / 1;
   max-width: 220px;
-}
-
-/* ══ 2026-11-20 마케팅 수정 요청 — 줄바꿈 묶음 ════════════════════════
-   시간 범위·괄호·전화번호·제목의 가운뎃점 낱말은 한 줄에서 끊지 않는다(KeepTogether,
-   lib/clinic-text.ts). inline-block이라 줄에 들어가면 통째로 넘어가고, 칸보다 길면(390px 반 폭
-   칸) 넘치지 않고 그 안에서만 줄을 바꾼다. 선택자를 .clinic-shell로 올려 제목 조각의 span 규칙
-   (--lines의 display: block)이 묶음에 번지지 않게 한다. */
-.clinic-shell .clinic-keep {
-  display: inline-block;
-  max-width: 100%;
 }
