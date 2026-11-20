@@ -802,6 +802,9 @@ class Settings(BaseSettings):
     # 발행 시 site(Vercel) sitemap·페이지 캐시 무효화. 빈 값이면 호출 생략.
     SITE_REVALIDATE_URL: str = ""
     SITE_REVALIDATE_SECRET: str = ""
+    # 병원 공개 페이지 섹션 설정 미리보기 토큰 서명(services/site_preview_token.py). 선택 비밀값 —
+    # 비어 있으면 미리보기만 꺼진다(발급 503, 확인 실패). 다른 비밀값으로 대신하지 않는다.
+    SITE_PREVIEW_TOKEN_SECRET: str = ""
 
     # Site BFF → backend 방문자 IP 전달 인증 (CDX-M1). site의 /api/leads BFF가 이 secret으로
     # 자신을 증명하면 X-Visitor-IP 헤더를 실제 클라이언트 IP로 채택한다(XFF 체인은 Vercel

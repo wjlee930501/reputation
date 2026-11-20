@@ -184,6 +184,10 @@ class _FakeDB:
     async def get(self, _model, object_id):
         return self.hospital if self.hospital.id == object_id else None
 
+    async def scalar(self, _statement):
+        # 섹션 설정 공개 판 조회(레이아웃 PATCH 가드) — 이 병원들은 설정이 없다.
+        return None
+
     def add(self, _item):
         pass
 

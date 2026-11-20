@@ -4,6 +4,7 @@ import uuid
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -28,7 +29,8 @@ from app.models.essence import (
     SourceStatus,
 )
 from app.models.hospital import Hospital
-from app.services import clinic_page_copy
+from app.models.site_config import SITE_CONFIG_DRAFT, HospitalSiteConfig
+from app.services import clinic_page_copy, site_config_refs
 from app.services.content_image_binding import certified_public_image_asset
 from app.services.content_publication import PUBLICATION_CHECK_FIELDS, publication_field_values
 from app.services.content_visibility import (
@@ -51,6 +53,7 @@ from app.services.hospital_logo import is_public_logo_ref, public_logo_url
 from app.services.hospital_physicians import effective_representatives
 from app.services.photo_assets import effective_photo_metadata
 from app.services.public_asset_ref import is_public_asset_path
+from app.services.site_preview_token import verify_preview_token
 from app.utils.domain import normalize_domain
 from app.utils.error_page import looks_like_error_page_text
 from app.utils.medical_filter import check_forbidden, check_forbidden_content_fields
@@ -62,6 +65,8 @@ router = APIRouter(prefix="/public/hospitals", tags=["Public — Site"])
 # 커스텀 도메인 역조회 표면 — /site 미들웨어가 요청 호스트로 병원을 식별할 때 사용.
 # 계약(/api/v1/public/site/hospitals/by-domain/{domain})이 기존 prefix와 달라 별도 라우터.
 domain_router = APIRouter(prefix="/public/site/hospitals", tags=["Public — Site"])
+# 섹션 설정 초안 미리보기(레이아웃 편집기). 병원 slug가 아니라 토큰으로 병원·초안을 찾는다.
+preview_router = APIRouter(prefix="/public/site-preview", tags=["Public — Site"])
 
 
 # 플랫폼 서브도메인({slug}.{platform host})에서 hospital slug가 아닌 예약 라벨.
@@ -256,7 +261,62 @@ async def get_hospital_public(request: Request, slug: str, db: AsyncSession = De
     # 승인된 콘텐츠 운영 기준(positioning/promise)만 공개 about 서사로 노출한다.
     # 자유 입력 director_philosophy와 달리 근거 기반 검수를 거친 필드다.
     public_philosophy = await get_public_essence_readiness(db, h.id)
-    return _serialize_hospital(h, photos, public_philosophy)
+    payload = _serialize_hospital(h, photos, public_philosophy)
+    # 섹션 설정(레이아웃 편집기) 공개 판. 없으면 null — 사이트는 지금 화면 그대로 그린다.
+    payload["site_config"] = await site_config_refs.public_site_config_for(
+        db, h, await site_config_refs.published_config(db, h.id), photos
+    )
+    return payload
+
+
+_PREVIEW_HEADERS = {
+    "Cache-Control": "no-store",
+    "X-Robots-Tag": "noindex, nofollow",
+}
+
+
+def _preview_not_found() -> HTTPException:
+    return HTTPException(status_code=404, detail="Preview not found", headers=_PREVIEW_HEADERS)
+
+
+@preview_router.get("/{token}")
+@limiter.limit(settings.PUBLIC_SITE_RATE_LIMIT)
+async def get_site_config_preview(request: Request, token: str, db: AsyncSession = Depends(get_db)):
+    """섹션 설정 초안 미리보기 — 병원 공개 응답과 같은 모양 + 초안 `site_config`.
+
+    공개 상태 검사 대신 토큰이 권한이다(공개 전 병원도 미리본다). 토큰은 병원·초안·revision에 묶여
+    있어 저장·공개 반영·버리기 뒤에는 열리지 않는다. 응답은 실패 포함 모두 no-store·noindex다.
+    """
+
+    claim = verify_preview_token(token)
+    if claim is None:
+        raise _preview_not_found()
+    draft = await db.get(HospitalSiteConfig, claim.draft_id)
+    if (
+        draft is None
+        or draft.hospital_id != claim.hospital_id
+        or draft.state != SITE_CONFIG_DRAFT
+        or draft.revision != claim.revision
+    ):
+        raise _preview_not_found()
+    h = await db.scalar(
+        select(Hospital).options(selectinload(Hospital.physicians)).where(Hospital.id == claim.hospital_id)
+    )
+    if h is None:
+        raise _preview_not_found()
+    photos = await site_config_refs.public_photos(db, h.id)
+    public_philosophy = await get_public_essence_readiness(db, h.id)
+    payload = _serialize_hospital(h, photos, public_philosophy)
+    payload["site_layout"] = draft.layout
+    payload["site_config"] = await site_config_refs.public_site_config_for(
+        db, h, draft, photos, layout=draft.layout
+    )
+    payload["preview"] = {
+        "draft_id": str(draft.id),
+        "revision": draft.revision,
+        "expires_at": claim.expires_at,
+    }
+    return JSONResponse(payload, headers=_PREVIEW_HEADERS)
 
 
 @router.get("/{slug}/assets/{source_id}")

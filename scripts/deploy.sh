@@ -198,6 +198,9 @@ BACKEND_OPTIONAL_SECRET_NAMES=(
   # 도입문의 접수 안내 문자(NHN Cloud SMS) 시크릿 키. INQUIRY_SMS_PROVIDER=nhn과 NHN_SMS_APP_KEY가
   # 함께 있어야 발송된다. 비어 있으면 접수는 정상이고 리드에 SKIPPED 사유만 남는다.
   "NHN_SMS_SECRET_KEY"
+  # 병원 공개 페이지 섹션 설정 미리보기 토큰 서명. 없거나 latest가 비활성이면 미리보기만 꺼진다
+  # (backend가 fail-closed — 발급 503). 다른 비밀값으로 대신하지 않는다.
+  "SITE_PREVIEW_TOKEN_SECRET"
 )
 
 SITE_REQUIRED_SECRET_NAMES=(
