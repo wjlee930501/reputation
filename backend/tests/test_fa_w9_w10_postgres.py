@@ -343,7 +343,9 @@ def test_daily_slo_reports_only_hospitals_that_missed(env) -> None:
 def test_stall_dispatch_claims_and_hands_off_to_item_task(env, monkeypatch) -> None:
     from app.workers import tasks as worker_tasks
 
-    now = datetime.now(UTC)
+    # 실행 키는 KST 날짜를 담는다 — 23:45 KST 이후에 돌면 아래 「15분 뒤」가 다음 날이 되어 두 번째
+    # 디스패치가 정상이 된다(2026-11-20 CI). 같은 날 안에 두 번 돌도록 KST 정오로 고정한다.
+    now = datetime.now(KST).replace(hour=12, minute=0, second=0, microsecond=0).astimezone(UTC)
     hospital = _hospital(env, active=True)
     item = _slot(
         env, hospital, scheduled=now.astimezone(KST).date(), attempt={}, created_hours_ago=30
