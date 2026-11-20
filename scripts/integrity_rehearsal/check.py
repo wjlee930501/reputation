@@ -179,7 +179,7 @@ def migration() -> None:
         functions = db.execute(
             text("SELECT count(*) FROM pg_proc WHERE proname='reconcile_content_revisions'")
         ).scalar_one()
-    assert head == "0099_add_content_schedule_daily_max_superseded", head
+    assert head == "0100_add_hospital_site_configs", head
     assert functions == 1
     emit("expand_migration_head_and_reconciliation_function", head=head)
 
