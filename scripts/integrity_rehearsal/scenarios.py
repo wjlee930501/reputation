@@ -141,6 +141,7 @@ def seed_mixed_version() -> dict[str, str]:
                 "contentId": str(content_id),
                 "slug": existing.slug,
                 "oldTitle": "검사 전 확인할 준비 사항",
+                "contentMonth": {"year": 2026, "month": 10},
                 "oldBodyMarker": "승인된 공개 본문 표식 task16-active-body",
                 "agedContentId": str(aged_content_id),
                 "budgetContentId": str(budget_content_id),
@@ -794,6 +795,9 @@ def seed_mixed_version() -> dict[str, str]:
         "contentId": str(content_id),
         "slug": "rehearsal-bareun-clinic",
         "oldTitle": "검사 전 확인할 준비 사항",
+        # 이 글의 예정일(2026-10-01)이 든 달 — Admin 콘텐츠 화면은 기본으로 이번 달만 보이므로 브라우저가
+        # 이 달을 골라야 글이 목록에 나온다(10월이 지나 11-17부터 리허설이 글 버튼을 못 찾았다).
+        "contentMonth": {"year": 2026, "month": 10},
         "oldBodyMarker": "승인된 공개 본문 표식 task16-active-body",
         "agedContentId": str(aged_content_id),
         "budgetContentId": str(budget_content_id),
