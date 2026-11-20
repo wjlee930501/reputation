@@ -411,7 +411,7 @@ def test_mixed_generation_batch_finishes_partial_with_retryable_failed_item(pg_c
         failure_id,
         GenerationItemState.FAILED,
         safe_error_code="PROVIDER_TIMEOUT",
-        safe_error_message="운영 센터에서 재시도해 주세요.",
+        safe_error_message="처리 목록에서 재시도해 주세요.",
     )
     failed = recorder.item_run(
         failure_id,
@@ -419,7 +419,7 @@ def test_mixed_generation_batch_finishes_partial_with_retryable_failed_item(pg_c
         "REGENERATE_CONTENT",
         OperationRunState.FAILED,
         safe_error_code="PROVIDER_TIMEOUT",
-        safe_error_message="운영 센터에서 재시도해 주세요.",
+        safe_error_message="처리 목록에서 재시도해 주세요.",
     )
     state = recorder.finish()
 
@@ -589,7 +589,7 @@ async def test_generation_failure_stays_silent_before_due_slot_and_retry_recover
         hospital_name=hospital_name,
         run_id=failed_run_id,
         code="PROVIDER_TIMEOUT",
-        message="운영 센터에서 재시도해 주세요.",
+        message="처리 목록에서 재시도해 주세요.",
     )
 
     pg_async_session.expire_all()
@@ -643,5 +643,5 @@ async def test_generation_failure_stays_silent_before_due_slot_and_retry_recover
             NotificationOutbox.notification_type == "INCIDENT_RECOVERED",
         )
     )
-    # 자동 복구 성공은 운영센터 상태만 닫고 Slack 소음을 만들지 않는다.
+    # 자동 복구 성공은 처리 목록 상태만 닫고 Slack 소음을 만들지 않는다.
     assert recovery_outbox == 0

@@ -27,7 +27,7 @@ test('post-publish review never repeats a confirmed POST when its follow-up GET 
   assert.doesNotMatch(source.slice(followUpGet), /문제 없음.*다시 누르세요/)
 })
 
-// 재생성 폴링과 그 버튼은 콘텐츠 화면에서 사라졌다(운영 센터가 맡는다).
+// 재생성 폴링과 그 버튼은 콘텐츠 화면에서 사라졌다(처리 목록이 맡는다).
 // 남아 있지 않다는 계약은 content-page-contract.test.ts가 지킨다.
 
 test('a single-item refresh never replaces an open editor', () => {

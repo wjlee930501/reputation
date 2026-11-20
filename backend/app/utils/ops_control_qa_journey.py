@@ -93,7 +93,7 @@ def _ensure_incident_and_outbox(
             source_type="CONTENT_ITEM",
             safe_error_code="IMAGE_PROVIDER_UNAVAILABLE",
             safe_error_message="대표 이미지 생성 연결이 잠시 중단되었습니다.",
-            next_action="운영 센터에서 ‘작업 다시 시도’를 누르세요.",
+            next_action="처리 목록에서 ‘작업 다시 시도’를 누르세요.",
             admin_path=f"/operations?queue=incidents&hospital_id={hospital.id}",
         )
         db.add(incident)

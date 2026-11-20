@@ -294,7 +294,7 @@ export interface ContentRowState {
   kind: ContentRowStateKind
   label: string
   reason: string | null
-  // 차단·보류로 막힌 글에만 붙는 운영 센터 링크.
+  // 차단·보류로 막힌 글에만 붙는 처리 목록 링크.
   link: { kind: 'incident' | 'run'; href: string; next_action?: string | null } | null
 }
 

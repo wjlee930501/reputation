@@ -105,7 +105,7 @@ test('blocked reports lead with the operations center before a rebuild', () => {
   )
   assert.equal(
     run?.nextAction,
-    '운영 센터에서 실제 차단 사유와 자동 복구 상태를 확인해 주세요. 조치가 필요한 항목만 처리한 뒤 보고서를 다시 확인하세요.',
+    '처리 목록에서 실제 차단 사유와 자동 복구 상태를 확인해 주세요. 조치가 필요한 항목만 처리한 뒤 보고서를 다시 확인하세요.',
   )
   assert.doesNotMatch(run?.whatHappened ?? '', /다시 만들기|측정이 부족/)
 })
@@ -160,4 +160,13 @@ test('rebuild reason and request key prevent opaque duplicate rebuilds', () => {
   const changedKey = getOrCreateReportRequestKey(cache, changedAction, () => `key-${++sequence}`)
   assert.equal(retryKey, firstKey)
   assert.notEqual(changedKey, firstKey)
+})
+
+import { latestRunPerPeriod } from './report-run.ts'
+
+test('one run card per month — the most recent request wins', () => {
+  const run = (runId: string, month: number, requestedAt: string) =>
+    ({ runId, periodYear: 2026, periodMonth: month, requestedAt }) as never
+  const latest = latestRunPerPeriod([run('a', 10, '2026-11-09'), run('b', 10, '2026-11-10'), run('c', 9, '2026-10-06')])
+  assert.deepEqual(latest.map((r: { runId: string }) => r.runId), ['b', 'c'])
 })

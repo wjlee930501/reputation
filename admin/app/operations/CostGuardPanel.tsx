@@ -2,7 +2,9 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 
+import { ConfirmDialog } from '@/app/_components/ConfirmDialog'
 import { OperatorIssuePanel } from '@/app/_components/OperatorIssuePanel'
+import { ADMIN_COPY } from '@/lib/admin-copy'
 import { fetchAPI } from '@/lib/api'
 import { safeOperatorError } from '@/lib/operations-journey'
 
@@ -61,6 +63,9 @@ export function CostGuardPanel({ canRaiseLimit }: { readonly canRaiseLimit: bool
 
   useEffect(() => { void load() }, [load])
 
+  // 전체 중지는 「전체 중지」를 다시 입력해야 한다. 해제는 확인만(2026-11-20).
+  const [killDialogOpen, setKillDialogOpen] = useState(false)
+
   async function toggleKillSwitch() {
     if (!status || status.kill_switch_active === null) return
     setBusy('kill')
@@ -70,6 +75,7 @@ export function CostGuardPanel({ canRaiseLimit }: { readonly canRaiseLimit: bool
         method: 'POST', body: JSON.stringify({ enabled: !status.kill_switch_active }),
       })
       setNotice(status.kill_switch_active ? '자동 작업을 다시 시작했습니다.' : '모든 자동 작업을 중지했습니다.')
+      setKillDialogOpen(false)
       await load()
     } catch (caught) {
       setError(message(caught))
@@ -80,7 +86,7 @@ export function CostGuardPanel({ canRaiseLimit }: { readonly canRaiseLimit: bool
 
   async function copyDeveloperContext() {
     try {
-      await navigator.clipboard.writeText('화면: 운영 센터 > 비용·자동 작업 안전장치\n상태: 비용 기록을 확인할 수 없음\n요청: 비용 현황 연결 상태 확인')
+      await navigator.clipboard.writeText('화면: 설정 > 자동 작업 한도\n상태: 비용 기록을 확인할 수 없음\n요청: 비용 현황 연결 상태 확인')
       setNotice('개발팀 문의용 정보를 복사했습니다.')
     } catch (caught) {
       setError(message(caught))
@@ -113,10 +119,24 @@ export function CostGuardPanel({ canRaiseLimit }: { readonly canRaiseLimit: bool
     }
   }
 
+  const killing = !status?.kill_switch_active
   return (
+    <>
+    <ConfirmDialog
+      open={killDialogOpen}
+      title={killing ? ADMIN_COPY.dangerConfirm.killTitle : ADMIN_COPY.dangerConfirm.unkillTitle}
+      description={killing ? ADMIN_COPY.dangerConfirm.killBody : ADMIN_COPY.dangerConfirm.unkillBody}
+      confirmLabel={killing ? ADMIN_COPY.dangerConfirm.killConfirm : ADMIN_COPY.dangerConfirm.unkillConfirm}
+      typedConfirmation={killing ? ADMIN_COPY.dangerConfirm.killPhrase : null}
+      tone={killing ? 'danger' : 'neutral'}
+      busy={busy === 'kill'}
+      error={killDialogOpen ? error || null : null}
+      onConfirm={() => void toggleKillSwitch()}
+      onClose={() => setKillDialogOpen(false)}
+    />
     <details className="ops-cost-panel" open={status?.availability === 'UNAVAILABLE' || undefined}>
       <summary className="ops-control">
-        <span><b>비용·자동 작업 안전장치</b><small>처리 목록과 별도의 보조 설정</small></span>
+        <span><b>비용·자동 작업 안전장치</b><small>비용 급증 때만 쓰는 전체 한도</small></span>
         <span className={status?.availability === 'UNAVAILABLE' ? 'text-amber-700' : status?.availability !== 'AVAILABLE' ? 'text-slate-500' : status.kill_switch_active ? 'text-red-700' : 'text-emerald-700'}>{status?.availability === 'UNAVAILABLE' ? '확인할 수 없음' : status?.availability !== 'AVAILABLE' ? '확인 중' : status.kill_switch_active ? '전체 중지' : '정상'}</span>
       </summary>
       <div className="border-t border-slate-200 p-4">
@@ -144,7 +164,7 @@ export function CostGuardPanel({ canRaiseLimit }: { readonly canRaiseLimit: bool
           <>
             <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 p-3">
               <div><p className="font-semibold text-slate-800">전체 자동 작업</p><p className="mt-0.5 text-xs text-slate-500">콘텐츠·이미지·답변 내 병원 언급률 측정</p></div>
-              <button type="button" disabled={busy === 'kill'} onClick={() => void toggleKillSwitch()} className={`ops-control rounded-lg px-4 text-sm font-bold text-white disabled:opacity-45 ${status.kill_switch_active ? 'bg-emerald-700' : 'bg-red-700'}`}>{busy === 'kill' ? '확인 중…' : status.kill_switch_active ? '중지 해제' : '전체 중지'}</button>
+              <button type="button" disabled={busy === 'kill'} onClick={() => setKillDialogOpen(true)} className={`ops-control rounded-lg px-4 text-sm font-bold text-white disabled:opacity-45 ${status.kill_switch_active ? 'bg-emerald-700' : 'bg-red-700'}`}>{busy === 'kill' ? '확인 중…' : status.kill_switch_active ? '중지 해제' : '전체 중지'}</button>
             </div>
             <div className="mt-3 grid gap-3 lg:grid-cols-3">
               {status.categories.map((category) => {
@@ -183,5 +203,6 @@ export function CostGuardPanel({ canRaiseLimit }: { readonly canRaiseLimit: bool
         ) : status === null ? <p className="mt-4 text-sm text-slate-500">비용 상태를 불러오는 중입니다.</p> : null}
       </div>
     </details>
+    </>
   )
 }

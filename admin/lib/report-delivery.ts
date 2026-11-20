@@ -1,3 +1,4 @@
+import { groupReportVersions, type VersionedReport } from './report-versions.ts'
 import type { ReportEvent } from './report-review'
 
 export interface ReportDeliveryInput {
@@ -137,6 +138,19 @@ export function getDoctorDownload(
   return `/api/admin/hospitals/${hospitalId}/reports/${reportId}/download?audience=doctor`
 }
 
+/** 원장 전달용 PDF를 저장할 때 쓰는 파일 이름(상세 창·목록이 같은 이름). */
+export function doctorReportFileName(year: number, month: number): string {
+  return `${year}-${String(month).padStart(2, '0')}-doctor-report.pdf`
+}
+
+/**
+ * 보고서 탭 요약 숫자 — 같은 달·종류의 **최신 판만** 센다(2026-11-20 마케팅 요청: 보고서 5건인데
+ * 버전 21개가 합산돼 「검수 가능 13 · 조치 필요 8」로 보였다). 이전 버전은 전달 대상이 아니다.
+ */
+export function latestReportSummaryCounts<T extends DeliveryContract & VersionedReport>(reports: readonly T[]) {
+  return reportSummaryCounts(groupReportVersions(reports).map((row) => row.latest))
+}
+
 export function getInternalReportLabel(hasLink: boolean, hasPdf: boolean): string {
   if (hasLink) return '내부 검수용 보고서 열기 · 원장 전달 금지'
   if (hasPdf) return '내부 검수용 링크 준비 중 · 원장 전달 금지'
@@ -189,7 +203,7 @@ export function deliveryConflict(detail: unknown): DeliveryIssue {
       title: '최신 병원 자료 또는 측정 확인이 필요합니다',
       problem: serverProblem ?? '전달 직전 확인에서 필수 자료가 준비되지 않은 상태로 바뀌었습니다.',
       customerImpact: '현재 보고서는 원장님께 전달할 수 없습니다.',
-      nextAction: '운영 센터에서 차단 사유를 해결한 뒤 최신 보고서를 다시 확인해 주세요.',
+      nextAction: '처리 목록에서 차단 사유를 해결한 뒤 최신 보고서를 다시 확인해 주세요.',
       action: 'operations',
     }
   }
