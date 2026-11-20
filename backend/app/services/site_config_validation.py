@@ -100,7 +100,9 @@ def joined(text: str) -> str:
 
 
 def split_lines(value: str) -> list[str]:
-    return [line.strip() for line in value.split("\n")]
+    """줄 나누기 — LF만이 아니라 CR·CRLF·유니코드 줄 구분자도 줄 경계로 본다."""
+
+    return [line.strip() for line in value.splitlines()] or [""]
 
 
 def forbidden_words(text: str | None) -> list[str]:
@@ -112,7 +114,7 @@ def forbidden_words(text: str | None) -> list[str]:
 
     if not text:
         return []
-    variants = {joined(text), "".join(line.strip() for line in text.split("\n"))}
+    variants = {joined(text), "".join(split_lines(text))}
     words: list[str] = []
     for variant in variants:
         for word in check_forbidden(variant):
@@ -130,7 +132,7 @@ def lines_match(value: str, source: str) -> bool:
 
     target = joined(source)
     position = 0
-    lines = [joined(line) for line in value.split("\n")]
+    lines = [joined(line) for line in split_lines(value)]
     for index, line in enumerate(lines):
         if not line or not target.startswith(line, position):
             return False
@@ -220,6 +222,16 @@ def _forbidden(check: SiteConfigCheck, path: str, text: str | None, *, source: s
         check.error(path, "FORBIDDEN_EXPRESSION", message, words=words)
 
 
+def section_title(section: dict[str, Any], ctx: SiteConfigContext | None = None) -> str | None:
+    """화면에 보일 섹션 제목. 진료 원칙은 설정이 제목을 바꾸지 않았으면 병원 정보의 제목이 이긴다."""
+
+    title = section.get("title")
+    if section.get("id") == "care_principles" and title == site_defaults.CARE_PRINCIPLES_TITLE:
+        principles = ctx.care_principles if ctx and isinstance(ctx.care_principles, dict) else {}
+        return principles.get("title") or title
+    return title
+
+
 def section_note(
     resolved: dict[str, Any], section_id: str, ctx: SiteConfigContext | None = None
 ) -> str | None:
@@ -275,7 +287,7 @@ def _check_copy(
         return
     # 화면에 이어 보이는 묶음 — 병원 원문·기본값·덮어쓰기를 합친 최종 표시 문장.
     for section in resolved["sections"]:
-        parts = [section.get("title"), section_note(resolved, section["id"], ctx)]
+        parts = [section_title(section, ctx), section_note(resolved, section["id"], ctx)]
         _forbidden(check, f"sections.{section['id']}", " ".join(part for part in parts if part))
     for index, (title, body) in enumerate(effective_care_steps(resolved)):
         _forbidden(check, f"care_flow.steps[{index}]", f"{title} {body}")
@@ -379,6 +391,7 @@ __all__ = (
     "forbidden_words",
     "joined",
     "lines_match",
+    "section_title",
     "line_break_source",
     "nav_target",
     "section_note",

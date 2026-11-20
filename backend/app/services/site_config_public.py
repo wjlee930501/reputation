@@ -31,6 +31,7 @@ from app.services.site_config_validation import (
     lines_match,
     nav_target,
     section_note,
+    section_title,
 )
 
 
@@ -93,7 +94,7 @@ def public_site_config(
     for section in out["sections"]:
         section_id = section["id"]
         combined = " ".join(
-            part for part in (section.get("title"), section_note(out, section_id, ctx.texts)) if part
+            part for part in (section_title(section, ctx.texts), section_note(out, section_id, ctx.texts)) if part
         )
         if combined and forbidden_words(combined):
             out["copy"].pop(f"{section_id}.note", None)

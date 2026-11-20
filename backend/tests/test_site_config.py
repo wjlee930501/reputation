@@ -207,6 +207,21 @@ def test_filter_sees_across_line_breaks_in_multi_line_fields() -> None:
     assert _public(resolved)["share"]["description"] is None
 
 
+def test_other_line_separators_cannot_split_a_forbidden_word() -> None:
+    for value in ("완\r치 보장", "완\r\n치 보장", "완\u2028치 보장"):
+        check = validate_site_config("B", {"share": {"description": value}}, _ctx())
+        assert "FORBIDDEN_EXPRESSION" in _codes(check), repr(value)
+        resolved = site_defaults.resolve("B", {})
+        resolved["share"]["description"] = value
+        assert _public(resolved)["share"]["description"] is None
+
+
+def test_stored_principles_title_and_lede_are_checked_together() -> None:
+    principles = {"title": "타 병원보다", "lede": "저렴합니다", "cards": [None, None, None]}
+    check = validate_site_config("B", {}, _ctx(care_principles=principles))
+    assert [e["path"] for e in check.errors] == ["sections.care_principles"]
+
+
 def test_section_title_is_checked_with_the_stored_principles_lede() -> None:
     principles = {"title": None, "lede": "저렴합니다", "cards": [None, None, None]}
     check = validate_site_config(
