@@ -476,6 +476,7 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
           currentSection="home"
           googleMapsUrl={hospital.google_maps_url}
           siteConfig={hospital.site_config}
+          faqAvailable={faqEntries.length > 0}
         />
         {layout === 'A' ? (
           <HomeLayoutA model={homeModel} />

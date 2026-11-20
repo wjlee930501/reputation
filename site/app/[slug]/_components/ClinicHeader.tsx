@@ -35,6 +35,8 @@ interface Props {
    * 가므로(홈 섹션을 꺼도 하위 페이지는 남는다) 모든 병원 페이지가 같은 값을 넘긴다.
    */
   siteConfig?: ClinicSiteConfig | null
+  /** 홈만 넘긴다 — 홈 FAQ가 비면 메뉴 'FAQ'를 뺀다(하위 페이지는 공개 응답이 이미 거른 값을 쓴다). */
+  faqAvailable?: boolean
 }
 
 export function ClinicHeader({
@@ -48,8 +50,11 @@ export function ClinicHeader({
   currentSection,
   googleMapsUrl = null,
   siteConfig = null,
+  faqAvailable,
 }: Props) {
-  const menu: readonly SiteNavItem[] = siteConfig?.nav.items ?? DEFAULT_NAV_ITEMS
+  const menu: readonly SiteNavItem[] = (siteConfig?.nav.items ?? DEFAULT_NAV_ITEMS).filter(
+    (item) => item !== 'faq' || faqAvailable !== false,
+  )
   const bar: readonly SiteMobileBarItem[] = siteConfig?.nav.mobileBar ?? DEFAULT_MOBILE_BAR
   // 진료과 표기는 프로파일의 specialties[]에서만 파생 — 하드코딩 금지.
   const specialtyLabel = displayClinicLabels(specialties).join('·')

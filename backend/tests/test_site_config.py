@@ -384,12 +384,25 @@ def test_changed_sections_lists_blocks_sections_and_order() -> None:
 # ── 공개 정리 ─────────────────────────────────────────────────────
 
 
-def _public(resolved, *, layout="B", ctx=None, faq_entries=None, version=3):
+def _public(resolved, *, layout="B", ctx=None, faq_entries=None, version=3, faq_available=None):
     return public_site_config(
         resolved,
         version=version,
-        ctx=PublicSiteConfigContext(layout=layout, texts=ctx or _ctx(), faq_entries=faq_entries or {}),
+        ctx=PublicSiteConfigContext(
+            layout=layout, texts=ctx or _ctx(), faq_entries=faq_entries or {}, faq_available=faq_available
+        ),
     )
+
+
+def test_faq_menu_item_is_dropped_when_the_home_faq_would_be_empty() -> None:
+    auto = site_defaults.resolve("B", {"nav": {"items": ["faq", "call"]}})
+    assert _public(auto, faq_available=False)["nav"]["items"] == ["call"]
+    assert _public(auto, faq_available=True)["nav"]["items"] == ["faq", "call"]
+    manual = site_defaults.resolve(
+        "B", {"nav": {"items": ["faq", "call"]}, "faq": {"mode": "manual", "content_ids": [str(uuid.uuid4())]}}
+    )
+    # 고른 글이 모두 내려가 직접 FAQ가 비면 메뉴에서 뺀다.
+    assert _public(manual)["nav"]["items"] == ["call"]
 
 
 def test_no_config_or_a_different_current_layout_is_null() -> None:
