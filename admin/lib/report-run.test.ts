@@ -161,3 +161,12 @@ test('rebuild reason and request key prevent opaque duplicate rebuilds', () => {
   assert.equal(retryKey, firstKey)
   assert.notEqual(changedKey, firstKey)
 })
+
+import { latestRunPerPeriod } from './report-run.ts'
+
+test('one run card per month — the most recent request wins', () => {
+  const run = (runId: string, month: number, requestedAt: string) =>
+    ({ runId, periodYear: 2026, periodMonth: month, requestedAt }) as never
+  const latest = latestRunPerPeriod([run('a', 10, '2026-11-09'), run('b', 10, '2026-11-10'), run('c', 9, '2026-10-06')])
+  assert.deepEqual(latest.map((r: { runId: string }) => r.runId), ['b', 'c'])
+})

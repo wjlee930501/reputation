@@ -444,6 +444,12 @@ export const ADMIN_COPY = {
     sameRegionCount: '{province} {count}곳 사용 중',
     loadFailed: '같은 지역 분포를 불러오지 못했습니다. 레이아웃은 그대로 고를 수 있습니다.',
   },
+  // 보고서 탭 원장 PDF 저장(2026-11-20 — 새 탭 대신 파일로 바로 저장).
+  reportFiles: {
+    saveDoctorPdf: '원장 전달용 PDF 받기',
+    listPdf: 'PDF',
+    listPdfHint: '원장 전달용 PDF 바로 받기 · 전달 기록은 「열기」에서 받은 파일로',
+  },
   // 병원 정보 > 진료시간의 공휴일 칸(2026-11-18 — 공휴일 휴진을 AI가 읽는 구조화 데이터에 싣는다).
   businessHours: {
     holiday: '공휴일',

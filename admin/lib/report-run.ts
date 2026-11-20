@@ -159,6 +159,23 @@ function parseReportRun(value: unknown): ReportRunView | null {
   }
 }
 
+/**
+ * 같은 달 작업은 가장 최근 실행 하나만(2026-11-20 마케팅 요청 — 같은 10월 카드가 버전마다 반복됐다).
+ * 서버는 최근 실행을 요청 시각 내림차순으로 준다. 옛 실행의 「원장 전달 자료 확인」은 이전 판을 열 수
+ * 있어 남기지 않는다.
+ */
+export function latestRunPerPeriod(runs: readonly ReportRunView[]): ReportRunView[] {
+  const seen = new Set<string>()
+  const latest: ReportRunView[] = []
+  for (const run of [...runs].sort((a, b) => (a.requestedAt < b.requestedAt ? 1 : a.requestedAt > b.requestedAt ? -1 : 0))) {
+    const key = `${run.periodYear}-${run.periodMonth}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    latest.push(run)
+  }
+  return latest
+}
+
 export function parseReportRuns(value: unknown): readonly ReportRunView[] {
   if (!Array.isArray(value)) return []
   return value.map(parseReportRun).filter((run): run is ReportRunView => run !== null)
