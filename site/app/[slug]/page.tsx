@@ -329,13 +329,9 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
             heroDescription={hospital.hero_description}
           />
 
-          <nav className="clinic-section-index" aria-label="이 페이지의 주요 정보">
-            {hospital.treatments.length > 0 && <a href="#treatments">진료 영역</a>}
-            {physicians.length > 0 && <a href="#doctor">의료진</a>}
-            {contents.length > 0 && <a href="#contents">의료 정보</a>}
-            <a href="#facts">병원 정보</a>
-            <a href="#contact">오시는 길</a>
-          </nav>
+          {/* 첫 화면 아래 바로가기 메뉴(.clinic-section-index)는 2026-11-20 결정 12a로 뺐다 — 상단 메뉴와
+              내용이 겹쳤고, 휴대폰에서는 상단 메뉴·바로가기·하단 바 세 겹 메뉴였다. 스타일은 레이아웃
+              편집기(섹션 'section_index')에서 다시 켤 수 있게 globals.css에 남긴다. 앵커는 그대로다. */}
 
           <div className="clinic-anchor-target">
             <TreatmentGrid treatments={hospital.treatments} hospitalRootUrl={hospitalRootUrl} />
