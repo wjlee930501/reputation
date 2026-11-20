@@ -86,7 +86,7 @@ export function CostGuardPanel({ canRaiseLimit }: { readonly canRaiseLimit: bool
 
   async function copyDeveloperContext() {
     try {
-      await navigator.clipboard.writeText('화면: 운영 센터 > 비용·자동 작업 안전장치\n상태: 비용 기록을 확인할 수 없음\n요청: 비용 현황 연결 상태 확인')
+      await navigator.clipboard.writeText('화면: 처리 목록 > 비용·자동 작업 안전장치\n상태: 비용 기록을 확인할 수 없음\n요청: 비용 현황 연결 상태 확인')
       setNotice('개발팀 문의용 정보를 복사했습니다.')
     } catch (caught) {
       setError(message(caught))
@@ -136,7 +136,7 @@ export function CostGuardPanel({ canRaiseLimit }: { readonly canRaiseLimit: bool
     />
     <details className="ops-cost-panel" open={status?.availability === 'UNAVAILABLE' || undefined}>
       <summary className="ops-control">
-        <span><b>비용·자동 작업 안전장치</b><small>처리 목록과 별도의 보조 설정</small></span>
+        <span><b>비용·자동 작업 안전장치</b><small>비용 급증 때만 쓰는 전체 한도</small></span>
         <span className={status?.availability === 'UNAVAILABLE' ? 'text-amber-700' : status?.availability !== 'AVAILABLE' ? 'text-slate-500' : status.kill_switch_active ? 'text-red-700' : 'text-emerald-700'}>{status?.availability === 'UNAVAILABLE' ? '확인할 수 없음' : status?.availability !== 'AVAILABLE' ? '확인 중' : status.kill_switch_active ? '전체 중지' : '정상'}</span>
       </summary>
       <div className="border-t border-slate-200 p-4">

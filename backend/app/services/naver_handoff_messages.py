@@ -29,7 +29,7 @@ def build_naver_weekly_digest(
     admin_url = f"{settings.ADMIN_BASE_URL.rstrip('/')}/operations"
     status = "확인할 글이 있습니다" if failed else "정상 완료"
     action = (
-        "운영 센터에서 실패한 글을 열고 ‘실패한 글 다시 수집’을 눌러 주세요. "
+        "처리 목록에서 실패한 글을 열고 ‘실패한 글 다시 수집’을 눌러 주세요. "
         "다시 실패하면 작업 번호와 글 식별값을 개발팀에 전달해 주세요."
         if failed
         else "새로 추가된 근거 자료의 내용을 병원 자료 화면에서 검토해 주세요."
@@ -66,7 +66,7 @@ def build_naver_weekly_digest(
             "elements": [
                 {
                     "type": "button",
-                    "text": {"type": "plain_text", "text": "운영 센터에서 확인"},
+                    "text": {"type": "plain_text", "text": "처리 목록에서 확인"},
                     "url": admin_url,
                 }
             ],

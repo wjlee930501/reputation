@@ -76,7 +76,7 @@ def test_a_gate_recorded_slot_says_press_and_pressing_writes_it(monkeypatch):
     assert due is not None
     assert action == (
         f"자동 복구가 {display_time(due.astimezone(UTC))}에 이 글의 원고 생성을 다시 시도합니다. 원인이 "
-        "풀렸으면 운영 센터에서 해당 항목의 “작업 다시 시도”를 눌러 지금 바로 다시 시도할 수 있습니다."
+        "풀렸으면 처리 목록에서 해당 항목의 “작업 다시 시도”를 눌러 지금 바로 다시 시도할 수 있습니다."
     )
     assert _PRESS_NOW in action
     assert operator_retry_releases(item)
@@ -125,7 +125,7 @@ def test_a_gate_kept_environment_failure_names_the_sweep_and_the_button(monkeypa
     assert due is not None and due.tzinfo is not None
     assert action == (
         f"자동 복구가 {display_time(due.astimezone(UTC))}에 이 글의 원고 생성을 다시 시도합니다. 원인이 "
-        "풀렸으면 운영 센터에서 해당 항목의 “작업 다시 시도”를 눌러 지금 바로 다시 시도할 수 있습니다."
+        "풀렸으면 처리 목록에서 해당 항목의 “작업 다시 시도”를 눌러 지금 바로 다시 시도할 수 있습니다."
     )
     assert _PRESS_NOW in action and _PRESS_DOES_NOTHING not in action
     assert _press_retry(monkeypatch, item, _PRESS, operator=True) == [
@@ -250,7 +250,7 @@ def test_the_copy_predicate_agrees_with_what_the_real_task_releases(monkeypatch,
 
 _FAILED_0405 = _kst(2026, 9, 16, 4, 5)
 _PAST_DUE_ACTION = (
-    "자동 복구가 09/16 12:00 KST에 이 글의 원고 생성을 다시 시도합니다. 원인이 풀렸으면 운영 센터에서 "
+    "자동 복구가 09/16 12:00 KST에 이 글의 원고 생성을 다시 시도합니다. 원인이 풀렸으면 처리 목록에서 "
     "해당 항목의 “작업 다시 시도”를 눌러 지금 바로 다시 시도할 수 있습니다."
 )
 
@@ -313,7 +313,7 @@ def test_a_future_sample_record_keeps_its_stored_time_and_wait_copy(monkeypatch)
     assert due is not None and due > _SLOT_GATE_AT
     assert action == (
         f"자동 복구가 {display_time(due)}에 이 글의 원고 생성을 다시 시도합니다. 그 전에는 “작업 다시 "
-        "시도”를 눌러도 원고를 만들지 않으니, 그 뒤 운영 센터에서 결과를 확인하세요."
+        "시도”를 눌러도 원고를 만들지 않으니, 그 뒤 처리 목록에서 결과를 확인하세요."
     )
     assert _press_retry(monkeypatch, item, _PRESS, operator=True) == [
         (OperationRunState.FAILED, record["reason"])
@@ -359,7 +359,7 @@ def test_a_provider_failure_with_budget_left_names_the_button_and_pressing_write
     action = _action(monkeypatch, item, code, _FAILED_AT)
 
     assert action == (
-        f"{opening} 다음 예약 배치가 자동으로 다시 시도합니다. 서비스가 복구됐으면 운영 센터에서 해당 "
+        f"{opening} 다음 예약 배치가 자동으로 다시 시도합니다. 서비스가 복구됐으면 처리 목록에서 해당 "
         "항목의 “작업 다시 시도”를 눌러 지금 바로 다시 시도할 수 있습니다."
     )
     assert "기다리세요" not in action

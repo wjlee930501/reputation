@@ -1,6 +1,6 @@
-"""운영 센터로 보내는 admin 주소 — 화면들이 같은 한 곳을 가리키게 하는 순수 함수.
+"""처리 목록으로 보내는 admin 주소 — 화면들이 같은 한 곳을 가리키게 하는 순수 함수.
 
-운영 센터 화면은 `/operations` 하나뿐이고 상세는 질의값으로 연다 —
+처리 목록 화면은 `/operations` 하나뿐이고 상세는 질의값으로 연다 —
 `detail`은 큐 행 id(`incident:{id}`)를 그대로 받는다
 (`admin/app/operations/useOperationsCenter.ts`의 `patchQuery({queue, detail: row.id})`).
 화면마다 주소를 새로 지으면 링크는 존재하지 않는 경로로 가고, 사람은 404를 본다.

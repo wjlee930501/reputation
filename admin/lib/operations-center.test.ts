@@ -855,7 +855,7 @@ test('409는 경합·복구 미관측·예산 차단을 구분해 읽는다', ()
   assert.match(interpretOperationsConflict({}).message, /다른 운영자가 먼저 변경했습니다/)
 })
 
-test('운영 센터 훅은 깊은 링크를 해석기 한 곳으로 처리한다', () => {
+test('처리 목록 훅은 깊은 링크를 해석기 한 곳으로 처리한다', () => {
   const hook = readFileSync(new URL('../app/operations/useOperationsCenter.ts', import.meta.url), 'utf8')
 
   assert.match(hook, /resolveOperationsDetail\(/)

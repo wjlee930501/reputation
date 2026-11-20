@@ -261,7 +261,7 @@ def build_generation_blocked_digest_intent(
             )
         )
     blocks.append(
-        action_block("generation_blocked_digest_action", action_url, "운영센터에서 모아보기")
+        action_block("generation_blocked_digest_action", action_url, "처리 목록에서 모아보기")
     )
     message = validated_message(
         RenderedSlackMessage(
@@ -356,7 +356,7 @@ def build_generation_rejection_weekly_rollup_intent(
         ),
     )
     next_action = (
-        "운영센터에서 원인과 승인 자료 확인"
+        "처리 목록에서 원인과 승인 자료 확인"
         if item_count
         else "추가 조치 없음"
     )
@@ -376,7 +376,7 @@ def build_generation_rejection_weekly_rollup_intent(
                 action_block(
                     "generation_rejection_weekly_action",
                     action_url,
-                    "운영센터에서 원인 확인",
+                    "처리 목록에서 원인 확인",
                 ),
             ),
             action_url,

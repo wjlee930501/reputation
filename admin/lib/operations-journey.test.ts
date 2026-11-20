@@ -110,7 +110,7 @@ test('live marketer surfaces fail closed instead of rendering raw states or exce
   assert.match(shell, /break-keep text-pretty \[overflow-wrap:anywhere\]/)
   assert.match(leads, /font-semibold whitespace-nowrap text-slate-900/)
   assert.match(leads, /min-h-11 items-center justify-center whitespace-nowrap[\s\S]{0,500}병원 정보/)
-  assert.match(leads, /inline-flex min-h-11 items-center[\s\S]{0,160}운영 센터에서 상세 확인/)
+  assert.match(leads, /inline-flex min-h-11 items-center[\s\S]{0,160}처리 목록에서 상세 확인/)
   assert.match(leads, /inline-flex min-h-11 items-center[\s\S]{0,160}보고서 재발송/)
   assert.match(leads, /inline-flex min-h-11 items-center[\s\S]{0,160}1회 제한 해제/)
   assert.doesNotMatch(hospitalLayout, /hospital\?\.slug|\{hospital\.slug\}/)

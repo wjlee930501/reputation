@@ -393,7 +393,7 @@ async def test_open_rejected_cause_stays_out_of_immediate_and_morning_slack(
         state="OPEN",
         severity="HIGH",
         customer_impact="예정 공개 콘텐츠가 제때 공개되지 않습니다.",
-        next_action="운영 센터에서 가격·지역·검색 구조 게이트를 확인하세요.",
+        next_action="처리 목록에서 가격·지역·검색 구조 게이트를 확인하세요.",
         admin_path="/operations",
         hospital_id=uuid.uuid4(),
         version=1,
@@ -794,7 +794,7 @@ def test_running_publication_and_linked_incident_stay_observable_without_duplica
 
 
 def test_a_due_slot_with_an_open_incident_says_what_blocked_it() -> None:
-    """운영센터가 "오늘 발행 예정"만 반복하고 원인을 비워 두지 않는다.
+    """처리 목록이 "오늘 발행 예정"만 반복하고 원인을 비워 두지 않는다.
 
     2026-09-20 사고에서 이 자리가 늘 비어 있어, 매시간 같은 게이트에 막힌 5건의 원인을
     DB를 직접 열지 않고는 알 수 없었다.
@@ -1008,7 +1008,7 @@ def test_incident_payload_expands_unassigned_owner_and_missing_deadline() -> Non
         hospital_name="테스트의원",
         severity="HIGH",
         customer_impact="오늘 콘텐츠 공개가 늦어집니다.",
-        next_action="운영 센터에서 조치하세요.",
+        next_action="처리 목록에서 조치하세요.",
         admin_path="/operations",
         owner_label="미지정",
         sla_label="확인 필요",
@@ -1021,7 +1021,7 @@ def test_incident_payload_expands_unassigned_owner_and_missing_deadline() -> Non
     # Then
     payload = intent.message.payload_json()
     assert "담당: 병원 운영 담당자" in payload
-    assert "처리 기한: 운영 센터에서 확인" not in payload
+    assert "처리 기한: 처리 목록에서 확인" not in payload
     assert "SLA" not in payload
 
 

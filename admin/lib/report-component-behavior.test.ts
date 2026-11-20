@@ -36,7 +36,7 @@ test('fresh server state blocks stale delivery before mutation and stays actiona
 
   assert.equal(issue?.problem, '현재 병원 자료가 변경됐습니다.')
   assert.equal(issue?.action, 'operations')
-  assert.match(issue?.nextAction ?? '', /운영 센터/)
+  assert.match(issue?.nextAction ?? '', /처리 목록/)
 })
 
 test('fresh server state prevents a duplicate delivery but allows valid correction and rescind', () => {

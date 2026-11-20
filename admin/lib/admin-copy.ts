@@ -537,6 +537,20 @@ export const ADMIN_COPY = {
   systemActorFallback: '자동 처리',
   // 병원 목록 배지 — 로고·대표색·첫 화면 문구·정보 우선순위의 값 누락(사진 아님).
   visualItemsMissing: '공개 페이지 항목 입력 필요',
+  // 왼쪽 메뉴(2026-11-20 마케팅 요청 — 경로는 그대로, 이름·묶음만).
+  nav: {
+    sectionOperations: '운영',
+    sectionSales: '영업',
+    sectionManage: '관리',
+    hospitals: '병원',
+    operations: '처리 목록',
+    diagnoses: '노출 진단',
+    settings: '설정',
+  },
+  settings: {
+    accountsTitle: '운영자 계정',
+    costGuardTitle: '자동 작업 한도',
+  },
   // 병원 정보 > 진료시간의 공휴일 칸(2026-11-18 — 공휴일 휴진을 AI가 읽는 구조화 데이터에 싣는다).
   businessHours: {
     holiday: '공휴일',

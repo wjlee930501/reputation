@@ -38,7 +38,7 @@ def test_partial_v0_summary_migration_is_scoped_to_usable_partial_runs(monkeypat
         "safe_error_code": "V0_PARTIAL_PROVIDER_DEGRADED",
         "safe_error_message": "일부 AI 측정 호출은 실패했지만 성공 데이터로 초기 진단을 완료했습니다.",
         "next_action": (
-            "초기 진단을 다시 실행하지 마세요. 운영센터에서 실패한 플랫폼의 상태만 확인하고 "
+            "초기 진단을 다시 실행하지 마세요. 처리 목록에서 실패한 플랫폼의 상태만 확인하고 "
             "다음 정기 측정에서 회복 여부를 점검하세요."
         ),
     }

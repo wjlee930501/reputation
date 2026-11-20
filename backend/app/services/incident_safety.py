@@ -69,7 +69,7 @@ def build_incident_key(
 REBUILD_SITE_SWEEP_KEY_PREFIX: Final = "rebuild-site:"
 """자동 복구 sweep이 만든 REBUILD_SITE 실행의 idempotency key 접두사 (H-13).
 
-sweep이 만든 자동 시도와, 운영자가 운영센터에서 누른 재시도의 자식 실행을 가르는 표식이다.
+sweep이 만든 자동 시도와, 운영자가 처리 목록에서 누른 재시도의 자식 실행을 가르는 표식이다.
 sweep은 예산을 다 쓴 뒤 병원 하나당 사고 한 건으로 넘기므로 시도마다 알리지 않고, 사람이
 시작한 시도는 실패하면 반드시 보여야 한다. 접두사를 두 곳에서 각자 적으면 한쪽만 바뀌는
 순간 자동 시도가 사람의 할 일이 되거나 사람의 실패가 조용해진다.
@@ -144,7 +144,7 @@ def project_incident_labels(incident: Incident, *, now: datetime) -> IncidentLab
         severity_labels[severity],
         "담당자 배정됨" if incident.owner_id else "담당자 미배정",
         sla_label,
-        sanitize_operator_text(incident.next_action) or "운영 센터에서 확인",
+        sanitize_operator_text(incident.next_action) or "처리 목록에서 확인",
         normalize_admin_path(incident.admin_path),
         state is IncidentState.OPEN,
         state is IncidentState.RETRYING,

@@ -339,7 +339,7 @@ def _exhausted_incident(hospital, run, *, state, last_seen_at, **overrides):
         source_id=str(hospital.id),
         safe_error_code="SITE_BUILD_RETRIES_EXHAUSTED",
         safe_error_message="사이트 준비 자동 재실행이 하루치 예산을 모두 사용했습니다.",
-        next_action="병원 기본 정보와 공개 준비 오류를 확인하고 운영센터에서 다시 시도하세요.",
+        next_action="병원 기본 정보와 공개 준비 오류를 확인하고 처리 목록에서 다시 시도하세요.",
         admin_path=f"/hospitals/{hospital.id}",
         first_seen_at=last_seen_at,
         last_seen_at=last_seen_at,

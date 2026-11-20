@@ -777,7 +777,7 @@ def _deliver_hospital_critical_alerts(
     db.commit()
     for locked, snapshot in snapshots:
         try:
-            # Admin의 할 일(운영 센터) — Slack은 위 알림 하나뿐이라 사고는 알리지 않는다.
+            # Admin의 할 일(처리 목록) — Slack은 위 알림 하나뿐이라 사고는 알리지 않는다.
             _open_critical_incident(locked, hospital, run_async, snapshot=snapshot)
         except Exception:  # noqa: BLE001 - 알림은 이미 outbox에 있다. 사고 기록 실패가 알림을 막지 않는다.
             logger.exception("post-publish critical incident open failed for %s", locked.id)
@@ -908,7 +908,7 @@ def build_critical_backlog_digest(items: list[ContentItem], now: datetime):
             section_block(f"post_publish_critical_digest_{index}", chunk)
             for index, chunk in enumerate(chunk_lines(lines))
         ),
-        action_block("post_publish_critical_digest_action", action_url, "운영 센터 열기"),
+        action_block("post_publish_critical_digest_action", action_url, "처리 목록 열기"),
     ]
     message = validated_message(
         RenderedSlackMessage(prefixed_for_event(kind, title), tuple(blocks), action_url),

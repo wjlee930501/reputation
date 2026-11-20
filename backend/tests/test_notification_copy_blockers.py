@@ -100,7 +100,7 @@ def test_a_generation_error_is_a_service_error_not_a_body_review():
     assert copy.title == _GENERATION_ERROR
     assert copy.title != _BODY_REVIEW
     assert copy.action == (
-        "콘텐츠 생성 작업이 오류로 중단돼 원고를 만들지 못했습니다. 운영 센터에서 해당 글의 생성 "
+        "콘텐츠 생성 작업이 오류로 중단돼 원고를 만들지 못했습니다. 처리 목록에서 해당 글의 생성 "
         "상태를 확인하고, 오류가 풀렸으면 “작업 다시 시도”를 눌러 주세요."
     )
     assert copy.button == "생성 상태 확인"
@@ -117,7 +117,7 @@ def test_openrouter_key_limit_names_the_provider_and_operator_action():
 
 def test_the_provider_outage_digest_spells_the_operations_center_with_a_space():
     assert blocker_copy("PROVIDER_TIMEOUT").action == (
-        "콘텐츠 생성 서비스의 일시 장애로 원고를 만들지 못했습니다. 운영 센터에서 해당 글의 생성 "
+        "콘텐츠 생성 서비스의 일시 장애로 원고를 만들지 못했습니다. 처리 목록에서 해당 글의 생성 "
         "상태를 확인하고, 서비스가 복구됐으면 “작업 다시 시도”를 눌러 주세요."
     )
 

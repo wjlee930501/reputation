@@ -169,7 +169,7 @@ def test_pure_infrastructure_incidents_leave_the_ae_channel(incident_type: str) 
 
 
 def test_spent_site_build_budget_tells_the_developer_which_button_to_press() -> None:
-    """유일한 조치가 운영센터의 '작업 다시 시도'다 — 개발 담당 알림이 그 경로를 말한다."""
+    """유일한 조치가 처리 목록의 '작업 다시 시도'다 — 개발 담당 알림이 그 경로를 말한다."""
 
     intent = build_open_incident_notification(
         replace(_projection(), incident_type="SITE_BUILD_RETRIES_EXHAUSTED"),
@@ -177,7 +177,7 @@ def test_spent_site_build_budget_tells_the_developer_which_button_to_press() -> 
     )
 
     assert intent.channel == SLACK_DEVELOPER_CHANNEL
-    assert "운영센터" in intent.message.fallback_text
+    assert "처리 목록" in intent.message.fallback_text
     assert "‘작업 다시 시도’" in intent.message.fallback_text
 
 
@@ -436,7 +436,7 @@ def test_summary_identity_uses_sorted_unique_incidents_and_rejects_conflicts() -
     assert deduped.dedupe_key == canonical.dedupe_key
     assert all(
         label in deduped.message.fallback_text
-        for label in ("조치 필요", "장편한외과의원", "운영센터에서 담당 항목")
+        for label in ("조치 필요", "장편한외과의원", "처리 목록에서 담당 항목")
     )
     assert str(first.incident_id) not in deduped.message.payload_json()
     with pytest.raises(NotificationPayloadError, match="SUMMARY_INCIDENT_CONFLICT"):
@@ -634,7 +634,7 @@ async def test_slack_success_never_recovers_the_linked_incident(outbox_sessions)
             severity="HIGH",
             customer_impact="발행 지연",
             source_type="CONTENT",
-            next_action="운영 센터 확인",
+            next_action="처리 목록 확인",
             admin_path="/operations",
             # 알림과 같은 고정 시계로 연다 — 에피소드 시작보다 먼저 만든 열림 알림은 지난
             # 에피소드의 것으로 종결된다(`settle_incident_notices`).

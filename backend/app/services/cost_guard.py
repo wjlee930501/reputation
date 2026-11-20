@@ -1354,7 +1354,7 @@ async def _enqueue_durable_cost_alert_in_session(
                 ),
                 source_type="COST_GUARD",
                 next_action=(
-                    "운영센터의 비용 가드 사용량을 확인하고, 필요한 경우 킬스위치나 "
+                    "처리 목록의 비용 가드 사용량을 확인하고, 필요한 경우 킬스위치나 "
                     "일일 상한을 조정한 뒤 차단된 작업을 재시도하세요."
                 ),
                 admin_path="/operations",
@@ -1421,9 +1421,9 @@ def _build_cost_alert_intent(
     )
     next_action = (
         f"이후 {scope_label} 자동 호출은 기간이 리셋될 때까지 차단됩니다. "
-        "운영센터에서 사용량과 상한을 확인해 주세요."
+        "처리 목록에서 사용량과 상한을 확인해 주세요."
         if hard
-        else "현재 추세라면 곧 상한에 도달합니다. 운영센터에서 사용량을 확인해 주세요."
+        else "현재 추세라면 곧 상한에 도달합니다. 처리 목록에서 사용량을 확인해 주세요."
     )
     admin_url = urljoin(settings.ADMIN_BASE_URL.rstrip("/") + "/", "operations")
     message = SlackMessage(
@@ -1453,7 +1453,7 @@ def _build_cost_alert_intent(
                 "elements": [
                     {
                         "type": "button",
-                        "text": {"type": "plain_text", "text": "운영센터에서 확인"},
+                        "text": {"type": "plain_text", "text": "처리 목록에서 확인"},
                         "url": admin_url,
                     },
                 ],

@@ -73,7 +73,7 @@ def test_todo_predicate_excludes_developer_quiet_and_automatic_recovery() -> Non
 
 def test_heartbeat_counts_cause_groups_of_operator_todo_only(db) -> None:
     hospital, _ = seed(db)
-    # 같은 원인 세 건은 한 묶음이다 — 운영센터 카드도 하나다.
+    # 같은 원인 세 건은 한 묶음이다 — 처리 목록 카드도 하나다.
     for _ in range(3):
         _incident(db, hospital, "CONTENT_GENERATION_FAILED", "GENERATION_REJECTED")
     _incident(db, hospital, "CONTENT_GENERATION_FAILED", "MISSING_REFERENCES")
@@ -113,7 +113,7 @@ async def test_heartbeat_count_equals_operations_center_group_count(db) -> None:
 
 
 def test_cause_group_key_is_shared_by_both_screens() -> None:
-    # 운영센터가 쓰는 묶음 키가 같은 함수여야 두 화면의 숫자가 갈리지 않는다.
+    # 처리 목록이 쓰는 묶음 키가 같은 함수여야 두 화면의 숫자가 갈리지 않는다.
     from app.api.admin import operations_center_incident_queries as queries
 
     assert queries._cause_group_key is cause_group_key
