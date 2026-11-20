@@ -331,8 +331,8 @@ def test_a_future_environment_record_keeps_its_stored_time(monkeypatch):
     due = generation_incident_control._stored_retry_deadline(record)
     assert due is not None and due > _SLOT_GATE_AT
     assert action == (
-        f"자동 복구가 {display_time(due)}에 이 글의 원고 생성을 다시 시도합니다. 원인이 풀렸으면 운영 "
-        "센터에서 해당 항목의 “작업 다시 시도”를 눌러 지금 바로 다시 시도할 수 있습니다."
+        f"자동 복구가 {display_time(due)}에 이 글의 원고 생성을 다시 시도합니다. 원인이 풀렸으면 처리 "
+        "목록에서 해당 항목의 “작업 다시 시도”를 눌러 지금 바로 다시 시도할 수 있습니다."
     )
     assert _press_retry(monkeypatch, item, _PRESS, operator=True) == [
         (OperationRunState.SUCCEEDED, None)

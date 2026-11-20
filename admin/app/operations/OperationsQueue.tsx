@@ -96,7 +96,7 @@ function CostCauseAction({ item, canRaiseLimit }: {
       setNotice('오늘 한도를 2배로 올렸습니다. 차단된 작업을 다시 시도해 주세요.')
       setReason('')
     } catch {
-      setError('한도를 올리지 못했습니다. 비용 안전장치에서 상태를 다시 확인해 주세요.')
+      setError('한도를 올리지 못했습니다. 설정 화면 「자동 작업 한도」에서 상태를 다시 확인해 주세요.')
     } finally {
       setBusy(false)
     }

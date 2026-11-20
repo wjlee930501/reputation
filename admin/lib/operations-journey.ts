@@ -22,7 +22,7 @@ const SURFACE_COPY: Record<OperatorSurface, Omit<OperatorIssue, 'nextAction'>> =
     customerImpact: '확인되지 않은 글은 공개하거나 완료로 기록하지 않습니다.',
   },
   operations: {
-    problem: '처리 목록의 최신 처리 목록을 확인하지 못했습니다.',
+    problem: '처리 목록의 최신 상태를 확인하지 못했습니다.',
     customerImpact: '현재 화면만으로 고객 작업의 성공이나 실패를 판단할 수 없습니다.',
   },
   session: {

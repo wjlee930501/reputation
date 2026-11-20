@@ -1421,11 +1421,12 @@ def _build_cost_alert_intent(
     )
     next_action = (
         f"이후 {scope_label} 자동 호출은 기간이 리셋될 때까지 차단됩니다. "
-        "처리 목록에서 사용량과 상한을 확인해 주세요."
+        "설정 화면 「자동 작업 한도」에서 사용량과 상한을 확인해 주세요."
         if hard
-        else "현재 추세라면 곧 상한에 도달합니다. 처리 목록에서 사용량을 확인해 주세요."
+        else "현재 추세라면 곧 상한에 도달합니다. 설정 화면 「자동 작업 한도」에서 사용량을 확인해 주세요."
     )
-    admin_url = urljoin(settings.ADMIN_BASE_URL.rstrip("/") + "/", "operations")
+    # 2026-11-20: 비용·자동 작업 안전장치가 처리 목록에서 설정 화면(/accounts)으로 옮겨졌다.
+    admin_url = urljoin(settings.ADMIN_BASE_URL.rstrip("/") + "/", "accounts")
     message = SlackMessage(
         fallback_text=f"{title}: {context}",
         blocks=(
@@ -1453,7 +1454,7 @@ def _build_cost_alert_intent(
                 "elements": [
                     {
                         "type": "button",
-                        "text": {"type": "plain_text", "text": "처리 목록에서 확인"},
+                        "text": {"type": "plain_text", "text": "설정에서 확인"},
                         "url": admin_url,
                     },
                 ],

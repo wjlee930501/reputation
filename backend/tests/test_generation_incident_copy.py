@@ -347,8 +347,8 @@ async def test_a_provider_failure_with_budget_left_names_the_button_like_the_dig
     request, _incident_row = await _open(monkeypatch, item, "PROVIDER_TIMEOUT")
 
     assert request.next_action == (
-        "일시적인 응답 지연입니다. 다음 예약 배치가 자동으로 다시 시도합니다. 서비스가 복구됐으면 운영 "
-        "센터에서 해당 항목의 “작업 다시 시도”를 눌러 지금 바로 다시 시도할 수 있습니다."
+        "일시적인 응답 지연입니다. 다음 예약 배치가 자동으로 다시 시도합니다. 서비스가 복구됐으면 처리 "
+        "목록에서 해당 항목의 “작업 다시 시도”를 눌러 지금 바로 다시 시도할 수 있습니다."
     )
     assert "기다리세요" not in request.next_action
     assert "서비스가 복구됐으면" in blocker_copy("PROVIDER_TIMEOUT").action
@@ -486,8 +486,10 @@ _TOUCHED_ACTIONS = {
 
 @pytest.mark.parametrize("name", sorted(_TOUCHED_ACTIONS))
 def test_touched_actions_spell_the_operations_center_one_way(name):
-    # #187 2차: 이 PR이 쓰거나 고친 문구는 '처리 목록'(띄어쓰기)로 쓴다.
-    assert "처리 목록" not in _TOUCHED_ACTIONS[name]
+    # #187 2차: 이 PR이 쓰거나 고친 문구는 한 가지로 쓴다. 2026-11-20 메뉴 이름이 「운영 센터」에서
+    # 「처리 목록」으로 바뀌어, 옛 이름(붙여 쓴 것 포함)이 남지 않았는지 본다.
+    assert "운영센터" not in _TOUCHED_ACTIONS[name]
+    assert "운영 센터" not in _TOUCHED_ACTIONS[name]
 
 
 def test_touched_actions_that_name_the_operations_center_use_the_spaced_spelling():
@@ -988,3 +990,17 @@ def test_a_reused_unwritten_hard_cause_a_sweep_owns_keeps_its_action(monkeypatch
     )
 
     assert cause.next_action == "앞선 원인의 조치"
+
+
+def test_rejection_copy_saved_before_the_menu_rename_is_still_recognized():
+    """2026-11-20 「운영 센터」→「처리 목록」 — DB에 남은 옛 문구도 같은 거절로 알아본다."""
+    from app.workers.generation_run_control import (
+        _REJECTION_MESSAGES,
+        rejection_kind_for_message,
+        safe_generation_rejection_message,
+    )
+
+    for kind, message in _REJECTION_MESSAGES.items():
+        legacy = message.replace("처리 목록에서", "운영 센터에서")
+        assert safe_generation_rejection_message(legacy) == message, kind
+        assert rejection_kind_for_message(legacy) == kind, kind

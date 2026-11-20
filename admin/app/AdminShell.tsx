@@ -111,23 +111,32 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
   const isLogin = pathname === '/login'
   const [navCounts, setNavCounts] = useState<NavCounts | null>(null)
 
-  // 메뉴 배지는 화면을 옮길 때마다 다시 읽는다 — 가벼운 전용 API(쿼리 몇 개)라 폴링하지 않는다.
+  // 메뉴 배지는 화면을 옮길 때, 그리고 화면이 보이는 동안 1분마다 다시 읽는다 — 처리 목록에서 일을
+  // 끝내도 배지가 그대로 남지 않게. 가벼운 전용 API(쿼리 몇 개)다.
   useEffect(() => {
     if (isLogin) return
     let active = true
     async function loadCounts() {
+      if (document.visibilityState === 'hidden') return
       try {
         const counts = await fetchAPI<NavCounts>('/admin/operations/nav-counts')
         if (active) setNavCounts(counts)
       } catch (error: unknown) {
-        // 배지는 보조 정보다 — 못 읽으면 숫자 없이 메뉴만 보인다.
-        if (!isExpectedOperatorRequestFailure(error)) throw error
+        // 배지는 보조 정보다 — 요청·응답이 어떻게 실패하든(깨진 응답 포함) 숫자 없이 메뉴만 보인다.
         if (active) setNavCounts(null)
+        if (!isExpectedOperatorRequestFailure(error) && !(error instanceof SyntaxError)) {
+          console.warn('nav counts unavailable', error)
+        }
       }
     }
     void loadCounts()
+    const timer = window.setInterval(() => void loadCounts(), 60_000)
+    const onVisible = () => void loadCounts()
+    document.addEventListener('visibilitychange', onVisible)
     return () => {
       active = false
+      window.clearInterval(timer)
+      document.removeEventListener('visibilitychange', onVisible)
     }
   }, [isLogin, pathname])
 
