@@ -68,7 +68,7 @@ def monthly_run_operator_copy(stage: MonthlyRunStage) -> MonthlyRunOperatorCopy:
                 "필수 측정이 부족해 전달이 멈췄습니다",
                 "리포트는 만들어졌지만 필수 측정이나 운영 자료가 부족합니다.",
                 "현재 파일은 원장님께 전달할 수 없습니다.",
-                "운영 센터에서 차단 사유를 확인하고 해결한 뒤 ‘리포트 다시 만들기’를 눌러 주세요.",
+                "처리 목록에서 차단 사유를 확인하고 해결한 뒤 ‘리포트 다시 만들기’를 눌러 주세요.",
             )
         case MonthlyRunStage.COVERAGE_COMPLETE:
             return MonthlyRunOperatorCopy(

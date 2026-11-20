@@ -455,7 +455,7 @@ def _lead_incident(diagnosis_id: uuid.UUID, pipeline: str = "lead_diagnosis"):
         customer_impact="신청자에게 진단 리포트를 전달할 수 없습니다.",
         source_type="LEAD_DIAGNOSIS",
         source_id=str(diagnosis_id),
-        next_action="운영센터에서 원인을 확인하세요.",
+        next_action="처리 목록에서 원인을 확인하세요.",
         admin_path="/operations",
         safe_error_code="LEAD_DIAGNOSIS_FAILED",
     )

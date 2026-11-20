@@ -302,7 +302,7 @@ export default function ContentPage() {
     }
   }, [closeDetail, selected])
 
-  // 운영 센터의 콘텐츠 딥링크(?content=)로 들어오면 그 글을 바로 연다.
+  // 처리 목록의 콘텐츠 딥링크(?content=)로 들어오면 그 글을 바로 연다.
   useEffect(() => {
     if (deepLinkOpenedRef.current) return
     const contentId = new URLSearchParams(window.location.search).get('content')
@@ -750,7 +750,7 @@ export default function ContentPage() {
                   )}
                   {row.href && (
                     <a href={row.href} className="mt-1 inline-flex min-h-11 items-center text-xs font-semibold text-blue-700 underline underline-offset-2">
-                      운영 센터에서 조치
+                      처리 목록에서 조치
                     </a>
                   )}
                   {item.carried_over_from && (
@@ -825,7 +825,7 @@ export default function ContentPage() {
                       )}
                       {row.href && (
                         <a href={row.href} className="mt-1 inline-flex min-h-11 items-center text-[11px] font-semibold text-blue-700 underline underline-offset-2">
-                          운영 센터에서 조치
+                          처리 목록에서 조치
                         </a>
                       )}
                     </td>
@@ -1243,14 +1243,14 @@ export default function ContentPage() {
                     <p className="mt-1"><strong>발행 영향</strong> {selectedNotification?.publication_impact}</p>
                     <p className="mt-1"><strong>지금 할 일</strong> {selectedNotification?.next_action}</p>
                     <a href={hospitalOperationsHref(id, '/operations?queue=incidents')} className="mt-2 inline-flex min-h-11 items-center font-semibold text-blue-700 underline underline-offset-2">
-                      운영 센터에서 알림 상태 확인
+                      처리 목록에서 알림 상태 확인
                     </a>
                   </div>
                 )}
                 {selectedRow.href && (
                   <div className="mb-3 rounded-lg border border-orange-200 bg-orange-50 px-3 py-2 text-xs text-orange-800">
                     <a href={selectedRow.href} className="inline-flex min-h-11 items-center font-semibold underline underline-offset-2">
-                      운영 센터에서 조치: {selectedRow.detail ?? selectedRow.label}
+                      처리 목록에서 조치: {selectedRow.detail ?? selectedRow.label}
                     </a>
                   </div>
                 )}

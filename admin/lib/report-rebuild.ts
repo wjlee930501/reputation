@@ -34,7 +34,7 @@ export const REPORT_REBUILD_DELIVERED_WARNING =
  * 같은 버튼을 달면 "눌렀는데 이 달의 월간 보고서가 새로 생겼다"가 된다.
  */
 const V0_UNAVAILABLE =
-  '초기 진단은 월간 보고서 생성 경로로 다시 만들 수 없습니다. 운영 센터에서 초기 진단 재실행을 요청해 주세요.'
+  '초기 진단은 월간 보고서 생성 경로로 다시 만들 수 없습니다. 처리 목록에서 초기 진단 재실행을 요청해 주세요.'
 
 export function reportRebuildPlan(
   report: RebuildContract,

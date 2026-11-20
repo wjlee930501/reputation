@@ -202,7 +202,7 @@ def record_task_success(task: SignalTask | None, task_id: str | None) -> bool:
 def _record_site_build_operator_failure(db: Session, run: OperationRun) -> bool:
     """사람이 시작한 사이트 준비 재시도의 실패를 이 병원의 사고 한 건에 싣는다 (H-13).
 
-    운영센터 재시도는 sweep이 더 이상 고르지 않는 병원(이미 ACTIVE·site_built 등)에서도
+    처리 목록 재시도는 sweep이 더 이상 고르지 않는 병원(이미 ACTIVE·site_built 등)에서도
     눌린다. 그 실패를 sweep에게 미루면 아무도 알리지 않아, 누른 사람은 실패한 줄 모른다.
     그렇다고 실행 단위 generic 사고를 열면 같은 원인이 두 줄이 된다 — 그 실행은 sweep의
     예산에도 함께 세어져, 뒤이은 자동 실패 두 번이 병원 단위 최종 차단을 두 번째 OPEN과
@@ -287,7 +287,7 @@ def _recoverable_incident(db: Session, run: OperationRun) -> Incident | None:
     """이 실행의 성공이 닫아야 할 사고 한 건.
 
     일반 경로는 같은 도메인 결과가 연 OPERATION_TERMINAL_FAILED다. sweep이 주인인 작업은 시도마다
-    사고를 열지 않으므로, 운영자가 실패한 실행을 운영센터에서 다시 시도해 자식 run이
+    사고를 열지 않으므로, 운영자가 실패한 실행을 처리 목록에서 다시 시도해 자식 run이
     성공하면 sweep이 남긴 병원 단위 최종 차단을 닫아야 한다 — 아무도 닫지 않으면 이미
     해결된 일이 사람의 할 일 목록에 영원히 남는다.
     """

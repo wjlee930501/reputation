@@ -173,7 +173,7 @@ def _claim_expiry(now: datetime) -> datetime:
 
 
 def _inactive_claim_filter(expiry: datetime):
-    # 로더와 같은 술어다 — 토큰만 남고 claim 시각이 빈 행(운영센터의 claim 해제)도 비활성이다.
+    # 로더와 같은 술어다 — 토큰만 남고 claim 시각이 빈 행(처리 목록의 claim 해제)도 비활성이다.
     return _nightly_generation_claim_filter(expiry)
 
 

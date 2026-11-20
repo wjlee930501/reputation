@@ -432,7 +432,7 @@ export function DomainSetupPanel({ hospitalId, profile, onProfileChange, onHeade
       }
       setDomainFeedback({
         tone: 'error',
-        message: safeOperatorError('onboarding', '공개 운영 시작을 다시 누르고, 계속 실패하면 운영 센터에서 도메인 작업을 확인하세요.'),
+        message: safeOperatorError('onboarding', '공개 운영 시작을 다시 누르고, 계속 실패하면 처리 목록에서 도메인 작업을 확인하세요.'),
       })
     } finally {
       setPlatformActivating(false)

@@ -3425,7 +3425,7 @@ def _handle_v0_final_failure(task, hospital_id: str, exc: BaseException) -> dict
                     if rerun_at is not None
                     else summary.get(
                         "next_action",
-                        "운영센터에서 원인을 확인하고 초기 진단 리포트를 수동 재실행하세요.",
+                        "처리 목록에서 원인을 확인하고 초기 진단 리포트를 수동 재실행하세요.",
                     )
                 ),
                 source_type="V0_REPORT",
@@ -3504,7 +3504,7 @@ def _classify_v0_failure(
         code = "V0_PARTIAL_PROVIDER_DEGRADED"
         message = "일부 AI 측정 호출은 실패했지만 성공 데이터로 초기 진단을 완료했습니다."
         next_action = (
-            "초기 진단을 다시 실행하지 마세요. 운영센터에서 실패한 플랫폼의 상태만 확인하고 "
+            "초기 진단을 다시 실행하지 마세요. 처리 목록에서 실패한 플랫폼의 상태만 확인하고 "
             "다음 정기 측정에서 회복 여부를 점검하세요."
         )
     elif any(token in reason_text for token in ("credit_balance_exhausted", "quota")):
@@ -4091,7 +4091,7 @@ def _open_source_incident(
 ) -> uuid.UUID | None:
     """자동 복구가 끝난 자료 하나를 사람의 할 일로 올린다.
 
-    dedupe는 자료 id 하나다 — 같은 자료가 여러 번 실패해도 운영 센터에는 한 줄이다.
+    dedupe는 자료 id 하나다 — 같은 자료가 여러 번 실패해도 처리 목록에는 한 줄이다.
     """
     # 저장 경로는 앵커(#)를 허용하지 않는다(incident_safety.normalize_admin_path) —
     # 근거 자료 섹션까지 데려가는 것은 화면의 링크가 하고, 여기는 그 화면까지만 가리킨다.
@@ -4313,7 +4313,7 @@ def _retire_channel_source_fetch_incidents() -> None:
 
 
 def _attach_source_incident(source_uuid: uuid.UUID, incident_id: uuid.UUID | None) -> None:
-    """화면이 '운영 센터 확인' 링크를 걸 수 있게, 실제로 열린 예외만 자료에 붙인다."""
+    """화면이 '처리 목록 확인' 링크를 걸 수 있게, 실제로 열린 예외만 자료에 붙인다."""
     if incident_id is None:
         return
     with SyncSessionLocal() as db:
@@ -4488,7 +4488,7 @@ def process_source_asset_task(
         )
         logger.warning("Source processing rejected for %s: %s", source_uuid, exc)
         # ERROR는 자동 재시도가 없는 종착지다. 사람이 자료를 고치거나 빼기 전에는 이 자료가
-        # 근거로 쓰이지 않으므로, 현황·운영 센터가 그 사실을 들고 있어야 한다(I-3).
+        # 근거로 쓰이지 않으므로, 현황·처리 목록이 그 사실을 들고 있어야 한다(I-3).
         error_hospital_id, error_hospital_name = _source_hospital_identity(source_uuid)
         incident_id = _open_source_incident(
             pipeline=SOURCE_PROCESSING_PIPELINE,
@@ -5570,7 +5570,7 @@ def trigger_v0_report(self, hospital_id: str, failure_retry_count: int = 0):
                             safe_error_code="SITE_BUILD_DISPATCH_FAILED",
                             problem="초기 진단 완료 후 콘텐츠 허브 준비 작업을 큐에 넣지 못했습니다.",
                             customer_impact="콘텐츠 허브 공개 준비가 늦어질 수 있습니다.",
-                            next_action="자동 복구 결과를 확인하고 계속 실패하면 운영센터에서 사이트 준비를 재시도하세요.",
+                            next_action="자동 복구 결과를 확인하고 계속 실패하면 처리 목록에서 사이트 준비를 재시도하세요.",
                             source_type="SITE_BUILD",
                             hospital_name=hospital.name,
                             hospital_id=hospital.id,
@@ -6433,7 +6433,7 @@ def _run_generation_item(
                 cost_decision.reason,
             )
             code = "COST_BLOCKED"
-            message = "비용 가드가 생성을 보류했습니다. 운영 센터에서 한도를 확인해 주세요."
+            message = "비용 가드가 생성을 보류했습니다. 처리 목록에서 한도를 확인해 주세요."
             _remember_generation_attempt(db, item, philosophy, code, message=message)
             recorder.record(
                 item.id,
@@ -7919,7 +7919,7 @@ def _generate_single_content_item(
         return (
             GenerationItemState.SKIPPED,
             "COST_BLOCKED",
-            "비용 가드가 생성을 보류했습니다. 운영 센터에서 한도를 확인해 주세요.",
+            "비용 가드가 생성을 보류했습니다. 처리 목록에서 한도를 확인해 주세요.",
         )
 
     approved_brief = prepare_automatic_content_brief_sync(
@@ -12694,10 +12694,10 @@ def _finish_monthly_operation_run(
             "DOCTOR_ARTIFACT_BLOCKED" if artifact_blocked else "MONTHLY_REPORT_BLOCKED"
         )
         run.safe_error_message = (
-            "원장 전달용 PDF 검증을 완료하지 못했습니다. 운영 센터에서 자동 복구 상태와 차단 사유를 확인해 주세요."
+            "원장 전달용 PDF 검증을 완료하지 못했습니다. 처리 목록에서 자동 복구 상태와 차단 사유를 확인해 주세요."
             if artifact_blocked
             else "측정 결과, 원장 PDF, 또는 콘텐츠 검수 중 확인이 필요한 항목이 있습니다. "
-            "운영 센터에서 차단 사유를 확인해 주세요."
+            "처리 목록에서 차단 사유를 확인해 주세요."
         )
     run.version += 1
     db.commit()

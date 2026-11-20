@@ -645,7 +645,7 @@ def _operator_alert_text(report: WatchdogReport) -> str:
         "계약 분량이 밀립니다.",
         "",
         "지금 할 일",
-        "운영센터에서 오늘 발행 큐를 확인해 주세요. 자동 복구가 진행 중인 항목은 그대로 두고, "
+        "처리 목록에서 오늘 발행 큐를 확인해 주세요. 자동 복구가 진행 중인 항목은 그대로 두고, "
         "조치가 필요한 항목만 처리하면 됩니다. 개발팀에도 같은 시각의 실행기 점검 결과가 갑니다.",
         _operations_link(),
     ]
@@ -674,7 +674,7 @@ def _recovery_text(report: WatchdogReport, audience: str) -> str:
             f"오늘 공개된 글은 {report.publish_published_today}건이고 "
             f"{report.publish_due_remaining}건이 남아 있습니다."
             if report.publish_checked
-            else "오늘 발행 결과는 운영센터에서 확인할 수 있습니다."
+            else "오늘 발행 결과는 처리 목록에서 확인할 수 있습니다."
         )
         lines = [
             "오늘 예정된 글이 다시 공개되고 있습니다.",
@@ -727,7 +727,7 @@ def _operator_cleared_without_publication_text(report: WatchdogReport) -> str:
             "앞서 알린 '아침 자동 발행이 오늘 글을 한 건도 열어 보지 못한 상태'는 사라졌습니다. "
             "오늘 발행 예정으로 남은 글이 더 이상 없습니다."
         )
-        action = "일정이 바뀐 글이 있는지 운영센터에서 확인해 주세요."
+        action = "일정이 바뀐 글이 있는지 처리 목록에서 확인해 주세요."
     lines = [
         "아침 자동 발행 정지 경보가 해제됐습니다. 오늘 공개된 글은 아직 없습니다.",
         "",
@@ -1351,7 +1351,7 @@ def _email_lines(decision: AlertDecision, mail_key: str) -> tuple[str, ...]:
         f"외부 감시가 {audience} 담당 경보를 Slack에 전달하지 못해 메일로 알립니다.",
         f"감지된 조건: {conditions}",
         f"경보 번호: {mail_key}",
-        "같은 경보 동안 이 메일은 한 번만 보냅니다. 지금 상태와 건수는 운영센터와 Cloud Run 로그에서 확인해 주세요.",
+        "같은 경보 동안 이 메일은 한 번만 보냅니다. 지금 상태와 건수는 처리 목록과 Cloud Run 로그에서 확인해 주세요.",
     )
 
 

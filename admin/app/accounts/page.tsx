@@ -4,6 +4,8 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { ApiError, fetchAPI } from '@/lib/api'
 import { fetchCurrentAccount, type CurrentAccount } from '@/lib/current-account'
+import { ADMIN_COPY } from '@/lib/admin-copy'
+import { CostGuardPanel } from '@/app/operations/CostGuardPanel'
 
 type AdminAccount = {
   id: string
@@ -192,8 +194,8 @@ export default function AccountsPage() {
     <div className="mx-auto max-w-5xl px-6 py-8">
       <header className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <p className="admin-eyebrow">운영 설정</p>
-          <h1 className="title2 mt-1 text-slate-900">운영자 계정</h1>
+          <p className="admin-eyebrow">{ADMIN_COPY.nav.settings}</p>
+          <h1 className="title2 mt-1 text-slate-900">{ADMIN_COPY.settings.accountsTitle}</h1>
           <p className="mt-2 max-w-2xl text-sm leading-relaxed text-slate-600">
             Admin 콘솔에 로그인할 수 있는 운영자를 관리합니다. 계정을 추가·정지하는 조작은
             소유자만 할 수 있고, 모든 변경은 감사 로그에 남습니다.
@@ -492,6 +494,11 @@ export default function AccountsPage() {
           </form>
         </div>
       )}
+      {/* 2026-11-20: 처리 목록 화면에 있던 비용·자동 작업 안전장치를 설정으로 옮겼다. 한도 상향은 소유자만. */}
+      <section aria-labelledby="settings-cost-guard" className="mt-10">
+        <h2 id="settings-cost-guard" className="text-base font-semibold text-slate-900">{ADMIN_COPY.settings.costGuardTitle}</h2>
+        <CostGuardPanel canRaiseLimit={canManage} />
+      </section>
     </div>
   )
 }

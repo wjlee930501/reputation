@@ -643,10 +643,10 @@ export default function LeadsPage() {
                     {lead.notification_status === 'FAILED' && (
                       <div className="mt-2 min-w-[18rem] break-keep">
                         <OperatorIssuePanel
-                          message={'문제: 상담 요청은 저장됐지만 담당자 알림을 보내지 못했습니다.\n고객 영향: 담당자가 신규 문의를 늦게 확인할 수 있습니다.\n지금 할 일: ‘운영 센터에서 확인’을 눌러 알림 복구 상태를 확인하세요.'}
+                          message={'문제: 상담 요청은 저장됐지만 담당자 알림을 보내지 못했습니다.\n고객 영향: 담당자가 신규 문의를 늦게 확인할 수 있습니다.\n지금 할 일: ‘처리 목록에서 확인’을 눌러 알림 복구 상태를 확인하세요.'}
                           surface="leads"
                           actionHref="/operations?queue=incidents"
-                          actionLabel="운영 센터에서 확인"
+                          actionLabel="처리 목록에서 확인"
                         />
                       </div>
                     )}
@@ -791,7 +791,7 @@ export default function LeadsPage() {
                                         : '신청자에게는 아직 보고서가 전달되지 않았습니다. 완료 여부를 자동으로 확인하고 있습니다.'}
                                     </p>
                                     <Link href="/operations" className="mt-2 inline-flex min-h-11 items-center text-xs font-semibold text-blue-700 hover:underline">
-                                      운영 센터에서 상세 확인
+                                      처리 목록에서 상세 확인
                                     </Link>
                                   </div>
                                 )
@@ -825,7 +825,7 @@ export default function LeadsPage() {
                                         onClick={() => {
                                           void navigator.clipboard.writeText(supportInfo).then(
                                             () => setActionNotice('개발팀 문의 정보를 복사했습니다.'),
-                                            () => setActionNotice('복사하지 못했습니다. 운영 센터에서 진단 번호를 확인해 주세요.'),
+                                            () => setActionNotice('복사하지 못했습니다. 처리 목록에서 진단 번호를 확인해 주세요.'),
                                           )
                                         }}
                                         className="min-h-11 rounded-lg border border-amber-300 bg-white px-3 py-2 text-xs font-semibold text-amber-900"
@@ -833,7 +833,7 @@ export default function LeadsPage() {
                                         문의 정보 복사
                                       </button>
                                       <Link href="/operations" className="inline-flex min-h-11 items-center px-2 text-xs font-semibold text-amber-900 hover:underline">
-                                        운영 센터 상세
+                                        처리 목록 상세
                                       </Link>
                                     </div>
                                   </div>

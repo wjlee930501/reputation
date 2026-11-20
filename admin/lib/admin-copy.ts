@@ -444,6 +444,20 @@ export const ADMIN_COPY = {
     sameRegionCount: '{province} {count}곳 사용 중',
     loadFailed: '같은 지역 분포를 불러오지 못했습니다. 레이아웃은 그대로 고를 수 있습니다.',
   },
+  // 왼쪽 메뉴(2026-11-20 마케팅 요청 — 경로는 그대로, 이름·묶음만).
+  nav: {
+    sectionOperations: '운영',
+    sectionSales: '영업',
+    sectionManage: '관리',
+    hospitals: '병원',
+    operations: '처리 목록',
+    diagnoses: '노출 진단',
+    settings: '설정',
+  },
+  settings: {
+    accountsTitle: '운영자 계정',
+    costGuardTitle: '자동 작업 한도',
+  },
   // 병원 정보 > 진료시간의 공휴일 칸(2026-11-18 — 공휴일 휴진을 AI가 읽는 구조화 데이터에 싣는다).
   businessHours: {
     holiday: '공휴일',
