@@ -263,3 +263,26 @@ def test_steering_survives_missing_region_terms(content_type):
     prompt = _fill_type_prompt(content_type, _hospital(), brief)
 
     assert prompt
+
+
+# ── 측정 질문도 제목도 없는 슬롯 ──────────────────────────────────────────────
+
+
+def test_slot_without_question_or_title_never_steers_with_the_enum_name():
+    """2026-11: 「ContentType.TREATMENT 안내」 — str(enum)이 키워드가 돼 제목에 들어갔다."""
+    brief = build_content_brief(
+        hospital=_hospital(),
+        content_item=SimpleNamespace(id=uuid.uuid4(), title=None, content_type=ContentType.TREATMENT),
+        query_target=None,
+    )
+    assert brief["target_query"] == "TREATMENT content slot"
+    assert brief["target_keyword"] is None
+    assert brief["target_question"] == ""
+    assert "ContentType" not in str(brief)
+
+
+def test_stored_brief_with_the_enum_name_is_rebuilt():
+    from app.services.content_brief import _brief_carries_enum_repr
+
+    assert _brief_carries_enum_repr({"target_keyword": "ContentType.TREATMENT"})
+    assert not _brief_carries_enum_repr({"target_keyword": "허리디스크"})
