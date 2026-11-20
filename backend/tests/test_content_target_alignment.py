@@ -75,7 +75,7 @@ def test_brief_exposes_target_keyword_question_and_region():
     brief = _brief()
 
     assert brief["target_keyword"] == "허리디스크"
-    assert brief["target_question"] == "강남역에서 허리디스크 치료하는 병원 알려주시겠어요?"
+    assert brief["target_question"] == "강남역에서 허리디스크 치료하는 병원은 어디인가요?"
     assert brief["target_region_terms"] == ["강남역"]
 
 
@@ -94,7 +94,7 @@ def test_brief_falls_back_to_the_longest_non_region_token():
 def test_faq_prompt_binds_the_measured_question():
     prompt = _fill_type_prompt(ContentType.FAQ, _hospital(), _brief())
 
-    assert "강남역에서 허리디스크 치료하는 병원 알려주시겠어요?" in prompt
+    assert "강남역에서 허리디스크 치료하는 병원은 어디인가요?" in prompt
     assert "faq_question 필드에는 위 '환자 질문 문장'을 그대로" in prompt
     # 병원 키워드 전체가 아니라 이 질문의 키워드만 들어간다.
     assert "진료 키워드: 허리디스크" in prompt
@@ -263,3 +263,37 @@ def test_steering_survives_missing_region_terms(content_type):
     prompt = _fill_type_prompt(content_type, _hospital(), brief)
 
     assert prompt
+
+
+# ── 측정 질문도 제목도 없는 슬롯 ──────────────────────────────────────────────
+
+
+def test_slot_without_question_or_title_never_steers_with_the_enum_name():
+    """2026-11: 「ContentType.TREATMENT 안내」 — str(enum)이 키워드가 돼 제목에 들어갔다."""
+    brief = build_content_brief(
+        hospital=_hospital(),
+        content_item=SimpleNamespace(id=uuid.uuid4(), title=None, content_type=ContentType.TREATMENT),
+        query_target=None,
+    )
+    assert brief["target_query"] == "TREATMENT content slot"
+    assert brief["target_keyword"] is None
+    assert brief["target_question"] == ""
+    assert "ContentType" not in str(brief)
+    # 자리 표시는 진료 서술·작가 프롬프트·SEO 키워드로 새지 않는다.
+    assert brief["treatment_narrative"].get("treatment") != "TREATMENT content slot"
+    from app.services.content_engine import _validate_seo
+
+    findings = _validate_seo(
+        {"title": "허리 통증 안내", "body": "## 허리\n본문\n## 치료\n- 항목", "meta_description": ""},
+        _hospital(),
+        brief,
+        ContentType.TREATMENT,
+    )
+    assert not any("TREATMENT" in finding for finding in findings)
+
+
+def test_stored_brief_with_the_enum_name_is_rebuilt():
+    from app.services.content_brief import _brief_carries_enum_repr
+
+    assert _brief_carries_enum_repr({"target_keyword": "ContentType.TREATMENT"})
+    assert not _brief_carries_enum_repr({"target_keyword": "허리디스크"})

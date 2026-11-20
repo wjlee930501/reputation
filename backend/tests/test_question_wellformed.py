@@ -149,7 +149,7 @@ def test_brief_replaces_a_malformed_patient_question_with_neutral_phrasing() -> 
 
 def test_brief_leaves_a_wellformed_question_untouched() -> None:
     brief = _brief("마산에서 고혈압 치료하는 병원 알려줘", condition="고혈압")
-    assert brief["target_question"] == "마산에서 고혈압 치료하는 병원 알려주시겠어요?"
+    assert brief["target_question"] == "마산에서 고혈압 치료하는 병원은 어디인가요?"
 
 
 def test_brief_has_no_question_when_even_the_keyword_is_unusable() -> None:

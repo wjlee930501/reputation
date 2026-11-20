@@ -411,34 +411,86 @@ def target_is_question_form(target: object) -> bool:
 # 측정 질의는 환자가 AI에게 던지는 반말 명령형("추천해줘")이다. 공개되는 글의 FAQ
 # 질문 문장으로 그대로 쓰면 어색하므로 존댓말 의문문으로 바꾼다. 뜻은 바꾸지 않는다 —
 # 이 문장이 곧 "측정에서 우리가 답해야 하는 질문"이기 때문이다.
-# 긴 표지부터 본다(가장 구체적인 어미가 먼저 걸려야 한다).
+# 2026-11-20(마케팅 요청·결정 문서 14번 권장 ①): 새 글부터 존댓말 환자 질문형이다 — 추천·
+# 알려 달라는 요청형("추천해 주시겠어요?")도 환자가 묻는 질문으로 바꾼다. 측정 질의 문장과
+# 지문은 바꾸지 않는다(이 함수는 글 쪽에서만 쓴다). 앞부분(키워드·지역)은 글자 그대로 둔다 —
+# 생성 검증이 FAQ 질문에서 핵심 키워드를 찾는다.
+# 긴 표지부터 본다(가장 구체적인 어미가 먼저 걸려야 한다). `{topic}`은 표지 앞 부분에 은/는을 붙인 꼴.
 _QUESTION_REWRITES: tuple[tuple[str, str], ...] = (
     ("어느 병원으로 가야 해?", "어느 병원으로 가야 하나요?"),
     ("어떤 전문의한테 가야 해?", "어떤 전문의에게 가야 하나요?"),
     ("얼마나 드는지 알려줘", "얼마나 드나요?"),
-    ("어디가 좋은지 비교해줘", "어디가 좋은가요?"),
+    ("어디가 좋은지 비교해줘", "어디로 가면 좋을까요?"),
     ("뭔지 알려줘", "무엇인가요?"),
     ("얼마나 돼?", "얼마나 되나요?"),
     ("어느 정도야?", "어느 정도인가요?"),
     ("가능한 병원 추천해줘", "가능한 병원은 어디인가요?"),
-    ("추천해줘", "추천해 주시겠어요?"),
-    ("알려줘", "알려주시겠어요?"),
-    ("비교해줘", "비교해 주시겠어요?"),
+    ("병원 추천해줘", "병원은 어디로 가야 하나요?"),
+    ("병원 알려줘", "병원은 어디인가요?"),
+    ("전문의 추천", "전문의는 어디서 진료받을 수 있나요?"),
+    ("추천해줘", "{topic} 어디로 가야 하나요?"),
+    ("추천해 줘", "{topic} 어디로 가야 하나요?"),
+    ("비용 알려줘", "비용은 얼마나 드나요?"),
+    ("증상 알려줘", "증상은 무엇인가요?"),
+    ("알려줘", "{topic} 어떻게 되나요?"),
+    ("알려 줘", "{topic} 어떻게 되나요?"),
+    ("비교해줘", "{topic} 어떻게 다른가요?"),
 )
+
+# 물음표로 끝나는 반말 어미 → 존댓말. 이미 존댓말(…요?·…니까?)이면 건드리지 않는다.
+_CASUAL_QUESTION_ENDINGS: tuple[tuple[str, str], ...] = (
+    ("뭐야?", "무엇인가요?"),
+    ("어디야?", "어디인가요?"),
+    ("좋아?", "좋은가요?"),
+    ("할까?", "할까요?"),
+    ("될까?", "될까요?"),
+    ("있어?", "있나요?"),
+    ("없어?", "없나요?"),
+    ("돼?", "되나요?"),
+    ("해?", "하나요?"),
+    ("이야?", "인가요?"),
+    ("야?", "인가요?"),
+)
+
+
+def _topic_particle(text: str) -> str:
+    """앞말에 은/는을 붙인다(받침 있으면 은). 한글이 아니면 '은'."""
+    stripped = text.rstrip()
+    if not stripped:
+        return stripped
+    last = stripped[-1]
+    code = ord(last) - 0xAC00
+    if 0 <= code < 11172 and code % 28 == 0:
+        return f"{stripped}는"
+    return f"{stripped}은"
 
 
 def natural_patient_question(query_text: str) -> str:
     """측정 질의를 환자가 실제로 쓸 법한 존댓말 한 문장 질문으로 정규화한다.
 
-    결정적이며 뜻을 바꾸지 않는다. 규칙에 걸리지 않으면 물음표만 보정한다.
+    결정적이며 뜻을 바꾸지 않는다. 규칙에 걸리지 않으면 물음표만 보정한다. 이미 존댓말 질문이면
+    그대로 돌려준다(작가가 쓴 FAQ 질문에 다시 적용해도 안전하다).
     """
     text = " ".join((query_text or "").split())
     if not text:
         return ""
+    # 작가가 요청형 끝에 물음표만 붙인 꼴(「추천해줘?」)도 같은 규칙으로 본다.
+    bare = text[:-1].rstrip() if text.endswith("?") else text
     for suffix, replacement in _QUESTION_REWRITES:
-        if text.endswith(suffix):
-            return f"{text[: -len(suffix)]}{replacement}".strip()
+        matched = text if text.endswith(suffix) else bare if bare.endswith(suffix) else None
+        if matched is not None:
+            head = matched[: -len(suffix)].strip()
+            if "{topic}" in replacement:
+                if not head:
+                    break
+                return replacement.replace("{topic}", _topic_particle(head))
+            return f"{head} {replacement}".strip()
     if text.endswith("?"):
+        if text.endswith(("요?", "니까?")):
+            return text
+        for suffix, replacement in _CASUAL_QUESTION_ENDINGS:
+            if text.endswith(suffix):
+                return f"{text[: -len(suffix)]}{replacement}"
         return text
     if text.endswith(("병원", "추천")):
         return f"{text}은 어디인가요?"

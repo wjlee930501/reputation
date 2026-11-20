@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from typing import Any
 
 from app.models.content import ContentItem
 from app.models.essence import HospitalContentPhilosophy
 from app.models.hospital import Hospital
 from app.models.sov import AIQueryTarget, ExposureAction
+from app.services.enum_values import enum_value
 from app.services.essence_engine import effective_safety_policy
 from app.services.query_target_structure import (
     clinical_keyword_from_query,
@@ -71,9 +73,14 @@ def build_content_brief(
     target_query = (
         f"{focus['topic']}에 대해 알고 싶어요" if focus else _target_query(query_target, content_item)
     )
+    # 측정 질문도 제목도 없는 슬롯의 target_query는 내부 자리 표시다 — 키워드·환자 질문·진료 서술로
+    # 쓰면 작가가 그 글자를 제목에 넣는다(2026-11, 「ContentType.TREATMENT 안내」).
+    slot_placeholder = focus is None and is_slot_placeholder(target_query)
     treatment_name = (
         focus["treatment"]
         if focus
+        else None
+        if slot_placeholder
         else _first_present(
             getattr(query_target, "treatment", None),
             getattr(query_target, "condition_or_symptom", None),
@@ -88,7 +95,9 @@ def build_content_brief(
     safety_policy = effective_safety_policy(philosophy)
     region_terms = _list(getattr(query_target, "region_terms", None))
     target_keyword = (
-        focus["topic"] if focus else _target_keyword(query_target, target_query, region_terms)
+        None
+        if slot_placeholder
+        else focus["topic"] if focus else _target_keyword(query_target, target_query, region_terms)
     )
 
     brief = {
@@ -101,7 +110,7 @@ def build_content_brief(
         # - target_question: FAQ의 faq_question / 다른 유형의 "첫 문단이 답할 질문"
         # - target_region_terms: LOCAL 프롬프트에 넣을 지역 (병원 keywords 전체가 아니라)
         "target_keyword": target_keyword,
-        "target_question": _patient_question(target_query, target_keyword),
+        "target_question": "" if slot_placeholder else _patient_question(target_query, target_keyword),
         "target_region_terms": [str(term) for term in region_terms if term],
         "patient_intent": _patient_intent(query_target, exposure_action),
         "query_target": _query_target_reference(query_target),
@@ -146,10 +155,32 @@ def _patient_question(target_query: str, keyword: str | None) -> str:
     return ""
 
 
+def _slot_placeholder(content_item: ContentItem) -> str:
+    """측정 질문·제목이 없는 슬롯의 내부 자리 표시. enum은 값으로 쓴다 — str(ContentType.X)는
+    파이썬 3.11에서 'ContentType.X'다."""
+    return f"{enum_value(getattr(content_item, 'content_type', None)) or 'CONTENT'} content slot"
+
+
+_SLOT_PLACEHOLDER_RE = re.compile(r"^(?:ContentType\.)?[A-Z_]+ content slot$")
+
+
+def is_slot_placeholder(text: object) -> bool:
+    """브리프 target_query가 측정 질문 없는 슬롯의 내부 자리 표시인가(작가·검사에 보이지 않게)."""
+    return bool(_SLOT_PLACEHOLDER_RE.match(str(text or "").strip()))
+
+
+def _brief_carries_enum_repr(brief: dict) -> bool:
+    """옛 자리 표시('ContentType.X content slot')가 키워드·질문으로 저장된 브리프 — 다시 만든다."""
+    return any(
+        str(brief.get(field) or "").startswith("ContentType.")
+        for field in ("target_query", "target_keyword", "target_question")
+    )
+
+
 def _target_query(query_target: AIQueryTarget | None, content_item: ContentItem) -> str:
     if query_target is None:
         title = getattr(content_item, "title", None)
-        return title or f"{getattr(content_item, 'content_type', 'CONTENT')} content slot"
+        return title or _slot_placeholder(content_item)
 
     active_variants = [
         variant
@@ -307,6 +338,8 @@ def content_brief_matches_inputs(
     query_target: AIQueryTarget | None,
 ) -> bool:
     if not is_usable_content_brief(brief) or brief.get("schema_version") != CONTENT_BRIEF_SCHEMA_VERSION:
+        return False
+    if _brief_carries_enum_repr(brief):
         return False
     philosophy_reference = brief.get("philosophy_reference")
     source_snapshot = brief.get("source_snapshot")
