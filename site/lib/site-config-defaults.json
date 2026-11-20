@@ -1,5 +1,5 @@
 {
-  "defaults_version": "2026-11-21.2",
+  "defaults_version": "2026-11-21.3",
   "schema_version": 1,
   "layouts": {
     "A": {
@@ -123,10 +123,10 @@
         "style": "cards"
       },
       "doctor": {
-        "photo_ratio": "portrait",
+        "photo_ratio": "landscape",
         "photo_focus": {
           "x": 0.5,
-          "y": 0.2
+          "y": 0.5
         },
         "title_position": "above",
         "show_philosophy": false
@@ -244,7 +244,7 @@
           "id": "care_principles",
           "enabled": true,
           "title": "증상의 원인부터 확인합니다",
-          "background": "default",
+          "background": "tint",
           "align": "left",
           "label": false,
           "attached_to": null
@@ -280,7 +280,7 @@
           "id": "care_flow",
           "enabled": true,
           "title": "첫 방문부터 경과 관리까지, 진료 4단계",
-          "background": "default",
+          "background": "tint",
           "align": "center",
           "label": false,
           "attached_to": null
@@ -326,7 +326,7 @@
         "image": {
           "focus": {
             "x": 0.5,
-            "y": 0.5
+            "y": 0.48
           },
           "veil": {
             "opacity": 0.6,
@@ -343,7 +343,7 @@
         "photo_ratio": "portrait",
         "photo_focus": {
           "x": 0.5,
-          "y": 0.2
+          "y": 0.5
         },
         "title_position": "above",
         "show_philosophy": false
@@ -551,7 +551,7 @@
         "photo_ratio": "portrait",
         "photo_focus": {
           "x": 0.5,
-          "y": 0.2
+          "y": 0.5
         },
         "title_position": "above",
         "show_philosophy": false

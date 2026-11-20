@@ -68,6 +68,173 @@ def test_defaults_match_current_screens() -> None:
     c_labels = {s["id"]: s["label"] for s in site_defaults.defaults("C")["sections"]}
     assert all(label for section_id, label in c_labels.items() if section_id != "hero")
 
+    # ③-1 감사: 의료진 사진 비율(A 가로 4:3)·초점(세 안 모두 가운데), 첫 화면 사진 초점(B 위 48%),
+    # B 진료 원칙·진료 과정 연한 띠.
+    ratio = {layout: site_defaults.defaults(layout)["doctor"]["photo_ratio"] for layout in site_defaults.LAYOUTS}
+    assert ratio == {"A": "landscape", "B": "portrait", "C": "portrait"}
+    doctor_focus = {layout: site_defaults.defaults(layout)["doctor"]["photo_focus"] for layout in site_defaults.LAYOUTS}
+    assert doctor_focus == {layout: {"x": 0.5, "y": 0.5} for layout in site_defaults.LAYOUTS}
+    hero_focus = {layout: site_defaults.defaults(layout)["hero"]["image"]["focus"] for layout in site_defaults.LAYOUTS}
+    assert hero_focus == {"A": {"x": 0.5, "y": 0.5}, "B": {"x": 0.5, "y": 0.48}, "C": {"x": 0.5, "y": 0.5}}
+    b_background = {s["id"]: s["background"] for s in site_defaults.defaults("B")["sections"]}
+    assert {k for k, v in b_background.items() if v != "default"} == {"care_principles", "care_flow"}
+
+
+def _css_rule(path: Path, selector: str) -> str:
+    """미디어 쿼리 밖(들여쓰기 없는) 규칙들을 이어 붙인다 — 뒤 규칙이 앞 규칙을 덮으므로 뒤가 마지막에 온다."""
+
+    css = path.read_text(encoding="utf-8")
+    rules = re.findall(r"(?m)^" + re.escape(selector) + r"\s*\{([^}]*)\}", css)
+    assert rules, selector
+    return "\n".join(rules)
+
+
+def test_photo_defaults_follow_the_site_css() -> None:
+    """기본값은 CSS를 옮긴 것이다 — CSS가 바뀌면 이 테스트가 기본값도 같이 고치라고 알린다."""
+
+    globals_css = ROOT / "site" / "app" / "globals.css"
+    layouts = ROOT / "site" / "app" / "[slug]" / "_layouts"
+    assert "object-position: center 48%" in _css_rule(globals_css, ".clinic-hero-editorial-image")
+    # B 의료진 사진은 ClinicAvatar의 <img>(클래스 없음)에 `.clinic-curator-portrait img`가 붙는다 — 초점 지정 없음.
+    assert "object-position" not in _css_rule(globals_css, ".clinic-curator-portrait img")
+    avatar = (ROOT / "site" / "app" / "[slug]" / "_components" / "ClinicAvatar.tsx").read_text(encoding="utf-8")
+    assert "className" not in re.search(r"<Image[^>]*>", avatar, re.S).group(0)
+    assert 'wrapperClassName="clinic-curator-portrait"' in (
+        ROOT / "site" / "app" / "[slug]" / "_components" / "DoctorIntro.tsx"
+    ).read_text(encoding="utf-8")
+    assert "aspect-ratio: 4 / 5" in _css_rule(globals_css, ".clinic-shell .clinic-curator-figure .clinic-curator-portrait")
+    assert "aspect-ratio: 4 / 3" in _css_rule(layouts / "layout-a.module.css", ".doctorPhoto")
+    assert "aspect-ratio: 3 / 4" in _css_rule(layouts / "layout-c.module.css", ".doctorPhoto")
+    for module in ("layout-a.module.css", "layout-c.module.css"):
+        assert "object-position" not in _css_rule(layouts / module, ".doctorPhoto")
+
+
+# ── 옛 판 보호(③-1) ─────────────────────────────────────────────────
+
+
+def test_defaults_versions_compare_by_date_then_number() -> None:
+    parse = site_defaults.parse_defaults_version
+    assert parse("2026-11-21.10") > parse("2026-11-21.9")
+    assert parse("2026-11-22.1") > parse("2026-11-21.10")
+    for broken in (None, "", "2026-11-21", "2026-11-21.x", "26-11-21.1", 3, "2026-1-21.1"):
+        assert parse(broken) is None
+
+
+def _old_snapshot(layout: str, config: dict, *, version: str | None) -> dict:
+    """그 판의 기본값으로 저장된 듯한 스냅샷 — 지금 칸에 옛 기본값을 덮는다."""
+
+    snapshot = site_defaults.resolve(layout, config)
+    snapshot["defaults_version"] = version
+    snapshot["doctor"]["photo_focus"] = {"x": 0.5, "y": 0.2}
+    snapshot["doctor"]["photo_ratio"] = "portrait"
+    snapshot["hero"]["image"]["focus"] = {"x": 0.5, "y": 0.5}
+    for section in snapshot["sections"]:
+        section["background"] = "default"
+        section["align"] = "left"
+    snapshot["faq"]["limit"] = config.get("faq", {}).get("limit", 6)
+    return snapshot
+
+
+def test_old_snapshots_refresh_only_the_fields_the_site_did_not_read() -> None:
+    config = {
+        "sections": [
+            {"id": "doctor", "title": "원장 소개"},
+            {"id": "treatments", "enabled": True},
+            {"id": "gallery", "enabled": False, "align": "left"},
+        ],
+        "copy": {"treatments.note": "자주 찾는 진료입니다."},
+        "hero": {"blocks": ["phone", "today"]},
+        "care_principles": {"card_count": 2},
+        "faq": {"mode": "auto", "limit": 4},
+        "nav": {"items": ["visit", "doctor", "call"], "mobile_bar": ["call", "map"]},
+        "share": {"description": "공유 설명"},
+    }
+    snapshot = _old_snapshot("B", config, version="2026-11-21.2")
+    refreshed = site_defaults.refresh_stale_defaults(snapshot, config)
+
+    assert refreshed is not snapshot and snapshot["doctor"]["photo_focus"] == {"x": 0.5, "y": 0.2}  # 원본 불변
+    fresh = site_defaults.resolve("B", config)
+    # 아직 읽지 않던 칸 → 그 판의 설정 + 지금 기본값.
+    assert refreshed["doctor"] == fresh["doctor"]
+    assert refreshed["hero"] == fresh["hero"] and refreshed["hero"]["blocks"] == ["phone", "today"]
+    for key in ("treatments", "visit", "region_tags", "type", "article"):
+        assert refreshed[key] == fresh[key]
+    look = {s["id"]: (s["background"], s["align"], s["label"]) for s in refreshed["sections"]}
+    assert look == {s["id"]: (s["background"], s["align"], s["label"]) for s in fresh["sections"]}
+    assert look["gallery"][1] == "left"  # 설정에서 직접 바꾼 칸은 남는다
+    # 사이트가 이미 읽는 칸 → 스냅샷 그대로(순서·켜기·제목, 문구, 카드 수, FAQ, 메뉴, 공유, 진료 과정).
+    assert [(s["id"], s["enabled"], s["title"]) for s in refreshed["sections"]] == [
+        (s["id"], s["enabled"], s["title"]) for s in snapshot["sections"]
+    ]
+    for key in ("copy", "care_flow", "nav", "share"):
+        if key == "nav":
+            assert {k: v for k, v in refreshed[key].items() if k != "section_index"} == {
+                k: v for k, v in snapshot[key].items() if k != "section_index"
+            }
+        else:
+            assert refreshed[key] == snapshot[key]
+    assert refreshed["care_principles"]["card_count"] == 2
+    assert refreshed["faq"]["limit"] == 4 and refreshed["faq"]["mode"] == "auto"
+    assert refreshed["defaults_version"] == "2026-11-21.2"
+
+
+def test_current_snapshots_are_served_as_saved() -> None:
+    snapshot = site_defaults.resolve("A", {"doctor": {"photo_ratio": "square"}})
+    snapshot["hero"]["image"]["focus"] = {"x": 0.1, "y": 0.9}  # 저장 뒤 기본값이 바뀐 척
+    assert site_defaults.refresh_stale_defaults(snapshot, {}) is snapshot
+
+
+def test_fields_the_site_already_reads_are_never_refreshed() -> None:
+    """FAQ 개수는 `.2`에서 기본값이 6 → 10으로 바뀌었지만 사이트가 이미 읽는다 — 옛 판도 6 그대로."""
+
+    for version in ("2026-11-21.1", None, "broken"):
+        snapshot = _old_snapshot("C", {}, version=version)
+        assert snapshot["faq"]["limit"] == 6
+        assert site_defaults.refresh_stale_defaults(snapshot, {})["faq"]["limit"] == 6
+    read_by_site = {"faq.limit", "faq.mode", "faq.content_ids", "care_principles.card_count", "care_flow", "copy",
+                    "nav.items", "nav.mobile_bar", "share", "sections.enabled", "sections.title"}
+    assert not read_by_site & {path for path, _ in site_defaults.REFRESHED_SINCE}
+
+
+def test_refresh_survives_unknown_layouts_and_odd_configs() -> None:
+    assert site_defaults.refresh_stale_defaults({"layout": "Z"}, {}) == {"layout": "Z"}
+    snapshot = _old_snapshot("A", {}, version="2026-11-20.1")
+    refreshed = site_defaults.refresh_stale_defaults(snapshot, {"sections": "not-a-list"})
+    assert refreshed["doctor"] == site_defaults.defaults("A")["doctor"]
+    # 칸 하나가 깨진 옛 설정 — 500 대신 그 칸만 기본값.
+    for broken in ({"care_principles": None}, {"hero": None}, {"doctor": {"photo_focus": None}}, {"visit": "x"}):
+        refreshed = site_defaults.refresh_stale_defaults(_old_snapshot("B", {}, version="2026-11-21.2"), broken)
+        expected = site_defaults.defaults("B")
+        assert refreshed["care_principles"]["use_default_cards"] is True
+        assert refreshed["hero"] == expected["hero"] and refreshed["doctor"] == expected["doctor"]
+        assert refreshed["visit"] == expected["visit"]
+
+
+
+def test_one_broken_config_field_keeps_the_others_and_never_breaks_the_public_response() -> None:
+    """Codex 2차: 깨진 칸 하나가 다른 칸의 직접 바꾼 값을 지우거나 공개 응답을 500으로 만들지 않는다."""
+
+    good = {"doctor": {"photo_ratio": "square"}, "visit": {"show_transit": False}}
+    snapshot = _old_snapshot("B", good, version="2026-11-21.2")
+    broken = {**good, "sections": "not-a-list"}
+    refreshed = site_defaults.refresh_stale_defaults(snapshot, broken)
+    assert refreshed["doctor"]["photo_ratio"] == "square"
+    assert refreshed["visit"]["show_transit"] is False
+
+    for odd in (
+        {"hero": {"line_breaks": "broken"}},
+        {"hero": {"line_breaks": {"hero.headline": "broken"}}},
+        {"hero": {"blocks": [1, 2]}, "visit": {"order": "parking"}},
+        {"hero": {"image": {"focus": "middle", "veil": [0.3]}}},
+        {"sections": [{"id": "gallery", "background": 3, "align": None}, "x", {"id": 5}]},
+    ):
+        out = site_defaults.refresh_stale_defaults(_old_snapshot("B", {}, version="2026-11-21.2"), odd)
+        assert out["hero"]["line_breaks"] == {}
+        assert out["hero"]["blocks"] == site_defaults.defaults("B")["hero"]["blocks"]
+        assert out["hero"]["image"] == site_defaults.defaults("B")["hero"]["image"]
+        assert out["visit"] == site_defaults.defaults("B")["visit"]
+        _public(out)  # 예외 없이 정리된다
+
 
 def test_default_titles_match_the_site_template_copy() -> None:
     source = TEMPLATE_COPY.read_text(encoding="utf-8")

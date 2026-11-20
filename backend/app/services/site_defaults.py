@@ -3,7 +3,8 @@
 설정(`hospital_site_configs.config`)은 이 기본값과 **다른 칸만** 담는다. 서버가 둘을 합친 완성본
 (`resolved`)을 저장 시점에 스냅샷으로 남기고, 공개 응답은 그 스냅샷을 공개용으로 다시 정리해 낸다
 (`site_config_public.py`). 기본값을 바꾸면 `DEFAULTS_VERSION`을 올린다 — 옛 공개 판은 스냅샷으로
-그대로 재현되고, 복원할 때만 지금 기본값에 다시 합친다.
+그대로 재현되고, 복원할 때만 지금 기본값에 다시 합친다. 예외: 사이트가 아직 읽지 않던 칸은 그 칸의
+기본값을 맞춘 판(`REFRESHED_SINCE`)보다 오래된 스냅샷에서 지금 기본값으로 다시 합친다(`refresh_stale_defaults`).
 
 섹션 표는 2026-11-21 기준 사이트 홈 마크업을 그대로 옮긴 것이다(`site/app/[slug]/page.tsx`,
 `_layouts/HomeLayoutA.tsx`·`HomeLayoutC.tsx`). 기본 제목은 `site/lib/clinic-template-copy.ts`와
@@ -22,7 +23,7 @@ from __future__ import annotations
 import copy
 from typing import Any, Final
 
-DEFAULTS_VERSION: Final = "2026-11-21.2"
+DEFAULTS_VERSION: Final = "2026-11-21.3"
 SCHEMA_VERSION: Final = 1
 LAYOUTS: Final = ("A", "B", "C")
 
@@ -82,11 +83,12 @@ _SECTIONS: Final[dict[str, tuple[dict[str, Any], ...]]] = {
         _section("section_index", None, enabled=False),
         _section("treatments", TREATMENT_SECTION_TITLE, align="center"),
         _section("doctor", DOCTOR_SECTION_TITLE, align="center"),
-        _section("care_principles", CARE_PRINCIPLES_TITLE),
+        # 진료 원칙·진료 과정은 연한 대표색 띠다(globals.css `.clinic-section--principles`, layout-b `.clinic-section--flow`).
+        _section("care_principles", CARE_PRINCIPLES_TITLE, background="tint"),
         _section("contents", "먼저 정리한 글", align="center"),
         _section("questions", QUESTIONS_SECTION_TITLE),
         _section("faq", FAQ_SECTION_TITLE, align="center"),
-        _section("care_flow", CARE_FLOW_TITLE, align="center"),
+        _section("care_flow", CARE_FLOW_TITLE, background="tint", align="center"),
         _section("gallery", GALLERY_SECTION_TITLE, align="center"),
         _section("facts", None, align="center"),
         _section("visit", "오시는 길·방문 안내", align="center"),
@@ -129,9 +131,10 @@ _COMMON: Final[dict[str, Any]] = {
     },
     "copy": {},
     "treatments": {"show_description": True, "style": "cards"},
+    # 사진 초점은 CSS `object-position`이다 — A·C는 지정이 없어 가운데다.
     "doctor": {
         "photo_ratio": "portrait",
-        "photo_focus": {"x": 0.5, "y": 0.2},
+        "photo_focus": {"x": 0.5, "y": 0.5},
         "title_position": "above",
         "show_philosophy": False,
     },
@@ -159,8 +162,12 @@ _COMMON: Final[dict[str, Any]] = {
 
 _LAYOUT_OVERRIDES: Final[dict[str, dict[str, Any]]] = {
     # A·C는 진료 항목을 이름만 보인다(알약·타일). B 카드만 설명을 싣는다.
-    "A": {"treatments": {"show_description": False}},
-    "B": {},
+    # 의료진 사진: A 4:3 가로(layout-a `.doctorPhoto`), B 4:5·C 3:4 세로.
+    "A": {"treatments": {"show_description": False}, "doctor": {"photo_ratio": "landscape"}},
+    # B 첫 화면 사진은 위에서 48%(`.clinic-hero-editorial-image`, 모바일은 54%·가운데라 한 점으로 다
+    # 맞출 수는 없다). 의료진 사진은 가운데다 — 실제 사진에 붙는 규칙(`.clinic-curator-portrait img`)에
+    # 초점 지정이 없다(`.clinic-curator-portrait-image`의 위 14%는 쓰이지 않는 클래스다).
+    "B": {"hero": {"image": {"focus": {"x": 0.5, "y": 0.48}}}},
     "C": {"treatments": {"show_description": False}},
 }
 
@@ -231,6 +238,133 @@ def resolve(layout: str, config: dict[str, Any]) -> dict[str, Any]:
     return resolved
 
 
+def _typed_overlay(default: Any, value: Any, *, open_dict: bool = False) -> Any:
+    """기본값 위에 같은 모양의 값만 얹는다(옛 판 보호 전용). 모양이 다르면 그 칸은 기본값."""
+
+    if value is None:
+        return copy.deepcopy(default)
+    if isinstance(default, dict):
+        if not isinstance(value, dict):
+            return copy.deepcopy(default)
+        out = copy.deepcopy(default)
+        for key, child in value.items():
+            if key in default:
+                out[key] = _typed_overlay(default[key], child, open_dict=key in _REPLACED_DICTS)
+            elif open_dict and isinstance(key, str):
+                # 줄바꿈처럼 키가 정해지지 않은 사전 — 값이 `{pc, mobile}` 문자열(또는 null) 모양일 때만.
+                if isinstance(child, dict) and all(
+                    device in {"pc", "mobile"} and (text is None or isinstance(text, str))
+                    for device, text in child.items()
+                ):
+                    out[key] = copy.deepcopy(child)
+        return out
+    if isinstance(default, bool):
+        return value if isinstance(value, bool) else default
+    if isinstance(default, (int, float)):
+        return value if isinstance(value, (int, float)) and not isinstance(value, bool) else default
+    if isinstance(default, str):
+        return value if isinstance(value, str) else copy.deepcopy(default)
+    if isinstance(default, list):
+        kinds = {type(item) for item in default} or {str}
+        if isinstance(value, list) and all(type(item) in kinds for item in value):
+            return copy.deepcopy(value)
+        return copy.deepcopy(default)
+    return copy.deepcopy(default)
+
+
+# 옛 판 보호 — 사이트가 아직 읽지 않던 칸은 그 칸의 기본값을 맞춘 판보다 오래된 스냅샷에서 믿지 않는다.
+# 그런 판은 사이트가 그 칸을 읽기 전에 저장됐으므로, 화면에 한 번도 보인 적 없는 틀린 기본값을 담고
+# 있을 수 있다(2026-11-21 ③-1). 공개 응답은 그 칸만 그 판의 설정(바꾼 칸)을 지금 기본값에 다시 합쳐 낸다.
+# 사이트가 이미 읽는 칸(섹션 순서·켜기·제목, 문구, 진료 과정, 카드 수, FAQ 방식·글, 메뉴, 공유)은 스냅샷
+# 그대로다. 사이트가 새 칸을 읽기 시작하거나 아직 읽지 않는 칸의 기본값을 다시 바꾸면 여기에 그 판을 적는다.
+LOOK_DEFAULTS_SINCE: Final = "2026-11-21.3"
+# 사이트가 이미 읽는 칸(예: FAQ 개수 — `.2`에서 기본값 6 → 10)은 넣지 않는다. 그 칸은 지금도 화면에 보이므로
+# 다시 합치면 저장·재공개 없이 공개 화면이 바뀐다.
+REFRESHED_SINCE: Final[tuple[tuple[str, str], ...]] = (
+    ("sections.background", LOOK_DEFAULTS_SINCE),
+    ("sections.align", LOOK_DEFAULTS_SINCE),
+    ("sections.label", LOOK_DEFAULTS_SINCE),
+    ("hero", LOOK_DEFAULTS_SINCE),
+    ("treatments", LOOK_DEFAULTS_SINCE),
+    ("doctor", LOOK_DEFAULTS_SINCE),
+    ("care_principles.use_default_cards", LOOK_DEFAULTS_SINCE),
+    ("visit", LOOK_DEFAULTS_SINCE),
+    ("faq.merge_questions", LOOK_DEFAULTS_SINCE),
+    ("region_tags", LOOK_DEFAULTS_SINCE),
+    ("nav.section_index", LOOK_DEFAULTS_SINCE),
+    ("type", LOOK_DEFAULTS_SINCE),
+    ("article", LOOK_DEFAULTS_SINCE),
+)
+
+
+def parse_defaults_version(value: Any) -> tuple[str, int] | None:
+    """`YYYY-MM-DD.N` → (날짜, 번호). 문자열 비교는 `.10`에서 틀린다. 형식이 다르면 None."""
+
+    if not isinstance(value, str):
+        return None
+    day, sep, number = value.partition(".")
+    if not sep or len(day) != 10 or not number.isdigit():
+        return None
+    parts = day.split("-")
+    if len(parts) != 3 or not all(part.isdigit() for part in parts) or [len(p) for p in parts] != [4, 2, 2]:
+        return None
+    return day, int(number)
+
+
+def _older_than(version: tuple[str, int] | None, since: str) -> bool:
+    threshold = parse_defaults_version(since)
+    assert threshold is not None
+    # 판이 없거나 깨졌으면 가장 오래된 판으로 본다.
+    return version is None or version < threshold
+
+
+def refresh_stale_defaults(resolved: dict[str, Any], config: dict[str, Any] | None) -> dict[str, Any]:
+    """옛 스냅샷의 아직 읽지 않던 칸을 그 판의 설정 + 지금 기본값으로 다시 합친다(새 dict, 원본 불변).
+
+    스냅샷 판이 최신이면 그대로 돌려준다. 레이아웃을 모르면 손대지 않는다(공개 정리가 버린다).
+    """
+
+    layout = resolved.get("layout")
+    if layout not in _SECTIONS:
+        return resolved
+    version = parse_defaults_version(resolved.get("defaults_version"))
+    stale = [path for path, since in REFRESHED_SINCE if _older_than(version, since)]
+    if not stale:
+        return resolved
+    base = defaults(layout)
+    config = config if isinstance(config, dict) else {}
+    out = copy.deepcopy(resolved)
+
+    # 설정(바꾼 칸)을 칸마다 따로, 기본값과 모양이 맞는 값만 얹는다 — 한 칸이 깨져도 그 칸만 기본값이고
+    # 다른 칸의 직접 바꾼 값은 남는다(설정 전체를 `resolve`로 합치면 한 칸 오류가 전부를 버린다).
+    def group(head: str) -> Any:
+        return _typed_overlay(base[head], config.get(head), open_dict=head in _REPLACED_DICTS)
+
+    section_overrides: dict[Any, dict[str, Any]] = {}
+    raw_sections = config.get("sections")
+    for item in raw_sections if isinstance(raw_sections, list) else []:
+        if isinstance(item, dict) and isinstance(item.get("id"), str):
+            section_overrides[item["id"]] = item
+    base_sections = {section["id"]: section for section in base["sections"]}
+
+    for path in stale:
+        head, _, field = path.partition(".")
+        if head == "sections":
+            for section in out.get("sections") or []:
+                if not isinstance(section, dict) or section.get("id") not in base_sections:
+                    continue
+                default = base_sections[section["id"]][field]
+                section[field] = _typed_overlay(default, section_overrides.get(section["id"], {}).get(field))
+        elif not field:
+            out[head] = group(head)
+        else:
+            target = out.get(head)
+            if not isinstance(target, dict):
+                target = out[head] = {}
+            target[field] = group(head)[field]
+    return out
+
+
 __all__ = (
     "CARE_FLOW_NOTE",
     "CARE_PRINCIPLES_LEDE",
@@ -238,12 +372,16 @@ __all__ = (
     "CARE_STEPS",
     "DEFAULTS_VERSION",
     "FIRST_SECTION",
+    "LOOK_DEFAULTS_SINCE",
+    "REFRESHED_SINCE",
     "FIXED_SECTIONS",
     "LAYOUTS",
     "SCHEMA_VERSION",
     "UNTITLED_SECTIONS",
     "defaults",
     "merge_sections",
+    "parse_defaults_version",
+    "refresh_stale_defaults",
     "resolve",
     "section_ids",
 )

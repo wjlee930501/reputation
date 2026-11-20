@@ -90,6 +90,16 @@ def _iso(value: datetime | None) -> str | None:
     return value.isoformat() if value else None
 
 
+def served_resolved(row: HospitalSiteConfig) -> dict[str, Any]:
+    """공개 응답이 실제로 내는 완성본 — 옛 판의 아직 읽지 않던 칸은 지금 기본값으로(`refresh_stale_defaults`).
+
+    편집기는 이 값에서 편집을 시작해 기본값과의 차이만 저장한다. 저장된 옛 스냅샷을 그대로 주면 옛 기본값이
+    지금 기본값과 달라 '직접 바꾼 칸'으로 굳는다.
+    """
+
+    return site_defaults.refresh_stale_defaults(row.resolved or {}, row.config)
+
+
 def serialize_config(row: HospitalSiteConfig | None) -> dict[str, Any] | None:
     if row is None:
         return None
@@ -99,7 +109,7 @@ def serialize_config(row: HospitalSiteConfig | None) -> dict[str, Any] | None:
         "version": row.version,
         "layout": row.layout,
         "config": row.config or {},
-        "resolved": row.resolved or {},
+        "resolved": served_resolved(row),
         "defaults_version": row.defaults_version,
         "schema_version": row.schema_version,
         "revision": row.revision,
@@ -359,7 +369,7 @@ async def save_site_config_draft(
             "draft_id": str(draft.id),
             "revision": draft.revision,
             "layout": draft.layout,
-            "changed": changed_sections(published.resolved if published else None, draft.resolved),
+            "changed": changed_sections(served_resolved(published) if published else None, draft.resolved),
         },
     )
     await db.commit()
@@ -446,7 +456,7 @@ async def publish_site_config_draft(
     draft.defaults_version = site_defaults.DEFAULTS_VERSION
     draft.published_by = default_actor()
     draft.published_at = now
-    draft.change_summary = changed_sections(previous.resolved if previous else None, check.resolved or {})
+    draft.change_summary = changed_sections(served_resolved(previous) if previous else None, check.resolved or {})
     layout_before = hospital.site_layout
     hospital.site_layout = draft.layout
     if is_public:
@@ -603,7 +613,7 @@ async def restore_site_config_version(
                 "path": "defaults_version",
                 "code": "DEFAULTS_CHANGED",
                 "message": "기본 설정이 그 판 이후 바뀌어, 직접 바꾸지 않은 칸은 지금 기본값으로 들어갑니다.",
-                "changed": changed_sections(source.resolved or {}, result["draft"]["resolved"]),
+                "changed": changed_sections(served_resolved(source), result["draft"]["resolved"]),
             },
         ]
     return result
