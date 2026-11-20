@@ -90,8 +90,8 @@ function buildHospitalDescription(hospital: Awaited<ReturnType<typeof fetchHospi
   const specialties = hospital.specialties?.join(', ') || ''
   const locality = [region, specialties].filter(Boolean).join(' · ')
   return locality
-    ? `${hospital.name} (${locality}) 진료 안내 — 의료진, 진료 영역, 진료시간, 오시는 길과 건강 정보를 확인할 수 있습니다.`
-    : `${hospital.name} 진료 안내 — 의료진, 진료 영역, 진료시간, 오시는 길과 건강 정보를 확인할 수 있습니다.`
+    ? `${hospital.name} (${locality}) 진료 안내 — 의료진, 진료 영역, 진료시간, 오시는 길과 의료 정보를 확인할 수 있습니다.`
+    : `${hospital.name} 진료 안내 — 의료진, 진료 영역, 진료시간, 오시는 길과 의료 정보를 확인할 수 있습니다.`
 }
 
 export async function generateMetadata({ params: paramsPromise }: Props): Promise<Metadata> {
@@ -332,7 +332,7 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
           <nav className="clinic-section-index" aria-label="이 페이지의 주요 정보">
             {hospital.treatments.length > 0 && <a href="#treatments">진료 영역</a>}
             {physicians.length > 0 && <a href="#doctor">의료진</a>}
-            {contents.length > 0 && <a href="#contents">건강 정보</a>}
+            {contents.length > 0 && <a href="#contents">의료 정보</a>}
             <a href="#facts">병원 정보</a>
             <a href="#contact">오시는 길</a>
           </nav>

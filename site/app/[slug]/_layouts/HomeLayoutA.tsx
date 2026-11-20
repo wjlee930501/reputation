@@ -210,7 +210,7 @@ export function HomeLayoutA({ model }: { model: ClinicHomeModel }) {
           <div className={s.sectionHead}>
             <h2 className={s.bigTitle}>{QUESTIONS_SECTION_TITLE}</h2>
             <Link className={s.textLink} href={`${hospitalRootUrl}/contents`}>
-              건강 정보 {contents.length}편 모두 보기 ›
+              의료 정보 {contents.length}편 모두 보기 ›
             </Link>
           </div>
           <div className={s.questionCards}>
@@ -259,7 +259,7 @@ export function HomeLayoutA({ model }: { model: ClinicHomeModel }) {
           {questions.length === 0 && contents.length > 0 ? (
             <p className={s.centered}>
               <Link className={s.textLink} href={`${hospitalRootUrl}/contents`}>
-                건강 정보 {contents.length}편 모두 보기 ›
+                의료 정보 {contents.length}편 모두 보기 ›
               </Link>
             </p>
           ) : null}
