@@ -749,8 +749,12 @@ async def test_list_month_metrics_match_the_overview_month(pg_async_session):
     await _content(db, hospital, withheld=True)
 
     overview = await _overview(db, hospital.id)
-    rows = await list_hospital_month_metrics(db=db)
+    rows = await list_hospital_month_metrics(ids=None, db=db)
     row = next(item for item in rows if item["hospital_id"] == str(hospital.id))
+    other = await _hospital(db, "다른지표 의원")
+    # 「더 보기」로 불러온 병원은 ids로 그 병원만 받는다.
+    only = await list_hospital_month_metrics(ids=[other.id], db=db)
+    assert [item["hospital_id"] for item in only] == [str(other.id)]
     month = overview.month
     assert row["published_count"] == month.published_count
     assert row["public_count"] == month.public_count

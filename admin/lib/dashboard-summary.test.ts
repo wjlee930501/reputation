@@ -30,12 +30,25 @@ test('dashboard numbers read server states and keep the to-do count apart from o
   assert.equal(summary.operatorTodo, 1)
   assert.equal(summary.reportGapHospitals, 2)
   assert.equal(summarizeDashboard(hospitals, metrics, null, null).operatorTodo, null)
+  // 보조 호출을 아직 못 받았거나 실패하면 0이 아니라 null(「—」).
+  const pending = summarizeDashboard(hospitals, null, null, null)
+  assert.deepEqual([pending.reportGapHospitals, pending.monthPublic, pending.monthPlanned], [null, null, null])
 })
 
-test('today lines put exceptions first and paused hospitals last', () => {
+test('today lines put exceptions first, reports before page items, paused hospitals last', () => {
   const lines = todoLines(hospitals, reports)
-  assert.deepEqual(lines.map((l) => [l.hospitalId, l.tone]), [
-    ['a', 'urgent'], ['a', 'attention'], ['b', 'attention'], ['b', 'attention'], ['b', 'attention'], ['c', 'info'],
+  assert.deepEqual(lines.map((l) => l.key), [
+    'a:exception', 'a:report', 'b:report', 'b:visual', 'b:preparing', 'c:paused',
   ])
   assert.equal(lines[1].title, '10월 원장 보고 미전달')
+  assert.equal(lines[2].title, '10월 원장 보고 미생성')
+})
+
+test('a later hospital report is not hidden behind an earlier hospital page item', () => {
+  const visualFirst = [
+    { id: 'v', name: '가', status: 'ACTIVE', open_exception_count: 0, visual_approval_missing: ['로고'], public_service_state: live },
+    { id: 'r', name: '나', status: 'ACTIVE', open_exception_count: 0, visual_approval_missing: [], public_service_state: live },
+  ]
+  const lines = todoLines(visualFirst, { period_month: 10, missing: [], undelivered: [{ hospital_id: 'r' }] })
+  assert.deepEqual(lines.map((l) => l.key), ['r:report', 'v:visual'])
 })

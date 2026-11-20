@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import { fetchAPI } from '@/lib/api'
 import { OperatorIssuePanel } from '@/app/_components/OperatorIssuePanel'
@@ -80,20 +80,35 @@ export default function HospitalsPage() {
   }, [loadPage])
 
   // 이번 달 발행·언급률은 병원마다 계산하는 무거운 호출이라 목록이 뜬 뒤 따로 받는다(실패해도 목록은 그대로).
+  // 첫 쪽은 최근 200곳을 한 번에, 「더 보기」로 붙은 병원은 그 병원 id만 더 받아 합친다.
+  // 요청마다 cleanup으로 버리면 「더 보기」가 목록을 바꿀 때 첫 응답이 사라지고 그 병원은 다시 받지 않는다 —
+  // 화면을 떠났을 때만 버린다.
+  const requestedMetrics = useRef<Set<string>>(new Set())
+  const mounted = useRef(true)
+  useEffect(() => {
+    mounted.current = true
+    return () => {
+      mounted.current = false
+    }
+  }, [])
   useEffect(() => {
     if (hospitals.length === 0) return
-    let active = true
-    fetchAPI<unknown>('/admin/hospitals/month-metrics')
+    const first = requestedMetrics.current.size === 0
+    const pending = hospitals.map((h) => h.id).filter((id) => !requestedMetrics.current.has(id))
+    if (pending.length === 0) return
+    pending.forEach((id) => requestedMetrics.current.add(id))
+    const query = first ? '' : `?${pending.slice(0, PAGE_SIZE).map((id) => `ids=${encodeURIComponent(id)}`).join('&')}`
+    fetchAPI<unknown>(`/admin/hospitals/month-metrics${query}`)
       .then((rows) => {
-        if (active) setMetrics(metricsByHospital(rows))
+        if (!mounted.current) return
+        const fetched = metricsByHospital(rows)
+        setMetrics((prev) => new Map([...prev, ...fetched]))
       })
       .catch((e: unknown) => {
+        pending.forEach((id) => requestedMetrics.current.delete(id))
         if (!isExpectedOperatorRequestFailure(e)) throw e
       })
-    return () => {
-      active = false
-    }
-  }, [hospitals.length])
+  }, [hospitals])
 
   // 원장 보고 누락 큐는 부가 정보다 — 실패해도 병원 목록을 막지 않는다.
   const [attention, setAttention] = useState<AttentionQueue | null>(null)
@@ -128,8 +143,10 @@ export default function HospitalsPage() {
   }, [hospitals, query, statusFilter, reportGapIds, sort, metrics])
 
   const pausedRows = useMemo(
-    () => (statusFilter === 'default' && !query.trim() ? hospitals.filter((h) => h.status === 'PAUSED') : []),
-    [hospitals, statusFilter, query],
+    () => (statusFilter === 'default' && !query.trim()
+      ? sortHospitals(hospitals.filter((h) => h.status === 'PAUSED'), sort, metrics)
+      : []),
+    [hospitals, statusFilter, query, sort, metrics],
   )
 
   const stats = useMemo(() => {

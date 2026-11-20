@@ -1,7 +1,7 @@
 'use client'
 
 import Link from 'next/link'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { fetchAPI } from '@/lib/api'
 import { ADMIN_COPY } from '@/lib/admin-copy'
@@ -33,32 +33,45 @@ const TONE_BAR: Record<TodoTone, string> = {
  */
 export default function DashboardPage() {
   const [hospitals, setHospitals] = useState<HospitalListRow[] | null>(null)
-  const [metrics, setMetrics] = useState<ReadonlyMap<string, HospitalMonthMetrics>>(new Map())
+  const [metrics, setMetrics] = useState<ReadonlyMap<string, HospitalMonthMetrics> | null>(null)
   const [attention, setAttention] = useState<AttentionQueue | null>(null)
   const [counts, setCounts] = useState<NavCounts | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [checkedAt, setCheckedAt] = useState<Date | null>(null)
+  // 새로고침마다 세대를 올린다 — 늦게 끝난 옛 응답이 새 숫자를 덮지 않게, 화면을 떠난 뒤에는 그리지 않게.
+  const generation = useRef(0)
+  useEffect(() => () => {
+    generation.current += 1
+  }, [])
 
   const load = useCallback(async () => {
+    const mine = ++generation.current
+    const current = () => generation.current === mine
     setError(null)
+    // 보조 숫자는 따로 받는다 — 하나가 느리거나 실패해도 다른 숫자를 막지 않고, 못 받은 값은 「—」(0이 아니다).
+    setMetrics(null)
+    setAttention(null)
+    setCounts(null)
+    const settle = <T,>(request: Promise<T>, apply: (value: T | null) => void) => {
+      request
+        .then((value) => { if (current()) apply(value) })
+        .catch((e: unknown) => {
+          if (!isExpectedOperatorRequestFailure(e)) throw e
+          if (current()) apply(null)
+        })
+    }
+    settle(fetchAPI<unknown>('/admin/hospitals/month-metrics'), (rows) => setMetrics(rows === null ? null : metricsByHospital(rows)))
+    settle(fetchAPI<AttentionQueue>('/admin/operations/attention'), setAttention)
+    settle(fetchAPI<NavCounts>('/admin/operations/nav-counts'), setCounts)
     try {
       const rows = await fetchAPI<HospitalListRow[]>('/admin/hospitals?skip=0&limit=200')
+      if (!current()) return
       setHospitals(Array.isArray(rows) ? rows : [])
       setCheckedAt(new Date())
     } catch (e: unknown) {
       if (!isExpectedOperatorRequestFailure(e)) throw e
-      setError(safeOperatorError('onboarding', '대시보드 새로고침을 누르세요.'))
-      return
+      if (current()) setError(safeOperatorError('onboarding', '대시보드 새로고침을 누르세요.'))
     }
-    // 아래는 보조 숫자다 — 하나가 실패해도 화면은 남은 것으로 그린다.
-    const [metricRows, attentionRows, navCounts] = await Promise.allSettled([
-      fetchAPI<unknown>('/admin/hospitals/month-metrics'),
-      fetchAPI<AttentionQueue>('/admin/operations/attention'),
-      fetchAPI<NavCounts>('/admin/operations/nav-counts'),
-    ])
-    setMetrics(metricRows.status === 'fulfilled' ? metricsByHospital(metricRows.value) : new Map())
-    setAttention(attentionRows.status === 'fulfilled' ? attentionRows.value : null)
-    setCounts(navCounts.status === 'fulfilled' ? navCounts.value : null)
   }, [])
 
   useEffect(() => {
@@ -101,12 +114,12 @@ export default function DashboardPage() {
       {summary && (
         <>
           <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
-            <NumberCard href="/hospitals" label={COPY.cardLive} value={summary.live} unit="곳" emphasis
+            <NumberCard href="/hospitals" label={COPY.cardLive} value={summary.live} unit={COPY.unitHospital} emphasis
               sub={COPY.cardLiveSub.replace('{preparing}', String(summary.preparing)).replace('{paused}', String(summary.paused))} />
-            <NumberCard href="/operations" label={COPY.cardTodo} value={summary.operatorTodo} unit="건" sub={COPY.cardTodoSub} />
-            <NumberCard href="/hospitals" label={COPY.cardReports.replace('{month}', String(reports?.period_month ?? ''))} value={summary.reportGapHospitals} unit="곳" sub={COPY.cardReportsSub} />
-            <NumberCard href="/hospitals" label={ADMIN_COPY.visualItemsMissing} value={summary.visualMissingHospitals} unit="곳" sub={COPY.cardVisualSub} />
-            <NumberCard href="/leads" label={COPY.cardLeads} value={summary.leadTotal} unit="건"
+            <NumberCard href="/operations" label={COPY.cardTodo} value={summary.operatorTodo} unit={COPY.unitCase} sub={COPY.cardTodoSub} />
+            <NumberCard href="/hospitals" label={COPY.cardReports.replace('{month}', String(reports?.period_month ?? ''))} value={summary.reportGapHospitals} unit={COPY.unitHospital} sub={COPY.cardReportsSub} />
+            <NumberCard href="/hospitals" label={ADMIN_COPY.visualItemsMissing} value={summary.visualMissingHospitals} unit={COPY.unitHospital} sub={COPY.cardVisualSub} />
+            <NumberCard href="/leads" label={COPY.cardLeads} value={summary.leadTotal} unit={COPY.unitCase}
               sub={summary.leadNeedsAttention === null ? '' : COPY.cardLeadsSub.replace('{count}', String(summary.leadNeedsAttention))} />
           </div>
 
@@ -145,13 +158,13 @@ export default function DashboardPage() {
             <div className="grid gap-4">
               <section className="rounded-xl border border-slate-200 bg-white p-4 sm:p-5" aria-labelledby="dash-status">
                 <h2 id="dash-status" className="text-base font-semibold text-slate-900">{COPY.statusTitle}</h2>
-                <p className="mt-2 text-2xl font-bold text-slate-900">{summary.total}<span className="ml-1 text-sm font-medium text-slate-500">곳</span></p>
+                <p className="mt-2 text-2xl font-bold text-slate-900">{summary.total}<span className="ml-1 text-sm font-medium text-slate-500">{COPY.unitHospital}</span></p>
                 <StatusBar live={summary.live} preparing={summary.preparing} paused={summary.paused} total={summary.total} />
               </section>
               <section className="rounded-xl border border-slate-200 bg-white p-4 sm:p-5" aria-labelledby="dash-month">
                 <h2 id="dash-month" className="text-base font-semibold text-slate-900">{COPY.monthTitle}</h2>
                 <p className="mt-2 text-2xl font-bold tabular-nums text-slate-900">
-                  {summary.monthPublic}<span className="ml-1 text-sm font-medium text-slate-500">/ {summary.monthPlanned}편</span>
+                  {summary.monthPublic ?? '—'}<span className="ml-1 text-sm font-medium text-slate-500">/ {summary.monthPlanned ?? '—'}{COPY.unitArticle}</span>
                 </p>
                 <p className="mt-1 text-xs text-slate-500">{COPY.monthHint}</p>
               </section>
@@ -167,7 +180,7 @@ export default function DashboardPage() {
               <table className="admin-responsive-table w-full min-w-[760px] text-sm">
                 <thead className="border-b border-slate-200 bg-slate-50">
                   <tr>
-                    <th className="px-5 py-2.5 text-left font-medium text-slate-600">병원</th>
+                    <th className="px-5 py-2.5 text-left font-medium text-slate-600">{ADMIN_COPY.hospitalList.colHospital}</th>
                     <th className="px-4 py-2.5 text-left font-medium text-slate-600">{ADMIN_COPY.hospitalList.colAddress}</th>
                     <th className="px-4 py-2.5 text-left font-medium text-slate-600">{ADMIN_COPY.hospitalList.colPublish}</th>
                     <th className="px-4 py-2.5 text-left font-medium text-slate-600">{ADMIN_COPY.hospitalList.colMention}</th>
@@ -178,7 +191,7 @@ export default function DashboardPage() {
                   {tableRows.map((h) => {
                     const addresses = readPublicAddresses(h)
                     const shown = addresses.live ?? addresses.custom ?? addresses.platform
-                    const progress = publishProgress(metrics.get(h.id))
+                    const progress = publishProgress(metrics?.get(h.id))
                     return (
                       <tr key={h.id}>
                         <td className="px-5 py-3" data-primary="true">
@@ -191,11 +204,11 @@ export default function DashboardPage() {
                           {progress ? `${ADMIN_COPY.hospitalList.publishPrefix} ${progress.label}` : '—'}
                         </td>
                         <td className="px-4 py-3 text-xs tabular-nums text-slate-700" data-label={ADMIN_COPY.hospitalList.colMention}>
-                          {mentionRateLabel(metrics.get(h.id))}
+                          {mentionRateLabel(metrics?.get(h.id))}
                         </td>
                         <td className="px-4 py-3 text-xs" data-label={ADMIN_COPY.hospitalList.colTodo}>
                           {h.open_exception_count > 0 ? (
-                            <span className="rounded-full bg-amber-50 px-2 py-0.5 font-semibold text-amber-800">예외 {h.open_exception_count}건</span>
+                            <span className="rounded-full bg-amber-50 px-2 py-0.5 font-semibold text-amber-800">{ADMIN_COPY.hospitalList.exceptionBadge.replace('{count}', String(h.open_exception_count))}</span>
                           ) : (
                             <span className="text-slate-400">—</span>
                           )}

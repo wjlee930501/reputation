@@ -5,6 +5,8 @@
  * 같다. 언급률 null은 「측정 전」이지 0%가 아니다.
  */
 
+import { ADMIN_COPY } from './admin-copy.ts'
+
 export interface HospitalMonthMetrics {
   readonly hospital_id: string
   readonly year: number
@@ -37,7 +39,7 @@ export function publishProgress(metrics: HospitalMonthMetrics | undefined): { ra
 
 export function mentionRateLabel(metrics: HospitalMonthMetrics | undefined): string {
   if (!metrics) return '—'
-  return metrics.mention_rate === null ? '측정 전' : `${metrics.mention_rate.toFixed(1)}%`
+  return metrics.mention_rate === null ? ADMIN_COPY.hospitalList.notMeasured : `${metrics.mention_rate.toFixed(1)}%`
 }
 
 export type HospitalSort = 'created' | 'name' | 'publish' | 'mention'

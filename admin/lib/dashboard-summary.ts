@@ -7,6 +7,7 @@
  * - 공개 페이지 항목·준비 중 남은 조건·일시 정지는 할 일 숫자에 섞지 않고 따로 안내한다.
  */
 
+import { ADMIN_COPY } from './admin-copy.ts'
 import type { HospitalMonthMetrics } from './hospital-month-metrics.ts'
 import type { NavCounts } from './nav-counts.ts'
 import { isOnboardingHospital } from './hospital-list-filter.ts'
@@ -45,16 +46,17 @@ export interface DashboardSummary {
   readonly total: number
   readonly visualMissingHospitals: number
   readonly operatorTodo: number | null
-  readonly reportGapHospitals: number
+  /** 보조 호출(원장 보고·이번 달 지표)이 아직 안 왔거나 실패하면 null — 0건과 다르다(「—」로 보인다). */
+  readonly reportGapHospitals: number | null
   readonly leadTotal: number | null
   readonly leadNeedsAttention: number | null
-  readonly monthPublic: number
-  readonly monthPlanned: number
+  readonly monthPublic: number | null
+  readonly monthPlanned: number | null
 }
 
 export function summarizeDashboard(
   hospitals: readonly DashboardHospital[],
-  metrics: ReadonlyMap<string, HospitalMonthMetrics>,
+  metrics: ReadonlyMap<string, HospitalMonthMetrics> | null,
   reports: DashboardReportGaps | null,
   counts: NavCounts | null,
 ): DashboardSummary {
@@ -62,8 +64,8 @@ export function summarizeDashboard(
   const gapIds = new Set([...(reports?.missing ?? []), ...(reports?.undelivered ?? [])].map((row) => row.hospital_id))
   let monthPublic = 0
   let monthPlanned = 0
-  for (const hospital of active) {
-    const row = metrics.get(hospital.id)
+  for (const hospital of metrics ? active : []) {
+    const row = metrics?.get(hospital.id)
     if (!row) continue
     monthPublic += row.public_count
     monthPlanned += Math.max(0, row.planned_total)
@@ -77,51 +79,58 @@ export function summarizeDashboard(
     total: hospitals.length,
     visualMissingHospitals: active.filter((h) => (h.visual_approval_missing?.length ?? 0) > 0).length,
     operatorTodo: counts ? counts.operator_todo_groups : null,
-    reportGapHospitals: gapIds.size,
+    reportGapHospitals: reports ? gapIds.size : null,
     leadTotal: counts ? counts.lead_total : null,
     leadNeedsAttention: counts ? counts.lead_needs_attention : null,
-    monthPublic,
-    monthPlanned,
+    monthPublic: metrics ? monthPublic : null,
+    monthPlanned: metrics ? monthPlanned : null,
   }
 }
 
-const TONE_ORDER: Record<TodoTone, number> = { urgent: 0, attention: 1, info: 2 }
+const COPY = ADMIN_COPY.dashboardScreen
 
-/** 오늘 할 일 — 병원별 예외(긴급) → 원장 보고 → 공개 페이지 항목·준비 중 남은 일(주의) → 일시 정지(정보). */
+type TodoKind = 'exception' | 'report' | 'visual' | 'preparing' | 'paused'
+
+// 줄 종류마다 순서를 둔다 — 같은 주의 단계라도 원장 보고가 공개 페이지 항목·준비 중보다 먼저(위 8줄에서 가려지지 않게).
+const KIND_ORDER: Record<TodoKind, number> = { exception: 0, report: 1, visual: 2, preparing: 3, paused: 4 }
+const KIND_TONE: Record<TodoKind, TodoTone> = {
+  exception: 'urgent', report: 'attention', visual: 'attention', preparing: 'attention', paused: 'info',
+}
+
+/** 오늘 할 일 — 병원별 예외(긴급) → 원장 보고 → 공개 페이지 항목 → 준비 중 남은 일(주의) → 일시 정지(정보). */
 export function todoLines(
   hospitals: readonly DashboardHospital[],
   reports: DashboardReportGaps | null,
 ): TodoLine[] {
-  const lines: TodoLine[] = []
+  const entries: { kind: TodoKind; line: TodoLine }[] = []
+  const add = (kind: TodoKind, h: DashboardHospital, title: string, href: string, action: string) => {
+    entries.push({ kind, line: { key: `${h.id}:${kind}`, hospitalId: h.id, hospitalName: h.name, tone: KIND_TONE[kind], title, href, action } })
+  }
   const missing = new Set((reports?.missing ?? []).map((row) => row.hospital_id))
   const undelivered = new Set((reports?.undelivered ?? []).map((row) => row.hospital_id))
   for (const h of hospitals) {
     if (h.open_exception_count > 0) {
-      lines.push({ key: `${h.id}:exception`, hospitalId: h.id, hospitalName: h.name, tone: 'urgent',
-        title: `예외 ${h.open_exception_count}건`, href: `/hospitals/${h.id}`, action: '원인 보기' })
+      add('exception', h, COPY.todoException.replace('{count}', String(h.open_exception_count)), `/hospitals/${h.id}`, COPY.todoExceptionAction)
     }
     if (missing.has(h.id) || undelivered.has(h.id)) {
-      lines.push({ key: `${h.id}:report`, hospitalId: h.id, hospitalName: h.name, tone: 'attention',
-        title: `${reports?.period_month ?? ''}월 원장 보고 ${missing.has(h.id) ? '미생성' : '미전달'}`,
-        href: `/hospitals/${h.id}/reports`, action: '보고서 보기' })
+      add('report', h, COPY.todoReport
+        .replace('{month}', String(reports?.period_month ?? ''))
+        .replace('{state}', missing.has(h.id) ? COPY.todoReportMissing : COPY.todoReportUndelivered),
+      `/hospitals/${h.id}/reports`, COPY.todoReportAction)
     }
-    if (h.status !== 'PAUSED' && (h.visual_approval_missing?.length ?? 0) > 0) {
-      lines.push({ key: `${h.id}:visual`, hospitalId: h.id, hospitalName: h.name, tone: 'attention',
-        title: `공개 페이지 항목 입력 필요 ${h.visual_approval_missing?.length}건`,
-        href: `/hospitals/${h.id}/info#info-brand`, action: '병원 정보 입력' })
+    const visual = h.visual_approval_missing?.length ?? 0
+    if (h.status !== 'PAUSED' && visual > 0) {
+      add('visual', h, COPY.todoVisual.replace('{count}', String(visual)), `/hospitals/${h.id}/info#info-brand`, COPY.todoVisualAction)
     }
     if (isOnboardingHospital({ status: h.status as never }) && h.public_service_state.remaining.length > 0) {
-      lines.push({ key: `${h.id}:preparing`, hospitalId: h.id, hospitalName: h.name, tone: 'attention',
-        title: `준비 중 · 남은 조건 ${h.public_service_state.remaining.length}개`,
-        href: `/hospitals/${h.id}`, action: '상태 보기' })
+      add('preparing', h, COPY.todoPreparing.replace('{count}', String(h.public_service_state.remaining.length)), `/hospitals/${h.id}`, COPY.todoStateAction)
     }
     if (h.status === 'PAUSED') {
-      lines.push({ key: `${h.id}:paused`, hospitalId: h.id, hospitalName: h.name, tone: 'info',
-        title: '일시 정지 중', href: `/hospitals/${h.id}`, action: '상태 보기' })
+      add('paused', h, COPY.todoPaused, `/hospitals/${h.id}`, COPY.todoStateAction)
     }
   }
-  return lines
-    .map((line, index) => ({ line, index }))
-    .sort((a, b) => TONE_ORDER[a.line.tone] - TONE_ORDER[b.line.tone] || a.index - b.index)
+  return entries
+    .map((entry, index) => ({ ...entry, index }))
+    .sort((a, b) => KIND_ORDER[a.kind] - KIND_ORDER[b.kind] || a.index - b.index)
     .map((entry) => entry.line)
 }
