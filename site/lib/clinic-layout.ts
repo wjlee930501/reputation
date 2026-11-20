@@ -37,9 +37,8 @@ export function selectAnswerQuestions<
   return [...contents]
     .sort((a, b) => rank(a.content_type) - rank(b.content_type))
     .filter((content) => {
-      const text = content.faq_question || content.title || ''
-      if (!text) return true
-      const key = faqQuestionKey(text)
+      const key = faqQuestionKey(content.faq_question || content.title || '')
+      if (!key) return true
       if (seen.has(key)) return false
       seen.add(key)
       return true

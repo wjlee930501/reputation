@@ -153,16 +153,17 @@ export default async function ContentDetailPage({ params: paramsPromise }: Props
   )
   const sameTypeRelated = [...sameTypeItems, ...relatedBackfill].slice(0, 3)
   const relatedAllSameType = sameTypeRelated.every((c) => c.content_type === content.content_type)
-  // 같은 질문 문장은 한 번만, 지금 글·관련 글과 같은 질문도 빼고 싣는다.
-  const shownQuestionKeys = new Set(
-    [content, ...sameTypeRelated].map((c) => faqQuestionKey(c.faq_question || c.title || '')),
-  )
+  // 같은 질문은 한 번만, 지금 글·관련 글과 같은 질문도 빼고 싣는다. 이 블록은 제목을 보이므로
+  // 승인된 질문과 제목을 둘 다 비교한다 — 어느 하나라도 이미 보인 글은 뺀다.
+  const questionKeys = (c: { faq_question: string | null; title: string }) =>
+    [c.faq_question, c.title].map((text) => faqQuestionKey(text || '')).filter(Boolean)
+  const shownQuestionKeys = new Set([content, ...sameTypeRelated].flatMap(questionKeys))
   const paaQuestions = otherContents
     .filter((c) => c.content_type === 'FAQ' && !sameTypeRelated.some((s) => s.id === c.id))
     .filter((c) => {
-      const key = faqQuestionKey(c.faq_question || c.title || '')
-      if (shownQuestionKeys.has(key)) return false
-      shownQuestionKeys.add(key)
+      const keys = questionKeys(c)
+      if (keys.some((key) => shownQuestionKeys.has(key))) return false
+      keys.forEach((key) => shownQuestionKeys.add(key))
       return true
     })
     .slice(0, 3)

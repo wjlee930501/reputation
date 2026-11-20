@@ -257,3 +257,22 @@ test('similar but differently worded questions are left alone (decision #14)', (
   )
   assert.equal(entries.length, 2)
 })
+
+test('questions that are only punctuation or symbols are not merged into one', () => {
+  // 비교 키가 빈 문자열이 되는 질문끼리 같은 질문으로 묶이면 안 된다(Codex 교차검토).
+  const entries = selectFaqEntries(
+    [sameQuestionFaq(1, '？'), sameQuestionFaq(2, '!!!'), sameQuestionFaq(3, '💉')],
+    'https://clinic.example',
+  )
+  assert.deepEqual(entries.map((entry) => entry.id), ['1', '2', '3'])
+  const cluster = selectClusterContents(
+    [{ ...faq(4), content_type: 'HEALTH', faq_question: null, title: '☎' }],
+    entries,
+  )
+  assert.deepEqual(cluster.map((c) => c.id), ['4'])
+})
+
+test('the article question block compares the title it shows as well as the approved question', () => {
+  const detail = readFileSync(join(HERE, '..', 'app', '[slug]', 'contents', '[contentId]', 'page.tsx'), 'utf8')
+  assert.match(detail, /\[c\.faq_question, c\.title\]\.map\(\(text\) => faqQuestionKey\(text \|\| ''\)\)/)
+})

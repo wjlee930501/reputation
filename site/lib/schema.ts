@@ -118,6 +118,8 @@ export function selectFaqEntries(
     .filter((entry) => Boolean(entry.question && entry.answer))
     .filter((entry) => {
       const key = faqQuestionKey(entry.question)
+      // 문장부호·기호뿐이라 비교 키가 비면 중복으로 보지 않는다(서로 다른 질문을 하나로 묶지 않게).
+      if (!key) return true
       if (seen.has(key)) return false
       seen.add(key)
       return true
@@ -173,10 +175,10 @@ export function selectClusterContents<T extends Pick<ContentSummary, 'id' | 'faq
   faqEntries: readonly FaqEntry[],
 ): T[] {
   const entryIds = new Set(faqEntries.map((entry) => entry.id))
-  const shownQuestions = new Set(faqEntries.map((entry) => faqQuestionKey(entry.question)))
-  return contents.filter(
-    (content) =>
-      !entryIds.has(content.id) &&
-      !shownQuestions.has(faqQuestionKey(content.faq_question || content.title || '')),
-  )
+  const shownQuestions = new Set(faqEntries.map((entry) => faqQuestionKey(entry.question)).filter(Boolean))
+  return contents.filter((content) => {
+    if (entryIds.has(content.id)) return false
+    const key = faqQuestionKey(content.faq_question || content.title || '')
+    return !key || !shownQuestions.has(key)
+  })
 }
