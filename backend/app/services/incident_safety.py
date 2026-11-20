@@ -20,7 +20,7 @@ _SECRET: Final = re.compile(
     r"(?i)\b(api[_-]?key|token|secret|password)\b\s*[:=]\s*[^\s,;]+"
 )
 _PHONE: Final = re.compile(r"(?<!\d)(?:\+?82[- ]?)?0?1\d[- ]?\d{3,4}[- ]?\d{4}(?!\d)")
-_ADMIN_ROUTE_ROOTS: Final = ("/operations", "/hospitals", "/leads")
+_ADMIN_ROUTE_ROOTS: Final = ("/operations", "/hospitals", "/leads", "/accounts")
 
 # 옛 병원 화면 경로 → 새 탭(admin/lib/route-redirects.ts의 TARGETS와 같은 대응).
 # Admin의 redirect는 2026-10-09에 사라진다. 그 전에 저장된 인시던트의 admin_path는
@@ -38,6 +38,28 @@ _RETIRED_HOSPITAL_TABS: Final = {
 _RETIRED_HOSPITAL_PATH = re.compile(
     r"^(/hospitals/[^/]+)/(%s)/?$" % "|".join(re.escape(key) for key in _RETIRED_HOSPITAL_TABS)
 )
+
+
+# 화면이 옮겨 간 사고 종류 — 옛 경로·안내로 저장된 행도 읽는 시점에 지금 위치를 가리킨다.
+# 2026-11-20: 비용·자동 작업 안전장치가 처리 목록(/operations)에서 설정 화면(/accounts)으로 옮겨졌다.
+COST_GUARD_ADMIN_PATH: Final = "/accounts"
+COST_GUARD_NEXT_ACTION: Final = (
+    "설정 화면 「자동 작업 한도」에서 사용량을 확인하고, 필요한 경우 전체 중지나 일일 상한을 "
+    "조정한 뒤 차단된 작업을 재시도하세요."
+)
+_MOVED_INCIDENT_GUIDANCE: Final = {
+    "COST_GUARD_LIMIT_REACHED": (COST_GUARD_ADMIN_PATH, COST_GUARD_NEXT_ACTION),
+}
+
+
+def current_incident_guidance(
+    incident_type: str | None, next_action: str | None, admin_path: str | None
+) -> tuple[str | None, str | None]:
+    """화면이 옮겨 간 종류의 저장된 안내·경로를 지금 위치로 바꾼다. 그 밖은 그대로."""
+    moved = _MOVED_INCIDENT_GUIDANCE.get(incident_type or "")
+    if moved is None:
+        return next_action, admin_path
+    return moved[1], moved[0]
 
 
 def current_admin_path(path: str) -> str:
@@ -133,6 +155,9 @@ def project_incident_labels(incident: Incident, *, now: datetime) -> IncidentLab
         IncidentSeverity.HIGH: "높음",
         IncidentSeverity.CRITICAL: "긴급",
     }
+    guided_next_action, guided_admin_path = current_incident_guidance(
+        getattr(incident, "incident_type", None), incident.next_action, incident.admin_path
+    )
     sla_label = "기한 미설정"
     if incident.sla_due_at is not None:
         sla_label = "기한 초과" if incident.sla_due_at < now else "기한 내"
@@ -144,8 +169,8 @@ def project_incident_labels(incident: Incident, *, now: datetime) -> IncidentLab
         severity_labels[severity],
         "담당자 배정됨" if incident.owner_id else "담당자 미배정",
         sla_label,
-        sanitize_operator_text(incident.next_action) or "처리 목록에서 확인",
-        normalize_admin_path(incident.admin_path),
+        sanitize_operator_text(guided_next_action) or "처리 목록에서 확인",
+        normalize_admin_path(guided_admin_path or ""),
         state is IncidentState.OPEN,
         state is IncidentState.RETRYING,
     )

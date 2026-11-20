@@ -13,6 +13,7 @@ from urllib.parse import urljoin, urlsplit
 from app.models.operations import JSONValue
 from app.services.incident_safety import (
     current_admin_path,
+    current_incident_guidance,
     normalize_incident_code,
     sanitize_operator_text,
 )
@@ -99,7 +100,9 @@ def _incident_notification(
     prefix = "복구" if recovered else "긴급" if incident.severity.upper() == "CRITICAL" else "조치 필요"
     subject = "이전 알림 해결" if recovered else copy.title
     title = f"[{prefix}] {hospital_name} · {subject}"
-    url = _admin_url(admin_base_url, incident.admin_path)
+    # 화면이 옮겨 간 종류(비용 한도 → 설정)는 옛 경로로 저장돼 있어도 지금 위치로 보낸다.
+    _, guided_path = current_incident_guidance(incident.incident_type, None, incident.admin_path)
+    url = _admin_url(admin_base_url, guided_path or incident.admin_path)
     if recovered:
         problem = f"앞서 알린 ‘{copy.title}’ 문제의 정상 복구가 확인됐습니다."
         action = "추가 조치가 필요하지 않습니다. 같은 문제가 다시 발생하면 새로 알립니다."
@@ -261,7 +264,7 @@ def _admin_url(base_url: str, path: str) -> str:
     path_parts = urlsplit(path)
     allowed_root = any(
         path_parts.path == root or path_parts.path.startswith(f"{root}/")
-        for root in ("/operations", "/hospitals", "/leads")
+        for root in ("/operations", "/hospitals", "/leads", "/accounts")
     )
     if (
         not path.startswith("/")

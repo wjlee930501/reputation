@@ -33,6 +33,7 @@ from app.services.incident_cause_group import (
     canonical_cause_code,
     cost_guard_category,
 )
+from app.services.incident_safety import current_incident_guidance
 from app.services.operator_action import (  # public API facade
     is_operator_todo,
     requires_operator_action,
@@ -401,7 +402,10 @@ def serialize_incident_row(
         owner=owner_projection(owner),
         sla_due_at=incident.sla_due_at,
         sla_state=sla_state(incident.sla_due_at, now),
-        next_action=incident.next_action,
+        # 화면이 옮겨 간 종류(비용 한도 → 설정)는 옛 안내로 저장돼 있어도 지금 위치를 말한다.
+        next_action=current_incident_guidance(
+            incident.incident_type, incident.next_action, incident.admin_path
+        )[0],
         action=OperationsAction(
             kind="OPEN_INCIDENT", label="문제와 조치 확인", method="GET", path=detail_path
         ),

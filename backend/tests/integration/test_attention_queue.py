@@ -2077,3 +2077,27 @@ async def test_nav_badge_equals_the_incident_queue_total(pg_async_session):
     assert counts["operator_todo_groups"] >= 1
     assert counts["hospital_count"] >= 2
     assert set(counts) == {"operator_todo_groups", "hospital_count", "lead_total", "lead_needs_attention"}
+
+
+async def test_nav_badge_never_loads_incident_details(pg_async_session, monkeypatch):
+    """배지는 화면 이동마다 불린다 — 묶음의 사고 전체를 상세 조회하지 않고 total만 센다(2026-11-20)."""
+    from app.api.admin import operations_center_incident_queries as incident_queries
+    from app.api.admin.operations_center_read_routes import get_nav_counts
+
+    db = pg_async_session
+    actor = await _operations_actor(db)
+    hospital = await _active_hospital(db, "배지 상세 의원")
+    for _ in range(3):
+        await _incident(db, hospital, safe_error_code="PROVIDER_TIMEOUT")
+
+    overview = await operations_center.get_operations_overview(db=db, actor=actor)
+    incidents_total = next(
+        summary.total for summary in overview.queues if summary.queue.value == "INCIDENTS"
+    )
+
+    async def _details_forbidden(*_args, **_kwargs):
+        raise AssertionError("nav badge must not load incident details")
+
+    monkeypatch.setattr(incident_queries, "_load_grouped_rows", _details_forbidden)
+    counts = await get_nav_counts(db=db, actor=actor)
+    assert counts["operator_todo_groups"] == incidents_total >= 1
