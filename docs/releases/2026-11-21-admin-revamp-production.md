@@ -83,7 +83,7 @@ bash scripts/deploy.sh admin
   - 다올·강심장·다대으뜸은 자기 도메인이 없다.
 - [x] Admin 로그인 200.
 - [x] Beat `00287-nlk`이 100%이고 04:49:08에 `beat_lock_acquired`를 남겼다(대기 경고 `beat_lock_wait_long` 없음).
-- [x] 04:46 이후 Cloud Run 리비전 ERROR 0건(04:55 확인). +30분 확인은 아래에 덧붙인다.
+- [x] 04:46~05:22(+약 33분) 사이 Re:putation 서비스(api·worker·beat·admin·site) ERROR 0건. 같은 프로젝트의 다른 서비스 `kakaotalk-server`의 인증 ERROR 2건은 이 배포와 무관하다.
 - [ ] readiness `facts.auto_publish_hold`: Job 로그에 사실 값이 찍히지 않아 '통과'만 기록한다.
 - [ ] 새 화면을 로그인해서 조작해 보는 확인은 하지 않았다. 대상은 대시보드, 병원 목록 필터, 보고서 PDF 받기, ⋯ 메뉴다.
 
