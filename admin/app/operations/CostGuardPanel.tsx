@@ -80,7 +80,7 @@ export function CostGuardPanel({ canRaiseLimit }: { readonly canRaiseLimit: bool
 
   async function copyDeveloperContext() {
     try {
-      await navigator.clipboard.writeText('화면: 처리 목록 > 비용·자동 작업 안전장치\n상태: 비용 기록을 확인할 수 없음\n요청: 비용 현황 연결 상태 확인')
+      await navigator.clipboard.writeText('화면: 설정 > 자동 작업 한도\n상태: 비용 기록을 확인할 수 없음\n요청: 비용 현황 연결 상태 확인')
       setNotice('개발팀 문의용 정보를 복사했습니다.')
     } catch (caught) {
       setError(message(caught))
