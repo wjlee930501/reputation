@@ -1,4 +1,5 @@
 import { buildWeeklyHoursRows, HOLIDAY_KEY, VISIT_HOURS_ANCHOR } from '@/lib/business-hours'
+import { KeepTogether } from './KeepTogether'
 
 import { CalendarIcon } from './icons'
 
@@ -50,7 +51,7 @@ export function VisitHoursTable({ hospitalName, phone, businessHours }: Props) {
               {rows.map((row) => (
                 <tr key={row.key} className={row.closed ? 'is-closed' : undefined}>
                   <th scope="row">{row.label}</th>
-                  <td>{row.value ?? '진료시간 확인 중'}</td>
+                  <td>{row.value ? <KeepTogether text={row.value} /> : '진료시간 확인 중'}</td>
                 </tr>
               ))}
             </tbody>

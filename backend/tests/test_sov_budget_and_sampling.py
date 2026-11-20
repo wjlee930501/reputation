@@ -119,7 +119,9 @@ def test_weekly_sov_cap_cannot_outspend_daily_content_generation():
     weekly_sov_max_calls = tasks.SOV_TOTAL_SPEC_CAP * tasks.SOV_REPEAT_WEEKLY
 
     assert weekly_sov_max_calls <= tasks.settings.COST_GUARD_DAILY_CONTENT_CALLS
-    assert tasks.settings.COST_GUARD_DAILY_SOV_QUERIES == 1260
+    # 2026-11-03 새벽 마감: 월간 측정을 1일 새벽 하루에 다 하므로 일일 한도가 월간 한도까지 쓸 수 있다
+    # (월간 상한은 그대로 — config.py COST_GUARD_DAILY_SOV_QUERIES 주석).
+    assert tasks.settings.COST_GUARD_DAILY_SOV_QUERIES == 4260
     assert tasks.settings.COST_GUARD_MONTHLY_SOV_QUERIES == 4260
 
 

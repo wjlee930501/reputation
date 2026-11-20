@@ -1,3 +1,4 @@
+import { articleDateLabels, formatSeoulDate } from '@/lib/clinic-dates'
 import { CLINIC_IMAGE_SIZES } from '@/lib/clinic-image-delivery'
 import { Metadata } from 'next'
 import Link from 'next/link'
@@ -23,7 +24,7 @@ import {
   stripLeadingMarkdownH1,
 } from '@/lib/article-markdown'
 import { safeExternalHref } from '@/lib/safe-url'
-import { buildFaqPageJsonLd, selectFaqEntries } from '@/lib/schema'
+import { buildFaqPageJsonLd, faqQuestionKey, selectFaqEntries } from '@/lib/schema'
 import { canonicalHospitalUrl } from '@/lib/site-url'
 import { buildTreatmentSlug, inferPillarTreatment } from '@/lib/treatment-slug'
 
@@ -67,13 +68,6 @@ function headingText(children: ReactNode): string {
 function buildImageAlt(args: { contentTitle: string; typeLabel: string }): string {
   const joined = `${args.typeLabel}: ${args.contentTitle}`
   return joined.length > ALT_MAX_LENGTH ? `${joined.slice(0, ALT_MAX_LENGTH - 1)}…` : joined
-}
-
-function formatDate(value: string | null | undefined, fallback: string) {
-  if (!value) return fallback
-  const parsed = new Date(value)
-  if (Number.isNaN(parsed.getTime())) return fallback
-  return parsed.toLocaleDateString('ko-KR', { year: 'numeric', month: 'long', day: 'numeric' })
 }
 
 function calculateReadingMinutes(body: string | null | undefined): number {
@@ -136,10 +130,9 @@ export default async function ContentDetailPage({ params: paramsPromise }: Props
 
   const hospitalWebsiteUrl = safeExternalHref(hospital.website_url)
   const typeLabel = TYPE_LABELS[content.content_type] ?? content.content_type
-  const publishedLabel = formatDate(content.published_at, content.scheduled_date)
-  const updatedLabel = content.body_updated_at
-    ? formatDate(content.body_updated_at, '')
-    : publishedLabel
+  // 화면 날짜는 한국 시간이고, 발행보다 앞선 '최근 업데이트'(발행 전 편집)는 싣지 않는다.
+  const articleDates = articleDateLabels(content)
+  const publishedLabel = articleDates.published.label
   const articleBody = stripLeadingMarkdownH1(content.body)
   const articleHeadings = extractArticleHeadings(articleBody)
   const readingMinutes = calculateReadingMinutes(articleBody)
@@ -153,8 +146,19 @@ export default async function ContentDetailPage({ params: paramsPromise }: Props
   )
   const sameTypeRelated = [...sameTypeItems, ...relatedBackfill].slice(0, 3)
   const relatedAllSameType = sameTypeRelated.every((c) => c.content_type === content.content_type)
+  // 같은 질문은 한 번만, 지금 글·관련 글과 같은 질문도 빼고 싣는다. 이 블록은 제목을 보이므로
+  // 승인된 질문과 제목을 둘 다 비교한다 — 어느 하나라도 이미 보인 글은 뺀다.
+  const questionKeys = (c: { faq_question: string | null; title: string }) =>
+    [c.faq_question, c.title].map((text) => faqQuestionKey(text || '')).filter(Boolean)
+  const shownQuestionKeys = new Set([content, ...sameTypeRelated].flatMap(questionKeys))
   const paaQuestions = otherContents
     .filter((c) => c.content_type === 'FAQ' && !sameTypeRelated.some((s) => s.id === c.id))
+    .filter((c) => {
+      const keys = questionKeys(c)
+      if (keys.some((key) => shownQuestionKeys.has(key))) return false
+      keys.forEach((key) => shownQuestionKeys.add(key))
+      return true
+    })
     .slice(0, 3)
   const referenceList = Array.isArray(content.references) ? content.references : []
   const referenceCountLabel =
@@ -328,14 +332,14 @@ export default async function ContentDetailPage({ params: paramsPromise }: Props
                   <span className="clinic-article-byline-dot" aria-hidden="true">·</span>
                   <span>
                     발행{' '}
-                    <time dateTime={datePublished}>{publishedLabel}</time>
+                    <time dateTime={articleDates.published.value}>{publishedLabel}</time>
                   </span>
-                  {updatedLabel && updatedLabel !== publishedLabel && (
+                  {articleDates.updated && (
                     <>
                       <span className="clinic-article-byline-dot" aria-hidden="true">·</span>
                       <span>
                         최근 업데이트{' '}
-                        <time dateTime={dateModified}>{updatedLabel}</time>
+                        <time dateTime={articleDates.updated.value}>{articleDates.updated.label}</time>
                       </span>
                     </>
                   )}
@@ -349,7 +353,9 @@ export default async function ContentDetailPage({ params: paramsPromise }: Props
                   <div>
                     <dt>업데이트</dt>
                     <dd>
-                      <time dateTime={dateModified}>{updatedLabel || publishedLabel}</time>
+                      <time dateTime={(articleDates.updated ?? articleDates.published).value}>
+                        {(articleDates.updated ?? articleDates.published).label}
+                      </time>
                     </dd>
                   </div>
                   <div>
@@ -548,7 +554,7 @@ export default async function ContentDetailPage({ params: paramsPromise }: Props
                           </span>
                           <span className="clinic-related-title">{r.faq_question || r.title}</span>
                           <span className="clinic-related-date">
-                            {formatDate(r.published_at, r.scheduled_date)}
+                            {formatSeoulDate(r.published_at, r.scheduled_date)}
                           </span>
                         </Link>
                       </li>
