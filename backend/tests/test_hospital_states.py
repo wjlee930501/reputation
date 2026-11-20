@@ -51,7 +51,21 @@ def test_public_service_mirrors_the_serving_gate():
         )
     )
     assert not_live.kind == "not_live"
-    assert not_live.remaining == ("service_inactive", "public_permission_missing", "site_not_built")
+    # 자동 공개를 기다리는 병원의 서비스·공개 권한 막힘은 한 줄(시스템 몫)로 접힌다. 자동 공개가
+    # 기다리는 필수 병원 정보(profile_complete)는 사람 몫으로 함께 보인다.
+    assert not_live.remaining == ("auto_activation_pending", "profile_complete", "site_not_built")
+
+
+def test_public_service_separates_auto_activation_custom_domain_and_withdrawn():
+    onboarding = _hospital(status=HospitalStatus.ONBOARDING, site_live=False, address=None)
+    assert public_service_state(onboarding).remaining == ("auto_activation_pending", "address")
+
+    domain = _hospital(status=HospitalStatus.PENDING_DOMAIN, site_live=False, aeo_domain="clinic.example.com")
+    assert public_service_state(domain).remaining == ("custom_domain_pending",)
+
+    # 운영 중인데 공개 권한이 꺼진 병원은 시스템이 되살리지 않는다 — 사람 몫.
+    withdrawn = _hospital(status=HospitalStatus.ACTIVE, site_live=False)
+    assert public_service_state(withdrawn).remaining == ("public_permission_withdrawn",)
 
 
 def test_public_service_uses_minimum_public_facts_not_enrichment_completion():
