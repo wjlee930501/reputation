@@ -7,11 +7,12 @@
  *
  * 프록시 검사는 손으로 만든 주소를 막아야 하므로, 최적화기·백엔드가 실제로 보는 경로로 판정한다.
  * 최적화기처럼 `new URL`로 해석해 탭·줄바꿈 제거, `..`·역슬래시 정리를 거친 뒤, 백엔드처럼 경로를
- * 한 번 풀어(`%73ite-preview` → `site-preview`) 미리보기 경로인지 본다. 쿼리·조각은 보지 않는다
+ * 한 번 풀어(`%73ite-preview` → `site-preview`) 경로가 `/api/v1/public/site-preview`로 시작하는지 본다. 쿼리·조각은 보지 않는다
  * (정상 사진 주소의 `?label=site-preview`를 막지 않게). 경로를 반복해서 풀지 않는다 — 백엔드도 한
  * 번만 풀고, 반복하면 정상 `%25` 파일명이 깨진다. 해석할 수 없는 주소는 막는다(최적화기도 거절한다).
  */
-const PREVIEW_PATH = /\/public\/site-preview(?:\/|$)/i
+// 백엔드 미리보기 엔드포인트만 — 경로 맨 앞이어야 한다(GCS 객체 키 중간의 같은 낱말은 아니다).
+const PREVIEW_PATH = /^\/api\/v\d+\/public\/site-preview(?:\/|$)/i
 
 export function isPreviewAssetUrl(url: string | null | undefined): boolean {
   if (typeof url !== 'string') return false

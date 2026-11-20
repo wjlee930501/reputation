@@ -61,6 +61,7 @@ test('preview photos skip the image optimizer and the optimizer refuses them', a
     'https://api.example/api/v1/public/hospitals/../site-preview/tok/logo',
     'https://api.example/api/v1/public\\site-preview/tok/logo',
     '//api.example/api/v1/public/site-preview/tok/logo',
+    'https://api.example/api%2Fv1%2Fpublic%2Fsite-preview/tok/logo',
     'http://[bad',
   ]) {
     assert.equal(isPreviewAssetUrl(disguised), true, JSON.stringify(disguised))
@@ -71,6 +72,8 @@ test('preview photos skip the image optimizer and the optimizer refuses them', a
     'https://storage.googleapis.com/example/discount%25.jpg',
     'https://storage.googleapis.com/example/photo.jpg?label=100%25',
     'https://api.example/api/v1/public/hospitals/site-preview/logo',
+    'https://storage.googleapis.com/example/public/site-preview/photo.jpg',
+    'https://storage.googleapis.com/example%2Fpublic%2Fsite-preview%2Fphoto.jpg',
     '/api/v1/public/hospitals/demo/assets/%EC%82%AC%EC%A7%84',
     '/api/v1/public/%2573ite-preview/tok/logo', // 백엔드는 한 번만 푼다 — 라우트가 없다
   ]) {
