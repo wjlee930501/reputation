@@ -52,8 +52,9 @@
 
 /* 부제(강조 줄) — 병원명과 같은 48px이라 '병원명 2줄 + 부제 2줄 = 4줄'이 됐다(2026-11-20 마케팅 요청
    3-2, 결정 N3 권장안 B-1). 병원명 아래 한 단계 작은 한 줄로 둔다. 운영자가 줄을 나눈 제목(--lines)도
-   같은 크기다. 기본형(NULL) 화면은 그대로다. */
-.shell.shell :global(.clinic-hero-editorial-title strong) {
+   같은 크기다. 기본형(NULL) 화면은 그대로다. 앞부분(병원명 span) 뒤의 강조 줄만 줄인다 — 승인 제목이
+   한 줄뿐이면 제목 전체가 <strong>이라 줄이면 주제목이 섹션 제목보다 작아진다(Codex 검토). */
+.shell.shell :global(.clinic-hero-editorial-title span + strong) {
   display: block;
   margin-top: 12px;
   font-size: clamp(22px, 2.2vw, 30px);
