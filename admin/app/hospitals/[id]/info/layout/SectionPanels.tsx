@@ -27,14 +27,14 @@ export function sectionName(id: SectionId): string {
   return COPY.sections[id] ?? id
 }
 
-function IssueList({ issues }: { issues: readonly SiteConfigIssue[] }) {
+export function IssueList({ issues }: { issues: readonly SiteConfigIssue[] }) {
   if (!issues.length) return null
   return (
     <ul className="space-y-1">
       {issues.map((issue, index) => (
         <li key={`${issue.path}:${index}`} className="text-xs font-semibold text-red-700">
           {issue.message}
-          {issue.words?.length ? ` (${issue.words.join(', ')})` : ''}
+          {issue.words?.some((word) => !issue.message.includes(word)) ? ` (${issue.words.join(', ')})` : ''}
         </li>
       ))}
     </ul>
@@ -134,7 +134,7 @@ export function SectionList({
   )
 }
 
-function Choice<T extends string>({
+export function Choice<T extends string>({
   label,
   value,
   options,

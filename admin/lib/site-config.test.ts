@@ -209,3 +209,45 @@ test('history change keys read as screen names, never raw keys', async () => {
   assert.ok(groups.length >= 10)
   for (const group of [...groups, 'layout']) assert.ok(group in ADMIN_COPY.siteEditor.changeKeys, group)
 })
+
+test('line break rules mirror the server', async () => {
+  const { linesMatch, lineBreakProblem, splitLines, lineBreakSource, LINE_BREAK_PATHS, COPY_KEYS_BY_SECTION } = await import('./site-config.ts')
+  const source = '365서귀포삼성정형외과 제주 서귀포 정형외과 전문의 진료'
+  assert.equal(linesMatch('365서귀포삼성정형외과\n제주 서귀포 정형외과 전문의 진료', source), true)
+  // 단어 중간 줄바꿈은 된다, 띄어쓰기를 바꾸거나 글자를 바꾸면 안 된다.
+  assert.equal(linesMatch('365서귀포삼성\n정형외과 제주 서귀포 정형외과 전문의 진료', source), true)
+  assert.equal(linesMatch('365서귀포삼성정형외과제주 서귀포 정형외과 전문의 진료', source), false)
+  assert.equal(linesMatch('365서귀포삼성정형외과\n제주 정형외과 전문의 진료', source), false)
+  assert.equal(lineBreakProblem('가\n\n나', '가 나'), 'too_many')
+  assert.deepEqual(splitLines('가\r\n나\n'), ['가', '나'])
+  assert.equal(lineBreakSource('care_principles.cards[1].body', { care_principles: { cards: [null, { body: ' 설명 ' }] } }), ' 설명 ')
+  assert.equal(lineBreakSource('hero.headline', { hero_headline: '  ' }), null)
+
+  const schema = readFileSync(new URL('../../backend/app/services/site_config_schema.py', import.meta.url), 'utf8')
+  const copyKeys = [...(schema.match(/COPY_KEYS: tuple\[str, \.\.\.\] = \(([\s\S]*?)\n\)/)?.[1] ?? '').matchAll(/"([a-z_.]+)"/g)].map((m) => m[1]).sort()
+  assert.deepEqual(Object.values(COPY_KEYS_BY_SECTION).flat().sort(), copyKeys)
+  assert.match(schema, /"hero\.headline",\n    "hero\.description",\n    "care_principles\.title",\n    "care_principles\.lede"/)
+  assert.equal(LINE_BREAK_PATHS.length, 4 + 3 * 2)
+  assert.match(readFileSync(new URL('../../backend/app/services/clinic_page_copy.py', import.meta.url), 'utf8'), /CARE_PRINCIPLE_CARD_COUNT\s*(:\s*\w+)?\s*=\s*3/)
+})
+
+test('every server issue path lands on one screen spot', async () => {
+  const { issueOwner } = await import('./site-config.ts')
+  const overrides = { sections: [{ id: 'treatments' }, { id: 'faq', title: '최고' }] }
+  const cases: [string, string | null][] = [
+    ['sections[1].title', 'faq'],
+    ['sections.treatments', 'treatments'],
+    ['copy.treatments.note', 'treatments'],
+    ['copy.hours.weekend_label', 'hours'],
+    ['care_flow.steps[0].title', 'care_flow'],
+    ['care_flow.note', 'care_flow'],
+    ['hero.line_breaks.hero.headline.pc', 'hero'],
+    ['hero.line_breaks.care_principles.cards[0].title.mobile', 'care_principles'],
+    ['faq.content_ids[0]', 'faq'],
+    ['share.image_asset_id', 'page'],
+    ['nav.items.faq', 'page'],
+    ['layout', null],
+    ['defaults_version', null],
+  ]
+  for (const [path, owner] of cases) assert.equal(issueOwner(path, overrides), owner, path)
+})
