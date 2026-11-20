@@ -62,7 +62,7 @@ export function ClinicHeader({
       {navLink('treatments', `${hospitalRootUrl}/treatments`, '진료 영역')}
       {navLink('visit', `${hospitalRootUrl}/visit`, '진료시간·오시는 길')}
       {navLink('doctor', `${hospitalRootUrl}/doctor`, '의료진')}
-      {navLink('contents', `${hospitalRootUrl}/contents`, '건강 정보')}
+      {navLink('contents', `${hospitalRootUrl}/contents`, '의료 정보')}
       {websiteUrl && (
         <a className="clinic-header-external-link" href={websiteUrl} target="_blank" rel="noopener noreferrer" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
           공식 홈페이지

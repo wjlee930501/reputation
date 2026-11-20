@@ -21,7 +21,12 @@ import {
 import { getApiBase } from '@/lib/config'
 import { resolveClinicLayout } from '@/lib/clinic-layout'
 import { REVALIDATE_SECONDS } from '@/lib/fetch-policy'
-import { buildFaqPageJsonLd, buildPhysicianNode, selectFaqEntries } from '@/lib/schema'
+import {
+  buildFaqPageJsonLd,
+  buildPhysicianNode,
+  selectClusterContents,
+  selectFaqEntries,
+} from '@/lib/schema'
 import { canonicalBase, canonicalHospitalUrl } from '@/lib/site-url'
 
 import { AnswerClusters } from './_components/AnswerClusters'
@@ -85,8 +90,8 @@ function buildHospitalDescription(hospital: Awaited<ReturnType<typeof fetchHospi
   const specialties = hospital.specialties?.join(', ') || ''
   const locality = [region, specialties].filter(Boolean).join(' · ')
   return locality
-    ? `${hospital.name} (${locality}) 진료 안내 — 의료진, 진료 영역, 진료시간, 오시는 길과 건강 정보를 확인할 수 있습니다.`
-    : `${hospital.name} 진료 안내 — 의료진, 진료 영역, 진료시간, 오시는 길과 건강 정보를 확인할 수 있습니다.`
+    ? `${hospital.name} (${locality}) 진료 안내 — 의료진, 진료 영역, 진료시간, 오시는 길과 의료 정보를 확인할 수 있습니다.`
+    : `${hospital.name} 진료 안내 — 의료진, 진료 영역, 진료시간, 오시는 길과 의료 정보를 확인할 수 있습니다.`
 }
 
 export async function generateMetadata({ params: paramsPromise }: Props): Promise<Metadata> {
@@ -224,8 +229,8 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
   // 우선순위 맨 앞에 놓고 뽑기 때문에, 같은 항목을 두 섹션이 나란히 반복해서
   // 보여주게 된다. FAQ 섹션이 질문과 답변을 모두 싣는 쪽이므로 그쪽에 남기고,
   // 질문 목록은 아직 답이 붙지 않은 나머지 읽을 거리를 안내한다.
-  const faqEntryIds = new Set(faqEntries.map((entry) => entry.id))
-  const clusterContents = contents.filter((content) => !faqEntryIds.has(content.id))
+  // 같은 질문 문장의 글도 뺀다 — 중복이라 FAQ 섹션에서 빠진 글이 질문 목록에 다시 나오지 않게.
+  const clusterContents = selectClusterContents(contents, faqEntries)
   const pageJsonLd = [clinicJsonLd, breadcrumbJsonLd, ...(faqJsonLd ? [faqJsonLd] : [])]
 
   const externalChannels = [
@@ -324,13 +329,9 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
             heroDescription={hospital.hero_description}
           />
 
-          <nav className="clinic-section-index" aria-label="이 페이지의 주요 정보">
-            {hospital.treatments.length > 0 && <a href="#treatments">진료 영역</a>}
-            {physicians.length > 0 && <a href="#doctor">의료진</a>}
-            {contents.length > 0 && <a href="#contents">건강 정보</a>}
-            <a href="#facts">병원 정보</a>
-            <a href="#contact">오시는 길</a>
-          </nav>
+          {/* 첫 화면 아래 바로가기 메뉴(.clinic-section-index)는 2026-11-20 결정 12a로 뺐다 — 상단 메뉴와
+              내용이 겹쳤고, 휴대폰에서는 상단 메뉴·바로가기·하단 바 세 겹 메뉴였다. 스타일은 레이아웃
+              편집기(섹션 'section_index')에서 다시 켤 수 있게 globals.css에 남긴다. 앵커는 그대로다. */}
 
           <div className="clinic-anchor-target">
             <TreatmentGrid treatments={hospital.treatments} hospitalRootUrl={hospitalRootUrl} />
