@@ -67,3 +67,18 @@ async def test_include_noise_returns_marked_notes_but_counts_only_used_ones(pg_a
     body = await get_source(hospital.id, source.id, include_noise=True, db=pg_async_session)
     assert {note["id"] for note in body["evidence_notes"]} == {str(kept.id), str(noisy.id)}
     assert body["evidence_note_count"] == 1
+
+
+async def test_source_whose_notes_are_all_marked_stays_reachable(pg_async_session):
+    """노트를 전부 제외 표시해도 목록이 그 수를 알려 화면이 펼칠 수 있다."""
+    from app.api.admin.essence import list_sources
+
+    hospital, source, kept, noisy = await _seed(pg_async_session)
+    kept.note_metadata = {"is_noise": True}
+    await pg_async_session.commit()
+    rows = await list_sources(hospital.id, status_filter=None, source_type=None, db=pg_async_session)
+    row = next(item for item in rows if item["id"] == str(source.id))
+    assert row["evidence_note_count"] == 0
+    assert row["noise_note_count"] == 2
+    detail = await get_source(hospital.id, source.id, include_noise=True, db=pg_async_session)
+    assert len(detail["evidence_notes"]) == 2

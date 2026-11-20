@@ -38,6 +38,8 @@ interface TextSourceRow {
   file_url: string | null
   file_access_url: string | null
   evidence_note_count: number
+  /** 제외 표시한 노트 수(목록 응답). 옛 응답에는 없다. */
+  noise_note_count?: number
   //: 채널 자료의 fetch 진행 상태와, 자동 복구가 끝났을 때 열린 예외 id.
   source_metadata?: { fetch_state?: string; incident_id?: string; text_extraction?: string } | null
   display: { source_type_label: string } | null
@@ -361,7 +363,8 @@ function SourceRow({
         </div>
       </div>
 
-      {source.evidence_note_count > 0 && (
+      {/* 제외 표시한 노트만 남은 자료도 펼쳐서 되돌릴 수 있어야 한다(2026-11-20). */}
+      {(source.evidence_note_count > 0 || (source.noise_note_count ?? 0) > 0) && (
         <details className="mt-2" onToggle={(e) => { if (e.currentTarget.open) void loadNotes() }}>
           <summary className="cursor-pointer text-xs font-semibold text-blue-700">
             {ADMIN_COPY.evidenceNote} 보기

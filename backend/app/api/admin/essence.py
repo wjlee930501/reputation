@@ -64,7 +64,7 @@ from app.services.essence_sources import (
 from app.services.essence_sources import (
     start_source_processing_best_effort as _start_source_processing_best_effort,
 )
-from app.services.evidence_noise import not_noise_note_predicate
+from app.services.evidence_noise import noise_note_predicate, not_noise_note_predicate
 from app.services.gcs_utils import get_signed_url
 from app.services.incident_types import IncidentFingerprint
 from app.services.knowledge_changes import (
@@ -498,9 +498,14 @@ async def list_sources(
 
     result = await db.execute(stmt)
     sources = result.scalars().all()
-    counts = await _note_counts(db, [source.id for source in sources])
+    source_ids = [source.id for source in sources]
+    counts = await _note_counts(db, source_ids)
+    noise_counts = await _note_counts(db, source_ids, noise=True)
     return [
-        _serialize_source(source, evidence_note_count=counts.get(source.id, 0))
+        {
+            **_serialize_source(source, evidence_note_count=counts.get(source.id, 0)),
+            "noise_note_count": noise_counts.get(source.id, 0),
+        }
         for source in sources
     ]
 
@@ -1744,7 +1749,10 @@ def _note_is_noise(note: HospitalSourceEvidenceNote) -> bool:
     return metadata.get("is_noise") is True
 
 
-async def _note_counts(db: AsyncSession, source_ids: list[uuid.UUID]) -> dict[uuid.UUID, int]:
+async def _note_counts(
+    db: AsyncSession, source_ids: list[uuid.UUID], *, noise: bool = False
+) -> dict[uuid.UUID, int]:
+    """제외되지 않은 자료의 노트 수. 기본은 근거로 쓰이는 노트, `noise=True`면 제외 표시한 노트."""
     if not source_ids:
         return {}
     result = await db.execute(
@@ -1756,7 +1764,7 @@ async def _note_counts(db: AsyncSession, source_ids: list[uuid.UUID]) -> dict[uu
         .where(
             HospitalSourceEvidenceNote.source_asset_id.in_(source_ids),
             HospitalSourceAsset.status != SourceStatus.EXCLUDED,
-            _not_noise_predicate(),
+            noise_note_predicate() if noise else _not_noise_predicate(),
         )
         .group_by(HospitalSourceEvidenceNote.source_asset_id)
     )
