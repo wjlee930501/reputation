@@ -49,7 +49,7 @@ def publish_due_safe_cause(incident: Incident | None) -> str | None:
 
     예정된 일감에는 원인이라는 개념이 없어 이 자리는 비어 있는 것이 정상이다. 다만
     08:00~23:00 발행기가 게이트에서 되돌린 슬롯은 예정 상태가 아니라 이미 관측된
-    사건이고, 그 사실은 행에 붙은 인시던트가 증명한다. 원인을 비워 두면 운영센터가
+    사건이고, 그 사실은 행에 붙은 인시던트가 증명한다. 원인을 비워 두면 처리 목록이
     "오늘 발행 예정"만 반복해 보여 주고 무엇이 막혔는지는 DB를 열어야만 알 수 있다.
     """
 
@@ -62,7 +62,7 @@ def publish_due_safe_cause(incident: Incident | None) -> str | None:
 def _today_operator_copy() -> tuple[str, str]:
     return (
         "오늘 발행 예정 글이 아직 병원 채널에 공개되지 않았습니다.",
-        f"운영 센터의 “{_TODAY_ACTION_LABEL}”을 눌러 발행 가능한 상태인지 확인하세요. "
+        f"처리 목록의 “{_TODAY_ACTION_LABEL}”을 눌러 발행 가능한 상태인지 확인하세요. "
         "처리할 버튼이 없으면 개발팀에 병원명과 현재 화면의 문구를 전달하세요.",
     )
 
@@ -124,7 +124,7 @@ async def load_today_queue(
     related_incident = aliased(Incident)
     today = now.astimezone(_SEOUL).date()
     # 공개할 수 없는 병원의 슬롯을 사람 업무로 만들지 않는다. 자동 발행 worker도
-    # ACTIVE + site_live만 처리하므로, 운영센터가 그보다 넓은 집합을 보여주면 사람에게
+    # ACTIVE + site_live만 처리하므로, 처리 목록이 그보다 넓은 집합을 보여주면 사람에게
     # 영원히 해결할 수 없는 가짜 blocker를 만든다.
     predicates = [
         publicly_operational_hospital_predicate(),

@@ -105,7 +105,7 @@ def _automatic_retry_in_progress(item_key, hospital_id, now):
 
     시도 예산·스윕 창 판정(`generation_incident_control.scheduled_recovery_owns_blocker`)은
     생성 사고의 RETRYING과 기한으로 이미 투영된다. SQL로 예산을 다시 계산하지 않고 그 투영과
-    운영센터의 사람의 일 규칙(`requires_operator_action`)을 그대로 쓴다. 기한이 없는 RETRYING은
+    처리 목록의 사람의 일 규칙(`requires_operator_action`)을 그대로 쓴다. 기한이 없는 RETRYING은
     끝이 정해지지 않았으므로 '진행 중'으로 치지 않고, 같은 글에 사람의 일(OPEN·기한 지난
     RETRYING)이 하나라도 있으면 진행 중이 아니다.
     """
@@ -314,7 +314,7 @@ def collect_fleet_facts(db, *, now):
         )
         or 0
     )
-    # 운영센터와 같은 묶음 단위(원인 하나 = 1건)로, 같은 술어(`is_operator_todo`)로 센다.
+    # 처리 목록과 같은 묶음 단위(원인 하나 = 1건)로, 같은 술어(`is_operator_todo`)로 센다.
     # 사고 본문은 읽지 않고 묶음 키 재료와 기한 경과 여부만 읽는다.
     operator_groups: dict[str, list[str | None]] = {}
     operator_kinds: dict[str, str] = {}
@@ -550,14 +550,14 @@ def build_fleet_heartbeat(report: WatchdogReport, facts: FleetFacts, *, now, adm
         actions.append(f"• {safe_text(group.hospital_name, 70)} — {copy.title} 사고 {group.count}건\n  {copy.action}")
     shown_count = len(facts.action_groups[:6])
     if facts.operator_work > shown_count:
-        actions.append(f"그 외 확인할 이슈 {facts.operator_work - shown_count}건은 운영센터에서 볼 수 있습니다.")
+        actions.append(f"그 외 확인할 이슈 {facts.operator_work - shown_count}건은 처리 목록에서 볼 수 있습니다.")
     if not actions:
         actions.append("지금 사람이 처리할 것으로 분류된 이슈는 없습니다.")
     if coverage and coverage.missing_allocations:
         actions.append(f"미배정 {coverage.missing_allocations}편은 일정 복구 대상입니다. 복구 실패가 확정되면 별도 조치 알림을 보냅니다.")
     if coverage and coverage.unknown_schedule_hospitals:
         actions.append(f"계약 일정이 없는 {coverage.unknown_schedule_hospitals}곳은 병원 콘텐츠에서 일정 등록 여부를 확인해 주세요.")
-    # 보류는 발행 due 조건에서 걸러져 감시·운영센터에 '보류 중'으로 보이지 않는다 — 켜 두고 잊지 않게 매일 말한다.
+    # 보류는 발행 due 조건에서 걸러져 감시·처리 목록에 '보류 중'으로 보이지 않는다 — 켜 두고 잊지 않게 매일 말한다.
     hold = auto_publish_hold()
     if hold.active:
         scope = "전체 병원" if hold.all_hospitals else f"{len(hold.hospital_ids)}곳"

@@ -474,7 +474,7 @@ def test_an_exhausted_retry_is_not_in_progress(db, shape):
     if shape == "operator_required":
         _generation_incident(db, item, "OPEN", latest)
     elif shape == "stale_retrying":
-        # 기한이 지난 RETRYING은 운영센터 규칙(`requires_operator_action`)상 사람의 일이다.
+        # 기한이 지난 RETRYING은 처리 목록 규칙(`requires_operator_action`)상 사람의 일이다.
         _generation_incident(db, item, "RETRYING", latest, sla_due_at=NOW - timedelta(days=2))
     else:
         # 기한 없는 RETRYING은 끝이 정해지지 않아 '진행 중'의 근거가 아니다.
@@ -507,7 +507,7 @@ def test_another_target_or_an_earlier_success_is_not_recovery_proof(db, shape):
 
 
 def test_explicit_retry_lineage_still_resolves(db):
-    """운영센터 재시도(parent_run_id=실패 실행, 같은 종류·병원)의 성공은 기존대로 근거다."""
+    """처리 목록 재시도(parent_run_id=실패 실행, 같은 종류·병원)의 성공은 기존대로 근거다."""
     facts = _Facts(db)
     hospital = _hospital(db)
     item = _item(db, hospital)

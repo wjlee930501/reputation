@@ -110,6 +110,7 @@ export function SiteLayoutSection({
       </div>
 
       <SiteLayoutPicker
+        excludesCurrent
         name={`site-layout-${hospitalId}`}
         value={choice}
         onChange={(layout) => {

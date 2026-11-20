@@ -45,6 +45,7 @@ import {
   type AeProblemTarget,
 } from '@/lib/report-ae-edit'
 import { parseReportRuns } from '@/lib/report-run'
+import { formatActorLabel } from '@/lib/actor-display'
 
 type Validation = { readonly fingerprint: string; readonly problems: readonly AeEditProblem[]; readonly summary: AeEditSummary | null; readonly numbersPreserved: boolean }
 type Recounted = { readonly value: string; readonly names: readonly string[]; readonly tail: string | null } | null
@@ -411,7 +412,7 @@ export function ReportAeEditPanel({
         <>
           {(preview.editedBy || preview.droppedPaths.length > 0) && (
             <p className="text-xs leading-5 text-[var(--color-revisit-text-caption)] [word-break:keep-all]">
-              {preview.editedBy && <>{ADMIN_COPY.aeEditEditedBy} · {preview.editedBy} · {preview.editedAt ? new Date(preview.editedAt).toLocaleString('ko-KR') : '-'}<br /></>}
+              {preview.editedBy && <>{ADMIN_COPY.aeEditEditedBy} · {formatActorLabel(preview.editedBy)} · {preview.editedAt ? new Date(preview.editedAt).toLocaleString('ko-KR') : '-'}<br /></>}
               {preview.droppedPaths.length > 0 && ADMIN_COPY.aeEditDropped}
             </p>
           )}

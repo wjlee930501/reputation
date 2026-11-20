@@ -73,7 +73,7 @@ function withLastChecked(hospital: HospitalDomainInput, base: string): string {
  * 그래서 관측은 인증서 상태가 비어 있거나(도메인 재저장으로 초기화된 경우) 이미
  * DONE일 때만 '운영 중'의 근거가 된다. 목록·헤더·패널이 모두 이 함수를 쓴다.
  */
-function liveCheckProvesServing(input: {
+export function liveCheckProvesServing(input: {
   domain_cert_job_state?: string | null
   domain_last_check_ok?: boolean | null
 }): boolean {

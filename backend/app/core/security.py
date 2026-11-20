@@ -286,7 +286,7 @@ def _alert_unverified_actor(actor: str, method: str, path: str) -> None:
                 safe_error_code="UNVERIFIED_ADMIN_ACTOR",
                 problem="활성 관리자 계정과 일치하지 않는 actor로 쓰기 요청이 시도되었습니다.",
                 customer_impact="관리자 변경 요청의 신뢰성을 확인할 때까지 운영 기록 검토가 필요합니다.",
-                next_action="운영센터의 감사 기록에서 요청 경로와 계정 상태를 확인하세요.",
+                next_action="처리 목록의 감사 기록에서 요청 경로와 계정 상태를 확인하세요.",
                 source_type="ADMIN_SECURITY",
                 actor="admin-security",
             )

@@ -851,9 +851,9 @@ def _failures_since_last_success(recent: list[OperationRun]) -> list[OperationRu
     ]
 
 
-# 개발 담당의 사고다(`incident_types`). 원인을 고친 뒤 할 수 있는 일은 운영센터의 재시도 버튼 하나다.
+# 개발 담당의 사고다(`incident_types`). 원인을 고친 뒤 할 수 있는 일은 처리 목록의 재시도 버튼 하나다.
 SITE_BUILD_EXHAUSTED_NEXT_ACTION = (
-    "사이트 준비 오류를 확인해 원인을 고친 뒤, 운영센터에서 이 사고에 연결된 작업의 "
+    "사이트 준비 오류를 확인해 원인을 고친 뒤, 처리 목록에서 이 사고에 연결된 작업의 "
     "‘작업 다시 시도’를 눌러 주세요."
 )
 
@@ -1465,7 +1465,7 @@ def _fail_unsafe_operation_run(db, run: OperationRun, observed_at: datetime) -> 
         safe_error_code=run.safe_error_code,
         safe_error_message=run.safe_error_message,
         next_action=(
-            "운영 센터에서 작업 상세를 확인한 뒤 원 요청을 다시 실행해 주세요. "
+            "처리 목록에서 작업 상세를 확인한 뒤 원 요청을 다시 실행해 주세요. "
             "같은 문제가 반복되면 개발팀에 작업 ID를 전달해 주세요."
         ),
         admin_path="/operations",

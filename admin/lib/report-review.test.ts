@@ -14,7 +14,7 @@ const payload = {
   review_evidence: {
     version: 2, version_label: '새 버전 2 · 이전 리포트 보존', supersedes_report_id: 'report-1',
     measurement: { quality: 'COMPLETE', quality_label: '필수 측정 완료', planned_count: 2, success_count: 2, failed_count: 0, excluded_count: 1, problem: '측정 완료', customer_impact: '검토 가능', next_action: '근거 확인' },
-    notification: { state: 'NOT_INDIVIDUALLY_LINKED', state_label: '개별 알림 연결 기록 없음', problem: '여러 병원을 묶은 요약 알림입니다.', customer_impact: '발송 성공을 단정할 수 없습니다.', next_action: '운영 센터에서 확인', sent_at: null, operations_url: '/operations?queue=REPORTS' },
+    notification: { state: 'NOT_INDIVIDUALLY_LINKED', state_label: '개별 알림 연결 기록 없음', problem: '여러 병원을 묶은 요약 알림입니다.', customer_impact: '발송 성공을 단정할 수 없습니다.', next_action: '처리 목록에서 확인', sent_at: null, operations_url: '/operations?queue=REPORTS' },
   },
   sov_summary: {
     sov_pct: 50,
@@ -31,7 +31,7 @@ const payload = {
       scheduled_slot_state_counts: { PUBLISHED: 15, DRAFT: 1 },
       delivery_warnings: ['약정 콘텐츠 16편 중 15편만 발행되었습니다.'],
       post_publish_review: { required_sample_count: 2, reviewed_count: 1, pending_count: 1, overdue_count: 1, cutoff_at: '2026-08-02T09:00:00Z' },
-      operator_copy: { label: '콘텐츠 운영 증거', problem: '사후검수 대기', customer_impact: '전달 불가', next_action: '운영 센터 확인' },
+      operator_copy: { label: '콘텐츠 운영 증거', problem: '사후검수 대기', customer_impact: '전달 불가', next_action: '처리 목록 확인' },
     },
     first_measured_mention_cells: [{ classification_label: '이번 달 처음 확인된 언급', meaning: '지난달 기록이 없습니다.', customer_impact: '상승으로 설명할 수 없습니다.', next_action: '다음 달과 비교하세요.', query_text: '강남 내과 추천', platform_label: 'ChatGPT', related_contents: ['내과 진료 안내'] }],
   },

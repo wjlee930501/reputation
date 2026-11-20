@@ -79,7 +79,7 @@ def _report_operator_copy(
         case "DELIVERY_PENDING":
             return (
                 "생성된 지난달 보고서의 원장 전달 검수가 완료되지 않았습니다.",
-                f"운영 센터의 “{_REPORT_ACTION_LABEL}”을 눌러 고객용 PDF와 전달 기록을 확인하세요.",
+                f"처리 목록의 “{_REPORT_ACTION_LABEL}”을 눌러 고객용 PDF와 전달 기록을 확인하세요.",
             )
         case "COVERAGE_INCOMPLETE":
             if preparing:

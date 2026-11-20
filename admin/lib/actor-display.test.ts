@@ -71,3 +71,13 @@ test('every screen that shows a confirmer runs the value through the shared help
     assert.match(source, /from '@\/lib\/actor-display'/, surface)
   }
 })
+
+// 워커가 남기는 `system:*` 값이 사람 이름처럼 「system:ai-review」로 보이던 문제(2026-11-20).
+test('system:* actors read as automatic work, never as a raw token', () => {
+  assert.equal(formatActorLabel('system:ai-review'), 'AI 자동 검토')
+  assert.equal(formatActorLabel('system:ai-correction'), 'AI 자동 교정')
+  assert.equal(describeActor('system:ai-review').isAutomated, true)
+  assert.equal(formatActorLabel('system:something-new'), '자동 처리')
+  assert.equal(describeActor('system:something-new').kind, 'SYSTEM')
+  assert.equal(formatActorLabel('김운영'), '김운영')
+})

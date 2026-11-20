@@ -20,6 +20,7 @@ import logging
 import uuid
 
 from app.services.must_use_verbatim import (
+    EXCLUDED_NOT_DOCTOR_STATEMENT,
     ExcludedMustUseMessage,
     MustUseRequirement,
     approved_philosophy,
@@ -41,6 +42,8 @@ def _problem(version: object, excluded: tuple[ExcludedMustUseMessage, ...]) -> s
     reason = (
         f"의료광고 금지 표현({', '.join(expressions)})"
         if expressions
+        else "원장의 완결된 문장이 아닌 값(메모체·명사구·깨진 추출 문장·안내문)"
+        if any(item.reason == EXCLUDED_NOT_DOCTOR_STATEMENT for item in excluded)
         else "문장이 아닌 값"
     )
     return (
