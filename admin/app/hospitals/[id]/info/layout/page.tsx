@@ -233,6 +233,15 @@ export default function SiteLayoutEditorPage() {
                   {COPY.previewNewTab}
                 </a>
               )}
+              {/* 미리보기 안에서 링크를 누르면 iframe이 공개 페이지로 넘어갈 수 있다 — 새 토큰으로 처음 화면을 다시 띄운다. */}
+              <button
+                type="button"
+                className={button}
+                disabled={!savedDraft || editor.dirty || editor.busy !== null || editor.previewDisabled}
+                onClick={() => void editor.requestPreview()}
+              >
+                {COPY.previewReload}
+              </button>
               <button type="button" className={button} onClick={() => setPreviewOpen(false)}>
                 {COPY.previewClose}
               </button>
