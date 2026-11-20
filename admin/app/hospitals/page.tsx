@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import { fetchAPI } from '@/lib/api'
 import { OperatorIssuePanel } from '@/app/_components/OperatorIssuePanel'
@@ -29,10 +29,21 @@ import {
   type HospitalStatusFilter,
 } from '@/lib/hospital-list-filter'
 import { HospitalListRow, PLAN_LABELS } from '@/types'
+import { readPublicAddresses } from '@/lib/public-address'
+import { AddressLink } from '@/app/_components/AddressLink'
+import {
+  mentionRateLabel,
+  metricsByHospital,
+  publishProgress,
+  sortHospitals,
+  type HospitalMonthMetrics,
+  type HospitalSort,
+} from '@/lib/hospital-month-metrics'
 import { SkeletonTable } from '@/app/components/Skeleton'
 
-// backend GET /admin/hospitals — skip/limit 파라미터 (기본 50, 최대 200)
-const PAGE_SIZE = 50
+// backend GET /admin/hospitals — skip/limit 파라미터 (기본 50, 최대 200). 필터 칩의 숫자가 전체를
+// 말하도록 한 번에 상한까지 받는다(2026-11 기준 18곳).
+const PAGE_SIZE = 200
 
 export default function HospitalsPage() {
   const [hospitals, setHospitals] = useState<HospitalListRow[]>([])
@@ -41,7 +52,10 @@ export default function HospitalsPage() {
   const [hasMore, setHasMore] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [query, setQuery] = useState('')
-  const [statusFilter, setStatusFilter] = useState<HospitalStatusFilter>('all')
+  // 기본은 운영 중 + 준비 중 — 일시 정지는 아래 접힌 묶음(2026-11-20 마케팅 요청).
+  const [statusFilter, setStatusFilter] = useState<HospitalStatusFilter>('default')
+  const [sort, setSort] = useState<HospitalSort>('created')
+  const [metrics, setMetrics] = useState<ReadonlyMap<string, HospitalMonthMetrics>>(new Map())
 
   const loadPage = useCallback(async (skip: number) => {
     if (skip === 0) setLoading(true)
@@ -65,6 +79,37 @@ export default function HospitalsPage() {
     void loadPage(0)
   }, [loadPage])
 
+  // 이번 달 발행·언급률은 병원마다 계산하는 무거운 호출이라 목록이 뜬 뒤 따로 받는다(실패해도 목록은 그대로).
+  // 첫 쪽은 최근 200곳을 한 번에, 「더 보기」로 붙은 병원은 그 병원 id만 더 받아 합친다.
+  // 요청마다 cleanup으로 버리면 「더 보기」가 목록을 바꿀 때 첫 응답이 사라지고 그 병원은 다시 받지 않는다 —
+  // 화면을 떠났을 때만 버린다.
+  const requestedMetrics = useRef<Set<string>>(new Set())
+  const mounted = useRef(true)
+  useEffect(() => {
+    mounted.current = true
+    return () => {
+      mounted.current = false
+    }
+  }, [])
+  useEffect(() => {
+    if (hospitals.length === 0) return
+    const first = requestedMetrics.current.size === 0
+    const pending = hospitals.map((h) => h.id).filter((id) => !requestedMetrics.current.has(id))
+    if (pending.length === 0) return
+    pending.forEach((id) => requestedMetrics.current.add(id))
+    const query = first ? '' : `?${pending.slice(0, PAGE_SIZE).map((id) => `ids=${encodeURIComponent(id)}`).join('&')}`
+    fetchAPI<unknown>(`/admin/hospitals/month-metrics${query}`)
+      .then((rows) => {
+        if (!mounted.current) return
+        const fetched = metricsByHospital(rows)
+        setMetrics((prev) => new Map([...prev, ...fetched]))
+      })
+      .catch((e: unknown) => {
+        pending.forEach((id) => requestedMetrics.current.delete(id))
+        if (!isExpectedOperatorRequestFailure(e)) throw e
+      })
+  }, [hospitals])
+
   // 원장 보고 누락 큐는 부가 정보다 — 실패해도 병원 목록을 막지 않는다.
   const [attention, setAttention] = useState<AttentionQueue | null>(null)
   useEffect(() => {
@@ -73,18 +118,40 @@ export default function HospitalsPage() {
       .catch(() => setAttention(null))
   }, [])
 
+  // 「보고 미전달」 필터는 위 원장 보고 상자와 같은 판정(attention의 미생성·미전달)을 쓴다.
+  const reportGapIds = useMemo(
+    () => new Set([
+      ...(attention?.reports?.missing ?? []).map((row) => row.hospital_id),
+      ...(attention?.reports?.undelivered ?? []).map((row) => row.hospital_id),
+    ]),
+    [attention],
+  )
+
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
-    return hospitals.filter(
-      (hospital) =>
-        hospitalMatchesStatus(hospital, statusFilter)
-        && (!q || domainSearchText(hospital).includes(q)),
+    // 검색할 때는 일시 정지 병원도 찾는다.
+    const scope: HospitalStatusFilter = q && statusFilter === 'default' ? 'all' : statusFilter
+    return sortHospitals(
+      hospitals.filter(
+        (hospital) =>
+          hospitalMatchesStatus(hospital, scope, reportGapIds)
+          && (!q || domainSearchText(hospital).includes(q)),
+      ),
+      sort,
+      metrics,
     )
-  }, [hospitals, query, statusFilter])
+  }, [hospitals, query, statusFilter, reportGapIds, sort, metrics])
+
+  const pausedRows = useMemo(
+    () => (statusFilter === 'default' && !query.trim()
+      ? sortHospitals(hospitals.filter((h) => h.status === 'PAUSED'), sort, metrics)
+      : []),
+    [hospitals, statusFilter, query, sort, metrics],
+  )
 
   const stats = useMemo(() => {
-    return hospitalStatusCounts(hospitals)
-  }, [hospitals])
+    return hospitalStatusCounts(hospitals, reportGapIds)
+  }, [hospitals, reportGapIds])
 
   return (
     <div className="p-4 sm:p-6 lg:p-8">
@@ -92,7 +159,7 @@ export default function HospitalsPage() {
       <div className="mb-6">
         <div className="flex flex-col gap-4 mb-2 sm:flex-row sm:items-start sm:justify-between">
           <div>
-            <h1 className="text-2xl font-bold text-slate-900">병원 목록</h1>
+            <h1 className="text-2xl font-bold text-slate-900">{ADMIN_COPY.nav.hospitals}</h1>
             <p className="text-sm text-slate-500 mt-1">
               MotionLabs가 관리하는 병원 운영 화면입니다. 병원을 선택하면 운영 요약을 볼 수 있습니다.
             </p>
@@ -109,9 +176,12 @@ export default function HospitalsPage() {
         {/* Quick stats */}
         {!loading && !error && hospitals.length > 0 && (
           <div className="flex items-center gap-2 text-xs text-slate-500 mt-4" aria-label="병원 상태 필터">
-            <StatPill label="전체" value={stats.total} selected={statusFilter === 'all'} onClick={() => setStatusFilter('all')} />
+            <StatPill label={ADMIN_COPY.hospitalList.filterDefault} value={stats.default} selected={statusFilter === 'default'} onClick={() => setStatusFilter('default')} />
             <StatPill label="운영 중" value={stats.active} tone="good" selected={statusFilter === 'active'} onClick={() => setStatusFilter('active')} />
-            <StatPill label="온보딩" value={stats.onboarding} tone="warn" selected={statusFilter === 'onboarding'} onClick={() => setStatusFilter('onboarding')} />
+            <StatPill label="준비 중" value={stats.onboarding} tone="warn" selected={statusFilter === 'onboarding'} onClick={() => setStatusFilter('onboarding')} />
+            <StatPill label={ADMIN_COPY.hospitalList.filterReportGap} value={stats.reportGap} tone="warn" selected={statusFilter === 'reportGap'} onClick={() => setStatusFilter('reportGap')} />
+            <StatPill label="일시 정지" value={stats.paused} selected={statusFilter === 'paused'} onClick={() => setStatusFilter('paused')} />
+            <StatPill label="전체" value={stats.total} selected={statusFilter === 'all'} onClick={() => setStatusFilter('all')} />
           </div>
         )}
       </div>
@@ -189,7 +259,20 @@ export default function HospitalsPage() {
               placeholder="병원명, 공개 주소, 도메인 검색"
               className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 sm:w-72"
             />
-            {(query || statusFilter !== 'all') && (
+            <label className="flex items-center gap-1.5 text-xs text-slate-500">
+              {ADMIN_COPY.hospitalList.sortLabel}
+              <select
+                value={sort}
+                onChange={(e) => setSort(e.target.value as HospitalSort)}
+                className="min-h-9 rounded-lg border border-slate-300 bg-white px-2 text-xs text-slate-700"
+              >
+                <option value="created">{ADMIN_COPY.hospitalList.sortCreated}</option>
+                <option value="name">{ADMIN_COPY.hospitalList.sortName}</option>
+                <option value="publish">{ADMIN_COPY.hospitalList.sortPublish}</option>
+                <option value="mention">{ADMIN_COPY.hospitalList.sortMention}</option>
+              </select>
+            </label>
+            {(query || statusFilter !== 'default') && (
               <span className="text-xs text-slate-500">
                 {filtered.length}개 표시
               </span>
@@ -198,105 +281,40 @@ export default function HospitalsPage() {
 
           <div className="rounded-xl border border-slate-200 bg-white shadow-sm">
             <div className="admin-responsive-table-wrap overflow-x-auto">
-            <table className="admin-responsive-table min-w-[980px] w-full text-sm">
-              <thead className="bg-slate-50 border-b border-slate-200">
-                <tr>
-                  <th className="text-left px-6 py-3 text-slate-600 font-medium">병원</th>
-                  <th className="text-left px-6 py-3 text-slate-600 font-medium">공개 서비스</th>
-                  <th className="text-left px-6 py-3 text-slate-600 font-medium">콘텐츠 준비</th>
-                  <th className="text-left px-6 py-3 text-slate-600 font-medium">자기 도메인</th>
-                  <th className="text-left px-6 py-3 text-slate-600 font-medium">{ADMIN_COPY.plan}</th>
-                  <th className="px-4 py-3"></th>
-                </tr>
-              </thead>
+            <table className="admin-responsive-table min-w-[1180px] w-full text-sm">
+              <HospitalTableHead />
               <tbody className="divide-y divide-slate-100">
                 {filtered.length === 0 && (
                   <tr>
-                    <td colSpan={6} className="text-center py-12 text-slate-400">
+                    <td colSpan={8} className="text-center py-12 text-slate-400">
                       {query ? '검색 조건에 맞는 병원이 없습니다.' : '선택한 상태의 병원이 없습니다.'}
                     </td>
                   </tr>
                 )}
-                {filtered.map((h) => {
-                  // 상태 판정은 서버가 한다 — 목록이 따로 계산하면 헤더·현황과 다른 답을 낸다.
-                  const publicService = describePublicService(h.public_service_state)
-                  const contentReady = describeContentState(h.content_state)
-                  const domain = describeDomainState(h.domain_state)
-                  const domainHref = h.site_built
-                    ? `/hospitals/${h.id}/info#domain-setup`
-                    : `/hospitals/${h.id}/info`
-                  return (
-                    <tr key={h.id} className="hover:bg-slate-50/80 transition-colors">
-                      <td className="px-6 py-4" data-primary="true">
-                        <Link
-                          href={`/hospitals/${h.id}`}
-                          className="block group"
-                        >
-                          <div className="font-medium text-slate-900 group-hover:text-blue-700">
-                            {h.name}
-                            {/* 예외는 사람이 손대야 풀린다 — 목록에서 바로 보이지 않으면
-                                병원을 열어 보기 전에는 알 수 없다. */}
-                            {h.open_exception_count > 0 && (
-                              <span className="ml-2 inline-flex rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-800">
-                                예외 {h.open_exception_count}건
-                              </span>
-                            )}
-                          </div>
-                          <div className="mt-0.5 text-[11px] text-slate-400">
-                            {ADMIN_COPY.aeOwner} {h.ae_owner?.name ?? '미지정'}
-                          </div>
-                        </Link>
-                        {/* 로고·대표색·첫 화면 문구·정보 우선순위는 사람만 채울 수 있고, 여기서 보이지
-                            않으면 병원을 열기 전에는 알 수 없다 — 그 칸으로 바로 간다(O-2). 사진은 들지
-                            않는다(`clinic_visual_readiness`). 옛 배지 이름이 사진으로 읽혀
-                            2026-11-20에 바꿨다. */}
-                        {(h.visual_approval_missing?.length ?? 0) > 0 && (
-                          <Link
-                            href={`/hospitals/${h.id}/info#info-brand`}
-                            className="mt-1 inline-flex rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-800 hover:bg-amber-100"
-                          >
-                            {ADMIN_COPY.visualItemsMissing} {h.visual_approval_missing?.length}건
-                          </Link>
-                        )}
-                      </td>
-                      <td className="px-6 py-4" data-label="공개 서비스">
-                        <StateCell kind={h.public_service_state.kind} description={publicService} />
-                      </td>
-                      <td className="px-6 py-4" data-label="콘텐츠 준비">
-                        <StateCell kind={h.content_state.kind} description={contentReady} />
-                      </td>
-                      <td className="px-6 py-4" data-label="자기 도메인">
-                        {/* 자기 도메인을 쓰지 않는 병원은 이 칸이 비어 있는 게 사실이다 —
-                            기본 주소로 공개 중인 병원을 '미설정'으로 부르지 않는다.
-                            링크는 사람이 결정할 문제(`problem`)에만 붙인다 — 연결됨·확인
-                            중은 손댈 것이 없는데 눌러 보게 만든다. */}
-                        {!domain ? (
-                          <span className="text-xs text-slate-400">—</span>
-                        ) : h.domain_state.kind === 'problem' ? (
-                          <Link href={domainHref} className="group inline-flex max-w-[240px]">
-                            <StateCell kind={h.domain_state.kind} description={domain} />
-                          </Link>
-                        ) : (
-                          <StateCell kind={h.domain_state.kind} description={domain} />
-                        )}
-                      </td>
-                      <td className="px-6 py-4 text-slate-600" data-label={ADMIN_COPY.plan}>
-                        {h.plan ? PLAN_LABELS[h.plan] ?? h.plan : '-'}
-                      </td>
-                      <td className="px-4 py-4 text-right" data-label="">
-                        <Link
-                          href={`/hospitals/${h.id}`}
-                          className="text-xs font-medium text-blue-600 hover:text-blue-800 hover:underline"
-                        >
-                          열기 →
-                        </Link>
-                      </td>
-                    </tr>
-                  )
-                })}
+                {filtered.map((h) => (
+                  <HospitalRow key={h.id} h={h} metrics={metrics.get(h.id)} reportGap={reportGapIds.has(h.id)} />
+                ))}
               </tbody>
             </table>
             </div>
+            {pausedRows.length > 0 && (
+              <details className="border-t border-slate-200" data-testid="paused-hospitals">
+                <summary className="flex min-h-11 cursor-pointer items-center gap-2 px-6 text-sm font-semibold text-slate-600">
+                  {ADMIN_COPY.hospitalList.pausedGroup}
+                  <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-bold text-slate-600">{pausedRows.length}</span>
+                </summary>
+                <div className="admin-responsive-table-wrap overflow-x-auto">
+                  <table className="admin-responsive-table min-w-[1180px] w-full text-sm">
+                    <HospitalTableHead />
+                    <tbody className="divide-y divide-slate-100">
+                      {pausedRows.map((h) => (
+                        <HospitalRow key={h.id} h={h} metrics={metrics.get(h.id)} reportGap={reportGapIds.has(h.id)} />
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </details>
+            )}
             {hasMore && (
               <div className="border-t border-slate-100 px-6 py-3 text-center">
                 <button
@@ -318,6 +336,130 @@ export default function HospitalsPage() {
         </>
       )}
     </div>
+  )
+}
+
+function HospitalTableHead() {
+  return (
+    <thead className="bg-slate-50 border-b border-slate-200">
+      <tr>
+        <th className="text-left px-6 py-3 text-slate-600 font-medium">병원</th>
+        <th className="text-left px-4 py-3 text-slate-600 font-medium">{ADMIN_COPY.hospitalList.colAddress}</th>
+        <th className="text-left px-4 py-3 text-slate-600 font-medium">상태</th>
+        <th className="text-left px-4 py-3 text-slate-600 font-medium">{ADMIN_COPY.hospitalList.colPublish}</th>
+        <th className="text-left px-4 py-3 text-slate-600 font-medium">{ADMIN_COPY.hospitalList.colMention}</th>
+        <th className="text-left px-4 py-3 text-slate-600 font-medium">{ADMIN_COPY.hospitalList.colTodo}</th>
+        <th className="text-left px-4 py-3 text-slate-600 font-medium">{ADMIN_COPY.plan}</th>
+        <th className="px-4 py-3"></th>
+      </tr>
+    </thead>
+  )
+}
+
+function HospitalRow({
+  h,
+  metrics,
+  reportGap,
+}: {
+  h: HospitalListRow
+  metrics: HospitalMonthMetrics | undefined
+  reportGap: boolean
+}) {
+  // 상태 판정은 서버가 한다 — 목록이 따로 계산하면 헤더·현황과 다른 답을 낸다.
+  const publicService = describePublicService(h.public_service_state)
+  const contentReady = describeContentState(h.content_state)
+  const domain = describeDomainState(h.domain_state)
+  const domainHref = h.site_built ? `/hospitals/${h.id}/info#domain-setup` : `/hospitals/${h.id}/info`
+  // 공개 주소는 지금 열리는 주소만 링크로(public-address) — 헤더·콘텐츠와 같은 판정.
+  const addresses = readPublicAddresses(h)
+  const shownAddress = addresses.live ?? addresses.custom ?? addresses.platform
+  const progress = publishProgress(metrics)
+  return (
+    <tr className="hover:bg-slate-50/80 transition-colors">
+      <td className="px-6 py-4" data-primary="true">
+        <Link href={`/hospitals/${h.id}`} className="block group">
+          <div className="font-medium text-slate-900 group-hover:text-blue-700">{h.name}</div>
+          <div className="mt-0.5 text-[11px] text-slate-400">
+            {ADMIN_COPY.aeOwner} {h.ae_owner?.name ?? '미지정'}
+          </div>
+        </Link>
+      </td>
+      <td className="px-4 py-4 text-xs" data-label={ADMIN_COPY.hospitalList.colAddress}>
+        {shownAddress ? (
+          <div className="flex flex-col gap-0.5">
+            <AddressLink address={shownAddress} className="max-w-[240px]" />
+            {!addresses.live && <span className="text-[11px] text-slate-400">{ADMIN_COPY.address.notLive}</span>}
+          </div>
+        ) : (
+          <span className="text-slate-400">—</span>
+        )}
+      </td>
+      <td className="px-4 py-4" data-label="상태">
+        <div className="flex flex-col gap-1.5">
+          <StateCell kind={h.public_service_state.kind} description={publicService} />
+          <StateCell kind={h.content_state.kind} description={contentReady} />
+          {/* 자기 도메인을 쓰지 않는 병원은 아무 말도 하지 않는다 — 링크는 사람이 결정할 문제
+              (`problem`)에만 붙인다. */}
+          {domain && (h.domain_state.kind === 'problem' ? (
+            <Link href={domainHref} className="group inline-flex max-w-[240px]">
+              <StateCell kind={h.domain_state.kind} description={domain} />
+            </Link>
+          ) : (
+            <StateCell kind={h.domain_state.kind} description={domain} />
+          ))}
+        </div>
+      </td>
+      <td className="px-4 py-4" data-label={ADMIN_COPY.hospitalList.colPublish}>
+        {progress ? (
+          <div className="w-28">
+            <div className="h-1.5 rounded-full bg-slate-100" aria-hidden>
+              <div className="h-1.5 rounded-full bg-blue-600" style={{ width: `${Math.round(progress.ratio * 100)}%` }} />
+            </div>
+            <p className="mt-1 text-xs tabular-nums text-slate-600" title={ADMIN_COPY.hospitalList.publishHint}>
+              {ADMIN_COPY.hospitalList.publishPrefix} {progress.label}
+            </p>
+          </div>
+        ) : (
+          <span className="text-xs text-slate-400">—</span>
+        )}
+      </td>
+      <td className="px-4 py-4 text-xs tabular-nums text-slate-700" data-label={ADMIN_COPY.hospitalList.colMention}>
+        {mentionRateLabel(metrics)}
+      </td>
+      <td className="px-4 py-4" data-label={ADMIN_COPY.hospitalList.colTodo}>
+        <div className="flex flex-wrap gap-1">
+          {/* 예외는 사람이 손대야 풀린다 — 현황의 예외 카드와 같은 원인 묶음 수. */}
+          {h.open_exception_count > 0 && (
+            <Link href={`/hospitals/${h.id}`} className="inline-flex rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-800 hover:bg-amber-100">
+              예외 {h.open_exception_count}건
+            </Link>
+          )}
+          {/* 로고·대표색·첫 화면 문구·정보 우선순위는 사람만 채울 수 있다(O-2). 사진은 들지 않는다
+              (`clinic_visual_readiness`). 옛 배지 이름이 사진으로 읽혀 2026-11-20에 바꿨다. */}
+          {(h.visual_approval_missing?.length ?? 0) > 0 && (
+            <Link
+              href={`/hospitals/${h.id}/info#info-brand`}
+              className="inline-flex rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-800 hover:bg-amber-100"
+            >
+              {ADMIN_COPY.visualItemsMissing} {h.visual_approval_missing?.length}건
+            </Link>
+          )}
+          {reportGap && (
+            <Link href={`/hospitals/${h.id}/reports`} className="inline-flex rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-700 hover:bg-slate-200">
+              {ADMIN_COPY.hospitalList.filterReportGap}
+            </Link>
+          )}
+        </div>
+      </td>
+      <td className="px-4 py-4 text-slate-600" data-label={ADMIN_COPY.plan}>
+        {h.plan ? PLAN_LABELS[h.plan] ?? h.plan : '-'}
+      </td>
+      <td className="px-4 py-4 text-right" data-label="">
+        <Link href={`/hospitals/${h.id}`} className="text-xs font-medium text-blue-600 hover:text-blue-800 hover:underline">
+          열기 →
+        </Link>
+      </td>
+    </tr>
   )
 }
 

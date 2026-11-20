@@ -14,7 +14,7 @@ from app.workers.generation_retry_policy import (
 )
 from app.workers.generation_run_control import GenerationItemState, create_item_run
 
-_SAFE_FAILURE_MESSAGE = "생성 작업이 완료되지 않았습니다. 운영 센터에서 원인을 확인해 주세요."
+_SAFE_FAILURE_MESSAGE = "생성 작업이 완료되지 않았습니다. 처리 목록에서 원인을 확인해 주세요."
 
 
 def item_result_payload(

@@ -640,7 +640,7 @@ async def test_ae_edit_context_requires_the_latest_v4_version(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_operations_center_retry_carries_the_ae_edit_payload(monkeypatch):
-    """운영센터 재시도는 같은 인자로 새 실행을 만든다 — `ae_edit`를 잇지 않으면 수정 없는 템플릿 갱신이 된다(검토 2-P2-3)."""
+    """처리 목록 재시도는 같은 인자로 새 실행을 만든다 — `ae_edit`를 잇지 않으면 수정 없는 템플릿 갱신이 된다(검토 2-P2-3)."""
     from app.services import operation_runs
 
     hospital_id = uuid.uuid4()

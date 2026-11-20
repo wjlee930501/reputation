@@ -22,6 +22,8 @@ import {
 import { safeCauseText } from '@/lib/operations-center'
 import { CorrectDiagnosisDialog } from './CorrectDiagnosisDialog'
 import { manualDiagnosisRefusal, type ManualDiagnosisValues } from '@/lib/manual-diagnosis'
+import { ConfirmDialog } from '@/app/_components/ConfirmDialog'
+import { DangerMenu } from '@/app/_components/DangerMenu'
 import {
   type LeadDiagnosisSummary,
   type Tone,
@@ -194,6 +196,8 @@ export default function LeadsPage() {
   // 개인정보 파기
   const [erasingLeadId, setErasingLeadId] = useState<string | null>(null)
   const [eraseError, setEraseError] = useState<string | null>(null)
+  // 파기는 ⋯ 메뉴 → 병원명 재입력 확인창(2026-11-20). 되돌릴 수 없다.
+  const [eraseTarget, setEraseTarget] = useState<SalesLead | null>(null)
 
   // 무료 진단 — 확인 필요 필터 + 재발송/잠금 해제
   const [attentionOnly, setAttentionOnly] = useState(false)
@@ -329,10 +333,6 @@ export default function LeadsPage() {
   }, [leads, loadLeads])
 
   async function handleErase(lead: SalesLead) {
-    const confirmed = confirm(
-      `${lead.clinic_name} 상담 요청의 개인정보(연락처·문의 내용)를 즉시 파기합니다.\n파기 후에는 되돌릴 수 없습니다. 계속할까요?`,
-    )
-    if (!confirmed) return
     setErasingLeadId(lead.id)
     setEraseError(null)
     try {
@@ -340,6 +340,7 @@ export default function LeadsPage() {
       // 현재 로드된 창 전체를 다시 읽어 파기 결과를 반영한다 (백엔드 limit 상한 내).
       await loadLeads(0, { limit: Math.min(Math.max(leads.length, PAGE_SIZE), RELOAD_MAX) })
       void loadSummary()
+      setEraseTarget(null)
     } catch (e: unknown) {
       setEraseError(safeOperatorError('leads', '상담 요청 다시 불러오기를 누른 뒤 개인정보 파기를 다시 실행하세요.'))
     } finally {
@@ -646,10 +647,10 @@ export default function LeadsPage() {
                     {lead.notification_status === 'FAILED' && (
                       <div className="mt-2 min-w-[18rem] break-keep">
                         <OperatorIssuePanel
-                          message={'문제: 상담 요청은 저장됐지만 담당자 알림을 보내지 못했습니다.\n고객 영향: 담당자가 신규 문의를 늦게 확인할 수 있습니다.\n지금 할 일: ‘운영 센터에서 확인’을 눌러 알림 복구 상태를 확인하세요.'}
+                          message={'문제: 상담 요청은 저장됐지만 담당자 알림을 보내지 못했습니다.\n고객 영향: 담당자가 신규 문의를 늦게 확인할 수 있습니다.\n지금 할 일: ‘처리 목록에서 확인’을 눌러 알림 복구 상태를 확인하세요.'}
                           surface="leads"
                           actionHref="/operations?queue=incidents"
-                          actionLabel="운영 센터에서 확인"
+                          actionLabel="처리 목록에서 확인"
                         />
                       </div>
                     )}
@@ -794,7 +795,7 @@ export default function LeadsPage() {
                                         : '신청자에게는 아직 보고서가 전달되지 않았습니다. 완료 여부를 자동으로 확인하고 있습니다.'}
                                     </p>
                                     <Link href="/operations" className="mt-2 inline-flex min-h-11 items-center text-xs font-semibold text-blue-700 hover:underline">
-                                      운영 센터에서 상세 확인
+                                      처리 목록에서 상세 확인
                                     </Link>
                                   </div>
                                 )
@@ -828,7 +829,7 @@ export default function LeadsPage() {
                                         onClick={() => {
                                           void navigator.clipboard.writeText(supportInfo).then(
                                             () => setActionNotice('개발팀 문의 정보를 복사했습니다.'),
-                                            () => setActionNotice('복사하지 못했습니다. 운영 센터에서 진단 번호를 확인해 주세요.'),
+                                            () => setActionNotice('복사하지 못했습니다. 처리 목록에서 진단 번호를 확인해 주세요.'),
                                           )
                                         }}
                                         className="min-h-11 rounded-lg border border-amber-300 bg-white px-3 py-2 text-xs font-semibold text-amber-900"
@@ -836,7 +837,7 @@ export default function LeadsPage() {
                                         문의 정보 복사
                                       </button>
                                       <Link href="/operations" className="inline-flex min-h-11 items-center px-2 text-xs font-semibold text-amber-900 hover:underline">
-                                        운영 센터 상세
+                                        처리 목록 상세
                                       </Link>
                                     </div>
                                   </div>
@@ -894,14 +895,17 @@ export default function LeadsPage() {
                       {lead.converted_hospital_id ? '연결 병원으로 이동' : '계약 정보를 입력해 병원을 만듭니다'}
                     </p>
                     <div className="mt-1 flex items-center justify-end gap-2">
-                      <button
-                        type="button"
-                        onClick={() => handleErase(lead)}
-                        disabled={erasingLeadId === lead.id}
-                        className="inline-flex min-h-11 min-w-11 items-center justify-center text-[11px] font-medium text-red-400 hover:text-red-600 hover:underline disabled:opacity-50"
-                      >
-                        {erasingLeadId === lead.id ? '파기 중...' : '개인정보 파기'}
-                      </button>
+                      <DangerMenu
+                        items={[{
+                          label: erasingLeadId === lead.id ? '파기 중...' : ADMIN_COPY.dangerConfirm.eraseItem,
+                          danger: true,
+                          disabled: erasingLeadId === lead.id,
+                          onSelect: () => {
+                            setEraseError(null)
+                            setEraseTarget(lead)
+                          },
+                        }]}
+                      />
                     </div>
                   </td>
                 </tr>
@@ -923,6 +927,20 @@ export default function LeadsPage() {
           )}
         </div>
       )}
+
+      <ConfirmDialog
+        open={eraseTarget !== null}
+        title={ADMIN_COPY.dangerConfirm.eraseTitle}
+        description={`${eraseTarget?.clinic_name ?? ''} · ${ADMIN_COPY.dangerConfirm.eraseBody}`}
+        confirmLabel={ADMIN_COPY.dangerConfirm.eraseConfirm}
+        typedConfirmation={eraseTarget?.clinic_name}
+        busy={eraseTarget !== null && erasingLeadId === eraseTarget.id}
+        error={eraseTarget ? eraseError : null}
+        onConfirm={() => {
+          if (eraseTarget) void handleErase(eraseTarget)
+        }}
+        onClose={() => setEraseTarget(null)}
+      />
 
       {correctTarget && typeof document !== 'undefined' && createPortal((
         <CorrectDiagnosisDialog

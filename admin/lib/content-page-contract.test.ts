@@ -1,5 +1,5 @@
 // 콘텐츠 화면의 소스 계약 — 사람이 누를 수 있는 것은 표본 확인과 본문 편집뿐이다.
-// 운영 복구(발행·재생성·발행일 이동·항목 종료)는 운영 센터가 맡고 백엔드 라우트는 남아 있다.
+// 운영 복구(발행·재생성·발행일 이동·항목 종료)는 처리 목록이 맡고 백엔드 라우트는 남아 있다.
 
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
@@ -83,13 +83,13 @@ test('공개 글의 비공개는 표본 여부와 무관하고, "문제 없음" 
   assert.match(page, /JSON\.stringify\(\{ reason: reason\.trim\(\) \}\)/)
 })
 
-test('운영 센터로 가는 링크는 실제로 열리는 주소다', () => {
+test('처리 목록으로 가는 링크는 실제로 열리는 주소다', () => {
   // `/operations` 한 화면 + 질의값이 전부다 — 병원별 하위 경로는 존재하지 않는다.
   assert.match(page, /hospitalOperationsHref\(id, '\/operations\?queue=incidents'\)/)
   assert.doesNotMatch(page, /href="\/operations\/hospitals\//)
 })
 
-test('운영 센터 딥링크와 단건 새로고침은 유지된다', () => {
+test('처리 목록 딥링크와 단건 새로고침은 유지된다', () => {
   assert.match(page, /\?content=|get\('content'\)/)
   assert.match(page, /refreshItem/)
 })

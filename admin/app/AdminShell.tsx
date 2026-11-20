@@ -2,9 +2,13 @@
 
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 
 import { buildAdminCsrfHeaders } from '@/lib/csrf'
+import { fetchAPI } from '@/lib/api'
+import { ADMIN_COPY } from '@/lib/admin-copy'
+import { isExpectedOperatorRequestFailure } from '@/lib/operations-journey'
+import { navBadge, type NavBadgeKey, type NavCounts } from '@/lib/nav-counts'
 import { clearPublisherIdentity } from '@/lib/publisher-identity'
 import {
   developerSupportText,
@@ -14,9 +18,20 @@ import {
 
 const NAV_ITEMS = [
   {
+    href: '/',
+    label: ADMIN_COPY.nav.dashboard,
+    section: ADMIN_COPY.nav.sectionOperations,
+    icon: (
+      <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4">
+        <path d="M3 3h6v6H3zM11 3h6v4h-6zM11 9h6v8h-6zM3 11h6v6H3z" />
+      </svg>
+    ),
+  },
+  {
     href: '/hospitals',
-    label: '병원 목록',
-    meta: '관리',
+    label: ADMIN_COPY.nav.hospitals,
+    section: ADMIN_COPY.nav.sectionOperations,
+    badge: 'hospitals' as NavBadgeKey,
     icon: (
       <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4">
         <path d="M3 7v10a1 1 0 0 0 1 1h4V13h4v5h4a1 1 0 0 0 1-1V7l-7-4z" />
@@ -29,6 +44,7 @@ const NAV_ITEMS = [
   {
     href: '/hospitals/new',
     label: '계약 등록',
+    section: ADMIN_COPY.nav.sectionSales,
     icon: (
       <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4">
         <path d="M10 4v12M4 10h12" />
@@ -38,6 +54,8 @@ const NAV_ITEMS = [
   {
     href: '/leads',
     label: '상담 요청',
+    section: ADMIN_COPY.nav.sectionSales,
+    badge: 'leads' as NavBadgeKey,
     icon: (
       <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4">
         <path d="M3 5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H7l-4 4V5z" />
@@ -46,7 +64,8 @@ const NAV_ITEMS = [
   },
   {
     href: '/diagnoses',
-    label: '노출 진단 생성',
+    label: ADMIN_COPY.nav.diagnoses,
+    section: ADMIN_COPY.nav.sectionSales,
     icon: (
       <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4">
         <circle cx="9" cy="9" r="5" />
@@ -57,8 +76,9 @@ const NAV_ITEMS = [
   },
   {
     href: '/operations',
-    label: '운영 센터',
-    meta: '현황',
+    label: ADMIN_COPY.nav.operations,
+    section: ADMIN_COPY.nav.sectionOperations,
+    badge: 'operations' as NavBadgeKey,
     icon: (
       <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4">
         <path d="M3 16V9M8 16V5M13 16v-4M18 16V7" />
@@ -67,8 +87,8 @@ const NAV_ITEMS = [
   },
   {
     href: '/accounts',
-    label: '운영자 계정',
-    meta: '설정',
+    label: ADMIN_COPY.nav.settings,
+    section: ADMIN_COPY.nav.sectionManage,
     icon: (
       <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4">
         <path d="M10 10a3 3 0 1 0 0-6 3 3 0 0 0 0 6z" />
@@ -78,12 +98,47 @@ const NAV_ITEMS = [
   },
 ]
 
+// 메뉴 순서와 묶음(2026-11-20 마케팅 요청): 운영(병원·처리 목록) · 영업(상담 요청·노출 진단·계약 등록) · 관리(설정).
+// 경로는 그대로다 — 백엔드 딥링크(`incident_safety._ADMIN_ROUTE_ROOTS`)와 북마크가 깨지지 않게.
+const NAV_ORDER = ['/', '/hospitals', '/operations', '/leads', '/diagnoses', '/hospitals/new', '/accounts']
+const ORDERED_NAV = [...NAV_ITEMS].sort((a, b) => NAV_ORDER.indexOf(a.href) - NAV_ORDER.indexOf(b.href))
+
 export function AdminShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
   const router = useRouter()
   const [logoutError, setLogoutError] = useState(false)
   const [logoutCopyStatus, setLogoutCopyStatus] = useState('')
   const isLogin = pathname === '/login'
+  const [navCounts, setNavCounts] = useState<NavCounts | null>(null)
+
+  // 메뉴 배지는 화면을 옮길 때, 그리고 화면이 보이는 동안 1분마다 다시 읽는다 — 처리 목록에서 일을
+  // 끝내도 배지가 그대로 남지 않게. 가벼운 전용 API(쿼리 몇 개)다.
+  useEffect(() => {
+    if (isLogin) return
+    let active = true
+    async function loadCounts() {
+      if (document.visibilityState === 'hidden') return
+      try {
+        const counts = await fetchAPI<NavCounts>('/admin/operations/nav-counts')
+        if (active) setNavCounts(counts)
+      } catch (error: unknown) {
+        // 배지는 보조 정보다 — 요청·응답이 어떻게 실패하든(깨진 응답 포함) 숫자 없이 메뉴만 보인다.
+        if (active) setNavCounts(null)
+        if (!isExpectedOperatorRequestFailure(error) && !(error instanceof SyntaxError)) {
+          console.warn('nav counts unavailable', error)
+        }
+      }
+    }
+    void loadCounts()
+    const timer = window.setInterval(() => void loadCounts(), 60_000)
+    const onVisible = () => void loadCounts()
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      active = false
+      window.clearInterval(timer)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
+  }, [isLogin, pathname])
 
   async function handleLogout() {
     setLogoutError(false)
@@ -117,7 +172,7 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
     <div className="min-h-screen bg-slate-50 lg:flex lg:h-screen">
       <aside className="sticky top-0 z-50 flex shrink-0 flex-col bg-slate-900 text-slate-100 lg:static lg:w-60">
         <div className="flex h-14 items-center border-b border-slate-800 px-4 lg:block lg:h-auto lg:px-5 lg:py-4">
-          <Link href="/hospitals" className="inline-flex min-h-11 min-w-0 flex-1 items-center lg:block">
+          <Link href="/" className="inline-flex min-h-11 min-w-0 flex-1 items-center lg:block">
             <div className="flex items-baseline gap-1.5">
               <span className="text-lg font-bold tracking-tight text-white">Re:putation</span>
               <span className="text-[11px] font-semibold tracking-wider text-blue-300">운영</span>
@@ -132,11 +187,13 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
             </summary>
             <div className="absolute right-0 top-[calc(100%+8px)] z-50 w-[min(22rem,calc(100vw-2rem))] rounded-xl border border-slate-700 bg-slate-900 p-2 shadow-xl">
               <nav className="space-y-1" aria-label="모바일 운영 메뉴">
-                {NAV_ITEMS.map((item) => {
+                {ORDERED_NAV.map((item) => {
                   const active =
                     item.href === '/hospitals'
                       ? pathname === '/hospitals' || (pathname.startsWith('/hospitals/') && !pathname.startsWith('/hospitals/new'))
-                      : pathname === item.href || pathname.startsWith(`${item.href}/`)
+                      : item.href === '/'
+                        ? pathname === '/'
+                        : pathname === item.href || pathname.startsWith(`${item.href}/`)
                   return (
                     <Link
                       key={item.href}
@@ -167,40 +224,52 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
         </div>
 
         <nav className="hidden gap-1 overflow-x-auto px-3 py-3 lg:flex lg:flex-1 lg:flex-col lg:gap-0.5 lg:overflow-visible lg:py-4" aria-label="운영 메뉴">
-          <p className="hidden px-3 pb-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500 lg:block">
-            운영 메뉴
-          </p>
-          {NAV_ITEMS.map((item) => {
+          {ORDERED_NAV.map((item, index) => {
             const active =
               item.href === '/hospitals'
                 ? pathname === '/hospitals' || (pathname.startsWith('/hospitals/') && !pathname.startsWith('/hospitals/new'))
-                : pathname === item.href || pathname.startsWith(`${item.href}/`)
+                : item.href === '/'
+                  ? pathname === '/'
+                  : pathname === item.href || pathname.startsWith(`${item.href}/`)
+            const badge = 'badge' in item && item.badge ? navBadge(item.badge, navCounts) : null
+            const sectionStart = index === 0 || ORDERED_NAV[index - 1].section !== item.section
             return (
-              <Link
-                key={item.href}
-                href={item.href}
-                aria-current={active ? 'page' : undefined}
-                className={`flex min-h-11 min-w-fit items-center justify-between gap-3 rounded-md px-3 py-2 text-sm transition-colors ${
-                  active
-                    ? 'bg-slate-800 text-white'
-                    : 'text-slate-300 hover:bg-slate-800 hover:text-white'
-                }`}
-              >
-                <span className="flex items-center gap-2.5">
-                  <span
-                    aria-hidden
-                    className="inline-flex h-5 w-5 items-center justify-center rounded border border-slate-700 text-slate-300"
-                  >
-                    {item.icon}
-                  </span>
-                  {item.label}
-                </span>
-                {item.meta && (
-                  <span className="hidden text-[11px] text-slate-500 group-hover:text-slate-300 xl:inline">
-                    {item.meta}
-                  </span>
+              <div key={item.href}>
+                {sectionStart && (
+                  <p className="hidden px-3 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-wider text-slate-500 lg:block">
+                    {item.section}
+                  </p>
                 )}
-              </Link>
+                <Link
+                  href={item.href}
+                  aria-current={active ? 'page' : undefined}
+                  className={`flex min-h-11 min-w-fit items-center justify-between gap-3 rounded-md px-3 py-2 text-sm transition-colors ${
+                    active
+                      ? 'bg-slate-800 text-white'
+                      : 'text-slate-300 hover:bg-slate-800 hover:text-white'
+                  }`}
+                >
+                  <span className="flex items-center gap-2.5">
+                    <span
+                      aria-hidden
+                      className="inline-flex h-5 w-5 items-center justify-center rounded border border-slate-700 text-slate-300"
+                    >
+                      {item.icon}
+                    </span>
+                    {item.label}
+                  </span>
+                  {badge && (
+                    <span
+                      className={`inline-flex min-w-6 justify-center rounded-full px-1.5 py-0.5 text-[11px] font-bold tabular-nums ${
+                        badge.tone === 'attention' ? 'bg-orange-500 text-white' : 'bg-slate-700 text-slate-200'
+                      }`}
+                      aria-label={`${item.label} ${badge.label}`}
+                    >
+                      {badge.value}
+                    </span>
+                  )}
+                </Link>
+              </div>
             )
           })}
         </nav>
