@@ -22,6 +22,7 @@ test('dashboard numbers read server states and keep the to-do count apart from o
   assert.equal(summary.live, 1)
   assert.equal(summary.preparing, 1)
   assert.equal(summary.paused, 1)
+  assert.equal(summary.live + summary.preparing + summary.paused, summary.total)
   // 일시 정지 병원은 공개 페이지 항목·이번 달 발행 합계에 넣지 않는다.
   assert.equal(summary.visualMissingHospitals, 1)
   assert.deepEqual([summary.monthPublic, summary.monthPlanned], [6, 12])

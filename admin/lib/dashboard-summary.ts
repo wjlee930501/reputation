@@ -69,9 +69,11 @@ export function summarizeDashboard(
     monthPlanned += Math.max(0, row.planned_total)
   }
   return {
+    // 세 숫자는 서버 공개 상태(live·not_live·paused) 하나로 나눈다 — 합이 전체와 같다.
+    // 도메인 확인 대기 병원도 기본 주소로 공개 중이면 「공개 중」이다.
     live: hospitals.filter((h) => h.public_service_state.kind === 'live').length,
-    preparing: hospitals.filter((h) => isOnboardingHospital({ status: h.status as never })).length,
-    paused: hospitals.filter((h) => h.status === 'PAUSED').length,
+    preparing: hospitals.filter((h) => h.public_service_state.kind === 'not_live').length,
+    paused: hospitals.filter((h) => h.public_service_state.kind === 'paused').length,
     total: hospitals.length,
     visualMissingHospitals: active.filter((h) => (h.visual_approval_missing?.length ?? 0) > 0).length,
     operatorTodo: counts ? counts.operator_todo_groups : null,

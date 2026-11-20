@@ -18,6 +18,16 @@ import {
 
 const NAV_ITEMS = [
   {
+    href: '/',
+    label: ADMIN_COPY.nav.dashboard,
+    section: ADMIN_COPY.nav.sectionOperations,
+    icon: (
+      <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4">
+        <path d="M3 3h6v6H3zM11 3h6v4h-6zM11 9h6v8h-6zM3 11h6v6H3z" />
+      </svg>
+    ),
+  },
+  {
     href: '/hospitals',
     label: ADMIN_COPY.nav.hospitals,
     section: ADMIN_COPY.nav.sectionOperations,
@@ -90,7 +100,7 @@ const NAV_ITEMS = [
 
 // 메뉴 순서와 묶음(2026-11-20 마케팅 요청): 운영(병원·처리 목록) · 영업(상담 요청·노출 진단·계약 등록) · 관리(설정).
 // 경로는 그대로다 — 백엔드 딥링크(`incident_safety._ADMIN_ROUTE_ROOTS`)와 북마크가 깨지지 않게.
-const NAV_ORDER = ['/hospitals', '/operations', '/leads', '/diagnoses', '/hospitals/new', '/accounts']
+const NAV_ORDER = ['/', '/hospitals', '/operations', '/leads', '/diagnoses', '/hospitals/new', '/accounts']
 const ORDERED_NAV = [...NAV_ITEMS].sort((a, b) => NAV_ORDER.indexOf(a.href) - NAV_ORDER.indexOf(b.href))
 
 export function AdminShell({ children }: { children: React.ReactNode }) {
@@ -153,7 +163,7 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
     <div className="min-h-screen bg-slate-50 lg:flex lg:h-screen">
       <aside className="sticky top-0 z-50 flex shrink-0 flex-col bg-slate-900 text-slate-100 lg:static lg:w-60">
         <div className="flex h-14 items-center border-b border-slate-800 px-4 lg:block lg:h-auto lg:px-5 lg:py-4">
-          <Link href="/hospitals" className="inline-flex min-h-11 min-w-0 flex-1 items-center lg:block">
+          <Link href="/" className="inline-flex min-h-11 min-w-0 flex-1 items-center lg:block">
             <div className="flex items-baseline gap-1.5">
               <span className="text-lg font-bold tracking-tight text-white">Re:putation</span>
               <span className="text-[11px] font-semibold tracking-wider text-blue-300">운영</span>
@@ -172,7 +182,9 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
                   const active =
                     item.href === '/hospitals'
                       ? pathname === '/hospitals' || (pathname.startsWith('/hospitals/') && !pathname.startsWith('/hospitals/new'))
-                      : pathname === item.href || pathname.startsWith(`${item.href}/`)
+                      : item.href === '/'
+                        ? pathname === '/'
+                        : pathname === item.href || pathname.startsWith(`${item.href}/`)
                   return (
                     <Link
                       key={item.href}
@@ -207,7 +219,9 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
             const active =
               item.href === '/hospitals'
                 ? pathname === '/hospitals' || (pathname.startsWith('/hospitals/') && !pathname.startsWith('/hospitals/new'))
-                : pathname === item.href || pathname.startsWith(`${item.href}/`)
+                : item.href === '/'
+                  ? pathname === '/'
+                  : pathname === item.href || pathname.startsWith(`${item.href}/`)
             const badge = 'badge' in item && item.badge ? navBadge(item.badge, navCounts) : null
             const sectionStart = index === 0 || ORDERED_NAV[index - 1].section !== item.section
             return (

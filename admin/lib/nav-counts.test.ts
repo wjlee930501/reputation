@@ -22,7 +22,7 @@ test('zero, missing or broken counts hide the badge', () => {
 // 메뉴 이름은 바꾸되 경로는 그대로 — 백엔드 딥링크(`incident_safety._ADMIN_ROUTE_ROOTS`)가 이 경로를 쓴다.
 test('the shell keeps every route while renaming the menu', () => {
   const shell = readFileSync(new URL('../app/AdminShell.tsx', import.meta.url), 'utf8')
-  for (const href of ['/hospitals', '/operations', '/leads', '/diagnoses', '/hospitals/new', '/accounts']) {
+  for (const href of ['/', '/hospitals', '/operations', '/leads', '/diagnoses', '/hospitals/new', '/accounts']) {
     assert.match(shell, new RegExp(`href: '${href}'`))
   }
   assert.match(shell, /\/admin\/operations\/nav-counts/)
