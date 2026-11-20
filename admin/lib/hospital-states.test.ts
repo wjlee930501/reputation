@@ -108,6 +108,15 @@ test('publication blocker keys read in Korean and land on the right side', () =>
     describePublicService({ kind: 'not_live', remaining: ['service_inactive', 'address', 'site_not_built'] }).detail,
     '할 일: 서비스 활성화 · 병원 주소 입력 · 시스템 처리 중: 공개 페이지 준비',
   )
+  // 서버가 자동 공개 대기·자기 도메인 대기·명시적 비공개를 나눠 내려준다 — 자동 공개 대기는 할 일이 아니다.
+  assert.equal(
+    describePublicService({ kind: 'not_live', remaining: ['auto_activation_pending', 'address', 'site_not_built'] }).detail,
+    '할 일: 병원 주소 입력 · 시스템 처리 중: 조건이 채워지면 자동 공개 · 공개 페이지 준비',
+  )
+  assert.deepEqual(
+    humanRemaining(['auto_activation_pending', 'custom_domain_pending', 'public_permission_withdrawn']).map((c) => c.key),
+    ['custom_domain_pending', 'public_permission_withdrawn'],
+  )
   assert.equal(remainingConditionLabel('brand_new_blocker'), '확인 필요 항목')
   assert.deepEqual(humanRemaining(['brand_new_blocker']).map((c) => c.key), ['brand_new_blocker'])
 })

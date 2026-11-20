@@ -11,6 +11,7 @@ import { ADMIN_COPY } from './admin-copy.ts'
 import type { HospitalMonthMetrics } from './hospital-month-metrics.ts'
 import type { NavCounts } from './nav-counts.ts'
 import { isOnboardingHospital } from './hospital-list-filter.ts'
+import { humanRemaining } from './hospital-states.ts'
 
 export interface DashboardHospital {
   readonly id: string
@@ -122,8 +123,10 @@ export function todoLines(
     if (h.status !== 'PAUSED' && visual > 0) {
       add('visual', h, COPY.todoVisual.replace('{count}', String(visual)), `/hospitals/${h.id}/info#info-brand`, COPY.todoVisualAction)
     }
-    if (isOnboardingHospital({ status: h.status as never }) && h.public_service_state.remaining.length > 0) {
-      add('preparing', h, COPY.todoPreparing.replace('{count}', String(h.public_service_state.remaining.length)), `/hospitals/${h.id}`, COPY.todoStateAction)
+    // 사람 몫 조건만 센다 — 「조건이 채워지면 자동 공개」처럼 시스템이 맡은 조건은 할 일이 아니다.
+    const humanLeft = humanRemaining(h.public_service_state.remaining.filter((item): item is string => typeof item === 'string')).length
+    if (isOnboardingHospital({ status: h.status as never }) && humanLeft > 0) {
+      add('preparing', h, COPY.todoPreparing.replace('{count}', String(humanLeft)), `/hospitals/${h.id}`, COPY.todoStateAction)
     }
     if (h.status === 'PAUSED') {
       add('paused', h, COPY.todoPaused, `/hospitals/${h.id}`, COPY.todoStateAction)

@@ -613,7 +613,7 @@ export const ADMIN_COPY = {
     todoReportAction: '보고서 보기',
     todoVisual: '공개 페이지 항목 입력 필요 {count}건',
     todoVisualAction: '병원 정보 입력',
-    todoPreparing: '준비 중 · 남은 조건 {count}개',
+    todoPreparing: '준비 중 · 사람이 채울 조건 {count}개',
     todoPaused: '일시 정지 중',
     todoStateAction: '상태 보기',
     newContract: '계약 등록',

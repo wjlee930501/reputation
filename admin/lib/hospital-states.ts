@@ -77,6 +77,11 @@ const CONDITIONS: Record<string, readonly [label: string, actor: ConditionActor]
   // 공개 판정(`hospital_lifecycle`)의 막힘 코드 — 목록에는 키 그대로 내려온다.
   service_inactive: ['서비스 활성화', 'human'],
   public_permission_missing: ['공개 노출 확인', 'human'],
+  // 서버가 위 두 막힘을 나눠 내려준다(2026-11-20, `hospital_states.public_service_state`) —
+  // 다른 조건만 채우면 시스템이 스스로 공개할 병원에 「서비스 활성화」가 할 일로 뜨지 않게.
+  auto_activation_pending: ['조건이 채워지면 자동 공개', 'system'],
+  custom_domain_pending: ['자기 도메인 연결(DNS) 확인', 'human'],
+  public_permission_withdrawn: ['공개 꺼짐 · 다시 공개 여부 확인', 'human'],
   site_not_built: ['공개 페이지 준비', 'system'],
   name: ['병원명 입력', 'human'],
   slug: ['기본 주소 이름 입력', 'human'],

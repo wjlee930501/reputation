@@ -52,3 +52,15 @@ test('a later hospital report is not hidden behind an earlier hospital page item
   const lines = todoLines(visualFirst, { period_month: 10, missing: [], undelivered: [{ hospital_id: 'r' }] })
   assert.deepEqual(lines.map((l) => l.key), ['r:report', 'v:visual'])
 })
+
+test('a hospital waiting only for automatic publication is not a to-do', () => {
+  const waiting = [
+    { id: 'w', name: '자동', status: 'ONBOARDING', open_exception_count: 0, visual_approval_missing: [],
+      public_service_state: { kind: 'not_live', remaining: ['auto_activation_pending', 'site_not_built'] } },
+    { id: 'h', name: '사람', status: 'ONBOARDING', open_exception_count: 0, visual_approval_missing: [],
+      public_service_state: { kind: 'not_live', remaining: ['auto_activation_pending', 'address'] } },
+  ]
+  const lines = todoLines(waiting, null)
+  assert.deepEqual(lines.map((l) => l.key), ['h:preparing'])
+  assert.equal(lines[0].title, '준비 중 · 사람이 채울 조건 1개')
+})
