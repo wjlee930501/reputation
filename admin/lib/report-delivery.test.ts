@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import test from 'node:test'
 
@@ -187,4 +188,31 @@ test('the server hash rejection is recognized so the screen can drop the stale d
   assert.equal(isArtifactMismatch({ code: 'already_delivered' }), false)
   assert.equal(isArtifactMismatch(null), false)
   assert.equal(deliveryConflict({ code: 'artifact_mismatch' }).nextAction, '파일이 바뀌었습니다 — 다시 내려받아 주세요.')
+})
+
+import { latestReportSummaryCounts, doctorReportFileName } from './report-delivery.ts'
+
+// 2026-11-20 마케팅 요청: 보고서 5건인데 버전 21개가 합산되던 요약 숫자.
+test('summary counts only the latest version of each month', () => {
+  const base = {
+    hospitalId: 'h', isInitialReport: false, deliveryTracked: true, deliveryBlockers: [],
+    effectiveEventType: null, sentAt: null,
+  }
+  const reports = [
+    { ...base, id: 'oct-3', periodYear: 2026, periodMonth: 10, createdAt: '2026-11-10', version: 3, deliveryReady: true },
+    { ...base, id: 'oct-2', periodYear: 2026, periodMonth: 10, createdAt: '2026-11-09', version: 2, deliveryReady: true },
+    { ...base, id: 'oct-1', periodYear: 2026, periodMonth: 10, createdAt: '2026-11-01', version: 1, deliveryReady: false },
+    { ...base, id: 'sep-1', periodYear: 2026, periodMonth: 9, createdAt: '2026-10-01', version: 1, deliveryReady: false },
+  ]
+  assert.deepEqual(latestReportSummaryCounts(reports as never), { delivered: 0, ready: 1, blocked: 1 })
+  assert.equal(doctorReportFileName(2026, 3), '2026-03-doctor-report.pdf')
+})
+
+test('the doctor PDF is saved as a file, never opened in a blank tab first', () => {
+  const dialog = readFileSync(new URL('../app/hospitals/[id]/reports/ReportDialog.tsx', import.meta.url), 'utf8')
+  assert.doesNotMatch(dialog, /window\.open\(/)
+  assert.match(dialog, /link\.download = doctorReportFileName/)
+  // 전달 기록은 저장한 바로 그 바이트의 해시에만 열린다.
+  assert.match(dialog, /sha256OfDownloadedPdf\(doctorUrl/)
+  assert.match(dialog, /!downloadedSha256/)
 })

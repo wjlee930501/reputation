@@ -448,6 +448,19 @@ export const ADMIN_COPY = {
     sameRegionCountOthers: '{province} 다른 병원 {count}곳 사용 중',
     loadFailed: '같은 지역 분포를 불러오지 못했습니다. 레이아웃은 그대로 고를 수 있습니다.',
   },
+  // 근거 자료 목록 — 제외 자료 접기·처음 5개만(2026-11-20).
+  sources: {
+    showMore: '자료 {count}개 더 보기',
+    collapse: '접기',
+    excludedGroup: '제외 자료 {count}건',
+    excludedHint: '글 생성·운영 기준 미사용 · 펼쳐서 제외 해제',
+  },
+  // 보고서 탭 원장 PDF 저장(2026-11-20 — 새 탭 대신 파일로 바로 저장).
+  reportFiles: {
+    saveDoctorPdf: '원장 전달용 PDF 받기',
+    listPdf: 'PDF',
+    listPdfHint: '원장 전달용 PDF 바로 받기 · 전달 기록은 「열기」에서 받은 파일로',
+  },
   // 공개 주소 링크·복사(2026-11-20 마케팅 요청 — 모든 주소 새 탭 링크 + 복사).
   address: {
     copy: '복사',
