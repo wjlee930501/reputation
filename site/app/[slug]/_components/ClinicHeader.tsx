@@ -195,7 +195,12 @@ export function ClinicHeader({
       </nav>
 
       {bar.length > 0 ? (
-        <nav className="clinic-mobile-actionbar" aria-label="빠른 병원 문의">
+        <nav
+          className="clinic-mobile-actionbar"
+          aria-label="빠른 병원 문의"
+          // 기본 4칸 격자(globals.css). 항목 수를 바꾼 병원만 칸 수를 맞춘다 — 빈 칸이 남지 않게.
+          style={bar.length === 4 ? undefined : { gridTemplateColumns: `repeat(${bar.length}, 1fr)` }}
+        >
           {bar.map((item) => (
             <Fragment key={item}>{barItem(item)}</Fragment>
           ))}
