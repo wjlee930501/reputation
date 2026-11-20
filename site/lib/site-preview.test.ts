@@ -50,6 +50,19 @@ test('preview photos skip the image optimizer and the optimizer refuses them', a
   assert.equal(isPreviewAssetUrl('https://api.example/api/v1/public/site-preview/tok/assets/x'), true)
   assert.equal(isPreviewAssetUrl('https://api.example/api/v1/public/hospitals/demo/assets/x'), false)
   assert.equal(isPreviewAssetUrl(null), false)
+  // 퍼센트 인코딩·이중 인코딩·대소문자·역슬래시로 감싸도 미리보기 주소다(백엔드는 풀어서 처리한다).
+  for (const disguised of [
+    '/api/v1/public/%73ite-preview/tok/assets/x',
+    '/api/v1/public/%2573ite-preview/tok/assets/x',
+    '/api/v1/public/%252573ite%252Dpreview/tok/logo',
+    'https://api.example/api/v1/public/SITE-PREVIEW/tok/logo',
+    '/api/v1/public/site%2Dpreview/tok/logo',
+    '/api/v1/public\site-preview/tok/logo',
+    '/api/v1/public/%E0%A4%A/tok', // 깨진 표기 — 막는다
+  ]) {
+    assert.equal(isPreviewAssetUrl(disguised), true, disguised)
+  }
+  assert.equal(isPreviewAssetUrl('/api/v1/public/hospitals/demo/assets/%EC%82%AC%EC%A7%84'), false)
   const slug = join(HERE, '..', 'app', '[slug]')
   for (const [dir, name] of [
     ['_components', 'ClinicHero.tsx'],

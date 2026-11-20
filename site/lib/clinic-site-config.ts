@@ -341,7 +341,9 @@ export function resolveHomeFaqEntries(
   if (!config) return selectFaqEntries(contents, hospitalRootUrl)
   if (!plan.enabled('faq')) return []
   if (config.faq.mode === 'manual') {
-    return (config.faq.entries ?? []).slice(0, config.faq.limit).map((entry) => ({
+    // 직접 고른 글은 개수 설정을 따르지 않는다 — 편집기는 직접 고르기에서 개수를 숨기고, 자동 모드에서
+    // 남은 limit(3a 초안의 6 포함)이 고른 글을 자르면 안 된다. 상한은 직접 고르기 상한(10)뿐이다.
+    return (config.faq.entries ?? []).slice(0, DEFAULT_FAQ_LIMIT).map((entry) => ({
       id: entry.id,
       question: entry.question,
       answer: entry.answer,
