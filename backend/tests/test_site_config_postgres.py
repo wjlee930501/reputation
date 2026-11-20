@@ -386,10 +386,18 @@ async def test_old_published_snapshots_serve_current_defaults_for_fields_the_sit
 
     served = (await client.get(f"/api/v1/public/hospitals/site-config-{hospital_id.hex[:12]}")).json()
     site_config = served["site_config"]
-    assert site_config["doctor"]["photo_focus"] == {"x": 0.5, "y": 0.14}
+    assert site_config["doctor"]["photo_focus"] == {"x": 0.5, "y": 0.5}
     sections = {section["id"]: section for section in site_config["sections"]}
     assert sections["care_principles"]["background"] == "tint"
     assert sections["gallery"]["align"] == "left"  # 직접 바꾼 칸은 남는다
     assert site_config["faq"]["limit"] == 5  # 사이트가 이미 읽는 칸은 스냅샷 그대로
     await db.refresh(row)
     assert row.resolved["doctor"]["photo_focus"] == {"x": 0.5, "y": 0.2}  # 저장된 스냅샷은 바꾸지 않는다
+
+    # 편집기도 같은 완성본에서 시작한다 — 옛 기본값이 '직접 바꾼 칸'으로 굳지 않게.
+    admin_view = (await client.get(_base(hospital_id), headers=ADMIN)).json()["published"]["resolved"]
+    assert admin_view["doctor"] == site_config["doctor"]
+    assert {s["id"]: s["background"] for s in admin_view["sections"]} == {
+        s["id"]: s["background"] for s in site_config["sections"]
+    }
+    assert admin_view["faq"]["limit"] == 5

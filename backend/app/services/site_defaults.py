@@ -165,11 +165,9 @@ _LAYOUT_OVERRIDES: Final[dict[str, dict[str, Any]]] = {
     # 의료진 사진: A 4:3 가로(layout-a `.doctorPhoto`), B 4:5·C 3:4 세로.
     "A": {"treatments": {"show_description": False}, "doctor": {"photo_ratio": "landscape"}},
     # B 첫 화면 사진은 위에서 48%(`.clinic-hero-editorial-image`, 모바일은 54%·가운데라 한 점으로 다
-    # 맞출 수는 없다), 의료진 사진은 위에서 14%(`.clinic-curator-portrait-image`)를 맞춘다.
-    "B": {
-        "hero": {"image": {"focus": {"x": 0.5, "y": 0.48}}},
-        "doctor": {"photo_focus": {"x": 0.5, "y": 0.14}},
-    },
+    # 맞출 수는 없다). 의료진 사진은 가운데다 — 실제 사진에 붙는 규칙(`.clinic-curator-portrait img`)에
+    # 초점 지정이 없다(`.clinic-curator-portrait-image`의 위 14%는 쓰이지 않는 클래스다).
+    "B": {"hero": {"image": {"focus": {"x": 0.5, "y": 0.48}}}},
     "C": {"treatments": {"show_description": False}},
 }
 
@@ -246,9 +244,9 @@ def resolve(layout: str, config: dict[str, Any]) -> dict[str, Any]:
 # 사이트가 이미 읽는 칸(섹션 순서·켜기·제목, 문구, 진료 과정, 카드 수, FAQ 방식·글, 메뉴, 공유)은 스냅샷
 # 그대로다. 사이트가 새 칸을 읽기 시작하거나 아직 읽지 않는 칸의 기본값을 다시 바꾸면 여기에 그 판을 적는다.
 LOOK_DEFAULTS_SINCE: Final = "2026-11-21.3"
+# 사이트가 이미 읽는 칸(예: FAQ 개수 — `.2`에서 기본값 6 → 10)은 넣지 않는다. 그 칸은 지금도 화면에 보이므로
+# 다시 합치면 저장·재공개 없이 공개 화면이 바뀐다.
 REFRESHED_SINCE: Final[tuple[tuple[str, str], ...]] = (
-    # FAQ 개수 기본값 6 → 10(2026-11-21.2) — 그 전 판은 사이트가 읽기 전에 저장됐다.
-    ("faq.limit", "2026-11-21.2"),
     ("sections.background", LOOK_DEFAULTS_SINCE),
     ("sections.align", LOOK_DEFAULTS_SINCE),
     ("sections.label", LOOK_DEFAULTS_SINCE),
@@ -299,26 +297,48 @@ def refresh_stale_defaults(resolved: dict[str, Any], config: dict[str, Any] | No
     stale = [path for path, since in REFRESHED_SINCE if _older_than(version, since)]
     if not stale:
         return resolved
+    base = defaults(layout)
     try:
         fresh = resolve(layout, dict(config or {}))
     except (AttributeError, KeyError, TypeError, ValueError):  # 옛 설정이 지금 모양과 맞지 않으면 기본값만으로.
-        fresh = defaults(layout)
+        fresh = base
     out = copy.deepcopy(resolved)
-    fresh_sections = {section["id"]: section for section in fresh["sections"]}
+
+    def pick(head: str, field: str) -> Any:
+        # 설정 칸 하나가 깨져 있으면(예: `{"care_principles": null}`) 그 칸만 기본값으로.
+        group = fresh.get(head)
+        if not field:
+            merged = copy.deepcopy(base[head])
+            if isinstance(group, dict):
+                _deep_merge(merged, {key: value for key, value in group.items() if value is not None})
+            return merged
+        value = group.get(field) if isinstance(group, dict) else None
+        return copy.deepcopy(base[head][field] if value is None else value)
+
+    def section_look(section_id: Any, field: str) -> Any:
+        for source in (fresh, base):
+            sections = source.get("sections")
+            for section in sections if isinstance(sections, list) else []:
+                if isinstance(section, dict) and section.get("id") == section_id and section.get(field) is not None:
+                    return section[field]
+        return None
+
     for path in stale:
         head, _, field = path.partition(".")
         if head == "sections":
             for section in out.get("sections") or []:
-                source = fresh_sections.get(section.get("id")) if isinstance(section, dict) else None
-                if source is not None:
-                    section[field] = source[field]
+                if not isinstance(section, dict):
+                    continue
+                value = section_look(section.get("id"), field)
+                if value is not None:
+                    section[field] = value
         elif not field:
-            out[head] = copy.deepcopy(fresh[head])
+            out[head] = pick(head, "")
         else:
             target = out.get(head)
             if not isinstance(target, dict):
                 target = out[head] = {}
-            target[field] = copy.deepcopy(fresh[head][field])
+            target[field] = pick(head, field)
     return out
 
 

@@ -343,7 +343,7 @@
         "photo_ratio": "portrait",
         "photo_focus": {
           "x": 0.5,
-          "y": 0.14
+          "y": 0.5
         },
         "title_position": "above",
         "show_philosophy": false
