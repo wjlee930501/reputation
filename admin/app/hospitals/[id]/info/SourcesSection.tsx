@@ -60,6 +60,9 @@ function sourceTypeLabel(source: TextSourceRow): string {
     ?? '자료 유형 확인 필요'
 }
 
+/** 자료 목록은 처음 몇 개만 보이고 나머지는 「더 보기」(수십 건이 전부 펼쳐지던 문제). */
+const SOURCE_PREVIEW_COUNT = 5
+
 function isNoiseNote(note: NoteRow): boolean {
   return note.note_metadata?.is_noise === true
 }
@@ -113,6 +116,10 @@ export function SourcesSection({
   }, [refresh, readRun, refreshKey])
 
   const summary = processingSummary(run)
+  // 제외한 자료는 기본으로 접어 둔다(2026-11-20 마케팅 요청). 지우지 않고 「제외 해제」로 되돌린다.
+  const activeSources = sources.filter((source) => source.status !== 'EXCLUDED')
+  const excludedSources = sources.filter((source) => source.status === 'EXCLUDED')
+  const [showAll, setShowAll] = useState(false)
 
   // 아직 본문을 받는 중인 자료는 처리 run이 없다 — 그 단계도 진행 중으로 세야
   // 저장 직후 화면이 멈춰 있지 않다.
@@ -171,16 +178,49 @@ export function SourcesSection({
           아직 등록된 {ADMIN_COPY.evidence}가 없습니다. 공식 채널을 저장하거나 문서를 올리면 여기에 표시됩니다.
         </p>
       ) : (
-        <ul className="space-y-2">
-          {sources.map((source) => (
-            <SourceRow
-              key={source.id}
-              hospitalId={hospitalId}
-              source={source}
-              onChanged={() => void refresh()}
-            />
-          ))}
-        </ul>
+        <>
+          <ul className="space-y-2">
+            {(showAll ? activeSources : activeSources.slice(0, SOURCE_PREVIEW_COUNT)).map((source) => (
+              <SourceRow
+                key={source.id}
+                hospitalId={hospitalId}
+                source={source}
+                onChanged={() => void refresh()}
+              />
+            ))}
+          </ul>
+          {activeSources.length > SOURCE_PREVIEW_COUNT && (
+            <button
+              type="button"
+              onClick={() => setShowAll((current) => !current)}
+              className="min-h-11 text-sm font-semibold text-blue-700 underline-offset-2 hover:underline"
+            >
+              {showAll
+                ? ADMIN_COPY.sources.collapse
+                : ADMIN_COPY.sources.showMore.replace('{count}', String(activeSources.length - SOURCE_PREVIEW_COUNT))}
+            </button>
+          )}
+          {excludedSources.length > 0 && (
+            <details className="admin-disclosure" data-testid="excluded-sources">
+              <summary>
+                <span className="text-sm font-semibold text-slate-700">
+                  {ADMIN_COPY.sources.excludedGroup.replace('{count}', String(excludedSources.length))}
+                </span>
+                <span className="text-xs text-slate-500">{ADMIN_COPY.sources.excludedHint}</span>
+              </summary>
+              <ul className="space-y-2 p-3">
+                {excludedSources.map((source) => (
+                  <SourceRow
+                    key={source.id}
+                    hospitalId={hospitalId}
+                    source={source}
+                    onChanged={() => void refresh()}
+                  />
+                ))}
+              </ul>
+            </details>
+          )}
+        </>
       )}
     </section>
   )
@@ -213,7 +253,8 @@ function SourceRow({
     setNotesLoading(true)
     try {
       const detail = await fetchAPI<SourceDetail>(
-        `/admin/hospitals/${hospitalId}/essence/sources/${source.id}`,
+        // 제외 표시한 노트도 받는다 — 빼고 받으면 새로고침 뒤 사라져 되돌릴 수 없다(2026-11-20).
+        `/admin/hospitals/${hospitalId}/essence/sources/${source.id}?include_noise=true`,
       )
       setNotes(detail.evidence_notes ?? [])
       setError(null)
