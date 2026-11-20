@@ -17,8 +17,9 @@ test('narrow tables hide headers only visually so screen readers keep column nam
   assert.ok(thead, 'responsive table header rule')
   assert.doesNotMatch(thead[1], /display:\s*none/)
   assert.match(thead[1], /clip-path:\s*inset\(50%\)/)
-  // 칸 앞 열 이름은 눈으로만 — 대체 텍스트를 비워 머리글과 두 번 읽히지 않게(옛 브라우저용 줄도 남긴다).
-  assert.match(globals, /content: attr\(data-label\);\s*(?:\/\*[\s\S]*?\*\/\s*)?content: attr\(data-label\) \/ '';/)
+  // 칸 앞 열 이름은 머리글이 있는 표에서만 대체 텍스트를 비운다 — 머리글 없는 DNS 표는 이 이름이 유일한 열 이름.
+  assert.match(globals, /\.admin-responsive-table tbody td::before \{\s*content: attr\(data-label\);/)
+  assert.match(globals, /\.admin-responsive-table:has\(thead\) tbody td::before \{\s*content: attr\(data-label\) \/ '';/)
 })
 
 test('rate limiting is an error state with Korean scope and a retry action', () => {

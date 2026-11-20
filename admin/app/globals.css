@@ -158,14 +158,18 @@
 
   .admin-responsive-table tbody td::before {
     content: attr(data-label);
-    /* 칸 앞 열 이름은 눈으로 보는 사람용이다 — 머리글을 이미 읽으므로 대체 텍스트를 비워 두 번 읽지 않게.
-       이 문법을 모르는 브라우저는 이 줄만 버리고 위 줄로 그린다. */
-    content: attr(data-label) / '';
     flex: 0 0 5.5rem;
     color: #64748b;
     font-size: 0.75rem;
     font-weight: 600;
     text-align: left;
+  }
+
+  /* 머리글이 있는 표에서만 칸 앞 열 이름의 대체 텍스트를 비운다 — 머리글을 이미 읽으므로 두 번 읽지 않게.
+     머리글 없는 표(DNS 레코드 등)는 이 이름이 유일한 열 이름이라 그대로 읽힌다. 이 문법을 모르는
+     브라우저(Safari 17.3 이하)는 이 규칙만 버리고 위 규칙으로 그린다. */
+  .admin-responsive-table:has(thead) tbody td::before {
+    content: attr(data-label) / '';
   }
 
   .admin-responsive-table tbody td[data-label='']::before,
