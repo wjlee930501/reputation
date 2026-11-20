@@ -489,7 +489,7 @@ export const ADMIN_COPY = {
     previewNewTab: '새 탭에서 열기',
     previewClose: '미리보기 닫기',
     previewReload: '미리보기 처음으로',
-    previewFrameHint: '저장할 때마다 새로 불러옵니다. 미리보기 안의 링크를 누르면 공개 페이지로 넘어가거나 빈 화면이 될 수 있습니다 — 「미리보기 처음으로」로 돌아오고, 다른 화면은 새 탭에서 보세요.',
+    previewFrameHint: '저장할 때마다 새로 불러옵니다. 미리보기 안에서는 다른 페이지로 이동하지 않습니다 — 미리보기가 10분 지나 열리지 않거나 화면이 이상하면 「미리보기 처음으로」를 누르세요.',
     previewExpires: '{time}까지 열 수 있는 주소',
     previewNotReady: '미리보기 준비 전 — 미리보기 설정이 아직 켜지지 않았습니다.',
     previewFailed: '미리보기 주소를 만들지 못했습니다.',
