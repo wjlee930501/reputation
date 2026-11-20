@@ -193,11 +193,12 @@ def test_recovery_beat_and_retryable_month_schedules_are_declared() -> None:
     assert str(schedules["monthly-slot-generation"]["schedule"]) == (
         "<crontab: 0 */6 25-31 * * (m/h/dM/MY/d)>"
     )
+    # 2026-11-03 새벽 마감: 보고서 최종화는 1일 07:15·07:45·08:15·08:45(CLAUDE.md 월간 측정 절).
     assert str(schedules["monthly-reports"]["schedule"]) == (
-        "<crontab: 15 0 1-8 * * (m/h/dM/MY/d)>"
+        "<crontab: 15,45 7,8 1 * * (m/h/dM/MY/d)>"
     )
     assert str(schedules["monthly-report-gap-summary"]["schedule"]) == (
-        "<crontab: 0 9 1-8 * * (m/h/dM/MY/d)>"
+        "<crontab: 0 9 1 * * (m/h/dM/MY/d)>"
     )
 
 

@@ -309,6 +309,9 @@ from app.services.measurement_manifest_policy import (
     selected_weekly_manifest_is_resolved as _selected_weekly_manifest_is_resolved,  # noqa: F401 -- stable legacy worker import
 )
 from app.services.measurement_manifest_policy import (
+    slotted_observation_adequacy as _slotted_observation_adequacy,  # noqa: F401 -- stable legacy worker import
+)
+from app.services.measurement_manifest_policy import (
     sov_spec_identities_match as _sov_spec_identities_match,  # noqa: F401 -- stable legacy worker import
 )
 from app.services.measurement_manifest_policy import (

@@ -224,7 +224,8 @@ async def test_run_sov_operation_queues_task_after_audit_commit(monkeypatch):
     assert audit_rows[0].actor == "AE-test"
 
 
-_REMASURE_NOW = datetime(2026, 9, 2, 9, 0, tzinfo=timezone.utc)
+# 월간 복구는 다음 달 1일 00:15~07:00 KST에만 열린다(2026-11-03 새벽 마감). 9월 1일 06:00 KST.
+_REMASURE_NOW = datetime(2026, 8, 31, 21, 0, tzinfo=timezone.utc)
 
 
 def _patch_monthly_remasure(monkeypatch, db, task, progress):
