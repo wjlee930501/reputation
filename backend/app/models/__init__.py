@@ -64,6 +64,7 @@ from app.models.operations import (
 )
 from app.models.physician import HospitalPhysician
 from app.models.report import MonthlyReport
+from app.models.site_config import HospitalSiteConfig
 from app.models.sov import (
     AIQueryTarget,
     AIQueryVariant,
@@ -86,6 +87,7 @@ __all__ = [
     "Hospital", "Plan", "HospitalStatus", "DomainManagementMode", "DomainDnsStrategy",
     "HospitalHandoff", "HandoffState", "HandoffSource",
     "HospitalPhysician",
+    "HospitalSiteConfig",
     "AdminAuditLog", "AdminUser",
     "ContentSchedule", "ContentItem", "ContentRevision", "ContentRevisionApprovalStatus",
     "ContentType", "ContentStatus", "PLAN_DISTRIBUTION",

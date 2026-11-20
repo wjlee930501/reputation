@@ -32,6 +32,7 @@ from app.api.admin import operations as admin_operations
 from app.api.admin import operations_center as admin_operations_center
 from app.api.admin import query_targets as admin_query_targets
 from app.api.admin import reports as admin_reports
+from app.api.admin import site_config as admin_site_config
 from app.api.admin import sov as admin_sov
 from app.api.admin import watchdog as admin_watchdog
 from app.api.public import diagnosis as public_diagnosis
@@ -135,7 +136,14 @@ class PublicApiCacheMiddleware(BaseHTTPMiddleware):
         # 여기에 public 캐시 헤더가 붙으면 CDN이 한 사람의 리포트를 저장했다가
         # 같은 URL을 요청한 다른 사람에게 그대로 내줄 수 있다.
         # 원장 사전 설문도 병원마다 발급된 링크다 — 답이 CDN에 남으면 안 된다.
-        if request.url.path.startswith(("/api/v1/public/diagnosis", "/api/v1/public/doctor-survey")):
+        # 섹션 설정 미리보기도 토큰으로 여는 공개 전 초안이다(설계 5절).
+        if request.url.path.startswith(
+            (
+                "/api/v1/public/diagnosis",
+                "/api/v1/public/doctor-survey",
+                "/api/v1/public/site-preview",
+            )
+        ):
             response.headers["Cache-Control"] = "no-store"
             response.headers["X-Robots-Tag"] = "noindex, nofollow"
             response.headers["Referrer-Policy"] = "no-referrer"
@@ -196,6 +204,7 @@ app.include_router(admin_domain_setup.router, prefix="/api/v1", dependencies=adm
 app.include_router(admin_domain.router, prefix="/api/v1", dependencies=admin_deps)
 app.include_router(admin_essence.router, prefix="/api/v1", dependencies=admin_deps)
 app.include_router(admin_doctor_survey.router, prefix="/api/v1", dependencies=admin_deps)
+app.include_router(admin_site_config.router, prefix="/api/v1", dependencies=admin_deps)
 app.include_router(admin_exposure_actions.router, prefix="/api/v1", dependencies=admin_deps)
 app.include_router(admin_operations.router, prefix="/api/v1", dependencies=admin_deps)
 app.include_router(admin_operations.cost_guard_router, prefix="/api/v1", dependencies=admin_deps)
@@ -211,6 +220,7 @@ app.include_router(admin_watchdog.router, prefix="/api/v1")
 # Public 라우터: 인증 불필요 (의도적)
 app.include_router(public_site.router, prefix="/api/v1")
 app.include_router(public_site.domain_router, prefix="/api/v1")
+app.include_router(public_site.preview_router, prefix="/api/v1")
 app.include_router(public_leads.router, prefix="/api/v1")
 app.include_router(public_diagnosis.router, prefix="/api/v1")
 app.include_router(public_doctor_survey.router, prefix="/api/v1")
