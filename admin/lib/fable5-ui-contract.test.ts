@@ -11,6 +11,17 @@ test('hospital list becomes key-value cards at 768px', () => {
   assert.match(globals, /@media \(max-width: 768px\)[\s\S]*?\.admin-responsive-table-wrap/)
 })
 
+test('narrow tables hide headers only visually so screen readers keep column names', () => {
+  const globals = readFileSync(new URL('../app/globals.css', import.meta.url), 'utf8')
+  const thead = globals.match(/\.admin-responsive-table thead \{([^}]*)\}/)
+  assert.ok(thead, 'responsive table header rule')
+  assert.doesNotMatch(thead[1], /display:\s*none/)
+  assert.match(thead[1], /clip-path:\s*inset\(50%\)/)
+  // 칸 앞 열 이름은 머리글이 있는 표에서만 대체 텍스트를 비운다 — 머리글 없는 DNS 표는 이 이름이 유일한 열 이름.
+  assert.match(globals, /\.admin-responsive-table tbody td::before \{\s*content: attr\(data-label\);/)
+  assert.match(globals, /\.admin-responsive-table:has\(thead\) tbody td::before \{\s*content: attr\(data-label\) \/ '';/)
+})
+
 test('rate limiting is an error state with Korean scope and a retry action', () => {
   const layout = readFileSync(
     new URL('../app/hospitals/[id]/layout.tsx', import.meta.url),

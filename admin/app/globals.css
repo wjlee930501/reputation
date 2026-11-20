@@ -114,8 +114,19 @@
     min-width: 0 !important;
   }
 
+  /* 머리글은 화면에서만 감춘다. display:none이면 접근성 트리에서도 빠져 화면 읽기 프로그램이
+     칸마다 열 이름을 읽지 못한다 — 시각적으로만 숨겨(sr-only와 같은 방식) 머리글 연결을 남긴다. */
   .admin-responsive-table thead {
-    display: none;
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
   }
 
   .admin-responsive-table tbody {
@@ -152,6 +163,13 @@
     font-size: 0.75rem;
     font-weight: 600;
     text-align: left;
+  }
+
+  /* 머리글이 있는 표에서만 칸 앞 열 이름의 대체 텍스트를 비운다 — 머리글을 이미 읽으므로 두 번 읽지 않게.
+     머리글 없는 표(DNS 레코드 등)는 이 이름이 유일한 열 이름이라 그대로 읽힌다. 이 문법을 모르는
+     브라우저(Safari 17.3 이하)는 이 규칙만 버리고 위 규칙으로 그린다. */
+  .admin-responsive-table:has(thead) tbody td::before {
+    content: attr(data-label) / '';
   }
 
   .admin-responsive-table tbody td[data-label='']::before,
