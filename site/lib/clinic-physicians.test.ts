@@ -242,3 +242,18 @@ test('the home and the doctor page emit one Physician node per physician', () =>
     assert.match(source, /physicianNodeId\(hospitalRootUrl, physician, index\)/)
   }
 })
+
+// 2026-11-20: 머리글자 타일 규칙(정사각·최대 220px)이 사진이 있는 원장 상자에도 붙어 실제 사진을
+// 잘랐다. 머리글자 모양은 사진이 없거나 못 불러왔을 때만이다.
+test('the monogram shape is applied only when there is no photo or it failed to load', () => {
+  const avatar = readFileSync(join(HERE, '..', 'app', '[slug]', '_components', 'ClinicAvatar.tsx'), 'utf8')
+  assert.match(avatar, /const showFallbackShape = !src \|\| status === 'failed'/)
+  assert.match(avatar, /\$\{showFallbackShape \? fallbackClassName : ''\}/)
+  assert.doesNotMatch(avatar, /`\$\{wrapperClassName\} \$\{fallbackClassName\}`/)
+})
+
+test('layouts A and C list society memberships one per line', () => {
+  const profile = readFileSync(join(HERE, '..', 'app', '[slug]', '_layouts', 'PhysicianProfile.tsx'), 'utf8')
+  assert.doesNotMatch(profile, /societies\.join\(/)
+  assert.match(profile, /data-role="society-list"/)
+})

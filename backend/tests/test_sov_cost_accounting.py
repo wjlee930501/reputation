@@ -41,13 +41,13 @@ def _patch_answer_stage(monkeypatch, slot, provider_calls):
             "provider_calls": provider_calls,
         }
 
-    def checkpoint(_db, _slot_id, _answer, *, lease_token):
+    def checkpoint(_db, _slot_id, _answer, *, lease_token, deadline=None):
         slot.answer_status = "FAILED"
         return slot
 
     monkeypatch.setattr(tasks, "slot_needs_answer", lambda _slot: True)
     monkeypatch.setattr(
-        tasks, "claim_slot_stage", lambda _db, _slot_id, *, stage: (slot, uuid.uuid4())
+        tasks, "claim_slot_stage", lambda _db, _slot_id, *, stage, deadline=None: (slot, uuid.uuid4())
     )
     monkeypatch.setattr(tasks.cost_guard, "reserve", reserve)
     monkeypatch.setattr(tasks.cost_guard, "settle_reservation", settle)
