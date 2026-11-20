@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import { useParams } from 'next/navigation'
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import { ConfirmDialog } from '@/app/_components/ConfirmDialog'
 import { ADMIN_COPY } from '@/lib/admin-copy'
@@ -78,6 +78,18 @@ export default function SiteLayoutEditorPage() {
   const [selected, setSelected] = useState<SectionId | null>('hero')
   const [dialog, setDialog] = useState<'publish' | 'discard' | 'reset' | null>(null)
   const [resetLayout, setResetLayout] = useState<SiteLayout | null>(null)
+  // 같은 화면 미리보기(iframe). 토큰은 저장할 때마다 무효가 되므로 열려 있으면 새 판마다 한 번 다시 받는다.
+  const framed = SITE_RENDERS_SITE_CONFIG
+  const [previewOpen, setPreviewOpen] = useState(false)
+  const autoRequested = useRef<string | null>(null)
+  const savedDraft = editor.state?.draft ?? null
+  const draftKey = savedDraft ? `${savedDraft.id}:${savedDraft.revision}` : null
+  useEffect(() => {
+    if (!framed || !previewOpen || !draftKey || editor.dirty || editor.preview || editor.busy || editor.previewDisabled) return
+    if (autoRequested.current === draftKey) return
+    autoRequested.current = draftKey
+    void editor.requestPreview()
+  }, [framed, previewOpen, draftKey, editor])
 
   const back = (
     <Link href={`/hospitals/${hospitalId}/info#info-brand`} className="text-sm font-semibold text-blue-700 hover:underline">
@@ -167,11 +179,15 @@ export default function SiteLayoutEditorPage() {
             type="button"
             className={button}
             disabled={!draft || editor.dirty || locked || editor.previewDisabled}
-            onClick={() => void editor.requestPreview()}
+            onClick={() => {
+              setPreviewOpen(true)
+              autoRequested.current = draftKey
+              void editor.requestPreview()
+            }}
           >
             {editor.dirty ? COPY.previewNeedsSave : COPY.preview}
           </button>
-          {editor.preview && (
+          {editor.preview && !framed && (
             <a href={editor.preview.url} target="_blank" rel="noopener noreferrer" className="text-sm font-semibold text-blue-700 underline">
               {COPY.previewOpen}
               <span className="ml-1 text-xs font-normal text-slate-500">
@@ -206,6 +222,38 @@ export default function SiteLayoutEditorPage() {
           </p>
         )}
       </div>
+
+      {framed && previewOpen && (
+        <Card
+          title={COPY.previewTitle}
+          right={
+            <>
+              {editor.preview && (
+                <a href={editor.preview.url} target="_blank" rel="noopener noreferrer" className="text-sm font-semibold text-blue-700 underline">
+                  {COPY.previewNewTab}
+                </a>
+              )}
+              <button type="button" className={button} onClick={() => setPreviewOpen(false)}>
+                {COPY.previewClose}
+              </button>
+            </>
+          }
+        >
+          {editor.preview ? (
+            <iframe
+              key={editor.preview.url}
+              src={editor.preview.url}
+              title={COPY.previewTitle}
+              sandbox="allow-scripts allow-same-origin"
+              referrerPolicy="no-referrer"
+              className="h-[720px] w-full rounded-lg border border-slate-200"
+            />
+          ) : (
+            <p className="text-xs text-slate-500">{editor.dirty ? COPY.previewNeedsSave : COPY.loading}</p>
+          )}
+          <p className="text-[11px] text-slate-500">{COPY.previewFrameHint}</p>
+        </Card>
+      )}
 
       {(editor.warnings.length > 0 || unplaced.length > 0) && (
         <div className="space-y-1 rounded-lg border border-amber-300 bg-amber-50 p-3">

@@ -259,3 +259,26 @@ test('line break whitespace follows python str.split/strip, not JS \\s', async (
   assert.equal(linesMatch('가\n나', '가\uFEFF나'), false)
   assert.deepEqual(splitLines('\uFEFF가'), ['\uFEFF가'])
 })
+
+test('admin CSP lets the editor frame the site preview origin, nothing else', async () => {
+  const { createRequire } = await import('node:module')
+  const require = createRequire(import.meta.url)
+  const domain = readFileSync(new URL('./platform-domain.ts', import.meta.url), 'utf8')
+  const defaultHost = /const DEFAULT_SITE_HOST = '([^']+)'/.exec(domain)?.[1]
+  const previous = process.env.NEXT_PUBLIC_SITE_URL
+  try {
+    for (const [env, origin] of [['', `https://${defaultHost}`], ['https://reputation.co.kr/x', 'https://reputation.co.kr']] as const) {
+      process.env.NEXT_PUBLIC_SITE_URL = env
+      const path = require.resolve('../next.config.js')
+      delete require.cache[path]
+      const config = require(path)
+      const headers = await config.headers()
+      const csp = headers[0].headers.find((h: { key: string }) => h.key === 'Content-Security-Policy').value as string
+      assert.match(csp, new RegExp(`frame-src 'self' blob: ${origin.replace(/\./g, '\\.')}(;|$)`))
+      assert.match(csp, /frame-ancestors 'none'/)
+    }
+  } finally {
+    if (previous === undefined) delete process.env.NEXT_PUBLIC_SITE_URL
+    else process.env.NEXT_PUBLIC_SITE_URL = previous
+  }
+})

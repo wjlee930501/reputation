@@ -1,5 +1,20 @@
 const path = require('path')
 
+// 레이아웃 편집기 미리보기는 사이트의 /preview/{token}을 같은 화면 iframe에 띄운다. 사이트 주소는
+// lib/platform-domain.ts와 같은 규칙(NEXT_PUBLIC_SITE_URL, 없으면 운영 기본 주소)으로 정한다 — Admin
+// 이미지는 이 값을 빌드 인자로 받지 않으므로 운영에서는 기본 주소가 쓰인다.
+const DEFAULT_SITE_ORIGIN = 'https://reputation.motionlabs.kr'
+
+function siteOrigin() {
+  const raw = (process.env.NEXT_PUBLIC_SITE_URL || '').trim()
+  if (!raw) return DEFAULT_SITE_ORIGIN
+  try {
+    return new URL(raw).origin
+  } catch {
+    return DEFAULT_SITE_ORIGIN
+  }
+}
+
 const contentSecurityPolicy = [
   "default-src 'self'",
   "base-uri 'self'",
@@ -12,7 +27,7 @@ const contentSecurityPolicy = [
   "font-src 'self' data:",
   "connect-src 'self'",
   // 보고서 고치기의 PDF 미리보기는 같은 화면 안 iframe에 blob: URL로 띄운다(새 탭은 팝업 차단을 받는다).
-  "frame-src 'self' blob:",
+  `frame-src 'self' blob: ${siteOrigin()}`,
 ].join('; ')
 
 const securityHeaders = [
