@@ -237,6 +237,7 @@ test('every server issue path lands on one screen spot', async () => {
   const cases: [string, string | null][] = [
     ['sections[1].title', 'faq'],
     ['sections.treatments', 'treatments'],
+    ['sections.1.title', 'faq'],
     ['copy.treatments.note', 'treatments'],
     ['copy.hours.weekend_label', 'hours'],
     ['care_flow.steps[0].title', 'care_flow'],
@@ -250,4 +251,11 @@ test('every server issue path lands on one screen spot', async () => {
     ['defaults_version', null],
   ]
   for (const [path, owner] of cases) assert.equal(issueOwner(path, overrides), owner, path)
+})
+
+test('line break whitespace follows python str.split/strip, not JS \\s', async () => {
+  const { linesMatch, splitLines } = await import('./site-config.ts')
+  assert.equal(linesMatch('가\n나', '가\u0085나'), true)
+  assert.equal(linesMatch('가\n나', '가\uFEFF나'), false)
+  assert.deepEqual(splitLines('\uFEFF가'), ['\uFEFF가'])
 })

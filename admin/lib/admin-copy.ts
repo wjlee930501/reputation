@@ -562,6 +562,7 @@ export const ADMIN_COPY = {
     lineBreaksTitle: '줄바꿈 위치',
     lineBreaksHint: '글자는 병원 정보 그대로이고, 줄을 나눌 자리만 정합니다. 병원 정보에서 문장을 고치면 이 지정은 꺼집니다.',
     lineBreakNoSource: '병원 정보에 저장된 문장이 없어 줄바꿈을 정할 수 없습니다(기본 문구에는 걸 수 없습니다).',
+    lineBreakClear: '남아 있는 줄바꿈 지정 지우기',
     lineBreakPc: 'PC',
     lineBreakMobile: '모바일',
     lineBreakAuto: '자동으로 나누기',

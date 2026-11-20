@@ -391,10 +391,11 @@ const PAGE_GROUPS = new Set(['nav', 'share', 'region_tags', 'type', 'article'])
  * `hero.line_breaks.{칸 경로}`(진료 원칙 칸은 진료 원칙 섹션) 모양이다.
  */
 export function issueOwner(path: string, overrides: Record<string, unknown>): SectionId | 'page' | null {
-  const indexed = /^sections\[(\d+)\]/.exec(path)
+  // 검증 오류는 `sections[0]`, 스키마(pydantic) 오류는 `sections.0` 모양이다.
+  const indexed = /^sections(?:\[(\d+)\]|\.(\d+)(?=\.|$))/.exec(path)
   if (indexed) {
     const listed = Array.isArray(overrides.sections) ? overrides.sections : []
-    const entry = listed[Number(indexed[1])]
+    const entry = listed[Number(indexed[1] ?? indexed[2])]
     return isRecord(entry) && typeof entry.id === 'string' ? (entry.id as SectionId) : null
   }
   const grouped = /^sections\.([a-z_]+)/.exec(path)
@@ -503,16 +504,26 @@ export function lineBreakSource(path: LineBreakPath, hospital: LineBreakSourceIn
   return pick(card?.[match[2] as 'title' | 'body'])
 }
 
-/** 여러 줄 글을 한 문장으로(공백·줄바꿈을 공백 하나로). */
+// 파이썬 `str.split()`·`str.strip()`이 공백으로 보는 글자(`str.isspace`). JS `\s`와 다르다 —
+// JS는 U+FEFF를 공백으로 보고 U+0085·U+001C~001F를 공백으로 보지 않는다.
+const PY_SPACE = '\\t\\n\\v\\f\\r\\x1c-\\x1f \\x85\\xa0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000'
+const PY_SPACES = new RegExp(`[${PY_SPACE}]+`)
+const PY_EDGE_SPACES = new RegExp(`^[${PY_SPACE}]+|[${PY_SPACE}]+$`, 'g')
+
+function pyStrip(text: string): string {
+  return text.replace(PY_EDGE_SPACES, '')
+}
+
+/** 여러 줄 글을 한 문장으로(공백·줄바꿈을 공백 하나로) — 서버 `joined`와 같다. */
 export function joinedText(text: string): string {
-  return text.split(/\s+/).filter(Boolean).join(' ')
+  return text.split(PY_SPACES).filter(Boolean).join(' ')
 }
 
 /** 줄 나누기 — 파이썬 `str.splitlines`와 같은 줄 경계. */
 export function splitLines(value: string): string[] {
   const lines = value.split(/\r\n|[\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029]/)
   if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop()
-  const trimmed = lines.map((line) => line.trim())
+  const trimmed = lines.map(pyStrip)
   return trimmed.length ? trimmed : ['']
 }
 

@@ -137,6 +137,17 @@ function LineBreakField({
       <div className="space-y-1">
         <p className={small}>{label}</p>
         <p className={hint}>{COPY.lineBreakNoSource}</p>
+        {/* 원문이 지워진 뒤 남은 지정은 지울 수 있어야 한다 — 남겨 두면 다른 설정도 저장되지 않는다. */}
+        {value && (
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={() => onChange(undefined)}
+            className="text-xs font-semibold text-blue-700 hover:underline disabled:opacity-50"
+          >
+            {COPY.lineBreakClear}
+          </button>
+        )}
       </div>
     )
   }
