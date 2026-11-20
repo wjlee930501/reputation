@@ -261,7 +261,7 @@ def _admin_url(base_url: str, path: str) -> str:
     path_parts = urlsplit(path)
     allowed_root = any(
         path_parts.path == root or path_parts.path.startswith(f"{root}/")
-        for root in ("/operations", "/hospitals", "/leads")
+        for root in ("/operations", "/hospitals", "/leads", "/accounts")
     )
     if (
         not path.startswith("/")

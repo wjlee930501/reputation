@@ -124,14 +124,16 @@ async def get_nav_counts(
     # leads 라우터는 무겁고 이 모듈보다 나중에 올라온다 — 순환을 피해 여기서 부른다.
     from app.api.admin.leads import get_sales_lead_summary
 
-    todo_groups, _rows = await load_operations_queue(
+    # 큐와 같은 함수·같은 기본 필터의 첫 단계(원인 묶음)만 — 상세 조회 없이 total만 센다.
+    todo_groups, _rows = await load_incidents_queue(
         db,
-        OperationsQueue.INCIDENTS,
         OperationsFilters(),
         page=1,
         page_size=1,
         overview=True,
+        now=datetime.now(UTC),
         actor=actor,
+        count_only=True,
     )
     hospital_count = int((await db.execute(select(func.count(Hospital.id)))).scalar_one() or 0)
     leads = await get_sales_lead_summary(db=db)

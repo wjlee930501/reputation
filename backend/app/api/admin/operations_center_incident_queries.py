@@ -139,8 +139,14 @@ async def load_incidents_queue(
     incident_id: uuid.UUID | None = None,
     hospital_scope: HospitalScope = ...,
     actor: AdminUser | None = None,
+    count_only: bool = False,
 ) -> tuple[int, list[OperationsQueueRow]]:
-    """Load one incident page using one page query plus an optional count query."""
+    """Load one incident page using one page query plus an optional count query.
+
+    `count_only`이면 원인 묶음 수(total)만 돌려준다 — 메뉴 배지는 화면 이동마다 불리므로
+    선택된 묶음의 사고 전체를 상세 조회하는 두 번째 단계를 타지 않는다(같은 원인 사고 1만 건이면
+    1만 건 상세였다). total은 같은 첫 단계에서 나오므로 큐 total과 같다.
+    """
     assignee = aliased(AdminUser)
     predicates: list[ColumnElement[bool]] = []
     if filters.hospital_id is not None:
@@ -230,6 +236,8 @@ async def load_incidents_queue(
         groups.setdefault(key, []).append(row_id)
 
     total = len(groups)
+    if count_only:
+        return total, []
     start = (page - 1) * page_size
     page_incident_ids = [
         incident_id

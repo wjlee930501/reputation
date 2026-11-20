@@ -34,6 +34,7 @@ from app.core.config import settings
 from app.core.database import get_async_sessionmaker
 from app.models.operations import Incident, IncidentSeverity
 from app.services import cost_guard_health
+from app.services.incident_safety import COST_GUARD_ADMIN_PATH, COST_GUARD_NEXT_ACTION
 from app.services.incident_types import IncidentFingerprint, IncidentOpenRequest
 from app.services.incidents import open_or_touch_incident
 from app.services.notification_contracts import NotificationIntent, SlackMessage
@@ -1353,11 +1354,9 @@ async def _enqueue_durable_cost_alert_in_session(
                     "자동 AI 호출이 차단됩니다."
                 ),
                 source_type="COST_GUARD",
-                next_action=(
-                    "처리 목록의 비용 가드 사용량을 확인하고, 필요한 경우 킬스위치나 "
-                    "일일 상한을 조정한 뒤 차단된 작업을 재시도하세요."
-                ),
-                admin_path="/operations",
+                # 2026-11-20: 비용 안전장치는 설정 화면 「자동 작업 한도」(/accounts)에 있다 — Slack 알림과 같은 곳.
+                next_action=COST_GUARD_NEXT_ACTION,
+                admin_path=COST_GUARD_ADMIN_PATH,
                 source_id=_cost_alert_identity(category, scope, period, kind),
                 safe_error_code="COST_GUARD_LIMIT_REACHED",
                 safe_error_message=_cost_alert_safe_message(category, scope, period, value, limit),
