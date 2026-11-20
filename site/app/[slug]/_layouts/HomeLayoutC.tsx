@@ -2,6 +2,7 @@ import Image from 'next/image'
 import { formatSeoulDotDate } from '@/lib/clinic-dates'
 import Link from 'next/link'
 import type { ReactNode } from 'react'
+import { KeepTogether } from '../_components/KeepTogether'
 
 import { resolveAssetUrl, TYPE_LABELS } from '@/lib/api'
 import { HOLIDAY_LABEL, holidayHours } from '@/lib/business-hours'
@@ -101,10 +102,14 @@ export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
               {/* 승인 문구가 한 조각뿐이면 앞부분(lead)이 없다 — 그 조각을 큰 제목으로 쓴다. */}
               <span className={s.heroLead}>
                 {(headline.lead.length > 0 ? headline.lead : [headline.emphasis]).map((part, index) => (
-                  <span key={`${part}-${index}`}>{part}{' '}</span>
+                  <span key={`${part}-${index}`}><KeepTogether text={part} compounds />{' '}</span>
                 ))}
               </span>
-              {headline.lead.length > 0 ? <span className={s.heroEmphasis}>{headline.emphasis}</span> : null}
+              {headline.lead.length > 0 ? (
+                <span className={s.heroEmphasis}>
+                  <KeepTogether text={headline.emphasis} compounds />
+                </span>
+              ) : null}
             </h1>
           </div>
           <div className={s.todayWidget}>
@@ -115,8 +120,12 @@ export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
             <div>
               <p className={s.widgetLabel}>{todays && !todays.closed ? '진료시간' : '안내'}</p>
               <p className={s.widgetValue}>
-                {todaysTime ? todaysTime.main : todays ? '휴진' : '전화로 확인'}
-                {todaysTime?.note ? <small className={s.widgetNote}>{todaysTime.note}</small> : null}
+                {todaysTime ? <KeepTogether text={todaysTime.main} /> : todays ? '휴진' : '전화로 확인'}
+                {todaysTime?.note ? (
+                  <small className={s.widgetNote}>
+                    <KeepTogether text={todaysTime.note} />
+                  </small>
+                ) : null}
               </p>
             </div>
             <a className={s.widgetCall} href={`tel:${hospital.phone}`}>
@@ -188,13 +197,13 @@ export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
                 {WEEK_DAY_KEYS.map((key) => (
                   <li key={key} aria-current={key === today.key ? 'date' : undefined}>
                     <span>{dayShortLabel(key)}</span>
-                    <span>{hospital.business_hours?.[key] || '-'}</span>
+                    <span>{hospital.business_hours?.[key] ? <KeepTogether text={hospital.business_hours[key]} /> : '-'}</span>
                   </li>
                 ))}
                 {holiday ? (
                   <li>
                     <span>{HOLIDAY_LABEL}</span>
-                    <span>{holiday.value}</span>
+                    <span><KeepTogether text={holiday.value} /></span>
                   </li>
                 ) : null}
               </ul>
@@ -385,9 +394,12 @@ export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
                     <td>
                       <ul className={s.plainList}>
                         {WEEK_DAY_KEYS.map((key) => (
-                          <li key={key}>{dayShortLabel(key)} {hospital.business_hours?.[key] || '-'}</li>
+                          <li key={key}>
+                            {dayShortLabel(key)}{' '}
+                            {hospital.business_hours?.[key] ? <KeepTogether text={hospital.business_hours[key]} /> : '-'}
+                          </li>
                         ))}
-                        {holiday ? <li>{HOLIDAY_LABEL} {holiday.value}</li> : null}
+                        {holiday ? <li>{HOLIDAY_LABEL} <KeepTogether text={holiday.value} /></li> : null}
                       </ul>
                     </td>
                   </tr>

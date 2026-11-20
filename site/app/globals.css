@@ -7369,8 +7369,8 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
 /* 운영자가 어드민에서 직접 나눈 줄만 그대로 지킨다 (L-3).
    자동 생성 문구는 위 규칙대로 흘러야 하므로 이 모디파이어에만 블록을 준다 —
    `text-wrap: balance`는 블록 조각 안에서도 그 조각의 줄나눔만 다듬는다. */
-.clinic-hero-editorial-title--lines span,
-.clinic-hero-editorial-title--lines strong {
+.clinic-hero-editorial-title--lines > span,
+.clinic-hero-editorial-title--lines > strong {
   display: block;
 }
 
@@ -9070,7 +9070,19 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
   --color-revisit-text-helper: var(--color-revisit-coolgrey-40);
   font-size: var(--clinic-type-body);
   line-height: var(--clinic-leading-body);
-  overflow-wrap: anywhere;
+  /* break-word: 칸을 넘치는 긴 낱말(주소·URL)만 끊는다. anywhere는 최소 너비 계산에서 낱말을
+     글자 단위로 쪼개, 좁은 격자 칸에서 keep-all을 무시하고 '정형외 / 과'처럼 끊었다(2026-11-20). */
+  overflow-wrap: break-word;
+}
+
+/* ══ 2026-11-20 마케팅 수정 요청 — 줄바꿈 묶음 ════════════════════════
+   시간 범위·괄호·전화번호·제목의 가운뎃점 낱말은 한 줄에서 끊지 않는다(KeepTogether,
+   lib/clinic-text.ts). inline-block이라 줄에 들어가면 통째로 넘어가고, 칸보다 길면(390px 반 폭
+   칸) 넘치지 않고 그 안에서만 줄을 바꾼다. 선택자를 .clinic-shell로 올려 제목 조각의 span 규칙
+   (--lines의 display: block)이 묶음에 번지지 않게 한다. */
+.clinic-shell .clinic-keep {
+  display: inline-block;
+  max-width: 100%;
 }
 
 .clinic-shell :is(section[id], .clinic-anchor-target, .clinic-article-body [id]) {
@@ -9165,7 +9177,7 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
   letter-spacing: -0.035em;
   font-weight: 700;
   word-break: keep-all;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
   text-wrap: balance;
 }
 
@@ -9297,7 +9309,7 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
   font-size: var(--clinic-type-body);
   line-height: var(--clinic-leading-body);
   word-break: keep-all;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
 }
 
 .clinic-library-hero-title {
