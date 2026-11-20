@@ -9531,6 +9531,40 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
 
 .clinic-aside-action { width: 100%; justify-content: center; min-height: 48px; font-size: var(--clinic-type-meta); margin-top: 12px; }
 
+/* ══ 2026-11-20 결정 12b — 글 상세 보조 칸을 본문 아래로 ═══════════════════
+   오른쪽 칸(병원 정보·환자가 함께 묻는 질문·관련 글)이 본문 첫 소제목보다 먼저 끝나 본문을 읽는 동안
+   오른쪽이 비어 있었다(행복드림 11.02 글: 칸 끝 약 1,277px, 본문 시작 약 1,695px). 마케팅 요청 2-5
+   방안 1: 본문 아래 한 줄, 휴대폰과 같은 순서, 박스 폭 = 본문 폭, 배경 한 가지, 간격 16·24·40.
+   글 칸 폭은 예전 왼쪽 칸(1200 − 280 − 64 = 856px)과 같게 두어 제목·표지 크기는 바뀌지 않는다. */
+.clinic-article-shell {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 40px;
+}
+
+.clinic-article-shell > .clinic-article {
+  width: 100%;
+  max-width: calc(var(--clinic-max) - 280px - 64px);
+}
+
+.clinic-article-shell > .clinic-aside {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
+  align-items: start;
+  gap: 24px;
+  width: 100%;
+  max-width: var(--clinic-reading-max);
+}
+
+.clinic-article-shell > .clinic-aside .clinic-aside-card {
+  margin: 0;
+  background: var(--color-revisit-greyscale-100);
+  border: 1px solid var(--color-revisit-line-container);
+}
+
+.clinic-article-shell > .clinic-aside .clinic-aside-card-title {
+  margin-bottom: 16px;
+}
+
 @media (max-width: 1100px) {
   .clinic-header-nav { gap: 16px; }
   .clinic-header-cta strong { display: none; }
@@ -9649,38 +9683,4 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
 .clinic-shell .clinic-curator-figure .clinic-curator-portrait--monogram {
   aspect-ratio: 1 / 1;
   max-width: 220px;
-}
-
-/* ══ 2026-11-20 결정 12b — 글 상세 보조 칸을 본문 아래로 ═══════════════════
-   오른쪽 칸(병원 정보·환자가 함께 묻는 질문·관련 글)이 본문 첫 소제목보다 먼저 끝나 본문을 읽는 동안
-   오른쪽이 비어 있었다(행복드림 11.02 글: 칸 끝 약 1,277px, 본문 시작 약 1,695px). 마케팅 요청 2-5
-   방안 1: 본문 아래 한 줄, 휴대폰과 같은 순서, 박스 폭 = 본문 폭, 배경 한 가지, 간격 16·24·40.
-   글 칸 폭은 예전 왼쪽 칸(1200 − 280 − 64 = 856px)과 같게 두어 제목·표지 크기는 바뀌지 않는다. */
-.clinic-article-shell {
-  grid-template-columns: minmax(0, 1fr);
-  gap: 40px;
-}
-
-.clinic-article-shell > .clinic-article {
-  width: 100%;
-  max-width: calc(var(--clinic-max) - 280px - 64px);
-}
-
-.clinic-article-shell > .clinic-aside {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
-  align-items: start;
-  gap: 24px;
-  width: 100%;
-  max-width: var(--clinic-reading-max);
-}
-
-.clinic-article-shell > .clinic-aside .clinic-aside-card {
-  margin: 0;
-  background: var(--color-revisit-greyscale-100);
-  border: 1px solid var(--color-revisit-line-container);
-}
-
-.clinic-article-shell > .clinic-aside .clinic-aside-card-title {
-  margin-bottom: 16px;
 }
