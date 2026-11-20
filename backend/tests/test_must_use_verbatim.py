@@ -99,10 +99,12 @@ def test_multi_sentence_must_use_needs_every_sentence_in_order() -> None:
 def test_required_messages_come_only_from_the_current_approved_essence() -> None:
     philosophy = SimpleNamespace(
         status="APPROVED",
-        must_use_messages=[MUST_USE, " ", "짧은 문구입니다.", f"**{MUST_USE}**"],
+        must_use_messages=[MUST_USE, " ", "진료 전에 충분히 설명드리겠습니다.", f"**{MUST_USE}**"],
     )
 
-    assert required_must_use_messages(philosophy) == [MUST_USE, "짧은 문구입니다."]
+    # 2026-11-20: 옛 승인본도 원장의 완결된 문장만 요구한다(12자 미만 조각·메모체 제외 —
+    # test_must_use_extraction_artifacts.py).
+    assert required_must_use_messages(philosophy) == [MUST_USE, "진료 전에 충분히 설명드리겠습니다."]
     # 승인본이 아니면(초안·보관·없음) 원문 요구도 검수 면제도 없다.
     for status in ("DRAFT", "ARCHIVED", None):
         assert required_must_use_messages(

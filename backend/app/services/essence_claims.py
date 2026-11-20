@@ -85,7 +85,11 @@ _TEMPLATE_PREFIXES = (
 #: 다시 만들어지고(T7), 그 전에도 소비 단계(`must_use_verbatim`·공개 소개)가 현재 규칙으로 다시 거른다.
 #: 2026-10-14.4: 설문 안내문·질문·조각 문장을 원문 문장으로 고르지 않는다(`is_not_doctor_statement`).
 #: 2026-10-14.5: 원장 목소리 노트(진료 철학·환자 약속·핵심 메시지)만, 약·검사 설명 문장 제외.
-AUTOMATIC_ESSENCE_POLICY_VERSION = "2026-10-14.5"
+#: 2026-11-20.1: PDF 추출로 글자 사이가 띄어진 문장(「검 사 장비 가 많 아서 … 합니 다 .」)·자료 머리말
+#:   (「원장님 요청에 따라 … 편집본입니다.」)·환자 요청 문장(「…추천해주세요」)을 고르지 않는다. 운영 확인
+#:   결과 자동 판 6곳이 이런 문장을 필수 문구로 골라 공개 글에 그대로 들어갔다(마케팅 요청 「자료 머리말·
+#:   설문 원문 혼입」).
+AUTOMATIC_ESSENCE_POLICY_VERSION = "2026-11-20.1"
 
 # 원장의 답이 아니라 설문지가 원장에게 하는 말(안내·요청·질문)의 표지. 원장 자신의 문장에는 원장을
 # 부르는 말·답변 요청이 없다. 2026-10-14 신기한속 v2가 "모든 질문은 실제 원장님의 말투로, 풍부하게
@@ -95,6 +99,10 @@ _INSTRUCTION_MARKERS = (
     "작성해", "작성 해", "기재", "적어 주", "적어주", "기입", "체크해", "선택해 주", "선택해주",
     "입력해 주", "입력해주", "원장님의", "원장님께", "원장님은", "원장님이", "원장님에",
     "원장님을", "원장님,", "말투로", "내부 인력", "최대한 자세히",
+    # 자료 머리말·편집 안내(2026-11-20 뉴플랜 v18 「원장님 요청에 따라 … 편집본입니다.」).
+    "편집본", "요청에 따라", "원장님 요청",
+    # 환자가 하는 요청(설문·FAQ에서 옮겨 온 질문) — 원장의 말이 아니다(뉴플랜 「…추천해주세요」).
+    "추천해주세요", "추천해 주세요",
 )
 _QUESTION_ENDING = re.compile(r"(?:까요|나요|습니까|인가요|는지요|을까|할까|될까)$")
 # 문장 앞머리가 접속사·연결 어미(앞 문장의 뒷부분)이면 조각이다("중요하며, 음주, …").
@@ -110,6 +118,29 @@ _MIN_DOCTOR_STATEMENT_CHARS = 12
 # (2026-10-14 세종다온 v6: "트립탄(Triptan) 계열 …", "… 처방하기 좋습니다", "PWV (Pulse Wave …").
 _DRUG_OR_EXAM_DESCRIPTION = re.compile(r"계열|처방하|복용이 편리|[(（]\s*[A-Za-z]")
 _QUOTE_TAIL = "\"'“”‘’「」『』)]）"
+# PDF 추출이 글자 사이를 띄운 문장의 표지: 마지막 음절(다·요)이 앞 글자와 떨어져 있다 —
+# 「… 합니 다」「… 있습니 다」. 정상 한국어 문장의 서술어 끝은 떨어지지 않는다.
+_DETACHED_FINAL = re.compile(r"\s(?:다|요|니다)$")
+_BROKEN_SPACING_MIN_TOKENS = 8
+_BROKEN_SPACING_SINGLE_RATIO = 0.5
+
+
+def has_broken_spacing(sentence: str) -> bool:
+    """글자 사이가 띄어진 추출 잔재 문장인가(2026-11-20).
+
+    마지막 음절이 떨어져 있거나, 충분히 긴 문장에서 어절 절반 이상이 한 음절이면 깨진 것으로 본다.
+    「한 분 한 분 정성껏 상담해드리겠습니다.」처럼 짧은 반복은 어절 수가 모자라 통과한다.
+    """
+
+    body = re.sub(r"\s+", " ", normalize_sentence(sentence))
+    body = body.rstrip(".!。！…~ ").rstrip(_QUOTE_TAIL).rstrip(".!。！…~ ")
+    if _DETACHED_FINAL.search(body):
+        return True
+    tokens = body.split()
+    if len(tokens) < _BROKEN_SPACING_MIN_TOKENS:
+        return False
+    singles = sum(1 for token in tokens if len(token) == 1 and "가" <= token <= "힣")
+    return singles / len(tokens) >= _BROKEN_SPACING_SINGLE_RATIO
 
 
 def is_not_doctor_statement(sentence: str) -> bool:
@@ -126,6 +157,8 @@ def is_not_doctor_statement(sentence: str) -> bool:
     if any(marker in folded for marker in _INSTRUCTION_MARKERS):
         return True
     if _DRUG_OR_EXAM_DESCRIPTION.search(folded):
+        return True
+    if has_broken_spacing(folded):
         return True
     body = folded.rstrip(".!。！…~ ").rstrip(_QUOTE_TAIL).rstrip(".!。！…~ ")
     if folded.endswith(("?", "？")) or _QUESTION_ENDING.search(body):
@@ -341,6 +374,7 @@ __all__ = (
     "AUTOMATIC_ESSENCE_POLICY_VERSION",
     "automatic_version_verbatim_texts",
     "is_not_doctor_statement",
+    "has_broken_spacing",
     "CLAIM_SUPPORT_RATIO",
     "GENERAL_SUPPORT_RATIO",
     "claim_is_supported",
