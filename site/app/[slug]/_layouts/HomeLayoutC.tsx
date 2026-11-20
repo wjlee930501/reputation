@@ -1,6 +1,8 @@
 import Image from 'next/image'
+import { formatSeoulDotDate } from '@/lib/clinic-dates'
 import Link from 'next/link'
 import type { ReactNode } from 'react'
+import { KeepTogether } from '../_components/KeepTogether'
 
 import { resolveAssetUrl, TYPE_LABELS } from '@/lib/api'
 import { HOLIDAY_LABEL, holidayHours } from '@/lib/business-hours'
@@ -43,20 +45,6 @@ import { regionSentenceLabel } from '@/lib/clinic-region'
 
 const NEWS_LIMIT = 5
 
-function publishedDate(value: string | null): string {
-  if (!value) return ''
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return ''
-  const parts = new Intl.DateTimeFormat('ko-KR', {
-    timeZone: 'Asia/Seoul',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).formatToParts(date)
-  const get = (type: string) => parts.find((part) => part.type === type)?.value ?? ''
-  return `${get('year')}.${get('month')}.${get('day')}`
-}
-
 /**
  * 레이아웃 C — 일본 동네 내과 결(しおや内科・内視鏡クリニック 참고).
  * 꽉 찬 병원 사진 + 오늘 진료 위젯, 최근 글과 요일×시간 ●진료표, 고딕·영문 머리표.
@@ -90,20 +78,22 @@ export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
 
   return (
     <main id="main-content" className={s.home}>
-      <section className={`${s.hero}${model.heroPhotoUrl ? '' : ` ${s.heroPlain}`}`} aria-label="첫 화면">
+      <section className={`${s.hero}${model.heroPhotoUrl ? ` ${s.heroSplit}` : ` ${s.heroPlain}`}`} aria-label="첫 화면">
         {model.heroPhotoUrl ? (
-          <>
+          // 좌우 분할(2026-11-20 결정 N2): 사진은 오른쪽 절반(휴대폰은 위 4:3)에 덮개 없이 두고,
+          // 글은 대표색 바탕의 왼쪽(휴대폰은 아래)에 놓는다 — 사진이 가려지지 않고 흰 글자 대비가
+          // 사진 밝기와 무관하게 지켜진다.
+          <div className={s.heroMedia}>
             <Image
               src={model.heroPhotoUrl}
               alt={model.mediaMode === 'brand-graphic' ? `${hospital.name} 브랜드 그래픽` : `${hospital.name} 진료 공간`}
               fill
               preload
               quality={CLINIC_IMAGE_QUALITY}
-              sizes="100vw"
+              sizes="(max-width: 900px) 100vw, 50vw"
               style={{ objectFit: 'cover' }}
             />
-            <span className={s.heroVeil} aria-hidden="true" />
-          </>
+          </div>
         ) : null}
         <div className={s.heroInner}>
           <div className={s.heroCopy}>
@@ -114,10 +104,14 @@ export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
               {/* 승인 문구가 한 조각뿐이면 앞부분(lead)이 없다 — 그 조각을 큰 제목으로 쓴다. */}
               <span className={s.heroLead}>
                 {(headline.lead.length > 0 ? headline.lead : [headline.emphasis]).map((part, index) => (
-                  <span key={`${part}-${index}`}>{part}{' '}</span>
+                  <span key={`${part}-${index}`}><KeepTogether text={part} compounds />{' '}</span>
                 ))}
               </span>
-              {headline.lead.length > 0 ? <span className={s.heroEmphasis}>{headline.emphasis}</span> : null}
+              {headline.lead.length > 0 ? (
+                <span className={s.heroEmphasis}>
+                  <KeepTogether text={headline.emphasis} compounds />
+                </span>
+              ) : null}
             </h1>
           </div>
           <div className={s.todayWidget}>
@@ -128,8 +122,12 @@ export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
             <div>
               <p className={s.widgetLabel}>{todays && !todays.closed ? '진료시간' : '안내'}</p>
               <p className={s.widgetValue}>
-                {todaysTime ? todaysTime.main : todays ? '휴진' : '전화로 확인'}
-                {todaysTime?.note ? <small className={s.widgetNote}>{todaysTime.note}</small> : null}
+                {todaysTime ? <KeepTogether text={todaysTime.main} /> : todays ? '휴진' : '전화로 확인'}
+                {todaysTime?.note ? (
+                  <small className={s.widgetNote}>
+                    <KeepTogether text={todaysTime.note} />
+                  </small>
+                ) : null}
               </p>
             </div>
             <a className={s.widgetCall} href={`tel:${hospital.phone}`}>
@@ -144,7 +142,7 @@ export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
         {news.length > 0 ? (
           <section id="contents" className={s.newsBlock}>
             <div className={s.blockHead}>
-              <SectionTitle label="NEWS">최근 건강 정보</SectionTitle>
+              <SectionTitle label="NEWS">최근 의료 정보</SectionTitle>
               <Link className={s.moreLink} href={`${hospitalRootUrl}/contents`}>
                 {contents.length}편 모두 보기 →
               </Link>
@@ -153,7 +151,7 @@ export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
               {news.map((content) => (
                 <li key={content.id}>
                   <Link href={`${hospitalRootUrl}/contents/${content.id}`}>
-                    <span className={s.newsDate}>{publishedDate(content.published_at)}</span>
+                    <span className={s.newsDate}>{formatSeoulDotDate(content.published_at)}</span>
                     <span className={s.badge}>{TYPE_LABELS[content.content_type] ?? content.content_type}</span>
                     <span className={s.newsTitle}>{content.title}</span>
                   </Link>
@@ -201,13 +199,13 @@ export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
                 {WEEK_DAY_KEYS.map((key) => (
                   <li key={key} aria-current={key === today.key ? 'date' : undefined}>
                     <span>{dayShortLabel(key)}</span>
-                    <span>{hospital.business_hours?.[key] || '-'}</span>
+                    <span>{hospital.business_hours?.[key] ? <KeepTogether text={hospital.business_hours[key]} /> : '-'}</span>
                   </li>
                 ))}
                 {holiday ? (
                   <li>
                     <span>{HOLIDAY_LABEL}</span>
-                    <span>{holiday.value}</span>
+                    <span><KeepTogether text={holiday.value} /></span>
                   </li>
                 ) : null}
               </ul>
@@ -315,7 +313,7 @@ export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
         <section className={s.section} aria-label="자주 확인하는 질문">
           <div className={s.blockHead}>
             <SectionTitle label="Q&A">{QUESTIONS_SECTION_TITLE}</SectionTitle>
-            <Link className={s.moreLink} href={`${hospitalRootUrl}/contents`}>건강 정보 {contents.length}편 →</Link>
+            <Link className={s.moreLink} href={`${hospitalRootUrl}/contents`}>의료 정보 {contents.length}편 →</Link>
           </div>
           <div className={s.qaGrid}>
             {questions.map((content) => (
@@ -398,9 +396,12 @@ export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
                     <td>
                       <ul className={s.plainList}>
                         {WEEK_DAY_KEYS.map((key) => (
-                          <li key={key}>{dayShortLabel(key)} {hospital.business_hours?.[key] || '-'}</li>
+                          <li key={key}>
+                            {dayShortLabel(key)}{' '}
+                            {hospital.business_hours?.[key] ? <KeepTogether text={hospital.business_hours[key]} /> : '-'}
+                          </li>
                         ))}
-                        {holiday ? <li>{HOLIDAY_LABEL} {holiday.value}</li> : null}
+                        {holiday ? <li>{HOLIDAY_LABEL} <KeepTogether text={holiday.value} /></li> : null}
                       </ul>
                     </td>
                   </tr>

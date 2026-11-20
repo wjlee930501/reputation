@@ -99,7 +99,8 @@ test('a single-line approved headline needs no lead part', () => {
 
 test('the hero renders the separator and lets the browser choose the line breaks', () => {
   // 공백은 JSX에서 조각 사이에 명시적으로 넣어야 한다 — 줄바꿈만 두면 사라진다.
-  assert.match(HERO, /\{part\}\{' '\}/)
+  // 조각은 줄바꿈 묶음(KeepTogether)으로 그리되 사이 공백은 그대로 둔다.
+  assert.match(HERO, /<KeepTogether text=\{part\} compounds \/>\{' '\}/)
 
   const titleRules: postcss.Rule[] = []
   const fragments: postcss.Rule[] = []
@@ -120,7 +121,7 @@ test('an operator-authored headline gets the block-line modifier, and only it', 
   assert.match(HERO, /clinic-hero-editorial-title--lines/)
 
   // 그 모디파이어에만 블록이 걸려 있는가 — 기본 규칙은 위 테스트가 지킨다.
-  const modifier = CSS.slice(CSS.indexOf('.clinic-hero-editorial-title--lines span,'))
+  const modifier = CSS.slice(CSS.indexOf('.clinic-hero-editorial-title--lines > span,'))
   assert.match(modifier.slice(0, modifier.indexOf('\n}')), /display:\s*block/)
 })
 

@@ -152,8 +152,9 @@ def test_auto_gaps_are_a_report_and_manual_gaps_are_one_error_each() -> None:
     manual_a = gaps.MonthlyReportGap("가의원", "COVERAGE_INCOMPLETE")
     manual_b = gaps.MonthlyReportGap("나의원", "COVERAGE_INCOMPLETE")
 
+    # 자동 복구 공백은 복구 창이 남은 1일(00:15~07:00 측정, 09:00 공백 요약)에만 자동으로 본다(2026-11-03).
     intents = gaps.monthly_report_gap_intents(
-        period_key="2026-09", gaps=[auto, manual_a, manual_b], day=3
+        period_key="2026-09", gaps=[auto, manual_a, manual_b], day=1
     )
     by_type = {}
     for intent in intents:
@@ -172,16 +173,17 @@ def test_auto_gaps_are_a_report_and_manual_gaps_are_one_error_each() -> None:
 
 def test_auto_summary_is_not_repeated_daily_but_a_changed_set_is_sent() -> None:
     first = [gaps.MonthlyReportGap("A의원", "MISSING", recoverable=True)]
-    day_two = gaps.monthly_report_gap_intents(period_key="2026-09", gaps=first, day=2)
-    day_three = gaps.monthly_report_gap_intents(period_key="2026-09", gaps=first, day=3)
+    # 같은 날 다시 판정해도(재시도·재실행) 같은 공백 집합이면 같은 알림이고, 집합이 바뀌면 새 알림이다.
+    first_run = gaps.monthly_report_gap_intents(period_key="2026-09", gaps=first, day=1)
+    rerun = gaps.monthly_report_gap_intents(period_key="2026-09", gaps=first, day=1)
     grown = gaps.monthly_report_gap_intents(
         period_key="2026-09",
         gaps=[*first, gaps.MonthlyReportGap("B의원", "COVERAGE_INCOMPLETE", recoverable=True)],
-        day=3,
+        day=1,
     )
 
-    assert day_two[0].dedupe_key == day_three[0].dedupe_key
-    assert grown[0].dedupe_key != day_two[0].dedupe_key
+    assert first_run[0].dedupe_key == rerun[0].dedupe_key
+    assert grown[0].dedupe_key != first_run[0].dedupe_key
 
 
 def test_manual_error_is_once_per_hospital_and_period() -> None:
@@ -196,19 +198,19 @@ def test_manual_error_is_once_per_hospital_and_period() -> None:
     assert other_period[0].dedupe_key not in keys
 
 
-def test_day_seven_is_still_automatic_and_day_eight_belongs_to_the_safety_net() -> None:
+def test_day_one_is_still_automatic_and_day_two_belongs_to_the_safety_net() -> None:
     open_auto = [
         gaps.MonthlyReportGap("A의원", "MISSING", recoverable=True),
         gaps.MonthlyReportGap("B의원", "COVERAGE_INCOMPLETE", recoverable=True),
     ]
 
-    day_seven = gaps.monthly_report_gap_intents(period_key="2026-09", gaps=open_auto, day=7)
-    day_eight = gaps.monthly_report_gap_intents(period_key="2026-09", gaps=open_auto, day=8)
+    day_one = gaps.monthly_report_gap_intents(period_key="2026-09", gaps=open_auto, day=1)
+    day_two = gaps.monthly_report_gap_intents(period_key="2026-09", gaps=open_auto, day=2)
 
-    # 7일 밤 23:59:59까지 복구가 돌고 8일 00:15가 최종화한다 — 7일은 아직 사람의 일이 아니다.
-    assert [intent.notification_type for intent in day_seven] == ["MONTHLY_REPORT_GAP_AUTO"]
-    # 8일 09:00 뒤 남은 공백은 월간 보고서 안전망이 다시 만든다. '조치 필요'를 먼저 보내지 않는다(I3).
-    assert day_eight == []
+    # 1일 07:00까지 복구가 돌고 07:15부터 최종화한다(2026-11-03) — 1일은 아직 사람의 일이 아니다.
+    assert [intent.notification_type for intent in day_one] == ["MONTHLY_REPORT_GAP_AUTO"]
+    # 1일 09:00 뒤 남은 공백은 월간 보고서 안전망이 다시 만든다. '조치 필요'를 먼저 보내지 않는다(I3).
+    assert day_two == []
 
 
 # ── E. 막힌 글: 새로 막힌 글만 ─────────────────────────────────────────────

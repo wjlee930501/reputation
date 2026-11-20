@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import { KeepTogether } from './KeepTogether'
 
 import { HOLIDAY_LABEL, holidayHours } from '@/lib/business-hours'
 import { seoulDateLabel, seoulToday } from '@/lib/clinic-layout'
@@ -82,7 +83,7 @@ export function WeekHours({
             >
               <span className="clinic-week-day-label">{day.label}</span>
               <span className="clinic-week-day-time">
-                {day.time ? (closed ? '휴진' : day.time) : '-'}
+                {day.time ? (closed ? '휴진' : <KeepTogether text={day.time} />) : '-'}
               </span>
             </li>
           )
@@ -91,7 +92,7 @@ export function WeekHours({
       {holiday ? (
         <p className={`clinic-week-holiday${holiday.closed ? ' is-closed' : ''}`}>
           <span className="clinic-week-day-label">{HOLIDAY_LABEL}</span>
-          <span className="clinic-week-day-time">{holiday.closed ? '휴진' : holiday.value}</span>
+          <span className="clinic-week-day-time">{holiday.closed ? '휴진' : <KeepTogether text={holiday.value} />}</span>
         </p>
       ) : null}
     </>
