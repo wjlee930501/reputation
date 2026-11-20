@@ -41,7 +41,9 @@
 | `version` | int | 병원 안에서 1부터. 공개 반영할 때만 오른다(초안은 `NULL`) |
 | `state` | enum `DRAFT`·`PUBLISHED`·`SUPERSEDED` | 병원당 `DRAFT` 하나·`PUBLISHED` 하나(부분 유니크 인덱스 둘) |
 | `layout` | `String(1)` `A`/`B`/`C` | 이 판의 기본 틀. 공개 반영 때 `hospitals.site_layout`에 같이 쓴다 |
-| `config` | JSONB | 3절 스키마. 기본값과 **다른 칸만** 담는다(덮어쓰기 모양) |
+| `config` | JSONB | 3절 스키마. 기본값과 **다른 칸만** 담는다(덮어쓰기 모양) — 편집·비교용 |
+| `resolved` | JSONB | 저장 시점의 기본값과 합친 **완성본 스냅샷**. 공개 응답·이력 미리보기·복원은 이것을 쓴다 — 나중에 `site_defaults.py`가 바뀌어도 옛 공개 판이 그대로 재현된다 |
+| `defaults_version` | String | 합칠 때 쓴 기본값 판(`site_defaults.DEFAULTS_VERSION`). 복원 때 지금 판과 다르면 덮어쓰기 원본을 지금 기본값에 다시 합치고 바뀐 칸을 경고로 보인다 |
 | `schema_version` | int | 지금 1 |
 | `revision` | int | 초안 낙관적 잠금 — 저장마다 +1, 클라이언트가 `If-Match`로 보낸다 |
 | `based_on_id` | UUID null | 이 초안을 만든 공개 판(복원이면 복원한 판) |
@@ -52,7 +54,8 @@
 | `change_summary` | JSONB | 직전 공개 판과 다른 섹션 키 목록(이력 화면용, 서버 계산) |
 
 - 이력 = `PUBLISHED`·`SUPERSEDED` 판(행은 지우지 않는다, append-only). 복원은 옛 판의 `layout`·`config`를 **새 초안**으로 복사하고(`origin=RESTORE`), 공개 반영을 거쳐야 화면에 나간다.
-- `hospitals.site_layout`은 그대로 둔다 — 계약 등록·지역 통계·옛 코드 롤백이 이 칸을 읽는다. 공개 반영 트랜잭션이 두 곳을 같이 쓴다. 설정 행이 없는 병원은 `site_layout`만으로 지금처럼 그린다(I6).
+- `hospitals.site_layout`은 그대로 둔다 — 계약 등록·지역 통계·하위 페이지 셸·옛 코드 롤백이 이 칸을 읽는다. 공개 반영 트랜잭션이 두 곳을 같이 쓴다. 설정 행이 없는 병원은 `site_layout`만으로 지금처럼 그린다(I6).
+- **이중 쓰기 금지**: 공개 판이 있는 병원은 기존 `PATCH /admin/hospitals/{id}`의 `site_layout` 변경·비우기를 409 `SITE_LAYOUT_OWNED_BY_SITE_CONFIG`로 거절한다(편집기 `reset`/공개 반영으로만 바꾼다). 공개 판이 없는 병원은 지금처럼 PATCH로 바꾼다. 두 값이 갈라졌는지는 readiness 참고 사실로 센다(Codex 검토 4).
 - 왜 `hospitals`의 JSON 칸 하나가 아닌가: 임시 저장·이력·복원·작업자 기록이 요청 범위이고, `hospitals` 행 PATCH(`profile-patch.ts` 보호·provenance)와 저장 경로를 섞지 않기 위해서다.
 
 ### 2.2 이미 있는 칸과의 관계
@@ -81,7 +84,7 @@
   "hero": {
     "arrangement": "overlay",           // overlay(사진 위 글자) | split(좌우) | text(글자만)
     "title_size": "m",                  // s | m | l  (m = 지금 48px)
-    "lines": { "pc": "365서귀포삼성정형외과\n제주 서귀포 정형외과 전문의 진료", "mobile": null },
+    "line_breaks": { "hero.headline": { "pc": "365서귀포삼성정형외과\n제주 서귀포 정형외과 전문의 진료", "mobile": null } },
     "blocks": ["today", "phone", "location", "hours"],   // 정보 블록 선택·순서: today·phone·location·booking·hours
     "image": { "focus": { "x": 0.5, "y": 0.35 }, "veil": { "opacity": 0.6, "extent": "text" } }  // extent: text | full | none
   },
@@ -90,10 +93,11 @@
     "hours.weekend_label": "토요일 진료"
   },
   "treatments": { "show_description": true, "style": "cards" },          // cards | list
-  "doctor":     { "photo_ratio": "portrait", "title_position": "above", "show_philosophy": false },
+  "doctor":     { "photo_ratio": "portrait", "photo_focus": { "x": 0.5, "y": 0.2 },
+                  "title_position": "above", "show_philosophy": false },
   "care_principles": { "card_count": 3, "use_default_cards": true },
   "care_flow":  { "steps": [ { "title": "상담·문진", "body": "…" } ] },   // 2~6단계, 비우면 기본 4단계
-  "visit":      { "order": ["parking", "bus", "subway"], "show_subway": false },
+  "visit":      { "order": ["parking", "transit"], "show_transit": true },   // [결정 S7]
   "faq":        { "mode": "auto", "limit": 6, "content_ids": [], "merge_questions": false },  // [결정 S2]
   "region_tags": { "show": true, "separator": "comma" },
   "nav":        { "items": ["treatments", "visit", "doctor", "contents", "website", "call"],
@@ -106,9 +110,9 @@
 
 ### 3.1 섹션 id(홈)
 
-`hero` · `section_index`(B 목차·기본형 바로가기) · `news`(C 최근 소식) · `hours` · `treatments` ·
-`doctor` · `care_principles` · `care_flow` · `gallery` · `questions`(자주 확인하는 질문) · `faq` ·
-`facts`(기본 정보) · `visit`(오시는 길).
+`hero` · `section_index`(B 목차·기본형 바로가기) · `contents`(기본형·B 먼저 정리한 글, A 콘텐츠 영역) ·
+`news`(C 최근 소식 — C의 `#contents`) · `hours` · `treatments` · `doctor` · `care_principles` · `care_flow` ·
+`gallery` · `questions`(자주 확인하는 질문) · `faq` · `facts`(기본 정보) · `visit`(오시는 길).
 
 레이아웃마다 쓸 수 있는 섹션과 기본 순서·제목·배경은 `site_defaults.py` 한 곳(백엔드)과 같은 값을
 `site/lib/clinic-section-defaults.ts`가 읽는다(공개 응답에 완성본이 오므로 사이트는 기본값을 따로
@@ -125,8 +129,16 @@
 
 ### 3.3 줄바꿈 지정(PC·모바일 따로)
 
-- 저장 값은 **줄 구분된 같은 문장**이다. `lines.pc`의 줄을 이으면(공백 하나) 원문 `hero_headline`과
-  같아야 한다 — 글자를 바꾸는 통로가 되지 않게 서버가 비교해 거절한다(`LINES_TEXT_MISMATCH`).
+- 저장 값은 **줄 구분된 같은 문장**이다. `pc`·`mobile` **둘 다** 줄을 이으면(공백 하나, 정규화 후) 지금
+  원문과 같아야 한다 — 글자를 바꾸는 통로가 되지 않게 서버가 비교해 거절한다(`LINES_TEXT_MISMATCH`).
+- 줄바꿈을 걸 수 있는 칸은 **고정 목록**이다: `hero.headline`·`hero.description`·`care_principles.title`·
+  `care_principles.lede`·`care_principles.cards[i].title|body`. 임의 경로는 받지 않는다(FAQ 질문·측정 질문
+  같은 승인 문장에 쓰일 수 없게 — I8). 스키마는 `line_breaks: { "<고정 경로>": {pc, mobile} }`.
+- 원문이 나중에 바뀌면(병원 정보 PATCH) 그 칸의 줄바꿈 지정은 공개 응답에서 버린다(원문과 다르면 무시)
+  — 저장값은 남겨 편집기가 '원문이 바뀌어 줄바꿈 지정이 꺼짐' 경고를 보인다(Codex 검토 2).
+- 의료광고 필터는 줄마다가 아니라 **이어 붙인 문장**으로 돈다. `check_forbidden`은 줄바꿈을 넘는 표현을
+  보지 못한다('완\n치 보장'은 통과, '완치 보장'은 거절 — Codex 교차검토에서 재현). 모든 여러 줄 칸
+  (`care_flow.steps[].body`·`copy.*` 포함)도 저장·공개 둘 다 줄바꿈을 공백으로 바꾼 글로 검사한다.
 - 사이트는 줄마다 `<span class="lines-pc">`/`lines-mobile`로 그리고 CSS가 화면 폭에 맞는 쪽만 줄을
   나눈다(h1 글자는 하나 — 추출 문장 불변).
 - 줄바꿈 지정이 없으면 PR #327의 자동 묶음(시간·괄호·가운뎃점)이 그대로 동작한다.
@@ -151,8 +163,12 @@
 
 1. 형식: pydantic strict, 모르는 키 거절, enum·범위(초점 0~1, 덮개 0~0.9, limit 3~10, 카드 2~4, 단계 2~6).
 2. 섹션: 레이아웃이 쓰지 않는 id 거절, 같은 id 두 번 거절, 필수 고정 섹션 `enabled=false` 거절(`FIXED_SECTION`).
-3. 문구: 모든 사람 입력 글(섹션 제목·`copy.*`·`care_flow.steps`·`share.description`·`lines`)에
+3. 문구: 모든 사람 입력 글(섹션 제목·`copy.*`·`care_flow.steps`·`share.description`·`line_breaks`)에
    길이 상한과 `check_forbidden` — 걸리면 칸 경로와 문제 단어를 돌려준다(I7). 줄바꿈 문장 일치(3.3).
+   **검사 단위는 칸 하나가 아니라 화면에 이어 보이는 묶음**이다: 섹션 제목+설명, 단계 제목+설명, 카드
+   제목+설명, 첫 화면 제목+설명을 기본값과 덮어쓰기를 합친 **최종 표시 문장**으로 이어(줄바꿈은 공백으로)
+   한 번 더 검사한다. 실제 필터에서 '타 병원보다' + '저렴합니다'는 각각 통과하지만 합치면 '할인·유인'으로
+   걸린다(Codex 검토 1).
 4. 참조: `share.image_asset_id`는 그 병원의 공개 사진이고 사람 얼굴이면 실인물·신원 승인 조건을 넘어야 한다
    (`public/physicians.py`와 같은 판정). `faq.content_ids`는 그 병원의 **공개 FAQ 글 중 승인 질문·답이 있는 것**.
 5. 메뉴: `nav.items`가 가리키는 섹션이 꺼져 있으면 경고(저장은 됨) — 공개 응답이 그 항목을 뺀다.
@@ -160,20 +176,36 @@
 
 ### 4.2 동시성·멱등
 
-- 초안 저장은 `revision` 비교(다르면 409 `DRAFT_CHANGED`, 최신 초안 동봉).
+- 초안을 바꾸거나 쓰는 **모든** 요청(저장·공개 반영·버리기·복원·초기화)은 `{draft_id, revision}` 전제조건을
+  받는다(복원·초기화는 '초안 없음'도 명시 전제조건). 다르면 409 `DRAFT_CHANGED`(최신 초안 동봉). A가 revision
+  5를 미리보고 B가 6을 저장한 뒤 A가 공개를 누르면 6이 공개되던 경로를 막는다(Codex 검토 3).
 - 공개 반영은 `Idempotency-Key` → `OperationRun`(`PUBLISH_SITE_CONFIG`) 영수증. 같은 키 재요청은 같은 결과.
 - 공개 반영 직전 검증을 **다시** 돈다(초안 저장 뒤 사진이 비공개가 됐거나 FAQ 글이 내려간 경우).
+- 공개 중인 병원이면 **커밋 전에** `ensure_site_revalidate_configured()`(기존 PATCH와 같은 사전 검사)로 재검증
+  설정 누락을 거절하고, 같은 트랜잭션에 `enqueue_public_surface_intent`를 남긴 뒤 커밋 후
+  `trigger_hospital_site_revalidate_safe`를 부른다. 기존 프로필 PATCH에는 트랜잭션 intent가 없으므로 이것은
+  새로 세우는 규칙이다(PATCH를 선례로 삼지 않는다, Codex 검토 14).
 
 ## 5. 공개 응답·미리보기
 
 - `GET /public/hospitals/{slug}`에 `site_config` 추가: 공개 판 완성본을 **공개용으로 다시 정리**한 값
   (`public_site_config`) — 금지 표현이 든 문구는 비우고, 공개가 끝난 사진·내려간 FAQ id는 빼고, 꺼진
   섹션을 가리키는 메뉴 항목은 뺀다. 설정 행이 없으면 `null`(I6). `schema_version` 동봉.
-- 미리보기: `POST …/preview-token`이 `LEAD_REPORT_TOKEN_SECRET` 계열이 아닌 **새 비밀**
-  (`SITE_PREVIEW_TOKEN_SECRET`, 10분, 병원·초안 revision 결합) 서명 토큰을 준다. 사이트
-  `/{slug}?preview=<token>`은 `GET /public/hospitals/{slug}/site-config/preview?token=`에서 초안 완성본을
-  받아 그린다 — 응답·페이지 `Cache-Control: no-store`, `noindex`, GA·픽셀 없음(설문 페이지와 같은 규칙),
-  ISR 캐시를 쓰지 않는다. Admin은 iframe(390·1440)으로 띄운다. **[결정 S4]** 비밀 추가는 운영 env 변경.
+- 미리보기 토큰: `POST …/preview-token`이 새 비밀 `SITE_PREVIEW_TOKEN_SECRET`로 서명한 토큰(10분)을 준다.
+  토큰은 **병원 id + 초안 UUID + revision**에 묶이고, 미리보기 API가 그 초안이 지금도 DRAFT이고 revision이
+  같은지 확인한다 — 버리고 다시 만든 초안에 옛 토큰이 열리지 않는다. 공개 반영·버리기·복원·초기화·저장 뒤
+  옛 토큰은 모두 무효(revision이나 초안 id가 달라짐)(Codex 검토 5). **[결정 S4]** 비밀 추가는 운영 env 변경.
+- 미리보기 데이터: `GET /public/hospitals/{slug}/preview?token=`이 병원 공개 응답과 **같은 모양 전체**(병원 사실 +
+  초안 `site_config`)를 준다 — 공개 전 병원(공개 조회가 404)도 미리볼 수 있게. 공개 상태 검사 대신 토큰이 권한이다.
+  응답 `Cache-Control: no-store`, 실패 응답도 같다.
+- 미리보기 화면: 사이트의 **별도 경로** `/preview/{token}`(예약 slug `preview`)에서 그린다 — 홈 경로(`revalidate=1800`,
+  공유 fetch 캐시)를 재사용하지 않는다. 이 경로는 `dynamic = 'force-dynamic'`, 모든 fetch `no-store`, 메타데이터도
+  같은 미리보기 판정으로 만들고 `robots: noindex,nofollow`, `X-Robots-Tag`, 응답 `no-store`(실패 포함)(Codex 검토 7).
+- 분석 제외: `Analytics.tsx`·`lib/analytics.ts`의 제외 경로에 `/preview`를 넣는다(지금은 `/survey`만). 토큰이
+  `page_location`으로 GA·픽셀에 나가지 않게, 토큰 검증 결과와 무관하게 제외한다(Codex 검토 6).
+- iframe: 지금 Site는 `frame-ancestors 'none'`·`X-Frame-Options: DENY`, Admin은 `frame-src 'self' blob:`이다.
+  `/preview/*` 경로에만 `frame-ancestors <Admin origin>`을 주고(X-Frame-Options는 그 경로에서 뺀다), Admin CSP의
+  `frame-src`에 Site origin을 더한다. 다른 경로의 정책은 그대로(Codex 검토 8).
 
 ## 6. 사이트 렌더링 규칙
 
@@ -185,12 +217,23 @@
 - **I2·I3 FAQ**:
   - `faq.mode=auto`: 지금 규칙(`selectFaqEntries`, PR #325의 같은 문장 1회) + `limit`.
   - `faq.mode=manual`: `content_ids` 순서대로, 승인 질문·답이 있는 공개 FAQ만. 질문 **문구 수정은 없다**(I8) — 문구가 문제면 글 쪽에서 고친다(결정 14).
+  - 데이터 경로: 홈은 지금 `fetchContents(slug, 60)`만 받으므로 60건 밖의 선택 FAQ가 빠질 수 있다. 공개 응답의
+    `site_config.faq`에 **선택된 FAQ의 승인 질문·답·id를 함께 실어** 보낸다(공개 FAQ 글에서 서버가 다시 읽은 값).
+    사이트는 그 배열 하나를 화면·FAQPage·질문 목록 중복 제거에 그대로 넘긴다 — `buildFaqPageJsonLd()`가 안에서
+    `selectFaqEntries`를 다시 부르지 않게, 이미 고른 배열을 받는 `buildFaqPageJsonLdFromEntries(entries)`로 바꾼다
+    (auto 모드도 같은 함수, Codex 검토 9).
   - FAQ 섹션이 꺼지면 홈 FAQPage도 없다(화면 = FAQPage). 각 FAQ 글 상세의 FAQPage는 그대로다.
   - `merge_questions=true`(결정 S2 = README 11번): 한 섹션 '자주 묻는 질문' 안에 위쪽은 답이 있는 FAQ(이것만 FAQPage), 아래쪽은 나머지 질문 링크. 같은 글·같은 문장 중복 금지(I3).
-- **I4 의료진**: 꺼지지 않는다(결정 S3 권장). 사진 비율·초점·직함 위치·진료 철학 표시만 조절.
+- **I4 의료진**: 꺼지지 않는다. 사진 비율·초점·직함 위치·진료 철학 표시만 조절. (S3에서 '끌 수 있음'을 고르면
+  I4와 `clinic-layout-contract.test.ts`의 홈 의료진 전원 계약을 바꾸는 결정이 된다 — Codex 검토 15.)
+- **콘텐츠 영역**: 섹션 id `contents`를 둔다(기본형·B `FeaturedContent`, A 콘텐츠 영역, C는 `news`가 같은 역할 —
+  C에서는 `news`가 `#contents`를 갖는다). 레이아웃별 섹션 표가 이 대응을 명시한다(Codex 검토 10).
+- 섹션 안의 고정 링크(`CarePrinciples`의 '오시는 길 → #contact' 등)는 가리키는 섹션이 꺼지면 하위 페이지
+  주소(`/visit`)로 바꿔 건다.
 - 앵커: 꺼진 섹션의 `id`(`#treatments`·`#doctor`·`#faq`·`#facts`·`#contact`·`#contents`)는 사라지고,
-  그 섹션을 가리키는 메뉴·바로가기·하단 바 항목도 함께 빠진다. 백엔드가 만드는 공개 사이트 링크는
-  섹션 앵커를 쓰지 않는다(확인 필요 — 구현 PR에서 grep 테스트).
+  그 섹션을 가리키는 메뉴·바로가기·하단 바 항목도 함께 빠진다. 백엔드·Admin 코드에서 공개 사이트
+  섹션 앵커로 가는 링크는 없다(2026-11-20 grep, 구현 PR에서 테스트로 고정). 사이트 안의 링크(A안
+  '진료시간 전체 보기 → #facts' 등)는 가리키는 섹션이 필수 섹션이거나, 꺼지면 링크도 같이 뺀다.
 - `/treatments`·`/doctor`·`/visit`·`/contents` 하위 페이지와 sitemap은 섹션 표시와 무관하다.
 - 공유 이미지·설명(`share`)은 OG/트위터 메타만 바꾼다. JSON-LD `image`는 그대로(I1).
 - 글 상세 보조 칸(`article.aside`)은 결정 12에 따른다.
@@ -230,3 +273,15 @@
 | S4 | 미리보기용 새 비밀 `SITE_PREVIEW_TOKEN_SECRET` 추가(운영 env 변경) | 추가 |
 | S5 | 편집기 FAQ에서 질문 문구 고치기 | 하지 않음 — 글 쪽(결정 14) |
 | S6 | 설정 변경 이력 보존 기간 | 무기한(행 작음) |
+| S7 | 오시는 길 '버스·지하철 순서·지하철만 끄기' — 지금 대중교통 안내는 자유 문장 하나(`transit_note`)라 버스·지하철을 나눌 수 없다 | v1은 주차·대중교통 순서와 대중교통 줄 끄기만. 나누려면 `transit_note`를 버스·지하철 두 칸으로 쪼개는 별도 변경(Codex 검토 13) |
+| S8 | 진료 원칙 카드 4개(S1)의 배포·롤백 | 지금 코드는 3개만 저장·공개(구버전 롤백 시 4번째 카드 버려짐·재저장 거절). 사이트 먼저(4개 읽기) → 백엔드(4개 저장) 순서로 배포하고, 롤백 시 4번째 카드는 공개에서만 빠지고 DB에는 남는다고 명시(Codex 검토 12) |
+
+## 11. Codex 교차검토(2026-11-20) 반영 기록
+
+gpt-6.1-sol high로 이 문서를 코드와 대조했다. 15건 모두 받아들여 위 본문에 반영했다(반박 없음).
+1 이어 보이는 칸 조합 필터 우회 → 4.1(3) · 2 줄바꿈 원문 일치를 pc·mobile 둘 다, 고정 경로 → 3.3 ·
+3 초안 revision 전제조건 → 4.2 · 4 `site_layout` 이중 쓰기 → 2.1 · 5 미리보기 토큰에 초안 UUID → 5 ·
+6 분석 도구 토큰 유출 → 5 · 7 미리보기 캐시·noindex·공개 전 병원 → 5 · 8 iframe CSP → 5 ·
+9 수동 FAQ 데이터 경로·FAQPage 함수 → 6 · 10 `contents` 섹션·고정 링크 → 3.1·6 · 11 이력 재현 →
+2.1 `resolved`·`defaults_version` · 12 카드 4개 롤백 → S8 · 13 필드 부족(의료진 초점·교통 분리) → 3·S7 ·
+14 재검증 사전 검사·intent 선례 → 4.2 · 15 의료진 끄기 대안의 계약 충돌 → 6.
