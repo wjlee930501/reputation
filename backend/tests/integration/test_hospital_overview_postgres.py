@@ -344,8 +344,8 @@ async def test_preparing_hospital_splits_human_work_from_system_work(pg_async_se
 
     assert overview.public_service.kind == "not_live"
     assert [(c.key, c.actor, c.href) for c in overview.public_service.remaining] == [
-        ("service_inactive", "human", None),
-        ("public_permission_missing", "human", None),
+        # 자동 공개 대기는 시스템 몫 — 「서비스 활성화」·「공개 노출 확인」을 사람의 일로 보이지 않는다.
+        ("auto_activation_pending", "system", None),
         ("site_not_built", "system", None),
     ]
     # Phase 4(D33): 남은 보류 초안은 사람의 예외가 아니다 — 운영 기준은 시스템이 자동으로 만든다.

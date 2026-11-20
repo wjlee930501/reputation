@@ -65,6 +65,12 @@ _DOMAIN_LABELS = {
 _CONDITIONS: dict[str, tuple[str, str, str | None]] = {
     "service_inactive": ("서비스 활성화", "human", None),
     "public_permission_missing": ("공개 노출 확인", "human", None),
+    # 자동 공개 대기는 시스템 몫 — 나머지 사람 몫 조건(주소·전화 등)이 채워지면 기본 주소로 스스로 공개된다.
+    "auto_activation_pending": ("조건이 채워지면 자동 공개", "system", None),
+    # 자기 도메인은 DNS가 맞아야 공개된다. 확인은 15분마다 시스템이 하지만 DNS는 사람이 맞춘다.
+    "custom_domain_pending": ("자기 도메인 연결(DNS) 확인", "human", None),
+    # 운영 중인데 공개 권한이 꺼진 병원 — 시스템이 되살리지 않는다.
+    "public_permission_withdrawn": ("공개 꺼짐 · 다시 공개 여부 확인", "human", None),
     "site_not_built": ("공개 페이지 준비", "system", None),
     "address": ("병원 주소 입력", "human", "/hospitals/{hospital_id}/info"),
     "phone": ("병원 전화번호 입력", "human", "/hospitals/{hospital_id}/info"),

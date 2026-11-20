@@ -238,7 +238,7 @@ async def test_list_rows_carry_the_three_states(pg_async_session):
     }
     assert rows[str(preparing.id)]["public_service_state"] == {
         "kind": "not_live",
-        "remaining": ["service_inactive", "public_permission_missing", "site_not_built"],
+        "remaining": ["auto_activation_pending", "site_not_built"],
     }
     assert rows[str(preparing.id)]["content_state"] == {
         "kind": "preparing",

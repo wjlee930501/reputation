@@ -112,6 +112,37 @@ def serialize_availability(verdict: AvailabilityVerdict) -> dict[str, bool | lis
     }
 
 
+#: 자동 공개를 기다리는 병원의 서비스·공개 권한 막힘을 대신하는 키(2026-11-20 어드민 개편).
+#: `service_inactive`·`public_permission_missing`을 그대로 내면 사람 몫으로 보여, 다른 조건만
+#: 채우면 시스템이 스스로 공개할 병원에 「서비스 활성화」·「공개 노출 확인」이 할 일로 떴다.
+AUTO_ACTIVATION_PENDING = "auto_activation_pending"
+#: 자기 도메인이 있는 병원은 DNS가 맞아야 공개된다 — 15분 감시가 확인하지만 DNS는 사람이 맞춘다.
+CUSTOM_DOMAIN_PENDING = "custom_domain_pending"
+#: 운영 중(ACTIVE)인데 공개 권한이 꺼진 병원 — 시스템이 되살리지 않는 명시적 비공개.
+PUBLIC_PERMISSION_WITHDRAWN = "public_permission_withdrawn"
+
+_SERVICE_BLOCKERS = frozenset({"service_inactive", "public_permission_missing"})
+
+
+def _public_remaining(hospital: Any, status: Any, blockers: tuple[str, ...]) -> tuple[str, ...]:
+    """공개 판정의 막힘 코드를 사람·시스템 몫이 드러나는 키로 바꾼다. 판정 자체는 그대로다."""
+    from app.services.hospital_activation import AUTO_ACTIVATABLE_STATUSES, has_custom_domain
+
+    auto_statuses = {item.value for item in AUTO_ACTIVATABLE_STATUSES}
+    if status in auto_statuses:
+        service_key = CUSTOM_DOMAIN_PENDING if has_custom_domain(hospital) else AUTO_ACTIVATION_PENDING
+    elif status == HospitalStatus.ACTIVE.value:
+        service_key = PUBLIC_PERMISSION_WITHDRAWN
+    else:
+        return blockers
+    remaining: list[str] = []
+    for code in blockers:
+        key = service_key if code in _SERVICE_BLOCKERS else code
+        if key not in remaining:
+            remaining.append(key)
+    return tuple(remaining)
+
+
 def public_service_state(hospital: Any) -> PublicServiceState:
     """Expose the canonical public-profile verdict. PAUSED remains a state."""
     status = getattr(hospital, "status", None)
@@ -121,7 +152,7 @@ def public_service_state(hospital: Any) -> PublicServiceState:
     verdict = profile_publication_verdict(hospital)
     if verdict.allowed:
         return PublicServiceState("live", ())
-    return PublicServiceState("not_live", verdict.blockers)
+    return PublicServiceState("not_live", _public_remaining(hospital, status, verdict.blockers))
 
 
 def content_state(
