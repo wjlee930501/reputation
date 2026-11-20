@@ -352,3 +352,44 @@ async def test_publishing_a_public_hospital_writes_one_intent_and_serves_site_co
     assert (await client.get(public_url)).json()["site_config"] is None
     warnings = (await client.get(_base(hospital_id), headers=ADMIN)).json()["warnings"]
     assert "SITE_LAYOUT_DIVERGED" in [w["code"] for w in warnings]
+
+
+async def test_old_published_snapshots_serve_current_defaults_for_fields_the_site_did_not_read(
+    db, client, monkeypatch
+):
+    """③-1: 사이트가 아직 읽지 않던 칸의 틀린 기본값을 담은 옛 공개 판은 그 칸만 지금 기본값으로 낸다."""
+
+    hospital_id = await _hospital(db, layout="B")
+    monkeypatch.setattr(
+        admin_site_config,
+        "profile_publication_verdict",
+        lambda hospital: SimpleNamespace(allowed=True, blockers=()),
+    )
+    monkeypatch.setattr(public_site, "_is_active_public_hospital", lambda hospital: hospital is not None)
+    config = {"faq": {"limit": 5}, "sections": [{"id": "gallery", "align": "left"}]}
+    draft = (await _save(client, hospital_id, layout="B", config=config)).json()["draft"]
+    assert (await _publish(client, hospital_id, draft)).status_code == 200
+
+    # ③-1 전 판처럼 만든다 — 판 번호와 그때의 틀린 기본값.
+    row = await db.scalar(
+        select(HospitalSiteConfig).where(
+            HospitalSiteConfig.hospital_id == hospital_id, HospitalSiteConfig.state == "PUBLISHED"
+        )
+    )
+    old = dict(row.resolved)
+    old["defaults_version"] = "2026-11-21.2"
+    old["doctor"] = {**old["doctor"], "photo_focus": {"x": 0.5, "y": 0.2}}
+    old["sections"] = [{**section, "background": "default"} for section in old["sections"]]
+    row.resolved = old
+    row.defaults_version = "2026-11-21.2"
+    await db.commit()
+
+    served = (await client.get(f"/api/v1/public/hospitals/site-config-{hospital_id.hex[:12]}")).json()
+    site_config = served["site_config"]
+    assert site_config["doctor"]["photo_focus"] == {"x": 0.5, "y": 0.14}
+    sections = {section["id"]: section for section in site_config["sections"]}
+    assert sections["care_principles"]["background"] == "tint"
+    assert sections["gallery"]["align"] == "left"  # 직접 바꾼 칸은 남는다
+    assert site_config["faq"]["limit"] == 5  # 사이트가 이미 읽는 칸은 스냅샷 그대로
+    await db.refresh(row)
+    assert row.resolved["doctor"]["photo_focus"] == {"x": 0.5, "y": 0.2}  # 저장된 스냅샷은 바꾸지 않는다

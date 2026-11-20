@@ -17,6 +17,7 @@ from sqlalchemy.orm import selectinload
 from app.models.essence import PHOTO_SOURCE_TYPES, HospitalSourceAsset, SourceStatus, SourceType
 from app.models.hospital import Hospital
 from app.models.site_config import SITE_CONFIG_PUBLISHED, HospitalSiteConfig
+from app.services import site_defaults
 from app.services.site_config_validation import SiteConfigContext
 
 FAQ_SCAN_LIMIT = 500
@@ -163,7 +164,8 @@ async def public_site_config_for(
 
     if row is None:
         return None
-    resolved = row.resolved or {}
+    # 옛 판의 아직 읽지 않던 칸은 지금 기본값으로 다시 합친다(공개·미리보기 모두 여기를 지난다).
+    resolved = site_defaults.refresh_stale_defaults(row.resolved or {}, row.config)
     faq = resolved.get("faq") or {}
     faq_entries: dict[uuid.UUID, dict[str, str]] = {}
     if faq.get("mode") == "manual" and faq.get("content_ids"):
