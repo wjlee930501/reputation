@@ -238,6 +238,40 @@ def resolve(layout: str, config: dict[str, Any]) -> dict[str, Any]:
     return resolved
 
 
+def _typed_overlay(default: Any, value: Any, *, open_dict: bool = False) -> Any:
+    """기본값 위에 같은 모양의 값만 얹는다(옛 판 보호 전용). 모양이 다르면 그 칸은 기본값."""
+
+    if value is None:
+        return copy.deepcopy(default)
+    if isinstance(default, dict):
+        if not isinstance(value, dict):
+            return copy.deepcopy(default)
+        out = copy.deepcopy(default)
+        for key, child in value.items():
+            if key in default:
+                out[key] = _typed_overlay(default[key], child, open_dict=key in _REPLACED_DICTS)
+            elif open_dict and isinstance(key, str):
+                # 줄바꿈처럼 키가 정해지지 않은 사전 — 값이 `{pc, mobile}` 문자열(또는 null) 모양일 때만.
+                if isinstance(child, dict) and all(
+                    device in {"pc", "mobile"} and (text is None or isinstance(text, str))
+                    for device, text in child.items()
+                ):
+                    out[key] = copy.deepcopy(child)
+        return out
+    if isinstance(default, bool):
+        return value if isinstance(value, bool) else default
+    if isinstance(default, (int, float)):
+        return value if isinstance(value, (int, float)) and not isinstance(value, bool) else default
+    if isinstance(default, str):
+        return value if isinstance(value, str) else copy.deepcopy(default)
+    if isinstance(default, list):
+        kinds = {type(item) for item in default} or {str}
+        if isinstance(value, list) and all(type(item) in kinds for item in value):
+            return copy.deepcopy(value)
+        return copy.deepcopy(default)
+    return copy.deepcopy(default)
+
+
 # 옛 판 보호 — 사이트가 아직 읽지 않던 칸은 그 칸의 기본값을 맞춘 판보다 오래된 스냅샷에서 믿지 않는다.
 # 그런 판은 사이트가 그 칸을 읽기 전에 저장됐으므로, 화면에 한 번도 보인 적 없는 틀린 기본값을 담고
 # 있을 수 있다(2026-11-21 ③-1). 공개 응답은 그 칸만 그 판의 설정(바꾼 칸)을 지금 기본값에 다시 합쳐 낸다.
@@ -298,47 +332,36 @@ def refresh_stale_defaults(resolved: dict[str, Any], config: dict[str, Any] | No
     if not stale:
         return resolved
     base = defaults(layout)
-    try:
-        fresh = resolve(layout, dict(config or {}))
-    except (AttributeError, KeyError, TypeError, ValueError):  # 옛 설정이 지금 모양과 맞지 않으면 기본값만으로.
-        fresh = base
+    config = config if isinstance(config, dict) else {}
     out = copy.deepcopy(resolved)
 
-    def pick(head: str, field: str) -> Any:
-        # 설정 칸 하나가 깨져 있으면(예: `{"care_principles": null}`) 그 칸만 기본값으로.
-        group = fresh.get(head)
-        if not field:
-            merged = copy.deepcopy(base[head])
-            if isinstance(group, dict):
-                _deep_merge(merged, {key: value for key, value in group.items() if value is not None})
-            return merged
-        value = group.get(field) if isinstance(group, dict) else None
-        return copy.deepcopy(base[head][field] if value is None else value)
+    # 설정(바꾼 칸)을 칸마다 따로, 기본값과 모양이 맞는 값만 얹는다 — 한 칸이 깨져도 그 칸만 기본값이고
+    # 다른 칸의 직접 바꾼 값은 남는다(설정 전체를 `resolve`로 합치면 한 칸 오류가 전부를 버린다).
+    def group(head: str) -> Any:
+        return _typed_overlay(base[head], config.get(head), open_dict=head in _REPLACED_DICTS)
 
-    def section_look(section_id: Any, field: str) -> Any:
-        for source in (fresh, base):
-            sections = source.get("sections")
-            for section in sections if isinstance(sections, list) else []:
-                if isinstance(section, dict) and section.get("id") == section_id and section.get(field) is not None:
-                    return section[field]
-        return None
+    section_overrides: dict[Any, dict[str, Any]] = {}
+    raw_sections = config.get("sections")
+    for item in raw_sections if isinstance(raw_sections, list) else []:
+        if isinstance(item, dict) and isinstance(item.get("id"), str):
+            section_overrides[item["id"]] = item
+    base_sections = {section["id"]: section for section in base["sections"]}
 
     for path in stale:
         head, _, field = path.partition(".")
         if head == "sections":
             for section in out.get("sections") or []:
-                if not isinstance(section, dict):
+                if not isinstance(section, dict) or section.get("id") not in base_sections:
                     continue
-                value = section_look(section.get("id"), field)
-                if value is not None:
-                    section[field] = value
+                default = base_sections[section["id"]][field]
+                section[field] = _typed_overlay(default, section_overrides.get(section["id"], {}).get(field))
         elif not field:
-            out[head] = pick(head, "")
+            out[head] = group(head)
         else:
             target = out.get(head)
             if not isinstance(target, dict):
                 target = out[head] = {}
-            target[field] = pick(head, field)
+            target[field] = group(head)[field]
     return out
 
 

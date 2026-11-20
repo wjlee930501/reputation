@@ -210,6 +210,32 @@ def test_refresh_survives_unknown_layouts_and_odd_configs() -> None:
         assert refreshed["visit"] == expected["visit"]
 
 
+
+def test_one_broken_config_field_keeps_the_others_and_never_breaks_the_public_response() -> None:
+    """Codex 2차: 깨진 칸 하나가 다른 칸의 직접 바꾼 값을 지우거나 공개 응답을 500으로 만들지 않는다."""
+
+    good = {"doctor": {"photo_ratio": "square"}, "visit": {"show_transit": False}}
+    snapshot = _old_snapshot("B", good, version="2026-11-21.2")
+    broken = {**good, "sections": "not-a-list"}
+    refreshed = site_defaults.refresh_stale_defaults(snapshot, broken)
+    assert refreshed["doctor"]["photo_ratio"] == "square"
+    assert refreshed["visit"]["show_transit"] is False
+
+    for odd in (
+        {"hero": {"line_breaks": "broken"}},
+        {"hero": {"line_breaks": {"hero.headline": "broken"}}},
+        {"hero": {"blocks": [1, 2]}, "visit": {"order": "parking"}},
+        {"hero": {"image": {"focus": "middle", "veil": [0.3]}}},
+        {"sections": [{"id": "gallery", "background": 3, "align": None}, "x", {"id": 5}]},
+    ):
+        out = site_defaults.refresh_stale_defaults(_old_snapshot("B", {}, version="2026-11-21.2"), odd)
+        assert out["hero"]["line_breaks"] == {}
+        assert out["hero"]["blocks"] == site_defaults.defaults("B")["hero"]["blocks"]
+        assert out["hero"]["image"] == site_defaults.defaults("B")["hero"]["image"]
+        assert out["visit"] == site_defaults.defaults("B")["visit"]
+        _public(out)  # 예외 없이 정리된다
+
+
 def test_default_titles_match_the_site_template_copy() -> None:
     source = TEMPLATE_COPY.read_text(encoding="utf-8")
 
