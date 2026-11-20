@@ -9650,3 +9650,19 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
   aspect-ratio: 1 / 1;
   max-width: 220px;
 }
+
+/* ══ 2026-11-20 마케팅 수정 요청 — 의료진 소개 ═══════════════════════
+   의료진이 한 명일 때 '의료 정보 글 · 담당 진료 · 진료 지역'이 왼쪽 끝에서 시작해, 위의
+   이력(오른쪽 열)과 읽는 줄이 끊겼다. 같은 열에서 시작하게 사진 열 너비 + 간격만큼 민다
+   (사진 열은 1440px 320px + 64px, 920px 이하 240px + 32px, 720px 이하는 한 열이라 그대로). */
+@media (min-width: 921px) {
+  .clinic-shell .clinic-curator-grid--solo + .clinic-curator-meta {
+    margin-left: calc(320px + 64px);
+  }
+}
+
+@media (min-width: 721px) and (max-width: 920px) {
+  .clinic-shell .clinic-curator-grid--solo + .clinic-curator-meta {
+    margin-left: calc(240px + 32px);
+  }
+}

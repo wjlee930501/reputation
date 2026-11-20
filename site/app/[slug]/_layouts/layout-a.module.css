@@ -695,3 +695,12 @@
   gap: 12px;
   margin-top: 28px;
 }
+
+/* 학회 — 한 줄에 하나(의료진 페이지와 같은 목록형, 2026-11-20). */
+.doctorBody [data-role='society-list'] {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 16px;
+  line-height: 1.75;
+}
