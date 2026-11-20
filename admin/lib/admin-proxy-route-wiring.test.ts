@@ -61,7 +61,7 @@ function proxyContext() {
 test('every admin API method Next can route is served by the behavior-tested proxy handler', async () => {
   const route = await import(ROUTE_MODULE)
 
-  for (const method of ['GET', 'POST', 'PATCH', 'DELETE']) {
+  for (const method of ['GET', 'POST', 'PUT', 'PATCH', 'DELETE']) {
     assert.equal(
       route[method],
       handleAdminApiProxy,
@@ -130,7 +130,7 @@ test('the admin proxy rejects unsupported methods with a no-store 405 before rea
   Reflect.deleteProperty(process.env, 'ADMIN_SESSION_SECRET')
 
   try {
-    for (const method of ['PUT', 'OPTIONS']) {
+    for (const method of ['OPTIONS', 'PROPFIND']) {
       const res = await handleAdminApiProxy(proxyRequest(method), proxyContext())
 
       assert.equal(res.status, 405, `${method} must not be proxied`)

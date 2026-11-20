@@ -167,7 +167,7 @@ test('article schema uses supported, attributable publication fields', () => {
 })
 
 test('the hospital home renders the same FAQ entries it declares in JSON-LD', () => {
-  const page = readFileSync(join(HERE, '..', 'app', '[slug]', 'page.tsx'), 'utf8')
+  const page = readFileSync(join(HERE, '..', 'app', '[slug]', 'page.tsx'), 'utf8') + readFileSync(join(HERE, '..', 'app', '[slug]', '_layouts', 'HospitalHome.tsx'), 'utf8')
   assert.match(page, /const faqEntries = resolveHomeFaqEntries\(contents, hospitalRootUrl, siteConfig, plan\)/)
   assert.match(page, /const faqJsonLd = buildFaqPageJsonLdFromEntries\(faqEntries, hospitalRootUrl\)/)
   assert.match(page, /<ClinicFaq\s+entries=\{faqEntries\}/)
@@ -184,7 +184,7 @@ test('the hospital home renders the same FAQ entries it declares in JSON-LD', ()
 test('the approved Q&A has one owner on the home, so no item renders twice', () => {
   // 질문 목록(AnswerClusters)은 FAQ를 우선순위 맨 앞에 두고 뽑기 때문에, 같은
   // 항목을 FAQ 섹션과 나란히 반복해서 보여주게 된다.
-  const page = readFileSync(join(HERE, '..', 'app', '[slug]', 'page.tsx'), 'utf8')
+  const page = readFileSync(join(HERE, '..', 'app', '[slug]', 'page.tsx'), 'utf8') + readFileSync(join(HERE, '..', 'app', '[slug]', '_layouts', 'HospitalHome.tsx'), 'utf8')
   assert.match(page, /const clusterContents = selectClusterContents\(contents, faqEntries\)/)
   assert.match(page, /<AnswerClusters\s+contents=\{clusterContents\}/)
   // 질문 목록에 원본 contents를 그대로 넘기면 중복이 돌아온다.

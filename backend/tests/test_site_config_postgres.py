@@ -38,7 +38,9 @@ async def db() -> AsyncSession:
         await engine.dispose()
         fail_unreachable(_URL_ENV, exc)
     transaction = await connection.begin()
-    session = AsyncSession(bind=connection, expire_on_commit=False, join_transaction_mode="create_savepoint")
+    session = AsyncSession(
+        bind=connection, expire_on_commit=False, join_transaction_mode="create_savepoint"
+    )
     try:
         yield session
     finally:
@@ -69,7 +71,9 @@ async def client(db: AsyncSession, account: AdminUser, monkeypatch):
         revalidated.append(slug)
         return True
 
-    monkeypatch.setattr(admin_site_config, "trigger_hospital_site_revalidate_safe", record_revalidate)
+    monkeypatch.setattr(
+        admin_site_config, "trigger_hospital_site_revalidate_safe", record_revalidate
+    )
 
     async def override_get_db():
         yield db
@@ -135,7 +139,10 @@ async def _count_runs(db: AsyncSession, hospital_id: uuid.UUID, operation_type: 
         await db.scalar(
             select(func.count())
             .select_from(OperationRun)
-            .where(OperationRun.hospital_id == hospital_id, OperationRun.operation_type == operation_type)
+            .where(
+                OperationRun.hospital_id == hospital_id,
+                OperationRun.operation_type == operation_type,
+            )
         )
         or 0
     )
@@ -163,7 +170,11 @@ async def test_draft_save_preview_publish_restore_reset_and_discard(db, client, 
         hospital_id,
         config={
             "sections": [{"id": "faq", "enabled": False}],
-            "hero": {"line_breaks": {"hero.headline": {"pc": "편집기 검증 정형외과의원\n동네 정형외과 진료"}}},
+            "hero": {
+                "line_breaks": {
+                    "hero.headline": {"pc": "편집기 검증 정형외과의원\n동네 정형외과 진료"}
+                }
+            },
         },
         draft=draft,
     )
@@ -192,12 +203,16 @@ async def test_draft_save_preview_publish_restore_reset_and_discard(db, client, 
     # 미리보기 — 비밀값이 없으면 503(fail-closed), 있으면 초안·revision에 묶인 토큰.
     monkeypatch.setattr(settings, "SITE_PREVIEW_TOKEN_SECRET", "")
     disabled = await client.post(
-        f"{_base(hospital_id)}/preview-token", headers=ADMIN, json={"draft_id": draft["id"], "revision": 2}
+        f"{_base(hospital_id)}/preview-token",
+        headers=ADMIN,
+        json={"draft_id": draft["id"], "revision": 2},
     )
     assert disabled.status_code == 503
     monkeypatch.setattr(settings, "SITE_PREVIEW_TOKEN_SECRET", "preview-secret")
     issued = await client.post(
-        f"{_base(hospital_id)}/preview-token", headers=ADMIN, json={"draft_id": draft["id"], "revision": 2}
+        f"{_base(hospital_id)}/preview-token",
+        headers=ADMIN,
+        json={"draft_id": draft["id"], "revision": 2},
     )
     assert issued.status_code == 200, issued.text
     token = issued.json()["token"]
@@ -210,9 +225,19 @@ async def test_draft_save_preview_publish_restore_reset_and_discard(db, client, 
     assert body["site_layout"] == "B"
     sections = {s["id"]: s for s in body["site_config"]["sections"]}
     assert sections["faq"]["enabled"] is False
-    assert body["site_config"]["hero"]["line_breaks"]["hero.headline"]["pc"].startswith("편집기 검증")
+    assert body["site_config"]["hero"]["line_breaks"]["hero.headline"]["pc"].startswith(
+        "편집기 검증"
+    )
     bad = await client.get("/api/v1/public/site-preview/not-a-token")
     assert bad.status_code == 404 and bad.headers["cache-control"] == "no-store"
+    # 사진·로고는 토큰 자산 경로로 — 병원 공개 여부가 아니라 토큰이 권한이다. 없는 자산·잘못된 토큰은 404.
+    missing = await client.get(f"/api/v1/public/site-preview/{token}/assets/{uuid.uuid4()}")
+    assert missing.status_code == 404 and missing.headers["cache-control"] == "no-store"
+    no_logo = await client.get(f"/api/v1/public/site-preview/{token}/logo")
+    assert no_logo.status_code == 404
+    forged = await client.get(f"/api/v1/public/site-preview/not-a-token/assets/{uuid.uuid4()}")
+    assert forged.status_code == 404
+    assert f"/api/v1/public/hospitals/{body['slug']}/" not in preview.text
 
     # 공개 반영 — 요청 키가 필수, 같은 키는 같은 결과, 다른 초안에 같은 키는 거절.
     no_key = await client.post(
@@ -273,7 +298,9 @@ async def test_draft_save_preview_publish_restore_reset_and_discard(db, client, 
     draft = restored.json()["draft"]
     assert draft["origin"] == "RESTORE" and draft["based_on_id"] == v1["id"]
     assert draft["config"]["sections"] == [{"id": "faq", "enabled": False}]
-    again = await client.post(f"{_base(hospital_id)}/versions/{v1['id']}/restore", headers=ADMIN, json={})
+    again = await client.post(
+        f"{_base(hospital_id)}/versions/{v1['id']}/restore", headers=ADMIN, json={}
+    )
     assert again.status_code == 409
 
     # 초기화(레이아웃 바꾸기 포함) — 지금 초안을 기본 세팅으로.
@@ -288,7 +315,9 @@ async def test_draft_save_preview_publish_restore_reset_and_discard(db, client, 
 
     # 버리기 — 전제조건이 맞아야 한다.
     wrong = await client.delete(
-        f"{_base(hospital_id)}/draft", headers=ADMIN, params={"draft_id": draft["id"], "revision": 99}
+        f"{_base(hospital_id)}/draft",
+        headers=ADMIN,
+        params={"draft_id": draft["id"], "revision": 99},
     )
     assert wrong.status_code == 409
     discarded = await client.delete(
@@ -301,12 +330,24 @@ async def test_draft_save_preview_publish_restore_reset_and_discard(db, client, 
 
     # 이력은 지우지 않는다(append-only). 감사 로그가 남는다.
     rows = (
-        await db.execute(select(HospitalSiteConfig).where(HospitalSiteConfig.hospital_id == hospital_id))
-    ).scalars().all()
+        (
+            await db.execute(
+                select(HospitalSiteConfig).where(HospitalSiteConfig.hospital_id == hospital_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
     assert sorted(row.state for row in rows) == ["PUBLISHED", "SUPERSEDED"]
     actions = (
-        await db.execute(select(AdminAuditLog.action).where(AdminAuditLog.hospital_id == hospital_id))
-    ).scalars().all()
+        (
+            await db.execute(
+                select(AdminAuditLog.action).where(AdminAuditLog.hospital_id == hospital_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
     for action in (
         "site_config_save",
         "site_config_publish",
@@ -317,14 +358,18 @@ async def test_draft_save_preview_publish_restore_reset_and_discard(db, client, 
         assert action in actions
 
 
-async def test_publishing_a_public_hospital_writes_one_intent_and_serves_site_config(db, client, monkeypatch):
+async def test_publishing_a_public_hospital_writes_one_intent_and_serves_site_config(
+    db, client, monkeypatch
+):
     hospital_id = await _hospital(db, layout="A")
     monkeypatch.setattr(
         admin_site_config,
         "profile_publication_verdict",
         lambda hospital: SimpleNamespace(allowed=True, blockers=()),
     )
-    monkeypatch.setattr(public_site, "_is_active_public_hospital", lambda hospital: hospital is not None)
+    monkeypatch.setattr(
+        public_site, "_is_active_public_hospital", lambda hospital: hospital is not None
+    )
 
     public_url = f"/api/v1/public/hospitals/site-config-{hospital_id.hex[:12]}"
     before = await client.get(public_url)
@@ -332,7 +377,9 @@ async def test_publishing_a_public_hospital_writes_one_intent_and_serves_site_co
     assert before.json()["site_config"] is None
     assert before.json()["site_layout"] == "A"
 
-    draft = (await _save(client, hospital_id, layout="B", config={"faq": {"limit": 5}})).json()["draft"]
+    draft = (await _save(client, hospital_id, layout="B", config={"faq": {"limit": 5}})).json()[
+        "draft"
+    ]
     assert await _count_runs(db, hospital_id, "SITE_REVALIDATION") == 0
     published = await _publish(client, hospital_id, draft)
     assert published.status_code == 200, published.text
@@ -347,7 +394,9 @@ async def test_publishing_a_public_hospital_writes_one_intent_and_serves_site_co
     assert served["site_config"]["faq"]["limit"] == 5
 
     # 병원의 레이아웃이 공개 판과 갈라지면 공개 응답은 설정 없이(null) — 사이트는 지금 화면 그대로.
-    await db.execute(text("UPDATE hospitals SET site_layout = 'C' WHERE id = :id"), {"id": hospital_id})
+    await db.execute(
+        text("UPDATE hospitals SET site_layout = 'C' WHERE id = :id"), {"id": hospital_id}
+    )
     await db.commit()
     assert (await client.get(public_url)).json()["site_config"] is None
     warnings = (await client.get(_base(hospital_id), headers=ADMIN)).json()["warnings"]
@@ -365,7 +414,9 @@ async def test_old_published_snapshots_serve_current_defaults_for_fields_the_sit
         "profile_publication_verdict",
         lambda hospital: SimpleNamespace(allowed=True, blockers=()),
     )
-    monkeypatch.setattr(public_site, "_is_active_public_hospital", lambda hospital: hospital is not None)
+    monkeypatch.setattr(
+        public_site, "_is_active_public_hospital", lambda hospital: hospital is not None
+    )
     config = {"faq": {"limit": 5}, "sections": [{"id": "gallery", "align": "left"}]}
     draft = (await _save(client, hospital_id, layout="B", config=config)).json()["draft"]
     assert (await _publish(client, hospital_id, draft)).status_code == 200
@@ -384,7 +435,9 @@ async def test_old_published_snapshots_serve_current_defaults_for_fields_the_sit
     row.defaults_version = "2026-11-21.2"
     await db.commit()
 
-    served = (await client.get(f"/api/v1/public/hospitals/site-config-{hospital_id.hex[:12]}")).json()
+    served = (
+        await client.get(f"/api/v1/public/hospitals/site-config-{hospital_id.hex[:12]}")
+    ).json()
     site_config = served["site_config"]
     assert site_config["doctor"]["photo_focus"] == {"x": 0.5, "y": 0.5}
     sections = {section["id"]: section for section in site_config["sections"]}
@@ -392,12 +445,75 @@ async def test_old_published_snapshots_serve_current_defaults_for_fields_the_sit
     assert sections["gallery"]["align"] == "left"  # 직접 바꾼 칸은 남는다
     assert site_config["faq"]["limit"] == 5  # 사이트가 이미 읽는 칸은 스냅샷 그대로
     await db.refresh(row)
-    assert row.resolved["doctor"]["photo_focus"] == {"x": 0.5, "y": 0.2}  # 저장된 스냅샷은 바꾸지 않는다
+    assert row.resolved["doctor"]["photo_focus"] == {
+        "x": 0.5,
+        "y": 0.2,
+    }  # 저장된 스냅샷은 바꾸지 않는다
 
     # 편집기도 같은 완성본에서 시작한다 — 옛 기본값이 '직접 바꾼 칸'으로 굳지 않게.
-    admin_view = (await client.get(_base(hospital_id), headers=ADMIN)).json()["published"]["resolved"]
+    admin_view = (await client.get(_base(hospital_id), headers=ADMIN)).json()["published"][
+        "resolved"
+    ]
     assert admin_view["doctor"] == site_config["doctor"]
     assert {s["id"]: s["background"] for s in admin_view["sections"]} == {
         s["id"]: s["background"] for s in site_config["sections"]
     }
     assert admin_view["faq"]["limit"] == 5
+
+
+async def test_faq_candidates_list_approved_public_faq_questions(db, client, monkeypatch):
+    hospital_id = await _hospital(db, layout="B")
+    first, second = uuid.uuid4(), uuid.uuid4()
+
+    async def fake_entries(db_, hospital, *, ids=None):
+        assert hospital.id == hospital_id and ids is None
+        return {
+            first: {"question": "무릎이 붓고 아프면 어떤 검사를 받나요?", "answer": "답"},
+            second: {"question": "도수치료는 몇 번 받나요?", "answer": "답"},
+        }
+
+    monkeypatch.setattr(admin_site_config.site_config_refs, "public_faq_entries", fake_entries)
+    response = await client.get(f"{_base(hospital_id)}/faq-candidates", headers=ADMIN)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["items"] == [
+        {"id": str(first), "question": "무릎이 붓고 아프면 어떤 검사를 받나요?"},
+        {"id": str(second), "question": "도수치료는 몇 번 받나요?"},
+    ]
+    assert "answer" not in body["items"][0]
+    missing = await client.get(
+        f"/api/v1/admin/hospitals/{uuid.uuid4()}/site-config/faq-candidates", headers=ADMIN
+    )
+    assert missing.status_code == 404
+
+
+async def test_share_candidates_follow_the_share_image_rule(db, client, monkeypatch):
+    hospital_id = await _hospital(db, layout="B")
+    allowed_id, blocked_id = uuid.uuid4(), uuid.uuid4()
+    photos = [
+        SimpleNamespace(
+            id=allowed_id, title="대기 공간", source_type=SimpleNamespace(value="PHOTO_INTERIOR")
+        ),
+        SimpleNamespace(
+            id=blocked_id, title="원장 일러스트", source_type=SimpleNamespace(value="PHOTO_DOCTOR")
+        ),
+    ]
+
+    async def fake_photos(db_, hid):
+        assert hid == hospital_id
+        return photos
+
+    monkeypatch.setattr(admin_site_config.site_config_refs, "public_photos", fake_photos)
+    monkeypatch.setattr(
+        admin_site_config.site_config_refs, "share_image_ids", lambda items: frozenset({allowed_id})
+    )
+    response = await client.get(f"{_base(hospital_id)}/share-candidates", headers=ADMIN)
+    assert response.status_code == 200, response.text
+    assert response.json()["items"] == [
+        {
+            "id": str(allowed_id),
+            "title": "대기 공간",
+            "source_type": "PHOTO_INTERIOR",
+            "file_access_url": f"/api/admin/hospitals/{hospital_id}/essence/sources/{allowed_id}/file",
+        }
+    ]

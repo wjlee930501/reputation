@@ -13,14 +13,22 @@ def public_asset_url(slug: str, source_id: uuid.UUID) -> str:
     return f"/api/v1/public/hospitals/{slug}/assets/{source_id}"
 
 
-def public_asset_response(asset_ref: str, *, hospital_id: uuid.UUID, media_type: str | None) -> Response:
+def public_asset_response(
+    asset_ref: str,
+    *,
+    hospital_id: uuid.UUID,
+    media_type: str | None,
+    signed_url_hours: float = 24,
+) -> Response:
+    """저장된 자산 → 응답. GCS 자산은 서명 URL로 보낸다(`signed_url_hours` 동안 유효)."""
+
     if asset_ref.startswith("local://"):
         path = resolve_local_asset_path(asset_ref, expected_hospital_id=hospital_id)
         if not path or not path.exists():
             raise HTTPException(status_code=404, detail="Asset not found")
         return FileResponse(path, media_type=media_type)
     if asset_ref.startswith("gs://"):
-        signed_url = get_signed_url(asset_ref)
+        signed_url = get_signed_url(asset_ref, expiration_hours=signed_url_hours)
         if not signed_url or signed_url == asset_ref:
             raise HTTPException(status_code=503, detail="Could not create signed asset URL")
         return RedirectResponse(url=signed_url, status_code=302)

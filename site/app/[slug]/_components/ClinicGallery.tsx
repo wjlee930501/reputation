@@ -8,6 +8,7 @@ import { selectClinicGalleryPhotos, type ClinicGalleryPolicy } from '@/lib/clini
 
 import { ChevronRightIcon } from './icons'
 import { GALLERY_SECTION_TITLE } from '@/lib/clinic-template-copy'
+import { isPreviewAssetUrl } from '@/lib/site-preview-assets'
 
 interface Props {
   photos: HospitalPhoto[]
@@ -60,6 +61,7 @@ export function ClinicGallery({ photos, policy, excludeUrl = null, allPhotosHref
               >
                 <Image
                   src={url}
+                  unoptimized={isPreviewAssetUrl(url)}
                   alt={photo.title}
                   fill
                   sizes={lead ? CLINIC_IMAGE_SIZES.galleryLead : CLINIC_IMAGE_SIZES.gallery}

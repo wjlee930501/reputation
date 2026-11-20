@@ -78,6 +78,12 @@ const brochureFrameHeaders = [
   { key: 'X-Frame-Options', value: 'SAMEORIGIN' },
 ]
 
+// 섹션 설정 미리보기(`/preview/{token}`)는 어드민 편집 화면의 iframe에만 열린다(설계 5절). 그 경로만
+// frame-ancestors에 어드민 주소를 넣고 X-Frame-Options는 싣지 않는다(DENY가 iframe을 막는다). 매번 새로
+// 그리는 토큰 화면이라 캐시·색인하지 않는다. 다른 경로의 정책은 그대로다.
+const PREVIEW_FRAME_ANCESTORS =
+  process.env.SITE_PREVIEW_FRAME_ANCESTORS?.trim() || 'https://admin.reputation.motionlabs.kr'
+
 const securityHeaders = [
   { key: 'Content-Security-Policy', value: contentSecurityPolicy },
   { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
@@ -92,6 +98,20 @@ if (process.env.NODE_ENV === 'production') {
     value: 'max-age=63072000; includeSubDomains; preload',
   })
 }
+
+const previewHeaders = [
+  ...securityHeaders.filter(
+    (header) => !['X-Frame-Options', 'Content-Security-Policy', 'Referrer-Policy'].includes(header.key),
+  ),
+  // 주소에 토큰이 있다 — 미리보기에서 누른 링크·불러온 자원으로 토큰이 새지 않게.
+  { key: 'Referrer-Policy', value: 'no-referrer' },
+  {
+    key: 'Content-Security-Policy',
+    value: contentSecurityPolicy.replace("frame-ancestors 'none'", `frame-ancestors ${PREVIEW_FRAME_ANCESTORS}`),
+  },
+  { key: 'Cache-Control', value: 'no-store' },
+  { key: 'X-Robots-Tag', value: 'noindex, nofollow' },
+]
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
@@ -129,8 +149,13 @@ const nextConfig = {
   async headers() {
     return [
       {
-        source: '/:path*',
+        // 미리보기는 아래 자기 규칙만 받는다 — 전역 규칙의 X-Frame-Options: DENY가 섞이면 iframe이 막힌다.
+        source: '/:path((?!preview/).*)',
         headers: securityHeaders,
+      },
+      {
+        source: '/preview/:path*',
+        headers: previewHeaders,
       },
       {
         source: '/brochure/doc',

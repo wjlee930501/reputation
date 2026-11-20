@@ -63,7 +63,8 @@ async def test_own_bucket_image_is_signed(monkeypatch):
     handler = getattr(site.get_public_hospital_logo, "__wrapped__", site.get_public_hospital_logo)
     response = await handler(request=_asgi_request(), slug=hospital.slug, db=None)
     assert response.status_code == 302
-    signer.assert_called_once_with(reference)
+    # 공개 로고는 24시간 서명 그대로다(미리보기 자산만 10분 — test_site_config).
+    signer.assert_called_once_with(reference, expiration_hours=24)
 
 
 @pytest.mark.parametrize(

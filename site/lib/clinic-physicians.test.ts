@@ -227,7 +227,7 @@ test('each physician gets a stable node id, so the two pages describe the same p
 })
 
 test('the home and the doctor page emit one Physician node per physician', () => {
-  const home = readFileSync(join(HERE, '..', 'app', '[slug]', 'page.tsx'), 'utf8')
+  const home = readFileSync(join(HERE, '..', 'app', '[slug]', 'page.tsx'), 'utf8') + readFileSync(join(HERE, '..', 'app', '[slug]', '_layouts', 'HospitalHome.tsx'), 'utf8')
   const doctor = readFileSync(join(HERE, '..', 'app', '[slug]', 'doctor', 'page.tsx'), 'utf8')
 
   // 병원 노드는 employee[]로 사람을 싣는다 — 한 명만 담던 merged `physician:`은 없다.

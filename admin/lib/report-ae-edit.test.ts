@@ -291,7 +291,8 @@ test('revert, delete, row delete and row restore in sequence always send the rig
 
 test('the CSP lets the in-panel PDF preview frame a blob URL', () => {
   const config = readFileSync(new URL('../next.config.js', import.meta.url), 'utf8')
-  assert.match(config, /"frame-src 'self' blob:"/)
+  // 레이아웃 편집기 미리보기가 사이트 주소를 덧붙인다(site-config.test.ts가 그 값을 본다) — blob:은 그대로.
+  assert.match(config, /`frame-src 'self' blob:[^`]*`/)
 })
 
 // ── 2차 UX(2026-11-06) ────────────────────────────────────────────────────────

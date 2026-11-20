@@ -27,7 +27,7 @@ export const ALLOWED_PREFIXES = [
   // 여기 없으면 백엔드 라우터가 있어도 프록시가 403으로 끊는다 — 실제로 그렇게 나갔다.
   'lead-diagnoses',
 ]
-const ALLOWED_METHODS = new Set(['GET', 'POST', 'PATCH', 'DELETE'])
+const ALLOWED_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE'])
 const SAFE_IDEMPOTENCY_KEY = /^[A-Za-z0-9_.:-]{1,255}$/
 
 type IdempotencyKeyValidation =
