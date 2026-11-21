@@ -112,6 +112,17 @@ test('하단 환자 질문·노출 보완 제안은 읽기만 한다', () => {
   assert.match(signals, /isCurrentKoreanMonth\(year, month\)/)
 })
 
+test('노출 보완 제안은 기본으로 접고 건수만 보인다 — 옛 경로로 오면 펼친다', () => {
+  assert.match(signals, /<details\s+id=\{EXPOSURE_ACTIONS_ANCHOR\}/)
+  assert.match(signals, /useState\(false\)/)
+  assert.match(signals, /\$\{actions\.length\}건/)
+  // 목록은 상한까지만 받는다 — 상한에 닿으면 전체 건수처럼 말하지 않는다.
+  assert.match(signals, /\$\{EXPOSURE_ACTION_LIST_LIMIT\}건 이상/)
+  assert.match(signals, /addEventListener\('hashchange', openIfTargeted\)/)
+  assert.match(signals, /window\.location\.hash === `#\$\{EXPOSURE_ACTIONS_ANCHOR\}`/)
+  assert.match(signals, /EXPOSURE_ACTIONS_ANCHOR = 'content-exposure-actions'/)
+})
+
 test('편집 저장은 PATCH 한 번이고, 이후 자동 재검수를 안내한다', () => {
   assert.match(page, /method: 'PATCH'/)
   assert.match(page, /저장하면 자동 안전검사·재검수, 공개 글은 이미지 재인증까지 자동으로 진행됩니다/)

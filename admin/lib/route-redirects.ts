@@ -30,7 +30,7 @@ const TARGETS: Record<LegacyHospitalSegment, { path: string; hash?: string }> = 
   wiki: { path: 'info' },
   schedule: { path: 'content', hash: 'content-schedule' },
   'query-targets': { path: 'content', hash: 'content-signals' },
-  'exposure-actions': { path: 'content', hash: 'content-signals' },
+  'exposure-actions': { path: 'content', hash: 'content-exposure-actions' },
 }
 
 function firstValue(value: string | string[] | undefined): string | undefined {
