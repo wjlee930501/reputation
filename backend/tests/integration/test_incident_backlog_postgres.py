@@ -228,6 +228,34 @@ def test_a_generation_failure_closes_once_its_post_is_gone(db):
     assert _state(db, incident) == "ACKNOWLEDGED"
 
 
+def test_a_published_image_recertification_incident_is_not_closed_for_a_missing_post(db):
+    """이미지 재인증 사고도 대상 종류가 content_item이다(실제 키 생성 경로로 만든다) — 글이 없다고 닫지 않는다."""
+
+    from app.services import published_image_recertification as recertification
+    from app.services.incident_safety import build_incident_key
+
+    code = sorted(recertification.OPERATOR_REQUIRED_CODES)[0]
+    hospital = _hospital(db)
+    item_id = uuid.uuid4()
+    incident = _incident(
+        db, "CONTENT_GENERATION_FAILED", hospital=hospital, source_id=str(item_id)
+    )
+    incident.dedupe_key = build_incident_key(
+        "content_generation",
+        recertification.INCIDENT_OBJECT_TYPE,
+        recertification.incident_object_id(item_id, "a" * 64),
+        "MISSING_PREREQUISITE",
+    )
+    incident.safe_error_code = code
+    incident.state = "RETRYING"
+    db.flush()
+    assert ":content_generation:content_item:" in incident.dedupe_key
+
+    close_resolved_backlog_incidents(db, now=NOW)
+
+    assert _state(db, incident) == "RETRYING"
+
+
 def test_a_hospital_scoped_generation_hold_is_not_closed_for_lack_of_a_post(db):
     """운영 기준 없음 같은 병원 단위 생성 사고는 source_id가 병원 id다 — 글이 없다고 닫지 않는다."""
 

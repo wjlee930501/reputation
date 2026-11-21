@@ -48,6 +48,7 @@ from app.models.operations import (
     OperationRunState,
 )
 from app.models.report import MonthlyReport
+from app.services import published_image_recertification as recertification
 from app.services.dependency_incident_helpers import open_notice_exists_sync
 from app.services.finding_criticality import flag_findings_are_critical
 from app.services.incident_types import DEFAULT_RETRYING_DEADLINE, SWEEP_OWNED_INCIDENT_TYPES
@@ -213,8 +214,11 @@ def _content_published(db: Session, incident: Incident, _now: datetime) -> str |
 
     item = db.get(ContentItem, incident.source_id) if incident.source_id else None
     if item is None:
-        # 글 단위 사고(식별 키의 대상 종류가 content_item)인데 글이 없으면 다시 볼 글이 없다. 병원 단위 사고와
-        # 이미지 재인증 사고는 대상 종류가 달라 여기서 닫히지 않는다(`generation_incident_control._incident_identity`).
+        # 글 단위 사고(식별 키의 대상 종류가 content_item)인데 글이 없으면 다시 볼 글이 없다. 병원 단위 사고는
+        # 대상 종류가 달라 여기서 닫히지 않는다(`generation_incident_control._incident_identity`).
+        # 이미지 재인증 사고도 대상 종류가 content_item이라 원인 코드로 뺀다(사람이 정하는 공개 이미지 결정).
+        if incident.safe_error_code in recertification.OPERATOR_REQUIRED_CODES:
+            return None
         return "content_missing" if _CONTENT_ITEM_GENERATION_KEY in (incident.dedupe_key or "") else None
     if item.first_published_at and item.first_published_at > incident.first_seen_at:
         return "content_published"
