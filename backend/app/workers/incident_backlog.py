@@ -199,9 +199,21 @@ def _v0_report_created(db: Session, incident: Incident, _now: datetime) -> str |
 
 
 def _content_published(db: Session, incident: Incident, _now: datetime) -> str | None:
+    """글 단위 생성 사고의 근거: 사고 뒤 처음 공개됐거나, 공개된 적 없이 취소됐다.
+
+    취소된 글은 어떤 스윕·게이트도 다시 보지 않는다 — 공개만 근거로 두면 그 글의 사고가 처리 목록에
+    영원히 남는다(2026-11-21, 365서귀포: 11/12 HARD 지적 뒤 일정 변경으로 취소된 글의 사고가 9일째
+    「복구 재시도 중」). 병원 단위 사고(`source_id` = 병원 id, 운영 기준 없음 등)는 글을 찾지 못하므로
+    여기서 닫히지 않는다.
+    """
+
     item = db.get(ContentItem, incident.source_id) if incident.source_id else None
-    if item is not None and item.first_published_at and item.first_published_at > incident.first_seen_at:
+    if item is None:
+        return None
+    if item.first_published_at and item.first_published_at > incident.first_seen_at:
         return "content_published"
+    if item.status == ContentStatus.CANCELLED and item.first_published_at is None:
+        return "content_cancelled"
     return None
 
 
@@ -848,7 +860,11 @@ def active_resolvers() -> dict[str, Resolver]:
         return {**RESOLVERS, **POST_PUBLISH_RESOLVERS}
     return RESOLVERS
 # 스윕 소유 종류는 RETRYING으로 열리므로 그 상태에서도 근거로 닫는다. 나머지 RETRYING은 자동화의 것이다.
-_RETRYING_RESOLVABLE = tuple(sorted(SWEEP_OWNED_INCIDENT_TYPES & set(RESOLVERS)))
+# 생성 사고는 스윕 소유 종류가 아니지만 생성 사고 제어가 RETRYING으로 둔다(예약 복구·주제 교체·일일 갱신).
+# 그 글이 공개되거나 취소되면 어떤 게이트도 그 글을 다시 보지 않으므로, 근거 정리가 RETRYING도 닫는다.
+_RETRYING_RESOLVABLE = tuple(
+    sorted((SWEEP_OWNED_INCIDENT_TYPES & set(RESOLVERS)) | {"CONTENT_GENERATION_FAILED"})
+)
 
 
 def _finish_recovered(

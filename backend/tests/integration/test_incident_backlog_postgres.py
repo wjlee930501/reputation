@@ -152,6 +152,81 @@ def test_a_generation_failure_closes_once_the_post_is_published(db):
     assert _state(db, incident) == "ACKNOWLEDGED"
 
 
+def _generation_item(db, hospital, *, status, first_published_at=None) -> ContentItem:
+    schedule = ContentSchedule(
+        hospital_id=hospital.id, plan="PLAN_12", publish_days=[1], active_from=date(2026, 8, 1)
+    )
+    db.add(schedule)
+    db.flush()
+    item = ContentItem(
+        hospital_id=hospital.id, schedule_id=schedule.id, content_type=ContentType.TREATMENT,
+        sequence_no=1, total_count=8, scheduled_date=date(2026, 9, 13), title="가상 글",
+        status=status, first_published_at=first_published_at,
+    )
+    db.add(item)
+    db.flush()
+    return item
+
+
+@pytest.mark.parametrize("state", ["OPEN", "RETRYING"])
+def test_a_generation_failure_closes_once_its_post_is_cancelled(db, state):
+    """취소된 글은 어떤 게이트도 다시 보지 않는다 — 그 글의 생성 사고가 「복구 재시도 중」으로 남지 않는다
+    (2026-11-21 365서귀포: 일정 변경으로 취소된 글의 RETRYING 사고가 기한 9일 지난 채 처리 목록 맨 위)."""
+
+    hospital = _hospital(db)
+    item = _generation_item(db, hospital, status=ContentStatus.CANCELLED)
+    incident = _incident(db, "CONTENT_GENERATION_FAILED", hospital=hospital, source_id=str(item.id))
+    incident.state = state
+    incident.sla_due_at = NOW - timedelta(days=9)
+    db.flush()
+
+    close_resolved_backlog_incidents(db, now=NOW)
+
+    assert _state(db, incident) == "ACKNOWLEDGED"
+
+
+def test_a_retrying_generation_failure_closes_once_the_post_is_published(db):
+    hospital = _hospital(db)
+    item = _generation_item(
+        db, hospital, status=ContentStatus.PUBLISHED, first_published_at=NOW - timedelta(days=29)
+    )
+    incident = _incident(db, "CONTENT_GENERATION_FAILED", hospital=hospital, source_id=str(item.id))
+    incident.state = "RETRYING"
+    db.flush()
+
+    close_resolved_backlog_incidents(db, now=NOW)
+
+    assert _state(db, incident) == "ACKNOWLEDGED"
+
+
+@pytest.mark.parametrize("state", ["OPEN", "RETRYING"])
+def test_a_generation_failure_on_a_live_post_stays_open(db, state):
+    hospital = _hospital(db)
+    item = _generation_item(db, hospital, status=ContentStatus.DRAFT)
+    incident = _incident(db, "CONTENT_GENERATION_FAILED", hospital=hospital, source_id=str(item.id))
+    incident.state = state
+    db.flush()
+
+    close_resolved_backlog_incidents(db, now=NOW)
+
+    assert _state(db, incident) == state
+
+
+def test_a_hospital_scoped_generation_hold_is_not_closed_for_lack_of_a_post(db):
+    """운영 기준 없음 같은 병원 단위 생성 사고는 source_id가 병원 id다 — 글이 없다고 닫지 않는다."""
+
+    hospital = _hospital(db)
+    incident = _incident(
+        db, "CONTENT_GENERATION_FAILED", hospital=hospital, source_id=str(hospital.id)
+    )
+    incident.state = "RETRYING"
+    db.flush()
+
+    close_resolved_backlog_incidents(db, now=NOW)
+
+    assert _state(db, incident) == "RETRYING"
+
+
 @pytest.mark.parametrize("status,expected", [(302, "ACKNOWLEDGED"), (None, "OPEN")])
 def test_a_redirected_slack_delivery_is_not_a_delivery_check(db, status, expected):
     row = NotificationOutbox(
