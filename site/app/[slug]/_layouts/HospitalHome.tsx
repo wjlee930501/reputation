@@ -1,4 +1,4 @@
-import { Fragment, type ReactNode } from 'react'
+import type { ReactNode } from 'react'
 
 import type { ContentSummary, Hospital } from '@/lib/api'
 import { buildOpeningHoursSpec, visitHoursHref } from '@/lib/business-hours'
@@ -48,6 +48,7 @@ import { DoctorIntro } from '../_components/DoctorIntro'
 import { FeaturedContent } from '../_components/FeaturedContent'
 import { HospitalFacts } from '../_components/HospitalFacts'
 import { JsonLd } from '../_components/JsonLd'
+import { SectionLook } from '../_components/SectionLook'
 import { TreatmentGrid } from '../_components/TreatmentGrid'
 import { HomeLayoutA } from './HomeLayoutA'
 import { HomeLayoutC } from './HomeLayoutC'
@@ -250,6 +251,7 @@ export function HospitalHome({
           note={plan.customNote('treatments')}
           variant={siteConfig?.treatments.style}
           showDescription={siteConfig?.treatments.showDescription}
+          sectionLabel={plan.label('treatments')}
         />
       </div>
     ),
@@ -264,6 +266,7 @@ export function HospitalHome({
           note={plan.customNote('doctor')}
           photoLook={physicianPhotoLook(siteConfig)}
           titleBelow={siteConfig?.doctor.titleBelow ?? false}
+          sectionLabel={plan.label('doctor')}
         />
       </div>
     ),
@@ -279,6 +282,7 @@ export function HospitalHome({
         cardCount={siteConfig?.carePrinciples.cardCount}
         // '공식 채널 보기'는 오시는 길(#contact)로 간다 — 그 섹션이 꺼지면 하위 페이지로.
         channelsHref={plan.enabled('visit') ? `${hospitalRootUrl}#contact` : `${hospitalRootUrl}/visit`}
+        sectionLabel={plan.label('care_principles')}
       />
     ),
     contents: (
@@ -291,6 +295,7 @@ export function HospitalHome({
           secondaryLimit={composition.featuredSecondaryLimit}
           title={plan.customTitle('contents')}
           note={plan.customNote('contents')}
+          sectionLabel={plan.label('contents')}
         />
       </div>
     ),
@@ -303,6 +308,7 @@ export function HospitalHome({
         specialties={hospital.specialties}
         title={plan.customTitle('questions')}
         note={plan.customNote('questions')}
+        sectionLabel={plan.label('questions')}
       />
     ) : null,
     faq: (
@@ -311,6 +317,7 @@ export function HospitalHome({
         hospitalRootUrl={hospitalRootUrl}
         title={plan.customTitle('faq')}
         note={plan.customNote('faq')}
+        sectionLabel={plan.label('faq')}
       />
     ),
     care_flow: composition.showCareFlow ? (
@@ -320,6 +327,7 @@ export function HospitalHome({
         title={plan.customTitle('care_flow')}
         note={careFlow.note}
         steps={careFlow.steps}
+        sectionLabel={plan.label('care_flow')}
       />
     ) : null,
     gallery: (
@@ -330,6 +338,7 @@ export function HospitalHome({
         allPhotosHref={`${hospitalRootUrl}/visit#gallery`}
         title={plan.customTitle('gallery')}
         note={plan.customNote('gallery')}
+        sectionLabel={plan.label('gallery')}
       />
     ),
     facts: (
@@ -346,6 +355,7 @@ export function HospitalHome({
           hiraOrgId={hospital.hira_org_id}
           links={factLinks}
           googleMapsUrl={hospital.google_maps_url}
+          sectionLabel={plan.label('facts')}
         />
       </div>
     ),
@@ -366,6 +376,7 @@ export function HospitalHome({
           hoursHref={visitHoursHref(hospitalRootUrl, false)}
           title={plan.customTitle('visit')}
           note={plan.customNote('visit')}
+          sectionLabel={plan.label('visit')}
         />
       </div>
     ),
@@ -401,7 +412,9 @@ export function HospitalHome({
               쓰고 생김새만 바꾼다(_layouts/layout-b.module.css). 섹션은 `sectionsB` 표를 섹션 계획 순서로
               그린다 — 선택 섹션은 승인된 데이터가 있을 때만 보이고, 빈 자리를 지어내지 않는다. */}
           {plan.order.map((id) => (
-            <Fragment key={id}>{sectionsB[id]}</Fragment>
+            <SectionLook key={id} align={plan.align(id)}>
+              {sectionsB[id]}
+            </SectionLook>
           ))}
         </main>
         )}

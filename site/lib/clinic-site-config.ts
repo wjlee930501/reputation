@@ -15,6 +15,7 @@
  * 진료 과정 안내·단계, FAQ 자동·직접, 상단 메뉴·모바일 하단 바, 공유 이미지·설명.
  * ③-2a가 더한 칸(B안만): 첫 화면 정보 띠 칸(`hero.blocks`), 진료 항목 모양·설명(`treatments`).
  * ③-2b가 더한 칸(A·B·C): 의료진 사진 비율·초점, 직함 위치(`doctor`).
+ * ③-2c가 더한 칸(A·B·C): 섹션 제목 정렬·영문 소제목(`sections[].align`·`label`).
  * 첫 화면 배치·배경·정렬·영문 소제목·줄바꿈·진료 철학 같은 나머지 모양 칸은 다음 PR이다(받아 두기만 한다).
  */
 
@@ -139,6 +140,50 @@ export interface SiteSectionConfig {
   enabled: boolean
   /** 화면 제목. null이면 그 섹션의 지금 제목(병원 정보·공통 문구). */
   title: string | null
+  /** 제목 정렬. 레이아웃 기본과 같으면 null(지금 마크업). */
+  align?: SiteSectionAlign | null
+  /** 영문 소제목 켜기. 레이아웃 기본과 같으면 null(지금 마크업). */
+  label?: boolean | null
+}
+
+export type SiteSectionAlign = 'left' | 'center'
+
+/**
+ * 레이아웃별 섹션 제목 정렬·영문 소제목의 지금 모양(백엔드 `site_defaults`의 섹션 표와 같다). 정렬·소제목을
+ * 그릴 머리가 없는 섹션(첫 화면·바로가기)은 없다 — 그 섹션의 두 칸은 읽지 않는다.
+ */
+const CENTER = { align: 'center', label: false } as const
+const LEFT = { align: 'left', label: false } as const
+const C_HEAD = { align: 'left', label: true } as const
+export const DEFAULT_SECTION_LOOK: Readonly<
+  Record<ClinicLayout, Partial<Record<SiteSectionId, { align: SiteSectionAlign; label: boolean }>>>
+> = {
+  A: {
+    treatments: CENTER, doctor: CENTER, care_principles: CENTER, hours: CENTER, contents: LEFT, faq: LEFT,
+    care_flow: CENTER, gallery: LEFT, facts: LEFT,
+  },
+  B: {
+    treatments: CENTER, doctor: CENTER, care_principles: LEFT, contents: CENTER, questions: LEFT, faq: CENTER,
+    care_flow: CENTER, gallery: CENTER, facts: CENTER, visit: CENTER,
+  },
+  C: {
+    news: C_HEAD, hours: C_HEAD, treatments: C_HEAD, doctor: C_HEAD, care_principles: C_HEAD, care_flow: C_HEAD,
+    questions: C_HEAD, faq: C_HEAD, gallery: C_HEAD, facts: C_HEAD,
+  },
+}
+
+/**
+ * 영문 소제목 낱말 — C안이 지금 쓰는 낱말 그대로(`HomeLayoutC`), A·B에만 있는 섹션은 같은 말투로 더했다.
+ * 제목(h2) 밖의 장식이라 읽지 않는다(aria-hidden).
+ */
+const COMMON_LABELS: Partial<Record<SiteSectionId, string>> = {
+  news: 'NEWS', hours: 'INFORMATION', treatments: 'MEDICAL', doctor: 'DOCTOR', care_principles: 'POLICY',
+  care_flow: 'FLOW', questions: 'Q&A', faq: 'FAQ', gallery: 'CLINIC', facts: 'ACCESS', visit: 'LOCATION',
+}
+export const SECTION_LABEL_WORDS: Readonly<Record<ClinicLayout, Partial<Record<SiteSectionId, string>>>> = {
+  A: { ...COMMON_LABELS, contents: 'Q&A' },
+  B: { ...COMMON_LABELS, contents: 'ARTICLES' },
+  C: { ...COMMON_LABELS },
 }
 
 export interface SiteCareStep {
@@ -217,10 +262,13 @@ export function normalizeSiteConfig(value: unknown, siteLayout: ClinicLayout | n
     if (!known.has(id) || seen.has(id)) continue
     seen.add(id)
     const title = text(raw.title)
+    const base = DEFAULT_SECTION_LOOK[layout][id]
     sections.push({
       id,
       enabled: FIXED_SECTIONS.has(id) ? true : raw.enabled !== false,
       title: title && title !== DEFAULT_SECTION_TITLES[layout][id] ? title : null,
+      align: base && (raw.align === 'left' || raw.align === 'center') && raw.align !== base.align ? raw.align : null,
+      label: base && typeof raw.label === 'boolean' && raw.label !== base.label ? raw.label : null,
     })
   }
   // 설정에 없는 섹션은 기본 자리·기본값(서버 완성본은 언제나 전부 싣는다 — 옛 응답 대비).
@@ -408,6 +456,10 @@ export interface HomeSectionPlan {
   customNote(id: SiteSectionId): string | null
   /** 두 섹션이 켜진 채 바로 이어 나오는가(묶음 앵커 판단 — A안 질문 목록+FAQ). */
   adjacent(first: SiteSectionId, second: SiteSectionId): boolean
+  /** 그 섹션 머리에 보일 영문 소제목(설정 또는 레이아웃 기본). 보이지 않으면 null. */
+  label(id: SiteSectionId): string | null
+  /** 설정이 바꾼 제목 정렬(기본과 같으면 null — 지금 마크업). */
+  align(id: SiteSectionId): SiteSectionAlign | null
 }
 
 export function buildHomeSectionPlan(layout: ClinicLayout | null, config: ClinicSiteConfig | null): HomeSectionPlan {
@@ -426,9 +478,17 @@ export function buildHomeSectionPlan(layout: ClinicLayout | null, config: Clinic
   function note(id: SiteSectionId, fallback: string | null): string | null {
     return copy[`${id}.note`] ?? fallback
   }
+  const lookLayout: ClinicLayout = layout ?? 'B'
   return {
     order,
     enabled: (id) => order.includes(id),
+    label: (id) => {
+      const base = DEFAULT_SECTION_LOOK[lookLayout][id]
+      if (!base) return null
+      const shown = byId.get(id)?.label ?? base.label
+      return shown ? SECTION_LABEL_WORDS[lookLayout][id] ?? null : null
+    },
+    align: (id) => byId.get(id)?.align ?? null,
     title: (id, fallback) => byId.get(id)?.title ?? fallback,
     note,
     customTitle: (id) => byId.get(id)?.title ?? null,

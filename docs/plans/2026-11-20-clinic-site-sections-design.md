@@ -390,3 +390,18 @@ gpt-6.1-sol high로 이 문서를 코드와 대조했다. 15건 모두 받아들
 | 초점 | 가운데가 아니면 사진의 `object-position`(x%·y%). 0~1 밖·형식이 틀린 값은 버린다 |
 | 직함 위치 | '아래'면 직함(`physician.title`)을 이름 바로 아래에 둔다(B `clinic-curator-eyebrow--below`, A·C `[data-role=eyebrow][data-position=below]`). 직함이 없을 때의 역할 라벨은 원래부터 이름 아래다 |
 | 판 | 기본값을 바꾸지 않았다 — `DEFAULTS_VERSION`·`REFRESHED_SINCE` 그대로 |
+
+## 17. ③-2c-1 섹션 제목 정렬·영문 소제목(2026-11-21, 브랜치 `claude/site-config-3c2c-heads`)
+
+| 항목 | 정한 것 |
+|---|---|
+| 범위 | A·B·C의 `sections[].align`·`label`. 배경(`background`)·진료 철학은 다음 단계 |
+| 머리가 없는 섹션 | 첫 화면(`hero`)·바로가기(`section_index`)는 두 칸을 읽지 않는다(정렬·소제목을 그릴 머리가 없다). 어드민 숨김·서버 거절은 다음 짝 PR |
+| 기본값 = 지금 마크업 | 레이아웃 기본(`DEFAULT_SECTION_LOOK` — 백엔드 섹션 표와 같다는 테스트)과 같으면 정렬 틀이 없고, 소제목은 레이아웃 기본대로(C만 보임, 낱말도 지금과 같음) |
+| 영문 소제목 | 제목 h2 **밖**의 실제 요소(`aria-hidden`, 클래스 `.clinic-look-label` — 하위 페이지의 `.clinic-section-label`과 다르다) — h2 글자는 그대로다. A안의 가로 머리 줄(질문 목록·병원 공간)에서는 제목과 한 묶음으로 제목 위에 둔다. 낱말은 C안 낱말(MEDICAL·DOCTOR·POLICY·FLOW·Q&A·FAQ·CLINIC·ACCESS·NEWS·INFORMATION) + A·B에만 있는 섹션(B 먼저 정리한 글 ARTICLES, A 질문 목록 Q&A, 오시는 길 LOCATION). 모양은 C안 라벨과 같다. 진료 원칙은 'POLICY / 진료 원칙 / 제목'(레퍼런스 3-라) |
+| 정렬 | 바꾼 섹션만 `.clinic-look[data-look-align]` 틀로 감싸고 머리(제목·안내 문장·소제목)에만 건다 — B는 h2의 부모 머리, A·C는 `.clinic-look-head`/`.clinic-look-title`/`.clinic-look-note`. 본문 배치는 그대로. `.clinic-shell.clinic-shell`로 레이아웃 모듈의 `.shell.shell` 머리 규칙보다 앞선다 |
+| 다른 섹션 안의 섹션 | C 최근 소식·진료시간(첫 화면 아래 줄)·진료 과정(진료 원칙 띠 안), A 질문 목록 바로 뒤 FAQ는 `.clinic-look-nested` 틀 — 바깥 섹션의 정렬이 들어오지 않고 자기 정렬만 건다(바깥이 정렬을 바꿨으면 자기 정렬이 없어도 경계 틀) |
+| 질문 목록(B) | 옆 칸(`aside`)에 본문(처음 오시나요·전체 보기)이 함께 있어, 머리 묶음이 아니라 글줄(머리글·소제목·제목·안내)만 맞춘다 |
+| 틀 | 정렬 틀은 `display: contents`라 상자를 만들지 않는다 — 감싼 섹션이 그대로 부모(C 첫 화면 아래 줄의 flex 등)의 자식으로 배치된다 |
+| 가로 머리 줄 | 제목과 '전체 보기'가 한 줄인 머리(`.clinic-look-row` — A 질문 목록·병원 공간, C 최근 소식·질문·병원 공간)는 가운데일 때 세로로 쌓아 제목이 섹션 가운데에 온다 |
+| A 진한 띠 | 오늘 진료 띠 위 소제목은 띠 글자색 |
