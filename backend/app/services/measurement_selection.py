@@ -9,7 +9,7 @@ from collections.abc import Callable
 from datetime import date
 
 from app.models.sov import AIQueryTarget, AIQueryVariant, QueryMatrix
-from app.services import sov_engine
+from app.services import measurement_set, sov_engine
 
 _MEASUREMENT_WEEK_EPOCH = date(2026, 1, 5)  # 2026-W02 월요일 (임의의 고정 기준점)
 
@@ -118,7 +118,10 @@ def build_measurement_specs(
             if platform == "gemini" and not gemini_enabled:
                 continue
             query = resolve_variant_query(variant)
-            query_intent = str(getattr(query, "query_intent", "LOCAL") or "LOCAL").upper()
+            # 30개 세트 질문은 저장된 그룹이 의도를 정한다(A=BRAND, B~D=LOCAL) — 문구 분류를 쓰지 않는다.
+            query_intent = measurement_set.set_measurement_intent(target) or str(
+                getattr(query, "query_intent", "LOCAL") or "LOCAL"
+            ).upper()
             if query_intent == sov_engine.QUERY_INTENT_INFO:
                 continue
             key = (query.id, platform)
@@ -134,6 +137,7 @@ def build_measurement_specs(
                     "variant_id": variant.id,
                     "priority": target_priority,
                     "query_intent": query_intent,
+                    "query_set": measurement_set.manifest_query_set(target),
                 }
             )
 

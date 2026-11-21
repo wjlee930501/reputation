@@ -11,13 +11,31 @@ admin 목록·헤더·현황이 전부 이 값을 받아 라벨만 붙인다. �
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date, datetime
 from typing import Any, Literal
+from zoneinfo import ZoneInfo
 
 from app.models.hospital import Hospital, HospitalStatus
 from app.services.hospital_lifecycle import (
     article_publication_verdict,
     profile_publication_verdict,
 )
+
+_KST = ZoneInfo("Asia/Seoul")
+
+
+def contract_ended(hospital: Hospital, *, now: datetime | None = None) -> bool:
+    """일시정지 병원 중 계약 종료일(KST)이 지난 병원 — Admin이 「운영 종료」로 묶는다.
+
+    3상태에 네 번째 상태를 더하지 않는다: 운영 종료는 일시정지의 하위 묶음이고, 공개·발행·
+    서비스 구간·보고서 대상은 일시정지와 같다(2026-11 개편 결정 대기 1번 B). 종료일이 있어도
+    일시정지가 아니면(재개·운영 중) 운영 종료가 아니다. 오늘은 브라우저가 아니라 여기서 KST로 센다.
+    """
+    ended_on: date | None = getattr(hospital, "contract_ended_on", None)
+    if ended_on is None or hospital.status != HospitalStatus.PAUSED:
+        return False
+    today = (now or datetime.now(_KST)).astimezone(_KST).date()
+    return ended_on <= today
 
 
 @dataclass(frozen=True, slots=True)

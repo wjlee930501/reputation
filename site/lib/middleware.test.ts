@@ -6,6 +6,7 @@ import { NextRequest } from 'next/server.js'
 import {
   __clearDomainSlugCacheForTest,
   __setDomainSlugCacheEntryForTest,
+  decodablePath,
   proxy as middleware,
 } from '../proxy.ts'
 
@@ -152,4 +153,13 @@ test('unknown custom hosts cannot serve clinic-qualified llms routes', async () 
   globalThis.fetch = async () => new Response('Not found', { status: 404 })
   const response = await middleware(requestFor('unknown.example.com', '/clinic-b/llms.txt'))
   assert.equal(response.status, 404)
+})
+
+test('a path with broken percent-encoding is a plain 404 before any page (Next would 500 decoding it)', async () => {
+  assert.equal(decodablePath('/%E0%A4%A'), false)
+  assert.equal(decodablePath('/%2F.env'), true)
+  assert.equal(decodablePath('/병원'), true)
+  const response = await middleware(new NextRequest('https://reputation.motionlabs.kr/%E0%A4%A'))
+  assert.equal(response.status, 404)
+  assert.equal(response.headers.get('cache-control'), 'no-store')
 })

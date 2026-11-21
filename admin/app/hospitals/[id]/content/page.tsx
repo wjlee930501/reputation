@@ -41,6 +41,7 @@ import { resolveAuditActorName } from '@/lib/publishing'
 import { ContentItem, ContentReference, TYPE_LABELS } from '@/types'
 import { useHospitalHeader } from '../hospital-context'
 import { ContentFocusSection } from './ContentFocusSection'
+import { MeasurementSetLink } from './MeasurementSetLink'
 import { ReadOnlySignals } from './ReadOnlySignals'
 import { ScheduleSection } from './ScheduleSection'
 import { DangerMenu } from '@/app/_components/DangerMenu'
@@ -672,6 +673,9 @@ export default function ContentPage() {
 
         {/* 주력 주제 — 원장님이 원하는 진료 항목으로 다음 글의 주제를 기운다. */}
         <ContentFocusSection hospitalId={id} />
+
+        {/* 측정 키워드 30개 — 그룹 A~D, 고정·교체를 보고 고치는 하위 화면으로 간다. */}
+        <MeasurementSetLink hospitalId={id} />
 
         {/* 카드는 공개 사이트와 같은 판정을 그대로 센다 — 화면이 따로 묶지 않는다. */}
         <div className="mt-5 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
