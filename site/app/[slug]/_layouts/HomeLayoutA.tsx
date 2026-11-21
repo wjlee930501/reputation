@@ -53,6 +53,8 @@ const PRINCIPLE_ICONS = { explain: IconExplain, verified: IconExam, decide: Icon
 export function HomeLayoutA({ model }: { model: ClinicHomeModel }) {
   const { hospital, hospitalRootUrl, physicians, faqEntries, clusterContents, contents, composition, plan, careFlow } = model
   const principles = resolveCarePrinciples(hospital.care_principles)
+  // 기본 카드를 끄고 병원 카드가 없으면 진료 원칙 섹션을 그리지 않는다(제목뿐인 섹션을 남기지 않는다).
+  const principleCards = limitCarePrincipleCards(principles.cards, model.siteConfig, hospital.care_principles?.cards ?? null)
   const specialtyLabel = displayClinicLabels(hospital.specialties).join(' · ')
   const headline = buildClinicHeroHeadline({
     approvedHeadline: hospital.hero_headline,
@@ -248,12 +250,12 @@ export function HomeLayoutA({ model }: { model: ClinicHomeModel }) {
         </section>
       ) : null
     ),
-    care_principles: (
+    care_principles: principleCards.length === 0 ? null : (
       <section className={s.centerSection} aria-label="진료 원칙">
         {plan.label('care_principles') ? <SectionLabel text={plan.label('care_principles') ?? ''} /> : null}
         <h2 className={`${s.bigTitle} clinic-look-title`}>{plan.title('care_principles', principles.title)}</h2>
         <div className={s.principles}>
-          {limitCarePrincipleCards(principles.cards, model.siteConfig).map((principle) => {
+          {principleCards.map((principle) => {
             const Icon = PRINCIPLE_ICONS[principle.key]
             return (
               <div key={principle.key} className={s.principle}>

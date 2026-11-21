@@ -30,6 +30,8 @@ interface Props {
   /** 병원 정보의 주차·대중교통 안내(0096). 없으면 기본 안내. */
   parkingNote?: string | null
   transitNote?: string | null
+  /** 섹션 설정의 오시는 길 항목 순서·대중교통 보이기(`ClinicSiteConfig.visit`). null이면 지금 순서. */
+  visitLook?: { order: Array<'parking' | 'transit'>; showTransit: boolean } | null
   /** 섹션 설정이 바꾼 제목·안내 문장(레이아웃 편집기). 없으면 지금 문구. */
   title?: string | null
   note?: string | null
@@ -51,10 +53,19 @@ function pickIcon(label: string): JSX.Element {
 
 // 방문 전 확인 — 병원 정보에 쓴 주차·대중교통 안내가 있으면 그 문장을, 없으면 병원 시설을
 // 단정하지 않는 기본 안내를 쓴다.
-function visitChecks(parkingNote: string | null, transitNote: string | null) {
+// 섹션 설정(`visit`)이 있으면 주차·대중교통 순서를 바꾸고 대중교통을 뺄 수 있다(없으면 지금 순서 그대로).
+function visitChecks(
+  parkingNote: string | null,
+  transitNote: string | null,
+  look: { order: Array<'parking' | 'transit'>; showTransit: boolean } | null = null,
+) {
+  const items = {
+    parking: { title: '주차 안내', body: parkingNote || VISIT_PARKING_DEFAULT },
+    transit: { title: '대중교통', body: transitNote || VISIT_TRANSIT_DEFAULT },
+  }
+  const order = (look?.order ?? ['parking', 'transit']).filter((key) => key !== 'transit' || look?.showTransit !== false)
   return [
-    { title: '주차 안내', body: parkingNote || VISIT_PARKING_DEFAULT },
-    { title: '대중교통', body: transitNote || VISIT_TRANSIT_DEFAULT },
+    ...order.map((key) => items[key]),
     { title: '초진 준비물', body: '신분증과 복용 중인 약, 이전 검사 자료가 있으면 지참해 주세요.' },
   ]
 }
@@ -72,6 +83,7 @@ export function ContactCard({
   hoursHref,
   parkingNote = null,
   transitNote = null,
+  visitLook = null,
   title,
   note,
   sectionLabel = null,
@@ -148,7 +160,7 @@ export function ContactCard({
           </div>
 
           <ul className="clinic-visit-checks" aria-label="방문 전 확인">
-            {visitChecks(parkingNote, transitNote).map((check) => (
+            {visitChecks(parkingNote, transitNote, visitLook).map((check) => (
               <li key={check.title} className="clinic-visit-check">
                 <span className="clinic-visit-check-title">{check.title}</span>
                 <span className="clinic-visit-check-body">{check.body}</span>

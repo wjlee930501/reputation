@@ -282,6 +282,7 @@ export function HospitalHome({
         custom={hospital.care_principles}
         title={plan.customTitle('care_principles')}
         cardCount={siteConfig?.carePrinciples.cardCount}
+        useDefaultCards={siteConfig?.carePrinciples.useDefaultCards ?? true}
         // '공식 채널 보기'는 오시는 길(#contact)로 간다 — 그 섹션이 꺼지면 하위 페이지로.
         channelsHref={plan.enabled('visit') ? `${hospitalRootUrl}#contact` : `${hospitalRootUrl}/visit`}
         sectionLabel={plan.label('care_principles')}
@@ -374,6 +375,7 @@ export function HospitalHome({
           region={hospital.region}
           parkingNote={hospital.parking_note}
           transitNote={hospital.transit_note}
+          visitLook={siteConfig?.visit ?? null}
           websiteUrl={hospital.website_url}
           hoursHref={visitHoursHref(hospitalRootUrl, false)}
           title={plan.customTitle('visit')}

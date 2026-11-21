@@ -108,6 +108,8 @@ for (const layout of LAYOUTS) {
     assert.deepEqual(config.nav.items, [...DEFAULT_NAV_ITEMS])
     assert.deepEqual(config.nav.mobileBar, [...DEFAULT_MOBILE_BAR])
     assert.deepEqual(limitCarePrincipleCards([1, 2, 3], config), [1, 2, 3])
+    assert.deepEqual(limitCarePrincipleCards([1, 2, 3], config, [null, null, null]), [1, 2, 3])
+    assert.equal(config.visit, null)
     // 모양 칸(③-2a)도 기본값이면 지금 마크업이다 — 정보 띠 칸 null, 진료 항목 카드·설명 보임.
     assert.equal(config.hero.blocks, null)
     assert.equal(config.hero.look, null)
@@ -300,7 +302,9 @@ test('the FAQ menu item disappears when the home FAQ is off or every chosen FAQ 
 
 test('C draws the care flow on its own band when the principles are off', () => {
   const source = readFileSync(join(SLUG_DIR, '_layouts', 'HomeLayoutC.tsx'), 'utf8')
-  assert.match(source, /care_flow:\s*!plan\.enabled\('care_principles'\) && flowBlock \?/)
+  // 진료 원칙이 꺼졌거나 보일 카드가 0장이면(기본 카드 끄기 ③-2e) 진료 과정만 자기 띠에 그린다.
+  assert.match(source, /const principlesShown = plan\.enabled\('care_principles'\) && principleCards\.length > 0/)
+  assert.match(source, /care_flow:\s*!principlesShown && flowBlock \?/)
 })
 
 test('step labels keep the same text nodes as before (label, " · ", aux)', () => {
@@ -559,4 +563,30 @@ test('the hero look becomes data attributes and CSS variables', () => {
   assert.equal(attrs['data-hero-veil'], 'text')
   assert.equal(attrs['data-hero-focus'], '')
   assert.deepEqual(attrs.style, { '--hero-title-scale': '1.15', '--hero-focus': '50% 20%', '--hero-veil-opacity': '0.7' })
+})
+
+// ── ③-2e 진료 원칙 기본 카드·오시는 길 ───────────────────────────────
+
+test('turning default cards off keeps only the cards the hospital wrote, then the count', () => {
+  const config = normalizeSiteConfig(published('A', (c) => (c.care_principles.use_default_cards = false)), 'A')
+  assert.deepEqual(limitCarePrincipleCards(['a', 'b', 'c'], config, [null, { title: 't', body: 'b' }, null]), ['b'])
+  assert.deepEqual(limitCarePrincipleCards(['a', 'b', 'c'], config, null), [])
+  // 병원 카드 정보를 넘기지 않는 호출은 지금 동작(기본 카드 포함)이다.
+  assert.deepEqual(limitCarePrincipleCards(['a', 'b', 'c'], config), ['a', 'b', 'c'])
+  const counted = normalizeSiteConfig(
+    published('A', (c) => {
+      c.care_principles.use_default_cards = false
+      c.care_principles.card_count = 1
+    }),
+    'A',
+  )
+  assert.deepEqual(limitCarePrincipleCards(['a', 'b', 'c'], counted, [{}, {}, null]), ['a'])
+})
+
+test('the visit look reads the order and the transit switch; the current order is null', () => {
+  const visit = (patch: (v: Record<string, any>) => void) => normalizeSiteConfig(published('B', (c) => patch(c.visit)), 'B')?.visit
+  assert.equal(visit(() => {}), null)
+  assert.deepEqual(visit((v) => (v.order = ['transit', 'parking'])), { order: ['transit', 'parking'], showTransit: true })
+  assert.deepEqual(visit((v) => (v.show_transit = false)), { order: ['parking', 'transit'], showTransit: false })
+  assert.equal(visit((v) => (v.order = ['parking'])), null)
 })

@@ -17,6 +17,8 @@
  * ③-2b가 더한 칸(A·B·C): 의료진 사진 비율·초점, 직함 위치(`doctor`).
  * ③-2c가 더한 칸(A·B·C): 섹션 제목 정렬·영문 소제목(`sections[].align`·`label`), 섹션 배경(`background`).
  * ③-2d가 더한 칸(A·B·C): 첫 화면 배치·덮개·제목 크기·사진 초점(`hero.arrangement`·`image`·`title_size`).
+ * ③-2e가 더한 칸: 진료 원칙 기본 카드 쓰기(`care_principles.use_default_cards`, A·B·C), 오시는 길 항목 순서·대중교통
+ * 보이기(`visit`, B — 오시는 길 섹션은 B에만 있다).
  * 첫 화면 배치·배경·정렬·영문 소제목·줄바꿈·진료 철학 같은 나머지 모양 칸은 다음 PR이다(받아 두기만 한다).
  */
 
@@ -224,7 +226,10 @@ export interface ClinicSiteConfig {
   sections: SiteSectionConfig[]
   /** 섹션 안내 문장 덮어쓰기(`treatments.note` 등). 없는 키는 지금 문장. */
   copy: Record<string, string>
-  carePrinciples: { cardCount: number | null }
+  /** useDefaultCards false면 병원이 쓴 카드만(빈 자리를 공통 기본 카드로 채우지 않는다). */
+  carePrinciples: { cardCount: number | null; useDefaultCards: boolean }
+  /** 오시는 길 방문 전 확인의 주차·대중교통 순서와 대중교통 보이기(B). 기본이면 null. */
+  visit: { order: Array<'parking' | 'transit'>; showTransit: boolean } | null
   careFlow: { note: string | null; steps: SiteCareStep[] | null }
   faq: { mode: 'auto' | 'manual'; limit: number; entries: SiteFaqEntry[] | null }
   nav: { items: SiteNavItem[]; mobileBar: SiteMobileBarItem[] }
@@ -368,7 +373,8 @@ export function normalizeSiteConfig(value: unknown, siteLayout: ClinicLayout | n
     version: typeof value.version === 'number' ? value.version : null,
     sections,
     copy,
-    carePrinciples: { cardCount },
+    carePrinciples: { cardCount, useDefaultCards: principles.use_default_cards !== false },
+    visit: visitLook(value.visit),
     careFlow: { note: text(flow.note), steps },
     faq: { mode, limit, entries },
     nav: {
@@ -380,6 +386,16 @@ export function normalizeSiteConfig(value: unknown, siteLayout: ClinicLayout | n
     treatments: layout === 'B' ? treatmentLook(value.treatments) : { ...DEFAULT_TREATMENT_LOOK },
     doctor: doctorLook(value.doctor, layout),
   }
+}
+
+function visitLook(raw: unknown): ClinicSiteConfig['visit'] {
+  const visit = isRecord(raw) ? raw : {}
+  const order: Array<'parking' | 'transit'> =
+    Array.isArray(visit.order) && visit.order[0] === 'transit' && visit.order[1] === 'parking'
+      ? ['transit', 'parking']
+      : ['parking', 'transit']
+  const showTransit = visit.show_transit !== false
+  return order[0] === 'parking' && showTransit ? null : { order, showTransit }
 }
 
 function unit(value: unknown): number | null {
@@ -642,8 +658,19 @@ export function resolveCareFlow(config: ClinicSiteConfig | null): { note: string
   }
 }
 
-/** 진료 원칙 카드 — 설정이 카드 수를 줄였으면 앞에서부터 그만큼만. */
-export function limitCarePrincipleCards<T>(cards: readonly T[], config: ClinicSiteConfig | null): T[] {
+/**
+ * 진료 원칙 카드 — 설정이 기본 카드를 끄면 병원이 쓴 자리(`custom.cards[i]`가 있는 자리)만 남기고, 카드 수를
+ * 줄였으면 앞에서부터 그만큼만. `customCards`를 넘기지 않으면 기본 카드 끄기를 보지 않는다(지금 동작).
+ */
+export function limitCarePrincipleCards<T>(
+  cards: readonly T[],
+  config: ClinicSiteConfig | null,
+  customCards?: ReadonlyArray<unknown> | null,
+): T[] {
+  const kept =
+    config && !config.carePrinciples.useDefaultCards && customCards !== undefined
+      ? cards.filter((_, index) => Boolean(customCards?.[index]))
+      : [...cards]
   const count = config?.carePrinciples.cardCount
-  return count ? cards.slice(0, count) : [...cards]
+  return count ? kept.slice(0, count) : kept
 }
