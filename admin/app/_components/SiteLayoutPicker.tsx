@@ -71,7 +71,9 @@ export function SiteLayoutPicker({
               <span className="break-keep text-xs leading-5 text-slate-600">{option.summary}</span>
               {suggested === layout && distribution?.province && (
                 <span className="self-start rounded-full bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-800">
-                  {COPY.suggested.replace('{province}', distribution.province)}
+                  {distribution.total > 0
+                    ? COPY.suggested.replace('{province}', distribution.province)
+                    : COPY.suggestedFirst}
                 </span>
               )}
               {badge && (
