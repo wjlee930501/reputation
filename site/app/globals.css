@@ -9807,3 +9807,9 @@ a.clinic-tx-list-row:hover .clinic-tx-list-name {
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+/* ③-2b 직함을 이름 아래에 둘 때(섹션 설정 doctor.title_position = below) — 이름과 붙여 한 묶음으로 읽힌다. */
+.clinic-curator-eyebrow--below {
+  display: block;
+  margin: 0 0 6px;
+}

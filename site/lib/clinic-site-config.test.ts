@@ -18,8 +18,10 @@ import {
   FIXED_SECTIONS,
   DEFAULT_HERO_BLOCKS,
   limitCarePrincipleCards,
+  DEFAULT_PHOTO_RATIO,
   naverBookingUrl,
   normalizeSiteConfig,
+  physicianPhotoLook,
   resolveCareFlow,
   resolveHeroBlocks,
   resolveHomeFaqEntries,
@@ -105,8 +107,15 @@ for (const layout of LAYOUTS) {
     assert.equal(config.hero.blocks, null)
     assert.equal(resolveHeroBlocks(config, 'https://map.naver.com/p/entry/place/1'), null)
     assert.deepEqual(config.treatments, { style: 'cards', showDescription: true })
+    // ③-2b 의료진 칸도 기본값이면 지금 마크업이다.
+    assert.deepEqual(config.doctor, { photoRatio: null, photoFocus: null, titleBelow: false })
+    assert.equal(physicianPhotoLook(config), null)
   })
 }
+
+test('the default doctor photo ratio per layout equals the backend default', () => {
+  for (const layout of LAYOUTS) assert.equal(DEFAULT_PHOTO_RATIO[layout], DEFAULTS.layouts[layout].doctor.photo_ratio, layout)
+})
 
 test('the default info strip blocks equal the backend default', () => {
   for (const layout of LAYOUTS) assert.deepEqual([...DEFAULT_HERO_BLOCKS], DEFAULTS.layouts[layout].hero.blocks)
@@ -387,4 +396,38 @@ test('the booking link is the Naver place page (stored URL first, else built fro
   assert.equal(naverBookingUrl({ naver_place_url: 'javascript:alert(1)', naver_place_id: null }), null)
   assert.equal(naverBookingUrl({ naver_place_url: null, naver_place_id: 'abc' }), null)
   assert.equal(naverBookingUrl({}), null)
+})
+
+// ── ③-2b 의료진 사진 비율·초점, 직함 위치(A·B·C) ─────────────────────────
+
+test('a doctor photo ratio counts only when it differs from the layout default', () => {
+  const ratio = (layout: 'A' | 'B' | 'C', value: string) =>
+    normalizeSiteConfig(published(layout, (c) => (c.doctor.photo_ratio = value)), layout)?.doctor.photoRatio
+  assert.equal(ratio('A', 'landscape'), null)
+  assert.equal(ratio('A', 'portrait'), 'portrait')
+  assert.equal(ratio('B', 'portrait'), null)
+  assert.equal(ratio('B', 'square'), 'square')
+  assert.equal(ratio('C', 'portrait'), null)
+  assert.equal(ratio('C', 'landscape'), 'landscape')
+  assert.equal(ratio('B', 'wide'), null)
+})
+
+test('the photo look carries only the changed ratio and focus', () => {
+  const look = (patch: (c: Record<string, any>) => void) =>
+    physicianPhotoLook(normalizeSiteConfig(published('B', patch), 'B'))
+  assert.deepEqual(look((c) => (c.doctor.photo_ratio = 'square')), { aspectRatio: '1 / 1', objectPosition: null })
+  assert.deepEqual(look((c) => (c.doctor.photo_focus = { x: 0.5, y: 0.2 })), { aspectRatio: null, objectPosition: '50% 20%' })
+  assert.equal(look((c) => (c.doctor.photo_focus = { x: 0.5, y: 0.5 })), null)
+  assert.equal(look((c) => (c.doctor.photo_focus = { x: 2, y: 0.2 })), null)
+  assert.equal(look((c) => (c.doctor.photo_focus = 'top')), null)
+  assert.equal(physicianPhotoLook(null), null)
+})
+
+test('the title goes below the name only when the config says so', () => {
+  for (const layout of LAYOUTS) {
+    const below = normalizeSiteConfig(published(layout, (c) => (c.doctor.title_position = 'below')), layout)
+    assert.equal(below?.doctor.titleBelow, true, layout)
+    const above = normalizeSiteConfig(published(layout, (c) => (c.doctor.title_position = 'side')), layout)
+    assert.equal(above?.doctor.titleBelow, false, layout)
+  }
 })

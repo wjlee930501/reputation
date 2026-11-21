@@ -21,6 +21,10 @@ interface Props {
   /** C안처럼 자격·경력을 표로 보일 때 true. */
   asTable?: boolean
   tableClassName?: string
+  /** 섹션 설정이 바꾼 사진 비율·초점(`physicianPhotoLook`). null이면 지금 사진 모양. */
+  photoLook?: { aspectRatio: string | null; objectPosition: string | null } | null
+  /** 직함을 이름 아래에 둔다(섹션 설정 `doctor.title_position = below`). 기본은 이름 위. */
+  titleBelow?: boolean
 }
 
 /**
@@ -37,6 +41,8 @@ export function PhysicianProfile({
   priority = false,
   asTable = false,
   tableClassName,
+  photoLook = null,
+  titleBelow = false,
 }: Props) {
   const chips = physicianDisplayChips(physician, region)
   const eyebrow = physicianEyebrow(physician)
@@ -66,14 +72,16 @@ export function PhysicianProfile({
         sizes={CLINIC_IMAGE_SIZES.portraitSolo}
         priority={priority}
         fallback={<span key="monogram" aria-hidden="true">{physician.name.slice(0, 1) || '醫'}</span>}
+        look={photoLook}
       />
       <div className={bodyClassName}>
-        {eyebrow ? <p data-role="eyebrow">{eyebrow}</p> : null}
+        {eyebrow && !titleBelow ? <p data-role="eyebrow">{eyebrow}</p> : null}
         {/* `원장`은 텍스트 공백으로 띄운다 — 마진만 주면 추출된 문장이 `조재현원장`으로 붙는다. */}
         <h3>
           {physician.name}
           {suffix ? <small>{` ${suffix}`}</small> : null}
         </h3>
+        {eyebrow && titleBelow ? <p data-role="eyebrow" data-position="below">{eyebrow}</p> : null}
         {role ? <p data-role="role">{role}</p> : null}
         {chips.length > 0 ? (
           <ul data-role="chips">
