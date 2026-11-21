@@ -17,11 +17,11 @@ test('온보딩·병원 기본 정보·자료는 병원 정보 한 화면으로 
   assert.equal(legacyHospitalRedirect(ID, 'wiki'), '/hospitals/h-1/info')
 })
 
-test('자기 도메인 링크만 병원 정보의 도메인 위치로 보낸다', () => {
+test('자기 도메인 링크만 도메인·검색 탭의 도메인 위치로 보낸다', () => {
   // 서버는 `#domain-setup`을 볼 수 없다 — `?section=domain`으로 온 링크만 앵커를 받는다.
   assert.equal(
     legacyHospitalRedirect(ID, 'profile', { section: 'domain' }),
-    '/hospitals/h-1/info#domain-setup',
+    '/hospitals/h-1/domain#domain-setup',
   )
   assert.equal(legacyHospitalRedirect(ID, 'profile', { section: 'facts' }), '/hospitals/h-1/info')
   // 앵커는 자기 도메인 링크만의 것이다 — 다른 옛 화면에는 붙지 않는다.

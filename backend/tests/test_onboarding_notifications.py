@@ -84,7 +84,7 @@ def test_site_built_intent_is_hospital_milestone_identified_and_has_one_action()
     assert first.dedupe_key == second.dedupe_key == f"ONBOARDING_SITE_BUILT:{_HOSPITAL_ID}:v1"
     assert first.notification_type == SITE_BUILT_NOTIFICATION_TYPE
     assert _urls(first.message.payload()) == [
-        f"{_ADMIN}/hospitals/{_HOSPITAL_ID}/info#domain-setup"
+        f"{_ADMIN}/hospitals/{_HOSPITAL_ID}/domain#domain-setup"
     ]
 
 
