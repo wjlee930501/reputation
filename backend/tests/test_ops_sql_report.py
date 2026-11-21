@@ -169,12 +169,16 @@ def test_monthly_report_guarantee_queries_are_registered_reads() -> None:
 
 
 def test_measurement_set_readiness_queries_are_registered_reads() -> None:
-    """측정 키워드 30개(2026-11-21): 병원별 세트 준비(q17)와 가장 최근 달 새벽 창 진행(q17b)."""
+    """측정 키워드 30개(2026-11-21): 세트 준비(q17)·새벽 진행(q17b)·측정표 없는 코호트(q17c)·실행 기록(q17d)."""
 
     statements = ops_sql_report.QUERIES["q17"]
-    assert len(statements) == 2
-    assert statements[0].strip().upper().startswith("SELECT")
-    assert statements[1].strip().upper().startswith("SELECT")
+    assert len(statements) == 4
+    assert all(sql.strip().upper().startswith("SELECT") for sql in statements)
     assert "set_role" in statements[0] and "legacy_tracked" in statements[0]
     assert "measurement_observation_slots" in statements[1]
+    assert "received_gemini" in statements[1]  # 플랫폼별 진행(Gemini 미설정·한쪽 장애)
+    # q17c: 측정표가 아직 없는 코호트 병원(q17b에는 안 보인다).
+    assert "monthly_sov_cohort" in statements[2] and "hospital_service_intervals" in statements[2]
+    # q17d: 지난 KST 달의 월간 측정 실행 기록.
+    assert "'monthly-sov:%:'" in statements[3] and "MONTHLY_SOV_PERIOD" in statements[3]
     assert ops_sql_report.parse_args(["--only=q17"]).only == ["q17"]
