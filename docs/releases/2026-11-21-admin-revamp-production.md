@@ -1,12 +1,13 @@
-# 2026-11-21 여섯 번 배포 — 어드민 개편 1단계·레이아웃 편집기 3a·3b·3c·③-1·미리보기 비밀값·③-2a~e
+# 2026-11-21 일곱 번 배포 — 어드민 개편 1단계·레이아웃 편집기 3a~③-2f·공개 반영 열기·측정 30개
 
-상태: **2026-11-21 KST에 여섯 번 배포했다.**
+상태: **2026-11-21 KST에 일곱 번 배포했다.**
 - 1차: 02:01~02:07, main `2241f431`, Backend·Admin.
 - 2차: 04:46~04:51, main `85754f20`, Backend·Admin. 2차에는 마이그레이션 `0100`이 있다.
 - 3차: 08:46~08:52, main `0f93551b`, **Backend·Site·Admin**. 마이그레이션은 없다.
 - 4차: 10:13~10:17, 같은 main `0f93551b`, Backend만. 코드 변경 없이 새로 만든 미리보기 비밀값 `SITE_PREVIEW_TOKEN_SECRET`을 주입했다(사용자 지시 "만들고 배포").
 - 5차: 15:36~15:43, main `84b8f70c`, **Backend·Site·Admin**. 레이아웃 편집기 ③-2a·③-2b(#357~#360). 마이그레이션은 없다. 14:20 첫 시도는 gcloud 로그인 만료로 사전 검증에서 멈췄다(운영 변경 없음).
 - 6차: 15:47~15:49, main `f98c433b`, **Site·Admin만**(백엔드 변경 없음). ③-2c-1·③-2c-2·③-2d·③-2e(#361·#362·#365·#366)와 어드민 의료진 사진 안내(#363), 결정 대기 문서(#364).
+- 7차: 19:29~19:37, main `c0ae1adf`(통합 PR #391), **Backend·Site·Admin**. 마이그레이션 `0101`·`0102`. **공개 반영을 열었다**(#373, 사용자 지시 "배포 끝나면 공개 반영 열어"). 측정 키워드 30개(#378~#382)와 운영 env 월간 SoV 한도 9000→13500(사용자 지시 "한도는 13500으로 올려").
 - 사용자 지시: "완료 되면 병합, 배포까지 하고 바로 다음 단계로", "1단계에서 할 수 있는 것들 바로 진행 먼저 싹하고, 다음으로 레이아웃 편집기 3a 진행", "배포 2차 끝나고 문서 쓰고, 다음도 이어서 알아서 진행해".
 - 1·2차는 Site를 바꾸지 않았다. 3차에서 Site가 `00157-q7b` → `00158-qt2`가 됐다.
 
@@ -100,6 +101,52 @@ DEPLOY_ROLLBACK_STATE_FILE=.deploy-rollback-site bash scripts/deploy.sh site
 DEPLOY_ROLLBACK_STATE_FILE=.deploy-rollback-admin bash scripts/deploy.sh admin
 ```
 - 이번에는 대상마다 롤백 파일을 따로 두어 덮어쓰지 않았다.
+
+
+## 7차 — 통합 PR로 한 번에(공개 반영 열기·측정 30개·어드민)
+
+### 범위 — main `c0ae1adf`(6차 `f98c433b` 뒤 전부)
+- 17시대에 main에 병합된 것: #367(그리지 않는 칸 어드민 숨김+서버 거절)·#368(③-2f 줄바꿈)·#370(노출 보완 제안 접기)·#371(계약 등록 레이아웃 추천)·#374(B 띠 '오늘 진료' 글자색).
+- 통합 A #390: #373(**공개 반영 막음 걷기** — Admin `SITE_RENDERS_SITE_CONFIG` 삭제, 미리보기는 같은 화면 iframe, 그리지 않는 칸 셋 더 거절)·#375(편집기 진료 원칙 제목)·#376(`%2F` 주소 500→404)·#369(배포 기록).
+- 통합 AB #391: 통합 A + 측정 키워드 30개 #378~#382(마이그레이션 `0101_add_query_target_set_roles`, 병원명 질문 정확도, 30개 초안·`measurement_set_rollout` CLI·어드민 질문 화면, 원장 보고서 그룹별 표시, 한도 13500·운영 조회 q17) + 어드민 #372(계약 종료일, `0102_add_hospital_contract_ended_on`)·#377(첫 달 편수 마케터 설정)·#383(「오늘의 운영」 탭 삭제)·#384(계약 시작일 칸).
+
+### 왜 통합 PR로
+- 18시대에 하위 세션 PR이 서로 위에 쌓이고 CI 러너가 막혀(대기 26건) 하나씩 병합·재검사하면 21:15 배포 창을 놓쳤다. 두 통합 브랜치를 만들어 CI를 한 번씩만 돌리고(다른 실행은 취소), 병합 뒤 `origin/main^{tree}`가 CI가 검사한 통합 헤드 트리(`423bec2e`)와 같은지 확인하고 배포했다. 원 PR은 GitHub가 MERGED로 표시했고 쌓인 #379~#382는 닫았다.
+- 로컬에서도 합친 트리로 백엔드 변경 테스트 414 passed, Site 630·Admin 790 passed, 두 쪽 `tsc`를 확인했다. CI 10/10 둘 다 통과(19:27).
+
+### 실행 기록
+
+| 단계 | 시각(KST) | 결과 |
+|---|---|---|
+| 배포 전 리비전 | 19:28 | api `00302-ksn`, worker `00295-5tm`, beat `00290-8mg`, site `00160-txz`, admin `00134-4fv`. `.omo/rollback-ab1121/rollback.state` |
+| #391 병합 | 19:28 | `--match-head-commit ca3d3bac`, main `c0ae1adf`, 트리 일치 |
+| `deploy.sh backend` 첫 시도 | 19:29 | 사전 검증에서 멈춤(운영 변경 없음). `--accept-env-diff`면 로컬 파일이 정본이 되어 Terraform env 드롭 검사가 돈다 — 운영 서비스에 원래 없는 4키(`INQUIRY_SMS_PROVIDER`·`NHN_SMS_APP_KEY`·`SENTRY_DSN`·`INQUIRY_SMS_SENDER_NO`)가 파일에 없어서다 |
+| `deploy.sh backend` | 19:29~19:34 | 성공. env 변경은 `COST_GUARD_MONTHLY_SOV_QUERIES` 9000→13500 하나(changed 1). 4키는 config 기본값과 같은 값(빈 값 셋, 발신번호 기본값)으로 명시했다 — 빈 값은 서비스에 들어가지 않았고 발신번호는 기본값과 같아 동작은 그대로다. 마이그레이션 0100→0101→0102, worker `00296-55n`, beat `00291-2nv`, readiness `sg4nn` 통과, api `00303-vds`, 공개 표면 확인 통과. 오늘 일곱 번째 릴리스라 `--override-reason` |
+| `site_config_precheck` | 19:34 | `drafts 0 · published 0 · drafts_rejected_now 0 · published_rejected_now 0 · published_diverged 0` → Admin 배포 진행 |
+| `deploy.sh site` | 19:35~19:36 | 성공. site `00161-tmh` |
+| `deploy.sh admin` | 19:36~19:37 | 성공. admin `00135-wf9` — **공개 반영 열림** |
+
+```bash
+cd .omo/deploy-ab1121   # detached origin/main = c0ae1adf
+gcloud run services describe reputation-api --region asia-northeast3 --format=json | python3 scripts/deploy_env.py render --service-json - --out .env.production --drop SERVICE APP_ENV REPUTATION_RELEASE_REVISION
+# COST_GUARD_MONTHLY_SOV_QUERIES=9000 → 13500 한 줄만 바꾸고, 운영에 없는 Terraform 키 4개를 기본값으로 명시
+DEPLOY_ROLLBACK_STATE_FILE=.deploy-rollback-backend bash scripts/deploy.sh backend --accept-env-diff --override-reason="..."
+gcloud run jobs execute reputation-migrate --region asia-northeast3 --wait --args=python,-m,app.utils.site_config_precheck
+DEPLOY_ROLLBACK_STATE_FILE=.deploy-rollback-site bash scripts/deploy.sh site --override-reason="..."
+DEPLOY_ROLLBACK_STATE_FILE=.deploy-rollback-admin bash scripts/deploy.sh admin --override-reason="..."
+```
+
+### 배포 뒤 확인
+- `/api/v1/health/live` release `c0ae1adf…`. 공개 병원 16곳 200·hospital ID 일치. 홈 4곳(뉴플랜·장편한·행복드림·다대으뜸)의 보이는 글자·링크·이미지가 6차 뒤 기준과 같다(공개된 설정이 없으므로). Admin 로그인 200.
+- 운영 Worker env: `COST_GUARD_MONTHLY_SOV_QUERIES=13500`, `COST_GUARD_DAILY_SOV_QUERIES=9000`(그대로 — 12/1 새벽 16곳 × 300회 = 4,800회라 넉넉하다).
+- `measurement_set_rollout precheck`(읽기 전용, `kkxt9`): 16곳 모두 `action=apply`·`curated_now=false`, 초안은 A 고정 5 / B 고정 7+순환 3 / C 고정 4+순환 4 / D 고정 4+순환 3 = 30. 코호트 13곳(옛 추적 질문 15개), 코호트 밖 3곳. **아직 apply하지 않았다** — 측정 세션 검토 뒤 12/1 00:15 전에 `apply --confirm`.
+- #377 영향 조회(`docs/ops/snippets/first_month_target_impact.py`, #393, `zj9zq`): `operator_markers 0`, `changed []`, 새 판정 ≠ 옛 판정 0건, `new < live` 0건. `new > live`는 2026-12의 15곳(live 0 — 월말 배치가 만들 몫)뿐이라 기대와 같다.
+- ERROR: 배포 시작(19:29) 뒤 19:41까지 0건. +30분 확인은 아래에 덧붙인다.
+
+### 주의
+- **공개 반영이 열렸다.** 다시 막으려면 #373을 되돌리고 Admin만 배포한다. 이미 공개된 판은 그대로 남는다. 첫 공개 반영 점검 절차는 #385.
+- 첫 달 편수(#377)를 마케터가 줄인 뒤 Worker를 7차 이전으로 롤백하면 옛 판정이 그 달을 계약 편수로 보고 「미달」로 표시한다 — 롤백 전에 위 영향 조회로 `changed`를 남긴다.
+- `--accept-env-diff` 배포는 로컬 파일을 정본으로 삼으므로 Terraform이 선언한 키를 파일에 모두 적어야 한다(빈 값 = 설정 안 함). 운영 env 정본 배포(옵션 없음)에서는 이 검사를 건너뛴다.
 
 ## 배포 뒤 확인
 
@@ -197,8 +244,8 @@ DEPLOY_ROLLBACK_STATE_FILE=.deploy-rollback-admin bash scripts/deploy.sh admin
 - **CI 리허설은 DB head를 하드코딩한다.** 위치는 `scripts/integrity_rehearsal/check.py`다. 마이그레이션을 더하는 PR은 이 값도 함께 올려야 한다(#349가 0100으로 올렸다).
 
 ## 지금 운영 리비전
-- api `00302-ksn`, worker `00295-5tm`, beat `00290-8mg`, site `00160-txz`, admin `00134-4fv`.
-- DB head는 `0100_add_hospital_site_configs`다.
+- api `00303-vds`, worker `00296-55n`, beat `00291-2nv`, site `00161-tmh`, admin `00135-wf9`.
+- DB head는 `0102_add_hospital_contract_ended_on`다.
 
 ## 롤백
 `deploy.sh rollback`은 `서비스=리비전` 형식 파일을 읽는다(`DEPLOY_ROLLBACK_STATE_FILE`). 각 `before.txt`는 조회 결과라 그대로 쓸 수 없어 같은 폴더에 `rollback.state`를 만들어 두었다. 배포 worktree의 `.deploy-rollback`은 마지막 Admin 배포가 덮어써 Admin 좌표만 남아 있다.
@@ -209,6 +256,7 @@ DEPLOY_ROLLBACK_STATE_FILE=$PWD/.omo/rollback-admin1121/rollback.state bash scri
 ```bash
 DEPLOY_ROLLBACK_STATE_FILE=$PWD/.omo/rollback-3rd1121/rollback.state bash scripts/deploy.sh rollback   # 3차만(Site 포함 다섯 서비스)
 ```
+- 7차만 되돌릴 때: `DEPLOY_ROLLBACK_STATE_FILE=$PWD/.omo/rollback-ab1121/rollback.state` — api `00302-ksn`, worker `00295-5tm`, beat `00290-8mg`, site `00160-txz`, admin `00134-4fv`. 마이그레이션 0101·0102(추가형 칸)는 되돌리지 않는다. 월간 SoV 한도도 옛 리비전 env(9000)로 돌아간다.
 - 6차만 되돌릴 때: `DEPLOY_ROLLBACK_STATE_FILE=$PWD/.omo/rollback-6th1121/rollback.state` — site `00159-jzr`, admin `00133-lp7`.
 - 5차만 되돌릴 때: `DEPLOY_ROLLBACK_STATE_FILE=$PWD/.omo/rollback-5th1121/rollback.state` — api `00301-pjs`, worker `00294-zv7`, beat `00289-m8j`, site `00158-qt2`, admin `00132-ssx`(공개된 설정이 없으니 화면은 같다).
 - 4차만 되돌릴 때: `DEPLOY_ROLLBACK_STATE_FILE=$PWD/.omo/rollback-4th1121/rollback.state` — api `00300-gpw`, worker `00293-89h`, beat `00288-wn7`(코드는 같고 비밀값만 빠진다 → 미리보기 발급 503).
