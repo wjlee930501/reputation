@@ -14,14 +14,25 @@ export interface LineBreakSpec {
   mobile?: string | null
 }
 
+// 백엔드(Python `str.split()`·`str.strip()`)가 공백으로 보는 글자. JavaScript `\s`와 달리 `\x1c`~`\x1f`·NEL(`\x85`)이
+// 들고 BOM(`\ufeff`)은 빠진다 — 같지 않으면 백엔드가 맞다고 본 줄을 사이트가 버린다.
+const PY_SPACE = '\\t\\n\\v\\f\\r \\x1c-\\x1f\\x85\\xa0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000'
+const SPACES = new RegExp(`[${PY_SPACE}]+`)
+const EDGE_SPACES = new RegExp(`^[${PY_SPACE}]+|[${PY_SPACE}]+$`, 'g')
+// Python `str.splitlines()`의 줄 경계.
+const LINE_BOUNDARY = /\r\n|[\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029]/
+
 /** 공백·줄바꿈을 공백 하나로 이은 한 줄(백엔드 `joined`). */
 export function joinedText(text: string): string {
-  return text.split(/\s+/).filter(Boolean).join(' ')
+  return text.split(SPACES).filter(Boolean).join(' ')
 }
 
+/** 백엔드 `split_lines`와 같다 — `splitlines()`는 끝 줄 경계 뒤에 빈 줄을 만들지 않는다. */
 function splitLines(value: string): string[] {
-  const lines = value.split(/\r\n|[\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029]/).map((line) => line.trim())
-  return lines.length ? lines : ['']
+  const lines = value.split(LINE_BOUNDARY)
+  if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop()
+  const trimmed = lines.map((line) => line.replace(EDGE_SPACES, ''))
+  return value === '' ? [''] : trimmed
 }
 
 /**
@@ -60,14 +71,25 @@ export function lineBreakMap(source: string | null | undefined, spec: LineBreakS
 export type LineBreakPiece = { kind: 'text'; text: string } | { kind: 'br'; device: LineBreakDevice }
 
 /**
- * 원문을 이은 한 줄의 `[start, start + text.length)` 구간 글(`text`)을 줄바꿈 자리에서 나눈다. 여러 조각(첫 화면 제목의
- * 앞 조각·강조 조각)으로 나뉜 글은 조각마다 자기 시작 위치를 넘긴다.
+ * 원문을 이은 한 줄의 `[start, start + text.length)` 구간 글(`raw`, 이은 모양으로 바꿔 쓴다)을 줄바꿈 자리에서 나눈다. 여러 조각(첫 화면 제목의
+ * 앞 조각·강조 조각)으로 나뉜 글은 조각마다 자기 시작 위치를 넘기고, 앞 조각과 같은 줄에 이어지는 조각은 `breakAtStart`.
  */
-export function lineBreakPieces(text: string, start: number, breaks: Map<number, LineBreakDevice>): LineBreakPiece[] {
-  if (breaks.size === 0) return [{ kind: 'text', text }]
+export function lineBreakPieces(
+  raw: string,
+  start: number,
+  breaks: Map<number, LineBreakDevice>,
+  breakAtStart = false,
+): LineBreakPiece[] {
+  if (breaks.size === 0) return [{ kind: 'text', text: raw }]
+  // 자리는 이은 한 줄 기준이다 — 원문에 줄바꿈·겹공백이 있으면 이은 모양으로 잘라야 자리가 맞는다(화면에서도 공백 하나로 보인다).
+  const text = joinedText(raw)
   const pieces: LineBreakPiece[] = []
   let cursor = 0
-  const cuts = [...breaks.keys()].filter((at) => at > start && at < start + text.length).sort((a, b) => a - b)
+  // 조각 시작 자리의 줄바꿈은 그 조각이 앞 조각과 같은 줄에 이어질 때(`breakAtStart`)만 넣는다 — 새 줄에서 시작하는
+  // 조각(블록)이면 이미 다른 줄이다.
+  const cuts = [...breaks.keys()]
+    .filter((at) => (breakAtStart ? at >= start && at > 0 : at > start) && at < start + text.length)
+    .sort((a, b) => a - b)
   for (const at of cuts) {
     const local = at - start
     if (local > cursor) pieces.push({ kind: 'text', text: text.slice(cursor, local) })

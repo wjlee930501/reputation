@@ -124,6 +124,7 @@ export function ClinicHero({
                 <LineBroken
                   text={leadStarts[index].text}
                   start={leadStarts[index].start}
+                  breakAtStart={index > 0 && !headline.explicitLines}
                   breaks={headlineBreaks}
                   fallback={<KeepTogether text={part} compounds />}
                 />{' '}
@@ -133,6 +134,7 @@ export function ClinicHero({
               <LineBroken
                 text={emphasisStart.text}
                 start={emphasisStart.start}
+                breakAtStart={headline.lead.length > 0 && !headline.explicitLines}
                 breaks={headlineBreaks}
                 fallback={<KeepTogether text={headline.emphasis} compounds />}
               />

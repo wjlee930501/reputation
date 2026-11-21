@@ -53,3 +53,30 @@ test('a part that starts later in the joined text gets only its own breaks; a br
     { kind: 'text', text: '조각입니다' },
   ])
 })
+
+test('a source with newlines or repeated spaces is cut on its joined form', () => {
+  const raw = '토요일에도  진료합니다.\n평일은 저녁 7시까지입니다.'
+  const map = lineBreakMap(raw, { pc: '토요일에도 진료합니다.\n평일은 저녁 7시까지입니다.' })
+  assert.deepEqual(lineBreakPieces(raw, 0, map), [
+    { kind: 'text', text: '토요일에도 진료합니다. ' },
+    { kind: 'br', device: 'pc' },
+    { kind: 'text', text: '평일은 저녁 7시까지입니다.' },
+  ])
+})
+
+test('a trailing line separator and Python-only spaces (NEL, \\x1c) match like the backend', () => {
+  assert.deepEqual(lineBreakOffsets('앞 문장 뒷문장', '앞 문장\n뒷문장\n'), ['앞 문장 '.length])
+  assert.deepEqual(lineBreakOffsets('앞 문장 뒷문장', '앞 문장 뒷문장 '), ['앞 문장 '.length])
+  assert.equal(lineBreakOffsets('앞 문장 뒷문장', '앞 문장\n뒷문장\n\n'), null)
+  assert.deepEqual(lineBreakOffsets('앞 문장\u0085뒷문장', '앞 문장\n뒷문장'), ['앞 문장 '.length])
+  assert.equal(joinedText('앞\x1c뒤﻿'), '앞 뒤﻿')
+})
+
+test('a part that continues the previous line draws the break at its start', () => {
+  const map = lineBreakMap('앞 줄 가운데 줄 강조 줄', { pc: '앞 줄\n가운데 줄 강조 줄' })
+  assert.deepEqual(lineBreakPieces('가운데 줄', 4, map, true), [
+    { kind: 'br', device: 'pc' },
+    { kind: 'text', text: '가운데 줄' },
+  ])
+  assert.deepEqual(lineBreakPieces('가운데 줄', 4, map), [{ kind: 'text', text: '가운데 줄' }])
+})

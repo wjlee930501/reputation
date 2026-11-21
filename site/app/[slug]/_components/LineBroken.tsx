@@ -11,14 +11,17 @@ export function LineBroken({
   text,
   breaks,
   start = 0,
+  breakAtStart = false,
   fallback,
 }: {
   text: string
   breaks: Map<number, LineBreakDevice>
   start?: number
+  /** 앞 조각과 같은 줄에 이어지는 조각 — 시작 자리의 줄바꿈도 넣는다. */
+  breakAtStart?: boolean
   fallback?: ReactNode
 }) {
-  const pieces = lineBreakPieces(text, start, breaks)
+  const pieces = lineBreakPieces(text, start, breaks, breakAtStart)
   if (!pieces.some((piece) => piece.kind === 'br')) return <>{fallback ?? text}</>
   return (
     <>

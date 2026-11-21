@@ -138,6 +138,7 @@ export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
                       <LineBroken
                         text={headlineParts[index].text}
                         start={headlineParts[index].start}
+                        breakAtStart={index > 0}
                         breaks={headlineBreaks}
                         fallback={<KeepTogether text={part} compounds />}
                       />{' '}
