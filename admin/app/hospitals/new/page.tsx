@@ -16,6 +16,7 @@ import {
   type SiteLayoutDistribution,
 } from '@/lib/site-layout'
 import {
+  CONTRACT_START_COPY,
   registrationBlockReason,
   registrationFailure,
   registrationPayload,
@@ -38,6 +39,8 @@ export default function RegisterContractPage() {
   const [plan, setPlan] = useState<PlanCode>('PLAN_12')
   const [aeOwnerId, setAeOwnerId] = useState('')
   const [siteLayout, setSiteLayout] = useState<SiteLayout | null>(null)
+  // 계약 시작일(결정 대기 17번 A). 비워 두면 서버가 등록일로 채운다 — 날짜를 화면이 지어내지 않는다.
+  const [contractStartOn, setContractStartOn] = useState('')
   // 사람이 한 번이라도 고르면 추천으로 덮지 않는다.
   const layoutChosenByOperator = useRef(false)
   const [suggestion, setSuggestion] = useState<SiteLayout | null>(null)
@@ -140,7 +143,7 @@ export default function RegisterContractPage() {
     }
   }, [leadRegion])
 
-  const form = { name, leadId, plan, aeOwnerId, siteLayout }
+  const form = { name, leadId, plan, aeOwnerId, siteLayout, contractStartOn }
   const blockReason = registrationBlockReason(form)
 
   async function handleSubmit(event: React.FormEvent) {
@@ -235,6 +238,19 @@ export default function RegisterContractPage() {
           </select>
           <span className="mt-1 block break-keep text-xs font-normal leading-5 text-slate-500">
             이 병원에 생기는 문제와 보고서 전달을 맡는 사람입니다.
+          </span>
+        </label>
+
+        <label className="block text-sm font-medium text-slate-700">
+          {CONTRACT_START_COPY.label}
+          <input
+            type="date"
+            value={contractStartOn}
+            onChange={(e) => setContractStartOn(e.target.value)}
+            className="mt-1.5 min-h-11 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm"
+          />
+          <span className="mt-1 block break-keep text-xs font-normal leading-5 text-slate-500">
+            {CONTRACT_START_COPY.hint}
           </span>
         </label>
 
