@@ -5,16 +5,16 @@ list, header and dashboard (2026-11 admin revamp, decision 1 option B). Nothing 
 public visibility, publishing, service intervals and report targeting stay as for any paused
 hospital. Purely additive — NULL keeps every hospital as before.
 
-Revision ID: 0101_add_hospital_contract_ended_on
-Revises: 0100_add_hospital_site_configs
+Revision ID: 0102_add_hospital_contract_ended_on
+Revises: 0101_add_query_target_set_roles
 """
 
 import sqlalchemy as sa
 
 from alembic import op
 
-revision: str = "0101_add_hospital_contract_ended_on"
-down_revision: str | None = "0100_add_hospital_site_configs"
+revision: str = "0102_add_hospital_contract_ended_on"
+down_revision: str | None = "0101_add_query_target_set_roles"
 branch_labels: str | None = None
 depends_on: str | None = None
 

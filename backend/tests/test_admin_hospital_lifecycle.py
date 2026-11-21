@@ -733,7 +733,7 @@ async def test_resume_without_custom_domain_skips_dns_check(monkeypatch):
     assert hospital.domain_last_check_reason is None
 
 
-# ── 계약 종료일(0101, 개편 결정 대기 1번 B) ─────────────────────────
+# ── 계약 종료일(0102, 개편 결정 대기 1번 B) ─────────────────────────
 async def test_contract_end_is_recorded_with_audit_and_cleared_by_null():
     from datetime import date
 
