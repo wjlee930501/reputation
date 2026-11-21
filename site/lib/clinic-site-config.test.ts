@@ -19,6 +19,8 @@ import {
   DEFAULT_HERO_BLOCKS,
   limitCarePrincipleCards,
   DEFAULT_PHOTO_RATIO,
+  BACKGROUND_FIXED,
+  DEFAULT_SECTION_BACKGROUND,
   DEFAULT_SECTION_LOOK,
   SECTION_LABEL_WORDS,
   naverBookingUrl,
@@ -114,6 +116,7 @@ for (const layout of LAYOUTS) {
     // ③-2c 섹션 머리도 기본값이면 지금 마크업이다 — 정렬 틀 없음, 소제목은 레이아웃 기본(C만 보임).
     for (const id of DEFAULT_SECTION_ORDER[layout]) {
       assert.equal(withConfig.align(id), null, `${layout} ${id}`)
+      assert.equal(withConfig.background(id), null, `${layout} ${id}`)
       assert.equal(withConfig.label(id), without.label(id), `${layout} ${id}`)
     }
     assert.equal(physicianPhotoLook(config), null)
@@ -489,4 +492,34 @@ test('a changed align or label shows; the same as the default does not; heads-le
   const hero = plan('B', set('hero', { align: 'center', label: true }))
   assert.equal(hero.align('hero'), null)
   assert.equal(hero.label('hero'), null)
+})
+
+// ── ③-2c 섹션 배경 ──────────────────────────────────────────────────
+
+test('the section background defaults equal the backend defaults', () => {
+  for (const layout of LAYOUTS) {
+    for (const section of DEFAULTS.layouts[layout].sections as Array<{ id: string; background: string }>) {
+      assert.equal(DEFAULT_SECTION_BACKGROUND[layout][section.id as never] ?? 'default', section.background, `${layout} ${section.id}`)
+    }
+  }
+})
+
+test('a changed background shows; dark-band, attached and head-less sections keep theirs', () => {
+  const plan = (layout: 'A' | 'B' | 'C', id: string, background: string) =>
+    buildHomeSectionPlan(
+      layout,
+      normalizeSiteConfig(
+        published(layout, (c) => Object.assign(c.sections.find((x: { id: string }) => x.id === id) ?? {}, { background })),
+        layout,
+      ),
+    ).background(id as never)
+  assert.equal(plan('B', 'treatments', 'band'), 'band')
+  assert.equal(plan('B', 'care_principles', 'default'), 'default')
+  assert.equal(plan('B', 'care_principles', 'tint'), null)
+  assert.equal(plan('B', 'faq', 'stripes'), null)
+  assert.equal(plan('A', 'hours', 'white'), null)
+  assert.equal(plan('C', 'care_principles', 'white'), null)
+  assert.equal(plan('C', 'news', 'band'), null)
+  assert.equal(plan('C', 'treatments', 'default'), 'default')
+  for (const layout of LAYOUTS) assert.ok(BACKGROUND_FIXED[layout].has('hero'), layout)
 })

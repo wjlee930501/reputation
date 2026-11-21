@@ -15,7 +15,7 @@
  * 진료 과정 안내·단계, FAQ 자동·직접, 상단 메뉴·모바일 하단 바, 공유 이미지·설명.
  * ③-2a가 더한 칸(B안만): 첫 화면 정보 띠 칸(`hero.blocks`), 진료 항목 모양·설명(`treatments`).
  * ③-2b가 더한 칸(A·B·C): 의료진 사진 비율·초점, 직함 위치(`doctor`).
- * ③-2c가 더한 칸(A·B·C): 섹션 제목 정렬·영문 소제목(`sections[].align`·`label`).
+ * ③-2c가 더한 칸(A·B·C): 섹션 제목 정렬·영문 소제목(`sections[].align`·`label`), 섹션 배경(`background`).
  * 첫 화면 배치·배경·정렬·영문 소제목·줄바꿈·진료 철학 같은 나머지 모양 칸은 다음 PR이다(받아 두기만 한다).
  */
 
@@ -144,9 +144,29 @@ export interface SiteSectionConfig {
   align?: SiteSectionAlign | null
   /** 영문 소제목 켜기. 레이아웃 기본과 같으면 null(지금 마크업). */
   label?: boolean | null
+  /** 섹션 배경. 레이아웃 기본과 같거나 바꿀 수 없는 섹션이면 null(지금 마크업). */
+  background?: SiteSectionBackground | null
 }
 
 export type SiteSectionAlign = 'left' | 'center'
+export type SiteSectionBackground = 'default' | 'white' | 'tint' | 'band'
+
+/**
+ * 레이아웃별 섹션 배경의 지금 모양(백엔드 섹션 표와 같다). 표에 없는 섹션은 'default'(레이아웃 고유 바탕).
+ * 지금 진한 띠인 섹션(A 오늘 진료, C 진료 원칙)·다른 섹션에 붙은 섹션(C 최근 소식·진료시간·진료 과정)·머리가 없는
+ * 섹션은 배경을 바꾸지 않는다(`BACKGROUND_FIXED`) — 진한 바탕의 흰 글자를 밝은 바탕에 남기지 않게.
+ */
+export const DEFAULT_SECTION_BACKGROUND: Readonly<Record<ClinicLayout, Partial<Record<SiteSectionId, SiteSectionBackground>>>> = {
+  A: { hours: 'band' },
+  B: { care_principles: 'tint', care_flow: 'tint' },
+  C: { treatments: 'tint', care_principles: 'band', care_flow: 'band' },
+}
+export const BACKGROUND_FIXED: Readonly<Record<ClinicLayout, ReadonlySet<SiteSectionId>>> = {
+  A: new Set<SiteSectionId>(['hero', 'hours']),
+  B: new Set<SiteSectionId>(['hero', 'section_index']),
+  C: new Set<SiteSectionId>(['hero', 'news', 'hours', 'care_principles', 'care_flow']),
+}
+const BACKGROUNDS: ReadonlySet<string> = new Set<SiteSectionBackground>(['default', 'white', 'tint', 'band'])
 
 /**
  * 레이아웃별 섹션 제목 정렬·영문 소제목의 지금 모양(백엔드 `site_defaults`의 섹션 표와 같다). 정렬·소제목을
@@ -269,6 +289,13 @@ export function normalizeSiteConfig(value: unknown, siteLayout: ClinicLayout | n
       title: title && title !== DEFAULT_SECTION_TITLES[layout][id] ? title : null,
       align: base && (raw.align === 'left' || raw.align === 'center') && raw.align !== base.align ? raw.align : null,
       label: base && typeof raw.label === 'boolean' && raw.label !== base.label ? raw.label : null,
+      background:
+        !BACKGROUND_FIXED[layout].has(id) &&
+        typeof raw.background === 'string' &&
+        BACKGROUNDS.has(raw.background) &&
+        raw.background !== (DEFAULT_SECTION_BACKGROUND[layout][id] ?? 'default')
+          ? (raw.background as SiteSectionBackground)
+          : null,
     })
   }
   // 설정에 없는 섹션은 기본 자리·기본값(서버 완성본은 언제나 전부 싣는다 — 옛 응답 대비).
@@ -460,6 +487,8 @@ export interface HomeSectionPlan {
   label(id: SiteSectionId): string | null
   /** 설정이 바꾼 제목 정렬(기본과 같으면 null — 지금 마크업). */
   align(id: SiteSectionId): SiteSectionAlign | null
+  /** 설정이 바꾼 섹션 배경(기본과 같거나 바꿀 수 없는 섹션이면 null — 지금 마크업). */
+  background(id: SiteSectionId): SiteSectionBackground | null
 }
 
 export function buildHomeSectionPlan(layout: ClinicLayout | null, config: ClinicSiteConfig | null): HomeSectionPlan {
@@ -489,6 +518,7 @@ export function buildHomeSectionPlan(layout: ClinicLayout | null, config: Clinic
       return shown ? SECTION_LABEL_WORDS[lookLayout][id] ?? null : null
     },
     align: (id) => byId.get(id)?.align ?? null,
+    background: (id) => byId.get(id)?.background ?? null,
     title: (id, fallback) => byId.get(id)?.title ?? fallback,
     note,
     customTitle: (id) => byId.get(id)?.title ?? null,

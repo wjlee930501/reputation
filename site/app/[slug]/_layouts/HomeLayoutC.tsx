@@ -475,7 +475,7 @@ export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
   return (
     <main id="main-content" className={s.home}>
       {plan.order.map((id) => (
-        <SectionLook key={id} align={plan.align(id)}>
+        <SectionLook key={id} align={plan.align(id)} background={plan.background(id)}>
           {sections[id]}
         </SectionLook>
       ))}
@@ -490,7 +490,7 @@ export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
 function SectionTitle({ label, className, children }: { label: string | null; className?: string; children: ReactNode }) {
   return (
     <div className={`${className ? `${className} ` : ''}clinic-look-head`}>
-      {label ? <p className={s.label} aria-hidden="true">{label}</p> : null}
+      {label ? <p className={`${s.label} clinic-look-eng`} aria-hidden="true">{label}</p> : null}
       <h2 className={`${s.title} clinic-look-title`}>{children}</h2>
     </div>
   )

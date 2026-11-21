@@ -9912,3 +9912,80 @@ a.clinic-tx-list-row:hover .clinic-tx-list-name {
 .clinic-shell.clinic-shell .clinic-look:not(.clinic-look-nested)[data-look-align='left'] .clinic-answers-eyebrow:not(.clinic-look-nested *) {
   margin-inline: 0;
 }
+
+/* ══ ③-2c 섹션 배경 ═══════════════════════════════════════════
+   배경을 바꾼 섹션만 틀(`.clinic-look-bg`)이 화면 폭 상자가 되어 배경을 칠하고, 감싼 섹션의 자기 배경은 걷는다.
+   '기본'은 레이아웃 고유 바탕(덧칠 없음), '흰색', '연한 대표색', '진한 띠'(레퍼런스 3-나 — 진한 띠 위에 머리는
+   흰 글자, 본문은 밝은 판). 진한 띠에서 본문을 밝은 판에 올리는 것은 본문 글자(어두운 색)가 진한 바탕에 묻히지
+   않게 하려는 것이다. 지금 진한 띠인 섹션·붙은 섹션은 배경을 바꾸지 않는다(clinic-site-config `BACKGROUND_FIXED`). */
+.clinic-look.clinic-look-bg {
+  display: block;
+}
+
+.clinic-look-bg[data-look-bg='white'] {
+  background: var(--color-revisit-greyscale-100, #ffffff);
+}
+
+.clinic-look-bg[data-look-bg='tint'] {
+  background: var(--clinic-brand-tint);
+}
+
+.clinic-look-bg[data-look-bg='band'] {
+  background: var(--clinic-brand-strong);
+  color: var(--clinic-on-brand-strong);
+}
+
+.clinic-shell.clinic-shell .clinic-look-bg > :is(section, div),
+.clinic-shell.clinic-shell .clinic-look-bg > div > section {
+  background: transparent;
+}
+
+/* 진한 띠 — 머리 글자는 흰색, 머리 뒤 본문 덩어리는 밝은 판(질문 목록(B)은 오른쪽 본문·옆 칸 안내 상자),
+   머리 뒤 링크·문단과 머리 안 버튼은 흰 글자. 바깥 섹션의 규칙은 안쪽 섹션 틀(.clinic-look-nested)에 들어가지 않고,
+   안쪽 틀은 자기 배경 규칙을 따로 갖는다. */
+.clinic-shell.clinic-shell .clinic-look-bg:not(.clinic-look-nested)[data-look-bg='band'] :is(.clinic-section-title, .clinic-look-title, .clinic-look-note, .clinic-section-note, .clinic-look-label, .clinic-look-eng, .clinic-answers-eyebrow, .clinic-principles-eyebrow, .clinic-principles-statement):not(.clinic-look-nested *) {
+  color: var(--clinic-on-brand-strong);
+}
+
+.clinic-shell.clinic-shell .clinic-look-bg:not(.clinic-look-nested)[data-look-bg='band'] :is(header:has(> .clinic-section-title), .clinic-look-head, .clinic-look-row, .clinic-principles-actions, .clinic-answers-rail) :is(a, .clinic-btn):not(.clinic-look-nested *) {
+  border-color: color-mix(in srgb, var(--clinic-on-brand-strong) 45%, transparent);
+  background: transparent;
+  color: var(--clinic-on-brand-strong);
+}
+
+.clinic-shell.clinic-shell .clinic-look-bg:not(.clinic-look-nested)[data-look-bg='band'] :is(:is(header:has(> .clinic-section-title), .clinic-look-head, .clinic-look-row, .clinic-look-title) ~ :not(p, a, .clinic-look-label, .clinic-principles-actions), .clinic-answers-main, .clinic-answers-hint):not(.clinic-look-nested *) {
+  padding: clamp(16px, 3vw, 32px);
+  border-radius: var(--clinic-radius, 12px);
+  background: var(--clinic-paper);
+  color: var(--clinic-ink);
+}
+
+.clinic-shell.clinic-shell .clinic-look-bg:not(.clinic-look-nested)[data-look-bg='band'] :is(:is(header:has(> .clinic-section-title), .clinic-look-head, .clinic-look-row, .clinic-look-title) ~ :is(a, p), :is(header:has(> .clinic-section-title), .clinic-look-head, .clinic-look-row, .clinic-look-title) ~ p a):not(.clinic-look-nested *) {
+  color: var(--clinic-on-brand-strong);
+}
+
+.clinic-shell.clinic-shell .clinic-look-nested.clinic-look-bg[data-look-bg='band'] :is(.clinic-section-title, .clinic-look-title, .clinic-look-note, .clinic-section-note, .clinic-look-label, .clinic-look-eng, .clinic-answers-eyebrow, .clinic-principles-eyebrow, .clinic-principles-statement) {
+  color: var(--clinic-on-brand-strong);
+}
+
+.clinic-shell.clinic-shell .clinic-look-nested.clinic-look-bg[data-look-bg='band'] :is(header:has(> .clinic-section-title), .clinic-look-head, .clinic-look-row, .clinic-principles-actions, .clinic-answers-rail) :is(a, .clinic-btn) {
+  border-color: color-mix(in srgb, var(--clinic-on-brand-strong) 45%, transparent);
+  background: transparent;
+  color: var(--clinic-on-brand-strong);
+}
+
+.clinic-shell.clinic-shell .clinic-look-nested.clinic-look-bg[data-look-bg='band'] :is(:is(header:has(> .clinic-section-title), .clinic-look-head, .clinic-look-row, .clinic-look-title) ~ :not(p, a, .clinic-look-label, .clinic-principles-actions), .clinic-answers-main, .clinic-answers-hint) {
+  padding: clamp(16px, 3vw, 32px);
+  border-radius: var(--clinic-radius, 12px);
+  background: var(--clinic-paper);
+  color: var(--clinic-ink);
+}
+
+.clinic-shell.clinic-shell .clinic-look-nested.clinic-look-bg[data-look-bg='band'] :is(:is(header:has(> .clinic-section-title), .clinic-look-head, .clinic-look-row, .clinic-look-title) ~ :is(a, p), :is(header:has(> .clinic-section-title), .clinic-look-head, .clinic-look-row, .clinic-look-title) ~ p a) {
+  color: var(--clinic-on-brand-strong);
+}
+
+/* 진한 띠 안의 안쪽 섹션 틀이 진한 띠가 아니면 띠의 흰 글자색을 물려받지 않는다(A 질문 목록 안 FAQ). */
+.clinic-shell.clinic-shell .clinic-look-bg[data-look-bg='band'] .clinic-look-nested:not([data-look-bg='band']) {
+  color: var(--clinic-ink);
+}
