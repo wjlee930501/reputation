@@ -36,6 +36,7 @@ from app.services.content_month_target import (
     month_allocation_count_stmt,
     month_is_voided,
     month_quota_restored,
+    operator_month_target,
     recorded_first_month_target,
     resolve_month_target,
     schedule_change_records_stmt,
@@ -258,6 +259,7 @@ async def _month_summary(db: AsyncSession, hospital: Hospital) -> MonthSummary:
             month_allocation,
             voided=month_voided,
             quota_restored=quota_restored,
+            operator_target=operator_month_target(schedule_records, now),
         )
         or 0,
         mention_rate=measured[0] if measured else None,

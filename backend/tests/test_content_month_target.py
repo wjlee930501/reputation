@@ -88,3 +88,48 @@ def test_recorded_first_month_target_applies_only_to_the_recorded_start_month() 
         {"active_from": "2026-10-12", "first_month_target": -1},
     ):
         assert recorded_first_month_target(broken, october) is None
+
+
+
+# ── 마케터가 정한 첫 달 편수(2026-11-21 마케팅 요청 #8) ─────────────────────────
+def test_last_marker_for_the_month_wins_between_contract_and_operator_targets():
+    import arrow as _arrow
+
+    from app.services.content_month_target import (
+        last_month_marker,
+        month_quota_restored,
+        operator_cancelled_ids,
+        operator_month_target,
+    )
+
+    nov = _arrow.get("2026-11-01")
+    contract = {"contract_quota_month": "2026-11"}
+    five = {"operator_month_target": {"month": "2026-11", "target": 5, "cancelled_ids": ["a", "b"]}}
+    other_month = {"operator_month_target": {"month": "2026-12", "target": 3}}
+
+    assert last_month_marker([], nov) is None
+    assert last_month_marker([(1, contract), (2, five)], nov) == ("operator", 5)
+    assert operator_month_target([(1, contract), (2, five)], nov) == 5
+    assert month_quota_restored([(1, contract), (2, five)], nov) is False
+    # 나중에 계약 편수로 되돌렸으면 그 표지가 이긴다.
+    assert operator_month_target([(1, five), (2, contract)], nov) is None
+    assert month_quota_restored([(1, five), (2, contract)], nov) is True
+    # 다른 달의 표지는 이 달과 무관하다.
+    assert last_month_marker([(1, other_month)], nov) is None
+    # 이 기능이 종료한 슬롯은 되돌린 뒤에도 기억한다(다시 늘릴 때만 쓴다).
+    assert operator_cancelled_ids([(1, five), (2, contract)], nov) == {"a", "b"}
+    # 모양이 틀린 표지는 읽지 않는다.
+    broken = {"operator_month_target": {"month": "2026-11", "target": True}}
+    assert last_month_marker([(1, broken)], nov) is None
+
+
+def test_operator_target_is_capped_by_quota_and_raised_by_live_slots():
+    from app.services.content_month_target import resolve_month_target
+
+    assert resolve_month_target(12, None, 5, operator_target=5) == 5
+    assert resolve_month_target(12, None, 0, operator_target=0) == 0
+    # 사람이 남긴 원고가 더 많으면 그 수다(안분과 같은 규칙).
+    assert resolve_month_target(12, None, 7, operator_target=5) == 7
+    assert resolve_month_target(12, None, 30, operator_target=5) == 12
+    # 미룬 달 판정이 먼저다.
+    assert resolve_month_target(12, None, 2, voided=True, operator_target=5) == 2
