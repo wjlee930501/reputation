@@ -69,9 +69,10 @@ DOCTOR_SURVEY_FILES = "0098_add_doctor_survey_files"
 SCHEDULE_DAILY_MAX = "0099_add_content_schedule_daily_max_superseded"
 HOSPITAL_SITE_CONFIGS = "0100_add_hospital_site_configs"
 QUERY_TARGET_SET_ROLES = "0101_add_query_target_set_roles"
+HOSPITAL_CONTRACT_ENDED_ON = "0102_add_hospital_contract_ended_on"
 
 PRODUCTION_STAMP = CONTENT_CUSTOMIZATION
-HEAD = QUERY_TARGET_SET_ROLES
+HEAD = HOSPITAL_CONTRACT_ENDED_ON
 
 
 def _script_directory() -> ScriptDirectory:
@@ -163,6 +164,7 @@ def test_hardening_revisions_keep_their_recovered_parents() -> None:
         SCHEDULE_DAILY_MAX,
         HOSPITAL_SITE_CONFIGS,
         QUERY_TARGET_SET_ROLES,
+        HOSPITAL_CONTRACT_ENDED_ON,
     )
     parents = {
         revision: script.get_revision(revision).down_revision for revision in recovered
@@ -218,6 +220,7 @@ def test_hardening_revisions_keep_their_recovered_parents() -> None:
         SCHEDULE_DAILY_MAX: DOCTOR_SURVEY_FILES,
         HOSPITAL_SITE_CONFIGS: SCHEDULE_DAILY_MAX,
         QUERY_TARGET_SET_ROLES: HOSPITAL_SITE_CONFIGS,
+        HOSPITAL_CONTRACT_ENDED_ON: QUERY_TARGET_SET_ROLES,
     }
 
 
@@ -229,6 +232,7 @@ def test_upgrade_from_the_production_stamp_runs_the_linear_tail() -> None:
     ]
 
     assert pending == [
+        HOSPITAL_CONTRACT_ENDED_ON,
         QUERY_TARGET_SET_ROLES,
         HOSPITAL_SITE_CONFIGS,
         SCHEDULE_DAILY_MAX,
@@ -287,7 +291,7 @@ def test_fresh_database_applies_the_whole_chain_in_order() -> None:
     ]
 
     assert len(applied) == len(set(applied))
-    assert applied[-50:] == [
+    assert applied[-51:] == [
         PHOTO_PROVENANCE,
         IMAGE_POLICY,
         CONTENT_CUSTOMIZATION,
@@ -338,4 +342,5 @@ def test_fresh_database_applies_the_whole_chain_in_order() -> None:
         SCHEDULE_DAILY_MAX,
         HOSPITAL_SITE_CONFIGS,
         QUERY_TARGET_SET_ROLES,
+        HOSPITAL_CONTRACT_ENDED_ON,
     ]
