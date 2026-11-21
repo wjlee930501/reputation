@@ -5,7 +5,12 @@ import test from 'node:test'
 import {
   FIXED_SECTIONS,
   UNTITLED_SECTIONS,
+  BACKGROUND_FIXED,
   B_ONLY_FIELDS,
+  B_ONLY_LINE_BREAK_PATHS,
+  lineBreakPathShown,
+  UNRENDERED_FIELDS,
+  sectionLookShown,
   buildOverrides,
   canDisable,
   canMoveDown,
@@ -288,7 +293,7 @@ test('admin CSP lets the editor frame the site preview origin, nothing else', as
 
 test('the B-only fields match the backend B_LAYOUT_ONLY rule; only B shows them', () => {
   const source = readFileSync(new URL('../../backend/app/services/site_config_validation.py', import.meta.url), 'utf8')
-  const pairs = [...(source.match(/_B_ONLY_FIELDS[^=]*= \(([^\n]*)\)/)?.[1] ?? '').matchAll(/\("([a-z_]+)", "([a-z_]+)"\)/g)].map(
+  const pairs = [...(source.match(/_B_ONLY_FIELDS[^=]*= \(([\s\S]*?)\n\)/)?.[1] ?? '').matchAll(/\("([a-z_]+)", "([a-z_]+)"\)/g)].map(
     (m) => `${m[1]}.${m[2]}`,
   )
   // 서버 규칙이 아직 없는 main에서는 비교하지 않는다(#358이 함께 나간다).
@@ -304,12 +309,12 @@ test('A and C never save the B-only fields, even when an old draft holds them', 
   edited.treatments = { show_description: false, style: 'list' }
   const base = clone(defaultsC())
   base.treatments = { show_description: true, style: 'cards' }
-  // 정보 블록만 바뀐 첫 화면은 통째로 빠지고, 진료 항목은 모양만 빠진다.
-  assert.deepEqual(buildOverrides(edited, base, 'C'), { treatments: { show_description: false } })
+  // 정보 블록만 바뀐 첫 화면·모양과 설명만 바뀐 진료 항목은 통째로 빠진다.
+  assert.deepEqual(buildOverrides(edited, base, 'C'), {})
   ;(edited.hero as { title_size: string }).title_size = 'l'
-  assert.deepEqual(buildOverrides(edited, base, 'C'), { hero: { title_size: 'l' }, treatments: { show_description: false } })
+  assert.deepEqual(buildOverrides(edited, base, 'C'), { hero: { title_size: 'l' } })
   // 레이아웃을 넘기지 않으면 완성본의 레이아웃(C)을 쓴다.
-  assert.deepEqual(buildOverrides(edited, base), { hero: { title_size: 'l' }, treatments: { show_description: false } })
+  assert.deepEqual(buildOverrides(edited, base), { hero: { title_size: 'l' } })
   // B는 그대로 싣는다.
   assert.deepEqual(buildOverrides(edited, base, 'B'), {
     hero: { title_size: 'l', blocks: ['phone', 'location'] },
@@ -328,4 +333,67 @@ test('an old A/C draft holding B-only values counts as changed, so it can be sav
   assert.equal(overridesCompareKey('C', base, base, true), overridesCompareKey('C', base, base))
   // B는 두 모양이 언제나 같다.
   assert.equal(overridesCompareKey('B', stored, base, true), overridesCompareKey('B', stored, base))
+})
+
+test('the unrendered fields and fixed backgrounds match the backend rules', () => {
+  const source = readFileSync(new URL('../../backend/app/services/site_config_validation.py', import.meta.url), 'utf8')
+  const block = source.match(/_UNRENDERED_FIELDS[^=]*= \(([\s\S]*?)\n\)/)?.[1] ?? ''
+  const pairs = [...block.matchAll(/\("([a-z_]+)", "([a-z_]+)"\)/g)].map((m) => `${m[1]}.${m[2]}`)
+  assert.ok(pairs.length > 0, 'backend _UNRENDERED_FIELDS not found')
+  assert.deepEqual(pairs.sort(), UNRENDERED_FIELDS.map(([g, k]) => `${g}.${k}`).sort())
+  for (const layout of ['A', 'B', 'C'] as const) {
+    const line = source.match(new RegExp(`"${layout}": frozenset\\(\\{([^}]*)\\}\\)`))?.[1] ?? ''
+    const ids = [...line.matchAll(/"([a-z_]+)"/g)].map((m) => m[1]).sort()
+    assert.deepEqual(ids, [...BACKGROUND_FIXED[layout]].sort(), layout)
+  }
+})
+
+test('head-less and fixed-background sections hide their look fields', () => {
+  assert.deepEqual(sectionLookShown('B', 'hero'), { enabled: true, align: false, label: false, background: false })
+  assert.deepEqual(sectionLookShown('B', 'section_index'), { enabled: false, align: false, label: false, background: false })
+  assert.deepEqual(sectionLookShown('A', 'hours'), { enabled: true, align: true, label: true, background: false })
+  assert.deepEqual(sectionLookShown('B', 'treatments'), { enabled: true, align: true, label: true, background: true })
+})
+
+test('hidden fields never reach the save, but a stored draft holding them counts as changed', () => {
+  const base = clone(defaultsC())
+  ;(base as Record<string, unknown>).doctor = { show_philosophy: false, photo_ratio: 'portrait' }
+  ;(base as Record<string, unknown>).nav = { items: [], section_index: false }
+  const stored = clone(base)
+  ;(stored as Record<string, any>).doctor.show_philosophy = true
+  ;(stored as Record<string, any>).nav.section_index = true
+  stored.sections = stored.sections.map((section) =>
+    section.id === 'hero' ? { ...section, align: 'center' as const } : section.id === 'care_principles' ? { ...section, background: 'tint' as const } : section,
+  )
+  assert.deepEqual(buildOverrides(stored, base, 'C'), {})
+  assert.notEqual(overridesCompareKey('C', stored, base, true), overridesCompareKey('C', stored, base))
+  const kept = buildOverrides(stored, base, 'C', true)
+  assert.deepEqual((kept.doctor as Record<string, unknown>).show_philosophy, true)
+  assert.ok(Array.isArray(kept.sections))
+})
+
+test('the shortcut menu cannot be turned on from the section list (the site does not draw it)', () => {
+  assert.equal(canDisable(section('section_index')), false)
+  assert.equal(canDisable(section('gallery')), true)
+})
+
+test('the lede line break is B-only: hidden on A·C, never saved there, and matches the backend list', () => {
+  assert.equal(lineBreakPathShown('B', 'care_principles.lede'), true)
+  assert.equal(lineBreakPathShown('A', 'care_principles.lede'), false)
+  assert.equal(lineBreakPathShown('C', 'care_principles.title'), true)
+  const base = clone(defaultsC())
+  const edited = clone(base)
+  ;(edited as Record<string, any>).hero = {
+    ...(edited as Record<string, any>).hero,
+    line_breaks: { 'care_principles.lede': { pc: 'a\nb', mobile: null }, 'hero.headline': { pc: 'h\ni', mobile: null } },
+  }
+  assert.deepEqual((buildOverrides(edited, base, 'C').hero as Record<string, any>).line_breaks, {
+    'hero.headline': { pc: 'h\ni', mobile: null },
+  })
+  ;(edited as Record<string, any>).hero.line_breaks = { 'care_principles.lede': { pc: 'a\nb', mobile: null } }
+  assert.equal(buildOverrides(edited, base, 'C').hero, undefined)
+  assert.ok(((buildOverrides(edited, base, 'C', true).hero as Record<string, any>).line_breaks as object))
+  const source = readFileSync(new URL('../../backend/app/services/site_config_validation.py', import.meta.url), 'utf8')
+  const line = source.match(/_B_ONLY_LINE_BREAKS[^=]*= frozenset\(\{([^}]*)\}\)/)?.[1] ?? ''
+  assert.deepEqual([...line.matchAll(/"([a-z_.]+)"/g)].map((m) => m[1]).sort(), [...B_ONLY_LINE_BREAK_PATHS].sort())
 })

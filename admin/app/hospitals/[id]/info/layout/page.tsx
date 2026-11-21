@@ -14,6 +14,7 @@ import {
   changeLabels,
   COPY_KEYS_BY_SECTION,
   LINE_BREAK_PATHS,
+  lineBreakPathShown,
   issuesFor,
   type SectionId,
   type SiteSection,
@@ -299,6 +300,7 @@ export default function SiteLayoutEditorPage() {
                 issues={issuesFor(issues, overrides, current.id)}
                 onChange={(next) => setSections(sections.map((section) => (section.id === next.id ? next : section)))}
                 disabled={locked}
+                layout={working.layout}
               />
               {current.id === 'hero' && (
                 <Extra title={COPY.heroTitle}>
@@ -319,9 +321,10 @@ export default function SiteLayoutEditorPage() {
                   <FaqSettings hospitalId={hospitalId} faq={faq} issues={[]} onChange={(next) => update({ faq: next })} disabled={locked} />
                 </Extra>
               )}
-              {current.id === 'treatments' && (
+              {/* 진료 항목 설명 보이기·모양은 B에만 그려진다 — A·C에는 세부 설정이 없다. */}
+              {current.id === 'treatments' && bOnly && (
                 <Extra>
-                  <TreatmentsSettings value={group('treatments')} onChange={(next) => update({ treatments: next })} disabled={locked} showStyle={bOnly} />
+                  <TreatmentsSettings value={group('treatments')} onChange={(next) => update({ treatments: next })} disabled={locked} />
                 </Extra>
               )}
               {current.id === 'doctor' && (
@@ -333,7 +336,7 @@ export default function SiteLayoutEditorPage() {
                 <Extra>
                   <CarePrinciplesSettings value={group('care_principles')} onChange={(next) => update({ care_principles: next })} disabled={locked} />
                   <LineBreaksSettings
-                    paths={LINE_BREAK_PATHS.filter((path) => path.startsWith('care_principles.'))}
+                    paths={LINE_BREAK_PATHS.filter((path) => path.startsWith('care_principles.') && lineBreakPathShown(working.layout, path))}
                     hospital={hospital}
                     lineBreaks={lineBreaks}
                     issues={[]}
@@ -353,7 +356,7 @@ export default function SiteLayoutEditorPage() {
                   />
                 </Extra>
               )}
-              {current.id === 'visit' && (
+              {current.id === 'visit' && bOnly && (
                 <Extra>
                   <VisitSettings value={group('visit')} onChange={(next) => update({ visit: next })} disabled={locked} />
                 </Extra>
