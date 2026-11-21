@@ -551,6 +551,11 @@ def test_forced_headline_starts_pick_parts_like_the_site() -> None:
     # 사이트는 JS trim으로 조각을 고른다 — U+0085만 있는 줄도 조각이라 강조는 '나'(이은 원문 자리 2)다.
     assert forced_line_starts("A", "hero.headline", "가\n\u0085\n나\n다") == [2]
     assert forced_line_starts("B", "hero.headline", "가\n\u0085\n나\n다") == [2]
+    # BOM뿐인 줄은 조각이 아니지만 이은 원문에서 글자를 차지한다 — 원문 그대로의 지정은 통과한다.
+    bom = "가\n\ufeff\n나다\n라"
+    for layout in ("A", "B", "C"):
+        check = validate_site_config(layout, {"hero": {"line_breaks": {"hero.headline": {"pc": bom}}}}, _ctx(hero_headline=bom))
+        assert check.ok, (layout, check.errors)
     assert forced_line_starts("B", "hero.headline", "가 나") == []
     assert forced_line_starts("B", "hero.description", "가\n나") == []
 

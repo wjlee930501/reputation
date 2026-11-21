@@ -764,22 +764,24 @@ const HEADLINE_PARTS_MAX = 3
 export function forcedLineStarts(layout: SiteLayout | null | undefined, path: LineBreakPath, source: string): number[] {
   if (path !== 'hero.headline') return []
   // 조각 고르기는 사이트와 같이 JS `trim()` 기준, 자리는 이은 원문 기준(글자가 없는 조각은 자리를 차지하지 않는다).
-  const picked = source.split('\n').filter((part) => part.trim()).slice(0, HEADLINE_PARTS_MAX)
-  if (picked.length < 2) return []
+  // 고르지 않은 줄(BOM뿐인 줄 등)의 글자도 센다 — 자리는 `linesMatch`와 같은 이은 원문 기준이다.
   const starts: Array<number | null> = []
   let position = 0
   let seen = false
-  for (const part of picked) {
-    const text = joinedText(part)
-    if (!text) {
-      starts.push(null)
-      continue
+  for (const line of source.split('\n')) {
+    const text = joinedText(line)
+    let start: number | null = null
+    if (text) {
+      if (seen) {
+        position += 1
+        start = position
+      }
+      position += text.length
+      seen = true
     }
-    if (seen) position += 1
-    starts.push(seen ? position : null)
-    position += text.length
-    seen = true
+    if (line.trim() && starts.length < HEADLINE_PARTS_MAX) starts.push(start)
   }
+  if (starts.length < 2) return []
   const later = starts.slice(1)
   const forced = layout === 'B' ? later : later.slice(-1)
   return forced.filter((at): at is number => at !== null)

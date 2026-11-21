@@ -188,23 +188,24 @@ def forced_line_starts(layout: str, path: str, source: str) -> list[int]:
     if path != "hero.headline":
         return []
     # 조각 고르기는 사이트와 같이 JS `trim()` 기준이다(파이썬 공백과 집합이 다르다 — U+0085는 JS 공백이 아니다).
-    picked = [part for part in source.split("\n") if _js_trim(part)][:HEADLINE_PARTS_MAX]
-    if len(picked) < 2:
-        return []
-    # 자리는 이은 원문 기준 — 이은 원문에서 글자가 없는 조각은 자리를 차지하지 않는다(사이트 `partStarts`).
+    # 자리는 `lines_match`와 같은 이은 원문 기준이라 고르지 않은 줄(BOM뿐인 줄 등)의 글자도 센다. 이은 원문에서 글자가
+    # 없는 조각은 자리를 차지하지 않는다(사이트 `partStarts`).
     starts: list[int | None] = []
     position = 0
     seen = False
-    for part in picked:
-        text = joined(part)
-        if not text:
-            starts.append(None)
-            continue
-        if seen:
-            position += 1
-        starts.append(position if seen else None)
-        position += len(text)
-        seen = True
+    for line in source.split("\n"):
+        text = joined(line)
+        start = None
+        if text:
+            if seen:
+                position += 1
+                start = position
+            position += len(text)
+            seen = True
+        if _js_trim(line) and len(starts) < HEADLINE_PARTS_MAX:
+            starts.append(start)
+    if len(starts) < 2:
+        return []
     later = starts[1:]
     forced = later if layout == "B" else later[-1:]
     return [at for at in forced if at is not None]
