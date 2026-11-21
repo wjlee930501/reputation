@@ -123,3 +123,37 @@ def test_specialty_without_symptom_templates_falls_back_to_keywords():
     c_rows = [r for r in rows if r.group == "C"]
     assert sum(r.role is not None for r in c_rows) == 8
     assert len({r.text for r in c_rows}) == len(c_rows)
+
+
+def test_codex_review_generator_cases():
+    rehab = draft_measurement_set(
+        hospital_name="튼튼재활의학과의원",
+        region=["강남구", "역삼동"],
+        specialties=["재활의학과"],
+        keywords=["도수치료"],
+    )
+    assert not any("정형외과" in r.text for r in rehab)
+    assert any("재활의학과" in r.text for r in rehab if r.group == "C")
+
+    search = draft_measurement_set(
+        hospital_name="강남연세내과",
+        region=["강남구"],
+        specialties=["내과"],
+        keywords=["위내시경 잘하는 곳", "갑상선초음파"],
+    )
+    assert not any(" 곳 때문에" in r.text or "위내시경 곳" in r.text for r in search)
+
+    kids = draft_measurement_set(
+        hospital_name="아이사랑소아청소년과",
+        region=["수원 영통구"],
+        specialties=["소아청소년과"],
+        keywords=["예방접종", "감기", "장염"],
+    )
+    assert not any("예방접종 때문에 고민" in r.text or "예방접종이 오래가는데" in r.text for r in kids)
+    family = draft_measurement_set(
+        hospital_name="우리가정의원",
+        region=["대구 수성구"],
+        specialties=["가정의학과"],
+        keywords=["고혈압"],
+    )
+    assert not any(" 내과" in r.text for r in family)

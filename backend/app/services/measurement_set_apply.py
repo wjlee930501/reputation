@@ -34,6 +34,8 @@ from app.services.measurement_question_set import (
 from app.services.query_target_structure import describe_query_text
 
 DRAFT_ACTOR = "system:measure-30-draft"
+# 세트 저장·초안 적용이 새로 만든 질문 행의 created_by. 세트에서 빠지면 보관한다(측정만을 위해 만든 질문이다).
+SET_CREATOR = "system:measure-30-set"
 PLATFORMS = ("CHATGPT", "GEMINI")
 MAX_TEXT_LENGTH = 200
 
@@ -179,7 +181,7 @@ def _new_target(hospital_id: uuid.UUID, text: str, *, actor: str) -> AIQueryTarg
         priority="NORMAL",
         status="ACTIVE",
         target_month=arrow.now("Asia/Seoul").format("YYYY-MM"),
-        created_by=actor,
+        created_by=SET_CREATOR,
         updated_by=actor,
         variants=[],
     )
@@ -216,6 +218,14 @@ async def apply_rows(
             reused += 1
             if row.role is not None:
                 target.status = "ACTIVE"
+            elif (
+                str(target.status).upper() == "ARCHIVED"
+                or target.created_by in (SET_CREATOR, DRAFT_ACTOR)
+                or row.group == measurement_set.GROUP_BRAND
+            ):
+                # 후보는 측정도 글 주제도 아니다 — 보관된 후보를 다시 올리거나 측정 질문을 후보로 내리면
+                # PAUSED다. 옛 질문(V0 시드 등)을 후보로 두면 글 주제로는 계속 쓰이게 그대로 둔다.
+                target.status = "PAUSED"
             target.updated_by = actor
         target.question_group = row.group
         target.set_role = row.role
@@ -226,12 +236,19 @@ async def apply_rows(
             continue
         if target.question_group is None and target.set_role is None and not target.in_tracking_set:
             continue
-        target.question_group = None
+        was_brand = target.question_group == measurement_set.GROUP_BRAND
         target.set_role = None
         target.in_tracking_set = False
         target.updated_by = actor
-        if target.created_by == DRAFT_ACTOR and target.status == "PAUSED":
+        if target.created_by in (SET_CREATOR, DRAFT_ACTOR):
+            # 측정만을 위해 만든 질문 — 보관한다(그룹은 남겨 둔다).
             target.status = "ARCHIVED"
+        elif was_brand:
+            # 병원명 질문은 측정에서 빠져도 글 주제가 아니다 — 그룹 A를 남기고 쉬게 한다.
+            target.status = "PAUSED"
+        else:
+            # 옛 질문(V0 시드 등)은 측정에서만 빠지고 글 주제로 남는다.
+            target.question_group = None
         released += 1
     await db.flush()
     members = [row for row in cleaned if row.role is not None]

@@ -89,6 +89,9 @@ async def run(
         hospitals = await _hospitals(db, ids)
     for hospital in hospitals:
         async with session_factory() as db:
+            if command == "apply":
+                # 판정 전에 잠근다 — 판정과 적용 사이에 어드민 저장이 끼어들면 그 세트를 덮어쓰게 된다.
+                await acquire_hospital_advisory_lock(db, hospital.id)
             hospital = await db.get(Hospital, hospital.id)
             targets = await load_targets(db, hospital.id)
             curated = measurement_set.uses_curated_set(targets)
@@ -121,7 +124,6 @@ async def run(
             if curated and not replace:
                 _emit(out, {**base, "action": "skipped_curated"})
                 continue
-            await acquire_hospital_advisory_lock(db, hospital.id)
             try:
                 summary = await apply_rows(db, hospital, rows, actor=DRAFT_ACTOR)
             except MeasurementSetError as exc:

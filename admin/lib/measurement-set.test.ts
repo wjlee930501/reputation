@@ -73,3 +73,10 @@ test('서버 422 문제를 행별·세트 문장으로 나눈다', () => {
   assert.deepEqual(shape, ['fixed questions 14, requires 15..20'])
   assert.deepEqual(readSaveProblems(null).shape, [])
 })
+
+test('행 수 상한과 FastAPI 검증 오류를 보인다', () => {
+  const many = Array.from({ length: 61 }, (_, i) => row(`후보 ${i}`, 'B', null))
+  assert.ok(shapeIssues(many).some((issue) => issue.includes('60개까지')))
+  const { shape } = readSaveProblems([{ loc: ['body', 'rows'], msg: 'List should have at most 60 items' }])
+  assert.deepEqual(shape, ['List should have at most 60 items'])
+})

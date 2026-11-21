@@ -172,7 +172,19 @@ async def test_draft_save_swap_and_reject(db, client):
     promoted = targets[rows[candidate_index]["text"]]
     assert (promoted.set_role, promoted.status, promoted.in_tracking_set) == ("ROTATING", "ACTIVE", True)
     demoted = targets[rows[rotating_index]["text"]]
-    assert (demoted.set_role, demoted.in_tracking_set) == (None, False)
+    assert (demoted.set_role, demoted.in_tracking_set, demoted.status) == (None, False, "PAUSED")
+
+    # 세트에서 뺀 질문: 세트가 만든 행은 보관, 옛 병원명 질문은 그룹 A를 남기고 쉰다(글 주제 아님).
+    removed_text = next(r["text"] for i, r in enumerate(rows) if r["role"] is None and i != rotating_index)
+    if removed_text:
+        trimmed = [r for r in rows if r["text"] != removed_text]
+        response = await client.put(base, headers=ADMIN, json={"rows": trimmed})
+        assert response.status_code == 200, response.text
+        archived = (await _targets(db, hospital_id))[removed_text]
+        assert archived.status == "ARCHIVED"
+        restored = await client.put(base, headers=ADMIN, json={"rows": rows})
+        assert restored.status_code == 200
+        assert (await _targets(db, hospital_id))[removed_text].status == "PAUSED"
 
     # 지침 3-1 문형과 모양 위반은 저장하지 않는다.
     bad = [dict(row) for row in rows]
@@ -192,7 +204,7 @@ async def test_draft_save_swap_and_reject(db, client):
             select(AdminAuditLog.action).where(AdminAuditLog.hospital_id == hospital_id)
         )
     ).scalars().all()
-    assert audits.count("save_measurement_set") == 2
+    assert audits.count("save_measurement_set") >= 2
 
 
 async def test_rollout_cli_prechecks_applies_and_keeps_curated_sets(db, monkeypatch):

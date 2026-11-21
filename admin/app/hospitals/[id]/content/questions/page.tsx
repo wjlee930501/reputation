@@ -170,7 +170,8 @@ export default function MeasurementSetPage() {
         <span className="flex-1" />
         <button
           type="button"
-          className="rounded-md border border-slate-300 px-3 py-1.5 text-sm"
+          className="rounded-md border border-slate-300 px-3 py-1.5 text-sm disabled:opacity-50"
+          disabled={saving}
           onClick={() => (rows.length ? setConfirmDraft(true) : void loadDraft())}
         >
           {rows.length ? COPY.redraft : COPY.draft}
@@ -238,6 +239,7 @@ export default function MeasurementSetPage() {
           rows={rows}
           target={server.plan[group]}
           swapFrom={swapFrom}
+          locked={saving}
           onText={(index, text) => setRows((current) => setText(current, index, text))}
           onRole={onRoleChange}
           onRemove={(index) => {
@@ -277,6 +279,7 @@ function GroupSection({
   rows,
   target,
   swapFrom,
+  locked,
   onText,
   onRole,
   onRemove,
@@ -288,6 +291,7 @@ function GroupSection({
   rows: MeasurementSetRow[]
   target: { fixed: number; rotating: number }
   swapFrom: number | null
+  locked: boolean
   onText: (index: number, text: string) => void
   onRole: (index: number, value: string) => void
   onRemove: (index: number) => void
@@ -308,6 +312,7 @@ function GroupSection({
         <span className="flex-1" />
         <span className="text-xs text-slate-600">{COPY.groupCounts(counts.fixed, counts.rotating, target)}</span>
       </div>
+      <fieldset disabled={locked} className="contents">
       <ul className="space-y-2">
         {indexed.map(({ row, index }) => {
           const roleValue = row.role ?? 'candidate'
@@ -361,6 +366,7 @@ function GroupSection({
       <button type="button" className="text-sm text-slate-600 hover:text-slate-900" onClick={onAdd}>
         + {COPY.addQuestion}
       </button>
+      </fieldset>
     </section>
   )
 }

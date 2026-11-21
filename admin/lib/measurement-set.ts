@@ -45,6 +45,8 @@ export const SET_FIXED_MAX = 20
 export const SET_ROTATING_MAX = 10
 export const SET_TOTAL_MAX = 30
 export const QUESTION_MAX_LENGTH = 200
+// 서버 저장 본문의 최대 행 수(세트 30 + 후보).
+export const ROWS_MAX = 60
 
 export function countRoles(rows: MeasurementSetRow[]): { fixed: number; rotating: number; candidates: number } {
   return {
@@ -83,6 +85,7 @@ export function shapeIssues(rows: MeasurementSetRow[]): string[] {
     issues.push(`질문은 ${QUESTION_MAX_LENGTH}자까지입니다.`)
   }
   if (new Set(texts).size !== texts.length) issues.push('같은 질문이 두 번 있습니다.')
+  if (rows.length > ROWS_MAX) issues.push(`질문과 후보를 합쳐 ${ROWS_MAX}개까지 둘 수 있습니다(지금 ${rows.length}개).`)
   if (rows.some((row) => row.group === 'A' && row.role === 'ROTATING')) {
     issues.push('병원명 질문(A)은 고정으로만 둡니다.')
   }
@@ -132,6 +135,15 @@ export function toSavePayload(rows: MeasurementSetRow[]): { rows: { text: string
 export function readSaveProblems(detail: unknown): { byIndex: Map<number, string[]>; shape: string[] } {
   const byIndex = new Map<number, string[]>()
   const shape: string[] = []
+  // FastAPI 본문 검증 오류(배열 [{loc, msg}])도 세트 문장으로 보인다.
+  if (Array.isArray(detail)) {
+    for (const item of detail) {
+      if (item && typeof item === 'object' && typeof (item as { msg?: unknown }).msg === 'string') {
+        shape.push((item as { msg: string }).msg)
+      }
+    }
+    return { byIndex, shape }
+  }
   const problems =
     detail && typeof detail === 'object' && 'problems' in detail && Array.isArray((detail as { problems: unknown }).problems)
       ? ((detail as { problems: unknown[] }).problems)
