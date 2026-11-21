@@ -9989,3 +9989,59 @@ a.clinic-tx-list-row:hover .clinic-tx-list-name {
 .clinic-shell.clinic-shell .clinic-look-bg[data-look-bg='band'] .clinic-look-nested:not([data-look-bg='band']) {
   color: var(--clinic-ink);
 }
+
+/* ══ ③-2d 첫 화면 — 배치·덮개·제목 크기·사진 초점(B·레이아웃 도입 전 공용 ClinicHero) ══════════
+   표지(data-hero-*)는 설정이 기본과 다를 때만 붙는다. 사진 위에 글은 넓은 화면(921px~)에서만 — 좁은 화면은
+   지금처럼 글·사진을 위아래로 쌓아 글이 사진 위에 놓이지 않는다. 덮개 색은 B 글 바탕(종이색). 글이 놓이는 왼쪽(0~50%)은
+   설정 농도와 무관하게 불투명한 글 바탕색 — 어두운 사진에서도 글이 지금 첫 화면과 같은 바탕 위에 놓인다(설정 농도는
+   50~78%의 사라지는 구간이 아니라 '사진 전체' 덮개 한 겹에 쓴다). */
+.clinic-hero[data-hero-title] .clinic-hero-editorial-title {
+  font-size: calc(var(--clinic-type-display) * var(--hero-title-scale, 1));
+}
+
+.clinic-hero[data-hero-focus] .clinic-hero-editorial-photo img {
+  object-position: var(--hero-focus);
+}
+
+.clinic-hero[data-hero-arrangement='text'] .clinic-hero-editorial-grid {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.clinic-hero[data-hero-arrangement='text'] .clinic-hero-editorial-photo {
+  display: none;
+}
+
+@media (min-width: 921px) {
+  /* 사진과 글을 같은 칸에 겹친다(절대 위치 대신) — 칸 높이는 글과 최소 높이가 정하고 사진이 그 칸을 채운다. */
+  .clinic-hero[data-hero-arrangement='overlay'] .clinic-hero-editorial-grid {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(520px, auto);
+  }
+
+  .clinic-hero[data-hero-arrangement='overlay'] .clinic-hero-editorial-photo:not(.is-empty) {
+    grid-area: 1 / 1;
+    align-self: stretch;
+    aspect-ratio: auto;
+    height: auto;
+  }
+
+  .clinic-hero[data-hero-arrangement='overlay'] .clinic-hero-editorial-photo:not(.is-empty)::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(90deg, var(--clinic-paper) 0%, var(--clinic-paper) max(50%, 580px), transparent calc(max(50%, 580px) + 22%));
+  }
+
+  .clinic-hero[data-hero-veil='full'] .clinic-hero-editorial-photo:not(.is-empty)::after {
+    background: linear-gradient(90deg, var(--clinic-paper) 0%, var(--clinic-paper) max(50%, 580px), transparent calc(max(50%, 580px) + 22%)), color-mix(in srgb, var(--clinic-paper) calc(var(--hero-veil-opacity, 0.6) * 100%), transparent);
+  }
+
+  .clinic-shell.clinic-shell .clinic-hero[data-hero-arrangement='overlay'] .clinic-hero-editorial-copy {
+    position: relative;
+    z-index: 1;
+    grid-area: 1 / 1;
+    align-self: center;
+    max-width: 560px;
+    background: transparent;
+  }
+}

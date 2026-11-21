@@ -25,6 +25,7 @@ import {
 } from '@/lib/schema'
 import {
   buildHomeSectionPlan,
+  heroLookAttributes,
   naverBookingUrl,
   physicianPhotoLook,
   resolveCareFlow,
@@ -237,6 +238,7 @@ export function HospitalHome({
         heroDescription={hospital.hero_description}
         blocks={heroBlocks}
         bookingUrl={bookingUrl}
+        lookAttributes={heroLookAttributes(siteConfig?.hero.look)}
       />
     ),
     // 첫 화면 아래 바로가기 메뉴(.clinic-section-index)는 2026-11-20 결정 12a로 뺐다 — 상단 메뉴와

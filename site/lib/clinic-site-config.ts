@@ -16,6 +16,7 @@
  * ③-2a가 더한 칸(B안만): 첫 화면 정보 띠 칸(`hero.blocks`), 진료 항목 모양·설명(`treatments`).
  * ③-2b가 더한 칸(A·B·C): 의료진 사진 비율·초점, 직함 위치(`doctor`).
  * ③-2c가 더한 칸(A·B·C): 섹션 제목 정렬·영문 소제목(`sections[].align`·`label`), 섹션 배경(`background`).
+ * ③-2d가 더한 칸(A·B·C): 첫 화면 배치·덮개·제목 크기·사진 초점(`hero.arrangement`·`image`·`title_size`).
  * 첫 화면 배치·배경·정렬·영문 소제목·줄바꿈·진료 철학 같은 나머지 모양 칸은 다음 PR이다(받아 두기만 한다).
  */
 
@@ -231,7 +232,7 @@ export interface ClinicSiteConfig {
   /**
    * B안만. 기본값(지금 띠)과 같거나 B안이 아니면 null — 컴포넌트는 null이면 지금 마크업을 그대로 그린다.
    */
-  hero: { blocks: SiteHeroBlock[] | null }
+  hero: { blocks: SiteHeroBlock[] | null; look: HeroLook | null }
   /** B안만. A·C는 언제나 지금 모양(카드·설명 보임)이다 — A 알약·C 타일은 이 칸을 읽지 않는다. */
   treatments: { style: SiteTreatmentStyle; showDescription: boolean }
   /**
@@ -375,7 +376,7 @@ export function normalizeSiteConfig(value: unknown, siteLayout: ClinicLayout | n
       mobileBar: itemsOf<SiteMobileBarItem>(nav.mobile_bar, MOBILE_BAR_ITEMS, DEFAULT_MOBILE_BAR),
     },
     share: { imageAssetId: text(share.image_asset_id), description: text(share.description) },
-    hero: { blocks: layout === 'B' ? customHeroBlocks(value.hero) : null },
+    hero: { blocks: layout === 'B' ? customHeroBlocks(value.hero) : null, look: heroLook(value.hero, layout) },
     treatments: layout === 'B' ? treatmentLook(value.treatments) : { ...DEFAULT_TREATMENT_LOOK },
     doctor: doctorLook(value.doctor, layout),
   }
@@ -416,6 +417,64 @@ export function physicianPhotoLook(config: ClinicSiteConfig | null): {
 }
 
 const DEFAULT_TREATMENT_LOOK = { style: 'cards', showDescription: true } as const
+
+/**
+ * 첫 화면 모양(③-2d). 기본값과 다른 칸만 싣는다 — 모두 기본이면 null(지금 마크업).
+ * - 배치: 지금 세 안 모두 좌우 분할(split). overlay = 사진 위에 글(넓은 화면만 — 좁은 화면은 지금처럼 사진·글을
+ *   위아래로 쌓아 글이 사진 위에 놓이지 않는다), text = 글만(사진을 그리지 않는다).
+ * - 덮개: 사진 위에 글일 때만. extent text = 글 쪽만, full = 사진 전체. '없음'이면 글 쪽 덮개를 기본 농도(0.6)로 깐다.
+ *   색은 레이아웃의 글 바탕색(B 종이색, A 연한 대표색, C 진한 대표색).
+ * - 제목 크기: s·l(m = 지금 크기).
+ * - 사진 초점: 레이아웃 기본(B 위 48%, A·C 가운데)과 다를 때만.
+ */
+export interface HeroLook {
+  arrangement: 'overlay' | 'text' | null
+  titleSize: 's' | 'l' | null
+  veil: { extent: 'text' | 'full'; opacity: number } | null
+  focus: { x: number; y: number } | null
+}
+
+const DEFAULT_HERO_FOCUS: Readonly<Record<ClinicLayout, { x: number; y: number }>> = {
+  A: { x: 0.5, y: 0.5 },
+  B: { x: 0.5, y: 0.48 },
+  C: { x: 0.5, y: 0.5 },
+}
+
+function heroLook(raw: unknown, layout: ClinicLayout): HeroLook | null {
+  const hero = isRecord(raw) ? raw : {}
+  const arrangement = hero.arrangement === 'overlay' || hero.arrangement === 'text' ? hero.arrangement : null
+  const titleSize = hero.title_size === 's' || hero.title_size === 'l' ? hero.title_size : null
+  const image = isRecord(hero.image) ? hero.image : {}
+  const rawVeil = isRecord(image.veil) ? image.veil : {}
+  const opacity = unit(rawVeil.opacity)
+  const extent: 'text' | 'full' | null = rawVeil.extent === 'text' ? 'text' : rawVeil.extent === 'full' ? 'full' : null
+  // 사진 위에 글인데 덮개가 '없음'이면 글 쪽 덮개를 기본 농도로 깐다 — 글이 사진 위에 맨바닥으로 놓이지 않게
+  // (편집기의 덮개 기본값이 '없음'이라 배치만 바꾸면 글자가 사진에 묻힌다).
+  const veil = arrangement === 'overlay' ? { extent: extent ?? 'text', opacity: extent ? opacity ?? 0.6 : 0.6 } : null
+  const rawFocus = isRecord(image.focus) ? image.focus : {}
+  const x = unit(rawFocus.x)
+  const y = unit(rawFocus.y)
+  const base = DEFAULT_HERO_FOCUS[layout]
+  const focus = x !== null && y !== null && (x !== base.x || y !== base.y) ? { x, y } : null
+  if (!arrangement && !titleSize && !focus) return null
+  return { arrangement, titleSize, veil, focus }
+}
+
+/** 첫 화면 섹션에 덧붙일 표지·변수(`HeroLook`). null이면 아무것도 붙이지 않는다 — 지금 마크업 그대로. */
+export function heroLookAttributes(look: HeroLook | null | undefined): Record<string, unknown> {
+  if (!look) return {}
+  const style: Record<string, string> = {}
+  if (look.titleSize) style['--hero-title-scale'] = look.titleSize === 's' ? '0.85' : '1.15'
+  if (look.focus) style['--hero-focus'] = `${Math.round(look.focus.x * 100)}% ${Math.round(look.focus.y * 100)}%`
+  if (look.veil) style['--hero-veil-opacity'] = String(look.veil.opacity)
+  return {
+    'data-hero-arrangement': look.arrangement ?? undefined,
+    'data-hero-title': look.titleSize ?? undefined,
+    'data-hero-veil': look.veil?.extent ?? undefined,
+    'data-hero-focus': look.focus ? '' : undefined,
+    style,
+  }
+}
 
 /** 정보 띠 칸 — 모르는·겹친 칸은 버린다. 남은 칸이 없거나 지금 띠와 같으면 null(지금 마크업). */
 function customHeroBlocks(raw: unknown): SiteHeroBlock[] | null {

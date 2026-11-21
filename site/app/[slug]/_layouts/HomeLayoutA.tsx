@@ -20,7 +20,7 @@ import {
   WEEK_DAY_KEYS,
 } from '@/lib/clinic-layout'
 import { fullClinicAddress } from '@/lib/clinic-schema'
-import { physicianPhotoLook, limitCarePrincipleCards, type SiteSectionId } from '@/lib/clinic-site-config'
+import { heroLookAttributes, physicianPhotoLook, limitCarePrincipleCards, type SiteSectionId } from '@/lib/clinic-site-config'
 import {
   CARE_FLOW_TITLE,
   resolveCarePrinciples,
@@ -148,7 +148,7 @@ export function HomeLayoutA({ model }: { model: ClinicHomeModel }) {
 
   const sections: Partial<Record<SiteSectionId, ReactNode>> = {
     hero: (
-      <section className={s.hero} aria-label="첫 화면">
+      <section className={s.hero} aria-label="첫 화면" {...heroLookAttributes(model.siteConfig?.hero.look)}>
         <div className={s.heroInner}>
           <div className={s.heroCopy}>
             <h1 className={s.heroTitle}>
