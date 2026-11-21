@@ -21,15 +21,24 @@ export default function HospitalDomainPage() {
   const { hospital, refetch } = useHospitalHeader()
   const [profile, setProfile] = useState<DomainProfile>({})
   const [dirty, setDirty] = useState(false)
+  // 도메인 패널이 저장·확인 뒤 헤더를 다시 받을 때, 그 요청 전의 헤더. `refetch`는 실패를 삼키므로
+  // 「새 헤더가 실제로 왔다」(객체가 바뀌었다)를 확인한 뒤에만 입력 중 표시를 푼다 — 조회가 실패하면
+  // 옛 스냅샷이 방금 저장한 도메인을 덮지 않는다.
+  const [awaitingFrom, setAwaitingFrom] = useState<Hospital | null>(null)
 
   useEffect(() => {
-    if (!hospital || dirty) return
+    if (!hospital) return
+    if (dirty) {
+      if (!awaitingFrom || hospital === awaitingFrom) return
+      setDirty(false)
+      setAwaitingFrom(null)
+    }
     setProfile(hospital as unknown as DomainProfile)
-  }, [hospital, dirty])
+  }, [hospital, dirty, awaitingFrom])
 
-  async function refreshHeader() {
-    await refetch()
-    setDirty(false)
+  function refreshHeader() {
+    setAwaitingFrom(hospital)
+    void refetch()
   }
 
   return (
@@ -49,7 +58,7 @@ export default function HospitalDomainPage() {
                   setDirty(true)
                   setProfile((prev) => ({ ...prev, ...patch }))
                 }}
-                onHeaderRefresh={() => void refreshHeader()}
+                onHeaderRefresh={refreshHeader}
               />
             </div>
           ) : (

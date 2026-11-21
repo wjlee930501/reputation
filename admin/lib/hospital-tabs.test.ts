@@ -43,3 +43,10 @@ test('레이아웃 편집기는 주소를 옮기지 않고 공개 페이지 탭�
 function info(name: string): string {
   return readFileSync(new URL(`../app/hospitals/[id]/info/${name}`, import.meta.url), 'utf8')
 }
+
+test('도메인 탭은 새 헤더가 실제로 왔을 때만 입력 중 표시를 푼다', () => {
+  const page = readFileSync(new URL('../app/hospitals/[id]/domain/page.tsx', import.meta.url), 'utf8')
+  // refetch는 실패를 삼킨다 — 조회 실패 뒤 옛 스냅샷이 방금 저장한 도메인을 덮지 않게.
+  assert.match(page, /if \(!awaitingFrom \|\| hospital === awaitingFrom\) return/)
+  assert.doesNotMatch(page, /await refetch\(\)\s*\n\s*setDirty\(false\)/)
+})
