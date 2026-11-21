@@ -25,6 +25,7 @@
 from __future__ import annotations
 
 import copy
+import re
 import uuid
 from dataclasses import dataclass, field
 from typing import Any
@@ -168,6 +169,12 @@ def line_starts(value: str, source: str) -> set[int]:
 
 
 HEADLINE_PARTS_MAX = 3
+_JS_SPACE = "\t\n\v\f\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff"
+_JS_EDGE_SPACES = re.compile(f"^[{_JS_SPACE}]+|[{_JS_SPACE}]+$")
+
+
+def _js_trim(text: str) -> str:
+    return _JS_EDGE_SPACES.sub("", text)
 
 
 def forced_line_starts(layout: str, path: str, source: str) -> list[int]:
@@ -180,16 +187,27 @@ def forced_line_starts(layout: str, path: str, source: str) -> list[int]:
 
     if path != "hero.headline":
         return []
-    parts = [joined(part) for part in source.split("\n")]
-    parts = [part for part in parts if part][:HEADLINE_PARTS_MAX]
-    if len(parts) < 2:
+    # 조각 고르기는 사이트와 같이 JS `trim()` 기준이다(파이썬 공백과 집합이 다르다 — U+0085는 JS 공백이 아니다).
+    picked = [part for part in source.split("\n") if _js_trim(part)][:HEADLINE_PARTS_MAX]
+    if len(picked) < 2:
         return []
-    starts: list[int] = []
+    # 자리는 이은 원문 기준 — 이은 원문에서 글자가 없는 조각은 자리를 차지하지 않는다(사이트 `partStarts`).
+    starts: list[int | None] = []
     position = 0
-    for part in parts[:-1]:
-        position += len(part) + 1
-        starts.append(position)
-    return starts if layout == "B" else starts[-1:]
+    seen = False
+    for part in picked:
+        text = joined(part)
+        if not text:
+            starts.append(None)
+            continue
+        if seen:
+            position += 1
+        starts.append(position if seen else None)
+        position += len(text)
+        seen = True
+    later = starts[1:]
+    forced = later if layout == "B" else later[-1:]
+    return [at for at in forced if at is not None]
 
 
 def validate_site_config(
@@ -334,10 +352,12 @@ def _undrawn_focus(layout: str, hero: Any) -> bool:
     return hero.get("arrangement", base["arrangement"]) == "text"
 
 
-def strip_unrendered(layout: str, config: Any) -> Any:
+def strip_unrendered(layout: str, config: Any, *, hero_headline: str | None = None) -> Any:
     """옛 판 복원용 — 화면이 그리지 않는 칸(A·C의 B 전용 칸 포함)을 덮어쓰기에서 뺀다(그 칸은 기본값으로 돌아간다).
 
     그 칸이 거절되기 전에 저장·공개된 판도 복원할 수 있게 한다. 형식이 틀린 설정은 그대로 둔다 — 검증이 알린다.
+    `hero_headline`(지금 병원 정보 제목)을 주면 레이아웃이 늘 나누는 자리를 건너뛴 제목 줄 지정도 뺀다
+    (그 기기는 자동 줄바꿈으로 돌아간다).
     """
 
     if not isinstance(config, dict) or layout not in site_defaults.LAYOUTS:
@@ -369,6 +389,19 @@ def strip_unrendered(layout: str, config: Any) -> Any:
     if layout != "B" and isinstance(breaks, dict):
         for path in _B_ONLY_LINE_BREAKS:
             breaks.pop(path, None)
+    spec = breaks.get("hero.headline") if isinstance(breaks, dict) else None
+    if hero_headline and isinstance(spec, dict):
+        forced = set(forced_line_starts(layout, "hero.headline", hero_headline))
+        for device in ("pc", "mobile"):
+            value = spec.get(device)
+            if (
+                isinstance(value, str)
+                and lines_match(value, hero_headline)
+                and not forced <= line_starts(value, hero_headline)
+            ):
+                spec.pop(device)
+        if not any(isinstance(spec.get(device), str) for device in ("pc", "mobile")):
+            breaks.pop("hero.headline")
     sections = out.get("sections")
     if isinstance(sections, list):
         for section in sections:

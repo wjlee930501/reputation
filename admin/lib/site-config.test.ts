@@ -481,4 +481,7 @@ test('제목 줄바꿈은 레이아웃이 늘 새 줄로 시작하는 자리(A·
   // 한 줄 제목·다른 칸에는 강제 자리가 없다.
   assert.deepEqual(forcedLineStarts('B', 'hero.headline', '365서귀포삼성정형외과 제주'), [])
   assert.deepEqual(forcedLineStarts('B', 'hero.description', '가\n나'), [])
+  // 사이트는 JS trim으로 조각을 고른다 — U+0085만 있는 줄도 조각이라 강조는 '나'다(자리는 차지하지 않는다).
+  assert.deepEqual(forcedLineStarts('A', 'hero.headline', '가\n\u0085\n나\n다'), [2])
+  assert.deepEqual(forcedLineStarts('B', 'hero.headline', '가\n\u0085\n나\n다'), [2])
 })

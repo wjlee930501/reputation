@@ -545,6 +545,39 @@ def test_single_line_headline_has_no_forced_breaks() -> None:
         assert check.ok, (layout, check.errors)
 
 
+def test_forced_headline_starts_pick_parts_like_the_site() -> None:
+    from app.services.site_config_validation import forced_line_starts
+
+    # 사이트는 JS trim으로 조각을 고른다 — U+0085만 있는 줄도 조각이라 강조는 '나'(이은 원문 자리 2)다.
+    assert forced_line_starts("A", "hero.headline", "가\n\u0085\n나\n다") == [2]
+    assert forced_line_starts("B", "hero.headline", "가\n\u0085\n나\n다") == [2]
+    assert forced_line_starts("B", "hero.headline", "가 나") == []
+    assert forced_line_starts("B", "hero.description", "가\n나") == []
+
+
+def test_restore_drops_headline_breaks_that_skip_a_forced_line() -> None:
+    headline = "365서귀포삼성정형외과\n제주 서귀포 정형외과 전문의 진료"
+    config = {
+        "hero": {
+            "line_breaks": {
+                "hero.headline": {
+                    "pc": "365서귀포삼성정형외과 제주 서귀포\n정형외과 전문의 진료",
+                    "mobile": "365서귀포\n삼성정형외과\n제주 서귀포 정형외과 전문의 진료",
+                }
+            }
+        }
+    }
+    restored = strip_unrendered("A", config, hero_headline=headline)
+    assert restored["hero"]["line_breaks"]["hero.headline"] == {
+        "mobile": "365서귀포\n삼성정형외과\n제주 서귀포 정형외과 전문의 진료"
+    }
+    assert validate_site_config("A", restored, _ctx(hero_headline=headline)).ok
+    only_bad = {"hero": {"line_breaks": {"hero.headline": {"pc": "365서귀포삼성정형외과 제주 서귀포 정형외과 전문의 진료"}}}}
+    assert "hero.headline" not in strip_unrendered("C", only_bad, hero_headline=headline)["hero"]["line_breaks"]
+    # 제목을 모르면 그대로 둔다(검증이 알린다).
+    assert strip_unrendered("C", only_bad) == only_bad
+
+
 def test_line_break_lines_are_bounded() -> None:
     check = validate_site_config(
         "B", {"hero": {"line_breaks": {"hero.headline": {"pc": "365\n\n서귀포"}}}}, _ctx()

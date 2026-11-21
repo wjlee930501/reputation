@@ -763,15 +763,26 @@ const HEADLINE_PARTS_MAX = 3
  */
 export function forcedLineStarts(layout: SiteLayout | null | undefined, path: LineBreakPath, source: string): number[] {
   if (path !== 'hero.headline') return []
-  const parts = source.split('\n').map(joinedText).filter(Boolean).slice(0, HEADLINE_PARTS_MAX)
-  if (parts.length < 2) return []
-  const starts: number[] = []
+  // 조각 고르기는 사이트와 같이 JS `trim()` 기준, 자리는 이은 원문 기준(글자가 없는 조각은 자리를 차지하지 않는다).
+  const picked = source.split('\n').filter((part) => part.trim()).slice(0, HEADLINE_PARTS_MAX)
+  if (picked.length < 2) return []
+  const starts: Array<number | null> = []
   let position = 0
-  for (const part of parts.slice(0, -1)) {
-    position += part.length + 1
-    starts.push(position)
+  let seen = false
+  for (const part of picked) {
+    const text = joinedText(part)
+    if (!text) {
+      starts.push(null)
+      continue
+    }
+    if (seen) position += 1
+    starts.push(seen ? position : null)
+    position += text.length
+    seen = true
   }
-  return layout === 'B' ? starts : starts.slice(-1)
+  const later = starts.slice(1)
+  const forced = layout === 'B' ? later : later.slice(-1)
+  return forced.filter((at): at is number => at !== null)
 }
 
 export type LineBreakProblem = 'too_many' | 'mismatch' | 'layout_break' | null
