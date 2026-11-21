@@ -9,7 +9,6 @@ import {
 
 const TABS: readonly { readonly value: OperationsQueueParam; readonly api: string; readonly label: string }[] = [
   { value: 'onboarding', api: 'ONBOARDING', label: '신규·온보딩' },
-  { value: 'today', api: 'TODAY', label: '오늘의 운영' },
   { value: 'reports', api: 'REPORTS', label: '월간 보고서' },
   { value: 'incidents', api: 'INCIDENTS', label: '문제·복구' },
 ]

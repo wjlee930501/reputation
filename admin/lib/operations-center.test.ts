@@ -171,18 +171,18 @@ test('generic incident cause falls through to a classified run cause', () => {
 
 test('changing a quick filter resets page while preserving detail', () => {
   // Given
-  const source = new URLSearchParams('queue=today&page=4&detail=content%3A1')
+  const source = new URLSearchParams('queue=reports&page=4&detail=content%3A1')
 
   // When
   const next = updateOperationsQuery(source, { owner: 'AE QA' })
 
   // Then
-  assert.equal(next.toString(), 'queue=today&owner=AE+QA&detail=content%3A1')
+  assert.equal(next.toString(), 'queue=reports&owner=AE+QA&detail=content%3A1')
 })
 
 test('changing queue resets page and closes unrelated detail', () => {
   // Given
-  const source = new URLSearchParams('queue=today&page=3&detail=content%3A1&severity=HIGH')
+  const source = new URLSearchParams('queue=reports&page=3&detail=content%3A1&severity=HIGH')
 
   // When
   const next = updateOperationsQuery(source, { queue: 'incidents' })
@@ -193,7 +193,7 @@ test('changing queue resets page and closes unrelated detail', () => {
 
 test('selecting a task in another queue keeps its explicitly supplied detail', () => {
   // Given
-  const source = new URLSearchParams('queue=today&detail=content%3A1')
+  const source = new URLSearchParams('queue=reports&detail=content%3A1')
 
   // When
   const next = updateOperationsQuery(source, { queue: 'incidents', detail: 'incident:2' })
@@ -862,4 +862,13 @@ test('처리 목록 훅은 깊은 링크를 해석기 한 곳으로 처리한다
   assert.match(hook, /loadIncidentById\(resolution\.hospitalId, resolution\.incidentId\)/)
   // 작업 기록만 읽고 끝내면 상세가 담당 후보를 못 받아 담당 지정 폼을 그릴 수 없다.
   assert.match(hook, /assignable_accounts: incident\?\.assignable_accounts \?\? \[\]/)
+})
+
+test('「오늘의 운영」 탭은 없다 — 기본과 옛 queue=today 주소는 문제·복구로 연다', () => {
+  assert.equal(readOperationsQuery(new URLSearchParams('')).queue, 'incidents')
+  assert.equal(readOperationsQuery(new URLSearchParams('queue=today')).queue, 'incidents')
+  assert.equal(readOperationsQuery(new URLSearchParams('queue=TODAY')).queue, 'incidents')
+  assert.equal(readOperationsQuery(new URLSearchParams('queue=reports')).queue, 'reports')
+  const filters = readFileSync(new URL('../app/operations/OperationsFilters.tsx', import.meta.url), 'utf8')
+  assert.doesNotMatch(filters, /오늘의 운영/)
 })
