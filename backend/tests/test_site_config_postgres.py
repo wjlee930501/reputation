@@ -551,3 +551,34 @@ async def test_restoring_an_old_version_drops_fields_the_site_does_not_render(db
     assert config["faq"] == {"limit": 5}
     assert "doctor" not in config and "hero" not in config
     assert config["sections"] == [{"id": "hero"}, {"id": "care_principles"}]
+
+
+async def test_precheck_lists_drafts_that_would_be_rejected_and_diverged_published_versions(db, client, monkeypatch):
+    from app.utils.site_config_precheck import precheck, summarize
+
+    hospital_id = await _hospital(db, layout="B")
+    monkeypatch.setattr(
+        admin_site_config,
+        "profile_publication_verdict",
+        lambda hospital: SimpleNamespace(allowed=False, blockers=()),
+    )
+    published = (await _save(client, hospital_id, config={"faq": {"limit": 5}})).json()["draft"]
+    assert (await _publish(client, hospital_id, published)).status_code == 200
+    draft = (await _save(client, hospital_id, config={"faq": {"limit": 4}})).json()["draft"]
+    # 옛 초안에 이제 거절되는 칸이 남은 경우(규칙이 생기기 전에 저장된 값)와 병원 레이아웃이 공개 판과 갈라진 경우.
+    await db.execute(
+        text(
+            "UPDATE hospital_site_configs SET config = CAST(:config AS jsonb) WHERE id = :id"
+        ),
+        {"id": uuid.UUID(draft["id"]), "config": '{"copy": {"hours.weekend_label": "토요일 진료"}}'},
+    )
+    await db.execute(text("UPDATE hospitals SET site_layout = 'C' WHERE id = :id"), {"id": hospital_id})
+    await db.commit()
+
+    rows = [row for row in await precheck(db, read_only=False) if row["slug"] == f"site-config-{hospital_id.hex[:12]}"]
+    by_state = {row["state"]: row for row in rows}
+    assert by_state["DRAFT"]["ok"] is False
+    assert {"path": "copy.hours.weekend_label", "code": "FIELD_NOT_RENDERED"} in by_state["DRAFT"]["errors"]
+    assert by_state["PUBLISHED"]["ok"] is True and by_state["PUBLISHED"]["diverged"] is True
+    summary = summarize(rows)
+    assert summary["drafts_rejected_now"] == 1 and summary["published_diverged"] == 1
