@@ -297,6 +297,7 @@ export default function SiteLayoutEditorPage() {
                   <HeroSettings hero={hero} issues={[]} onChange={(next) => update({ hero: next })} disabled={locked} showBlocks={bOnly} />
                   <HeroImageSettings hero={group('hero')} onChange={(next) => update({ hero: next })} disabled={locked} />
                   <LineBreaksSettings
+                    layout={working.layout}
                     paths={['hero.headline', 'hero.description']}
                     hospital={hospital}
                     lineBreaks={lineBreaks}
@@ -326,6 +327,7 @@ export default function SiteLayoutEditorPage() {
                 <Extra>
                   <CarePrinciplesSettings value={group('care_principles')} onChange={(next) => update({ care_principles: next })} disabled={locked} />
                   <LineBreaksSettings
+                    layout={working.layout}
                     paths={LINE_BREAK_PATHS.filter((path) => path.startsWith('care_principles.') && lineBreakPathShown(working.layout, path))}
                     hospital={hospital}
                     lineBreaks={lineBreaks}

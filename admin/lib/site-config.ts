@@ -741,12 +741,60 @@ export function linesMatch(value: string, source: string): boolean {
   return position === target.length
 }
 
-export type LineBreakProblem = 'too_many' | 'mismatch' | null
+/** `linesMatch`를 통과한 줄 지정에서 각 줄이 시작하는 자리(이은 원문 기준) — 서버 `line_starts`. */
+export function lineStarts(value: string, source: string): Set<number> {
+  const target = joinedText(source)
+  let position = 0
+  const starts = new Set<number>()
+  const lines = splitLines(value).map(joinedText)
+  for (let index = 0; index < lines.length; index += 1) {
+    starts.add(position)
+    position += lines[index].length
+    if (index < lines.length - 1 && position < target.length && target[position] === ' ') position += 1
+  }
+  return starts
+}
 
-export function lineBreakProblem(value: string, source: string): LineBreakProblem {
+const HEADLINE_PARTS_MAX = 3
+
+/**
+ * 레이아웃이 줄 지정과 무관하게 늘 새 줄로 시작하는 자리(서버 `forced_line_starts`). 첫 화면 제목이 병원 정보에서
+ * 두 줄 이상이면 A·C는 마지막 줄(강조 줄)을, B는 모든 줄을 블록으로 쌓는다(사이트 `buildClinicHeroHeadline`).
+ */
+export function forcedLineStarts(layout: SiteLayout | null | undefined, path: LineBreakPath, source: string): number[] {
+  if (path !== 'hero.headline') return []
+  // 조각 고르기는 사이트와 같이 JS `trim()` 기준, 자리는 이은 원문 기준(글자가 없는 조각은 자리를 차지하지 않는다).
+  // 고르지 않은 줄(BOM뿐인 줄 등)의 글자도 센다 — 자리는 `linesMatch`와 같은 이은 원문 기준이다.
+  const starts: Array<number | null> = []
+  let position = 0
+  let seen = false
+  for (const line of source.split('\n')) {
+    const text = joinedText(line)
+    let start: number | null = null
+    if (text) {
+      if (seen) {
+        position += 1
+        start = position
+      }
+      position += text.length
+      seen = true
+    }
+    if (line.trim() && starts.length < HEADLINE_PARTS_MAX) starts.push(start)
+  }
+  if (starts.length < 2) return []
+  const later = starts.slice(1)
+  const forced = layout === 'B' ? later : later.slice(-1)
+  return forced.filter((at): at is number => at !== null)
+}
+
+export type LineBreakProblem = 'too_many' | 'mismatch' | 'layout_break' | null
+
+export function lineBreakProblem(value: string, source: string, forced: readonly number[] = []): LineBreakProblem {
   const lines = splitLines(value)
   if (lines.length > LINES_MAX || lines.some((line) => !line || line.length > LINE_MAX)) return 'too_many'
-  return linesMatch(value, source) ? null : 'mismatch'
+  if (!linesMatch(value, source)) return 'mismatch'
+  const starts = lineStarts(value, source)
+  return forced.every((at) => starts.has(at)) ? null : 'layout_break'
 }
 
 // --- 섹션별 안내 문구 칸(서버 `COPY_KEYS`) ---

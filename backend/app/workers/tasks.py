@@ -9368,6 +9368,8 @@ def run_sov_for_hospital(
             slotted_execution = _manifest_slot_repeat_count(manifest) is not None
             if slotted_execution and not isinstance(run_protocol, dict):
                 raise RuntimeError("measurement run protocol is missing")
+            # 이 실행의 페이지 밖에 미완료 칸이 더 남았나 — 깨끗한 페이지 뒤 곧바로 이어갈지 정한다.
+            pending_beyond_page = False
             slots_by_cell: dict[uuid.UUID, list[MeasurementObservationSlot]] = {}
             manifest_identity = _frozen_manifest_identity(manifest, hospital)
             if slotted_execution:
@@ -9383,6 +9385,9 @@ def run_sov_for_hospital(
                 # Persist the whole selected repeat plan before the first paid call.
                 db.commit()
                 if monthly:
+                    pending_beyond_page = (
+                        _pending_monthly_stage_count(slots_by_cell) > MONTHLY_SOV_PAGE_SIZE
+                    )
                     slots_by_cell = _bounded_monthly_slot_page(slots_by_cell)
             if monthly and slotted_execution:
                 # 답변 단계만 먼저 동시에 산다 — 아래 차례 실행은 판정과 남은 칸을 맡는다(설계 §3).
@@ -9665,6 +9670,18 @@ def run_sov_for_hospital(
                     _sov_operation_error_message(error_code),
                 )
                 return
+            if (
+                monthly
+                and pending_beyond_page
+                and not _deadline_reached(measurement_deadline, arrow.now().datetime)
+                and _sov_continuation_available(self)
+            ):
+                # 페이지가 실패 없이 끝났고 남은 칸이 있다 — 다음 틱(30분)을 기다리지 않고
+                # 120초 뒤 같은 실행으로 다음 페이지를 산다(설계 §3). 실패·비용 보류가 있는
+                # 페이지는 위에서 PARTIAL/FAILED로 끝나 지금처럼 다음 틱이 다시 연다.
+                raise SovMeasurementResumable(
+                    "monthly measurement page finished with pending slots"
+                )
             if monthly:
                 completed = _complete_monthly_measurement_and_dispatch_report(
                     db, self, hospital, manifest, period_year, period_month
@@ -11723,6 +11740,19 @@ def _first_pending_monthly_slot_id(
         .order_by(MeasurementObservationSlot.id)
         .limit(1)
     ).scalar_one_or_none()
+
+
+def _pending_monthly_stage_count(
+    slots_by_cell: Mapping[uuid.UUID, Sequence[MeasurementObservationSlot]],
+) -> int:
+    """답변이나 판정이 남은 칸 수 — `_bounded_monthly_slot_page`가 세는 것과 같다."""
+
+    return sum(
+        1
+        for slots in slots_by_cell.values()
+        for slot in slots
+        if slot_needs_answer(slot) or slot_needs_judgment(slot)
+    )
 
 
 def _bounded_monthly_slot_page(

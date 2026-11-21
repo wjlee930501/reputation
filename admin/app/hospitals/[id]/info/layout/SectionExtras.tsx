@@ -7,6 +7,7 @@ import { fetchAPI } from '@/lib/api'
 import { isExpectedOperatorRequestFailure } from '@/lib/operations-journey'
 import {
   LINES_MAX,
+  forcedLineStarts,
   lineBreakProblem,
   lineBreakSource,
   siteConfigPath,
@@ -15,6 +16,7 @@ import {
   type SiteConfigIssue,
   veilShown,
 } from '@/lib/site-config'
+import type { SiteLayout } from '@/lib/site-layout'
 import { isRecord } from '@/lib/type-guards'
 import { Choice, IssueList } from './SectionPanels'
 
@@ -120,12 +122,14 @@ type LineBreakValue = { pc?: string | null; mobile?: string | null }
 /** 한 칸의 PC·모바일 줄바꿈. 글자는 병원 정보 그대로이고 줄 나눌 자리만 정한다. */
 function LineBreakField({
   path,
+  layout,
   hospital,
   value,
   onChange,
   disabled,
 }: {
   path: LineBreakPath
+  layout: SiteLayout | null
   hospital: LineBreakSourceInput | null
   value: LineBreakValue | undefined
   onChange: (value: LineBreakValue | undefined) => void
@@ -161,7 +165,7 @@ function LineBreakField({
       <p className={small}>{label}</p>
       {(['pc', 'mobile'] as const).map((device) => {
         const current = value?.[device] ?? null
-        const problem = current === null ? null : lineBreakProblem(current, source)
+        const problem = current === null ? null : lineBreakProblem(current, source, forcedLineStarts(layout, path, source))
         return (
           <div key={device} className="space-y-1">
             <label className="flex items-center gap-2 text-xs text-slate-700">
@@ -186,7 +190,11 @@ function LineBreakField({
                 />
                 {problem && (
                   <p className="text-xs font-semibold text-red-700">
-                    {problem === 'too_many' ? COPY.lineBreakTooMany.replace('{max}', String(LINES_MAX)) : COPY.lineBreakMismatch}
+                    {problem === 'too_many'
+                      ? COPY.lineBreakTooMany.replace('{max}', String(LINES_MAX))
+                      : problem === 'layout_break'
+                        ? COPY.lineBreakLayoutBreak[layout === 'B' ? 'B' : 'other']
+                        : COPY.lineBreakMismatch}
                   </p>
                 )}
               </>
@@ -200,6 +208,7 @@ function LineBreakField({
 
 export function LineBreaksSettings({
   paths,
+  layout,
   hospital,
   lineBreaks,
   issues,
@@ -207,6 +216,7 @@ export function LineBreaksSettings({
   disabled,
 }: {
   paths: readonly LineBreakPath[]
+  layout: SiteLayout | null
   hospital: LineBreakSourceInput | null
   lineBreaks: Record<string, LineBreakValue>
   issues: readonly SiteConfigIssue[]
@@ -222,6 +232,7 @@ export function LineBreaksSettings({
         <LineBreakField
           key={path}
           path={path}
+          layout={layout}
           hospital={hospital}
           value={lineBreaks[path]}
           disabled={disabled}

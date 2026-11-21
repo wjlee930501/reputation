@@ -301,6 +301,19 @@ def common_clinic_name(specialty: str) -> str:
     return canonical
 
 
+_CLINIC_SUFFIXES: Final[tuple[str, ...]] = ("과", "의원", "한의원", "치과")
+
+
+def clinic_name_for(specialties: Sequence[str]) -> str:
+    """질문에 쓸 기관 이름 — 진료과로 읽히는 첫 값. '건강검진'처럼 진료과가 아닌 값은 건너뛰고, 없으면 '병원'."""
+
+    for specialty in specialties:
+        name = common_clinic_name(specialty)
+        if name.endswith(_CLINIC_SUFFIXES):
+            return name
+    return "병원"
+
+
 def specialty_kind(specialties: Sequence[str]) -> str | None:
     for specialty in specialties:
         text = _clean(specialty)
@@ -360,6 +373,46 @@ _SERVICE_SUFFIXES: Final[tuple[str, ...]] = ("접종", "주사", "상담", "검�
 _SEARCH_RESIDUE_RE = re.compile(r"(^|\s)(곳|추천|잘하는|잘\s*하는|잘\s*보는|병원|의원|근처|가까운)(\s|$)")
 
 
+# 진료 항목 이름에 붙은 괄호 설명·나열('고혈압/당뇨/고지혈증', '질건조증 치료(질소프/호르몬 치료)',
+# '떨림, 파킨슨병 등 운동질환')은 첫 항목만 쓴다 — 통째로 넣으면 환자가 묻지 않는 긴 나열 문장이 된다.
+_PAREN_RE = re.compile(r"\([^()]*\)|\[[^\[\]]*\]")
+_LIST_SPLIT_RE = re.compile(r"\s*(?:[/,·・ㆍ]|\s및\s|\s등\s|\s등$)\s*")
+_HANGUL_RE = re.compile(r"[가-힣]")
+# 그것만으로는 항목이 아닌 말('소아청소년 진료' → '진료') — 질문 주제로 쓰지 않는다.
+_GENERIC_TOPIC_TERMS: Final[frozenset[str]] = frozenset(
+    {"진료", "치료", "상담", "검사", "시술", "수술", "관리", "클리닉", "외래", "일반"}
+)
+
+
+def _items(value: object) -> list[str]:
+    """괄호 설명을 빼고 나열을 나눈 항목들. 'PET/CT'·'CD4+ T세포 검사'처럼 한글 없는 조각이 있으면 나누지 않는다."""
+
+    raw = str(value or "")
+    text = _PAREN_RE.sub(" ", raw)
+    pieces = [_clean(piece) for piece in _LIST_SPLIT_RE.split(text)]
+    pieces = [piece for piece in pieces if piece]
+    if len(pieces) > 1 and all(_HANGUL_RE.search(piece) for piece in pieces):
+        kept = [piece for piece in pieces if len(piece.replace(" ", "")) >= 2]
+        if kept:
+            return kept
+    whole = _clean(text) or _clean(raw)
+    return [whole] if whole else []
+
+
+def _vocabulary_pieces(value: object) -> set[str]:
+    """견줄 말 — 한글 없는 조각이 있어도 나열을 모두 나눈다('초음파/MRI'의 '초음파'). 일반어('치료')는 뺀다."""
+
+    text = _PAREN_RE.sub(" ", str(value or ""))
+    words = {_clean(piece).replace(" ", "") for piece in _LIST_SPLIT_RE.split(text)}
+    words.add(_clean(text).replace(" ", ""))
+    return {word for word in words if len(word) >= 2 and word not in _GENERIC_TOPIC_TERMS}
+
+
+def _first_item(value: object) -> str:
+    items = _items(value)
+    return items[0] if items else ""
+
+
 @dataclass(frozen=True, slots=True)
 class _Topic:
     term: str
@@ -386,24 +439,101 @@ class _Topic:
 
 
 def _topics(treatments: Iterable[Any], keywords: Iterable[Any], region: Sequence[str]) -> list[_Topic]:
-    names: list[str] = []
-    for item in (*tuple(treatments or ()), *tuple(keywords or ())):
-        value = item.get("name") if isinstance(item, Mapping) else item
-        text = _clean(value)
-        if len(text.replace(" ", "")) >= 2 and text not in names:
-            names.append(text)
-    topics: list[_Topic] = []
-    for name in names:
+    names: list[tuple[str, bool]] = []  # (이름, 키워드에서 왔나)
+    vocabulary: set[str] = set()  # 나열의 뒤 조각까지 — '치핵/치질'의 '치질'도 견줄 말이다
+    for from_keyword, items in ((False, treatments), (True, keywords)):
+        for item in tuple(items or ()):
+            value = item.get("name") if isinstance(item, Mapping) else item
+            pieces = _items(value)
+            vocabulary.update(_vocabulary_pieces(value))
+            text = pieces[0] if pieces else ""
+            if len(text.replace(" ", "")) >= 2 and all(text != name for name, _ in names):
+                names.append((text, from_keyword))
+    topics: list[tuple[_Topic, bool]] = []
+    for name, from_keyword in names:
         analysis = analyze_keyword(name, list(region))
         if analysis.keyword_class is KeywordClass.SEARCH_PHRASE:
             continue
-        term = analysis.canonical_term or name
+        term = (analysis.canonical_term or name).strip()
+        if len(term.replace(" ", "")) < 2 or term in _GENERIC_TOPIC_TERMS:
+            continue
         if _SEARCH_RESIDUE_RE.search(term) or _SEARCH_RESIDUE_RE.search(name):
             continue
-        if any(topic.term == term for topic in topics):
+        if any(topic.term == term for topic, _ in topics):
             continue
-        topics.append(_Topic(term=term, kind=analysis.keyword_class, exam=is_exam_term(term)))
-    return topics
+        topics.append(
+            (_Topic(term=term, kind=analysis.keyword_class, exam=is_exam_term(term)), from_keyword)
+        )
+    # 키워드 순서와 무관하게 모든 항목·나열 조각과 견준다('수원치질'이 '치질'보다 먼저 와도 뺀다).
+    vocabulary.update(
+        topic.term.replace(" ", "") for topic, _ in topics if topic.term not in _GENERIC_TOPIC_TERMS
+    )
+    dropped = _region_glued_keywords(
+        [topic.term for topic, from_keyword in topics if from_keyword], vocabulary, region
+    )
+    return [topic for topic, _ in topics if topic.term not in dropped]
+
+
+# 지명처럼 보이지만 신체 부위인 말('안구건조증').
+_NOT_PLACE: Final[frozenset[str]] = frozenset({"안구", "구강"})
+# 지명이 붙은 키워드 무리 안에서도 지키는 앞말 — '허리디스크'의 '허리' 같은 임상어.
+_CLINICAL_PREFIX_CLASSES: Final = frozenset(
+    {KeywordClass.BODY_PART, KeywordClass.DISEASE, KeywordClass.PROCEDURE, KeywordClass.CARE_SERVICE}
+)
+
+
+def _is_place_prefix(prefix: str, region: Sequence[str]) -> bool:
+    """병원 지역의 말('수원'·'팔달구')이거나, 지명 끝말(구·시·동…)을 단 세 글자 이상('영통동')이면 지명.
+
+    두 글자 '운동'·'안구'처럼 끝말만 같은 임상어를 지명으로 보지 않는다.
+    """
+
+    if prefix in _NOT_PLACE:
+        return False
+    known: set[str] = set()
+    for raw in region:
+        for token in _clean(raw).split():
+            known.add(token)
+            stripped = re.sub(r"(특별자치시|특별자치도|광역시|특별시|시|군|구|읍|면|동|역)$", "", token)
+            if len(stripped) >= 2:
+                known.add(stripped)
+    if prefix in known or any(token.startswith(prefix) for token in known if len(prefix) >= 2):
+        return True
+    return len(prefix) >= 3 and analyze_keyword(prefix, list(region)).embedded_region is not None
+
+
+def _region_glued_keywords(
+    terms: Sequence[str], vocabulary: set[str], region: Sequence[str]
+) -> set[str]:
+    """'수원치질'·'팔달구치질'·'영통치질' — 다른 항목 이름 앞에 지명을 띄어 쓰지 않고 붙인 검색어 키워드.
+
+    앞말이 지명이면 뺀다. 같은 항목에 지명 키워드가 하나라도 있으면 그 무리('영통치질')에서 임상어가
+    아닌 앞말도 뺀다. '허리디스크'·'긴장성두통'처럼 지명 무리가 없는 복합어는 그대로 둔다.
+    """
+
+    families: dict[str, list[tuple[str, str, bool]]] = {}
+    for term in terms:
+        if " " in term:
+            continue
+        suffixes = [
+            word for word in vocabulary if word != term and term.endswith(word) and len(term) - len(word) >= 2
+        ]
+        if not suffixes:
+            continue
+        suffix = max(suffixes, key=len)
+        prefix = term[: -len(suffix)]
+        place = _is_place_prefix(prefix, region)
+        families.setdefault(suffix, []).append((term, prefix, place))
+    dropped: set[str] = set()
+    for members in families.values():
+        has_place = any(place for _, _, place in members)
+        for term, prefix, place in members:
+            if place or (
+                has_place
+                and analyze_keyword(prefix, list(region)).keyword_class not in _CLINICAL_PREFIX_CLASSES
+            ):
+                dropped.add(term)
+    return dropped
 
 
 def _explore_templates(topic: _Topic) -> tuple[str, ...]:
@@ -462,7 +592,7 @@ def draft_measurement_set(
     있고, 마케터가 어드민에서 채운다(세트 유효 조건은 고정 15개 이상).
     """
 
-    clinic = common_clinic_name(specialties[0] if specialties else "")
+    clinic = clinic_name_for(specialties)
     regions = _regions(region)
     dong = _dong(regions)
     topics = _topics(treatments, keywords, region)
