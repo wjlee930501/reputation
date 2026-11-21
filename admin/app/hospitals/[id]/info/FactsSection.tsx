@@ -1,6 +1,6 @@
 'use client'
 
-import { useId, useState } from 'react'
+import { createContext, useContext, useId, useState } from 'react'
 import { ADMIN_COPY } from '@/lib/admin-copy'
 import {
   GOOGLE_CHANNEL_FIELD_HINTS,
@@ -167,6 +167,10 @@ function TagInput({
   )
 }
 
+/** 저장하지 않은 변경이 있는 구획(결정 대기 3번 A draft). 칸마다 테두리를 달지 못한 칸(진료시간·태그·
+ * 의료진 등)도 구획 테두리로 보이게 한다. */
+const ChangedSectionsContext = createContext<ReadonlySet<string>>(new Set())
+
 function SectionShell({
   section,
   description,
@@ -178,14 +182,19 @@ function SectionShell({
   action?: React.ReactNode
   children: React.ReactNode
 }) {
+  const changed = useContext(ChangedSectionsContext).has(section)
   return (
     <section
       id={`info-${section}`}
-      className="scroll-mt-24 bg-white rounded-xl border border-slate-200 p-4 space-y-4 sm:p-6"
+      data-unsaved={changed ? 'true' : undefined}
+      className={`scroll-mt-24 bg-white rounded-xl border p-4 space-y-4 sm:p-6 ${changed ? 'border-amber-400' : 'border-slate-200'}`}
     >
       <div className="flex items-start justify-between gap-3">
         <div>
-          <h3 className="text-base font-semibold text-slate-800">{INFO_SECTION_TITLES[section]}</h3>
+          <h3 className="text-base font-semibold text-slate-800">
+            {INFO_SECTION_TITLES[section]}
+            {changed && <span className="ml-2 text-xs font-medium text-amber-700">{ADMIN_COPY.saveBar.sectionBadge}</span>}
+          </h3>
           <p className="text-xs text-slate-500 mt-0.5">{description}</p>
         </div>
         {action}
@@ -236,6 +245,8 @@ export interface FactsSectionProps {
   onFieldChange: <K extends keyof HospitalInfoProfile>(key: K, value: HospitalInfoProfile[K]) => void
   onAddressChange: (value: string) => void
   onCoordinateChange: (key: 'latitude' | 'longitude', value: number | null) => void
+  /** 저장하지 않은 변경이 있는 구획 id(`InfoSectionId`). */
+  changedSections?: readonly string[]
 }
 
 export function FactsSection({
@@ -251,6 +262,7 @@ export function FactsSection({
   onFieldChange,
   onAddressChange,
   onCoordinateChange,
+  changedSections = [],
 }: FactsSectionProps) {
   const [weekdayCommonHours, setWeekdayCommonHours] = useState('')
   // 저장 전 미리보기 제안이 먼저, 없으면 서버가 기록한 자동 입력 출처를 보인다.
@@ -290,7 +302,7 @@ export function FactsSection({
   }
 
   return (
-    <>
+    <ChangedSectionsContext.Provider value={new Set(changedSections)}>
       <SectionShell
         section="director"
         description="인터뷰·기고문·소개자료에서 확인한 내용을 근거로 입력합니다. 진료 철학은 출처가 분명한 문장으로 정리해 주세요."
@@ -675,6 +687,6 @@ export function FactsSection({
           conflict={<ProvenanceConflict info={provenance?.competitors} />}
         />
       </SectionShell>
-    </>
+    </ChangedSectionsContext.Provider>
   )
 }

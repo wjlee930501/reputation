@@ -67,3 +67,18 @@ test('병원 정보 화면은 저장 바 하나로 저장하고 떠날 때 묻�
   assert.match(page, /factsPatchPayload\(profile\)/)
   assert.match(page, /changedFieldSet\.has\(fieldKey\)\) return 'border-amber-400/)
 })
+
+test('링크가 아닌 이동(모바일 탭 선택기)도 저장 안 된 변경을 먼저 묻는다', () => {
+  const layout = readFileSync(new URL('../app/hospitals/[id]/layout.tsx', import.meta.url), 'utf8')
+  assert.match(layout, /if \(!confirmLeaveIfGuarded\(\)\) return\s*\n\s*router\.push\(tabHref/)
+})
+
+test('칸 테두리가 없는 칸도 구획 테두리로 보이고, 저장 직후 다시 고치면 성공 문구를 내린다', () => {
+  const facts = readFileSync(new URL('../app/hospitals/[id]/info/FactsSection.tsx', import.meta.url), 'utf8')
+  const page = readFileSync(new URL('../app/hospitals/[id]/info/page.tsx', import.meta.url), 'utf8')
+  assert.match(facts, /useContext\(ChangedSectionsContext\)\.has\(section\)/)
+  assert.match(page, /changedSections=\{unsavedSectionList\}/)
+  assert.match(page, /setFactsDirty\(true\)\s*\n\s*\/\/[^\n]*\n\s*setSuccess\(false\)/)
+  // 의료진 재조회가 실패해도 저장에 보낸 목록이 「저장된 값」이다.
+  assert.match(page, /setSavedProfile\(\(current\) => \(\{ \.\.\.current, physicians: sentPhysicians \}\)\)/)
+})

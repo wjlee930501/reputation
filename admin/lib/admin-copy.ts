@@ -952,6 +952,7 @@ export const ADMIN_COPY = {
     saved: '저장되었습니다 ✓',
     leaveConfirm: '저장하지 않은 병원 정보 변경이 있습니다. 저장하지 않고 이동할까요?',
     hint: '사진·도메인·공개 페이지 칸은 그 칸의 버튼이 바로 저장합니다.',
+    sectionBadge: '저장 안 된 변경',
   },
 } as const
 

@@ -177,6 +177,8 @@ export default function HospitalInfoPage() {
 
   function updateField<K extends keyof HospitalInfoProfile>(key: K, value: HospitalInfoProfile[K]) {
     setFactsDirty(true)
+    // 저장 직후 다시 고치면 성공 문구가 변경 안내를 가리지 않게 한다.
+    setSuccess(false)
     setProfile((prev) => ({ ...prev, [key]: value }))
   }
 
@@ -218,6 +220,12 @@ export default function HospitalInfoPage() {
         longitude: saved.longitude ?? null,
         physicians: saved.physicians ?? current.physicians,
       }))
+      if (physiciansLoaded) {
+        // 의료진은 헤더 응답에 없다 — 저장에 보낸 목록을 「저장된 값」으로 삼는다. 아래 재조회가
+        // 실패해도 방금 저장한 의료진이 미저장으로 남거나, 되돌린 변경이 안 보이지 않게.
+        const sentPhysicians = saved.physicians ?? profile.physicians
+        setSavedProfile((current) => ({ ...current, physicians: sentPhysicians }))
+      }
       // 좌표만 못 만든 저장은 성공이다 — 입력은 그대로 두고 주소 칸 아래에만 알린다.
       setGeocodeWarning(saved.geocode_warning?.message ?? null)
       setSavedAddress(saved.address ?? '')
@@ -533,6 +541,7 @@ export default function HospitalInfoPage() {
           onFieldChange={updateField}
           onAddressChange={handleAddressChange}
           onCoordinateChange={handleCoordinateChange}
+          changedSections={unsavedSectionList}
         />
 
         {/* 「모두 저장」 바 — 탭 안 PATCH 칸을 한 번에 저장한다. 보내는 본문은 그대로 factsPatchPayload다. */}

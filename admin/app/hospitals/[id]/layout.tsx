@@ -25,6 +25,7 @@ import {
 import { ADMIN_COPY } from '@/lib/admin-copy'
 import { readPublicAddresses } from '@/lib/public-address'
 import { AddressLink } from '@/app/_components/AddressLink'
+import { confirmLeaveIfGuarded } from '@/lib/use-leave-guard'
 import { Hospital, HospitalOverview, PLAN_CONTRACT_LABELS } from '@/types'
 import { HospitalHeaderContext } from './hospital-context'
 
@@ -320,7 +321,11 @@ export default function HospitalLayout({
             <span className="sr-only">현재 병원 작업 화면</span>
             <select
               value={activeTab.path}
-              onChange={(event) => router.push(tabHref(hospitalId, event.target.value))}
+              onChange={(event) => {
+                // 저장하지 않은 변경이 있으면 링크 이동과 같이 먼저 묻는다(결정 대기 3번 A draft).
+                if (!confirmLeaveIfGuarded()) return
+                router.push(tabHref(hospitalId, event.target.value))
+              }}
               className="min-h-11 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-800 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100"
             >
               {MAIN_TABS.map((tab) => <option key={tab.path} value={tab.path}>{tab.label} — {tab.hint}</option>)}
