@@ -36,14 +36,16 @@ from collections import Counter
 from collections.abc import Callable
 from datetime import datetime, timezone
 from html.parser import HTMLParser
+from zoneinfo import ZoneInfo
 from typing import Any
 
+SEOUL = ZoneInfo("Asia/Seoul")
 DEFAULT_API = "https://reputation.motionlabs.kr/api/v1/public"
 DEFAULT_PLATFORM_HOST = "reputation.motionlabs.kr"
 USER_AGENT = "reputation-site-config-publish-check/1"
 PAGES = ("/", "/contents")
 # 참고로만 보이고 차이로 세지 않는 칸.
-INFO_KEYS = frozenset({"captured_at", "api.site_config_version", "api.site_config_layout", "headers"})
+INFO_KEYS = frozenset({"captured_at", "seoul_date", "api.site_config_version", "api.site_config_layout", "headers"})
 
 Fetch = Callable[[str], tuple[int, dict[str, str], str]]
 
@@ -63,50 +65,87 @@ def _text(value: str) -> str:
     return " ".join(value.split())
 
 
+VOID_TAGS = frozenset({"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"})
+SKIP_TEXT_TAGS = frozenset({"script", "style", "template", "noscript"})
+# 모양을 정하는 속성(섹션 정렬·배경·첫 화면 모양·사진 초점 등). 클래스는 레이아웃 CSS 모듈 이름이 섞여도 배포 사이에만 바뀐다.
+LOOK_ATTRS = ("class", "style")
+
+
+def _look(attr: dict[str, str]) -> dict[str, str]:
+    return {key: value for key, value in sorted(attr.items()) if key in LOOK_ATTRS or key.startswith("data-")}
+
+
 class PageParser(HTMLParser):
-    """홈·글 목록 HTML에서 비교할 구조만 뽑는다(표준 라이브러리만)."""
+    """홈·글 목록 HTML에서 비교할 구조와 화면 글을 뽑는다(표준 라이브러리만).
+
+    화면 글은 섹션마다 모은다(가장 안쪽 섹션에). `aria-hidden="true"` 안의 글(장식 'Q' 등)과 스크립트는 빼고,
+    기기별 줄바꿈 `<br class=…>`은 `↵클래스` 표지로 넣는다. 섹션 밖의 글(머리글·메뉴·바닥글·하단 바)은 `outside`.
+    """
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.sections: list[dict[str, Any]] = []
-        self._open_sections: list[dict[str, Any]] = []
-        self._tag_stack: list[str] = []
+        self.outside: list[str] = []
+        self.looks: list[str] = []
         self.h1: list[str] = []
         self.h2: list[str] = []
         self.faq_screen: list[str] = []
-        self.hero_facts: list[str] = []
         self.nav: list[str] = []
         self.meta: dict[str, str] = {}
         self.canonical: str | None = None
         self.jsonld_raw: list[str] = []
-        self._capture: str | None = None
-        self._buffer: list[str] = []
-        self._in_jsonld = False
-        self._nav_depth = 0
-        self._link_href: str | None = None
-        self._link_buffer: list[str] = []
+        self.visible: list[str] = []
+        # (태그, 숨김 여부, 섹션 dict 또는 None)
+        self._stack: list[tuple[str, bool, dict[str, Any] | None]] = []
+        self._capture: tuple[str, list[str]] | None = None
+        self._jsonld: list[str] | None = None
+        self._link: tuple[str, list[str]] | None = None
 
+    # --- 상태 ---
+    def _hidden(self) -> bool:
+        return any(hidden for _, hidden, _ in self._stack)
+
+    def _section(self) -> dict[str, Any] | None:
+        for _, _, section in reversed(self._stack):
+            if section is not None:
+                return section
+        return None
+
+    def _in(self, tag: str) -> bool:
+        return any(name == tag for name, _, _ in self._stack)
+
+    def _in_faq(self) -> bool:
+        return any(section is not None and section.get("id") == "faq" for _, _, section in self._stack)
+
+    def _emit(self, text: str) -> None:
+        if self._hidden() or any(name in SKIP_TEXT_TAGS for name, _, _ in self._stack):
+            return
+        section = self._section()
+        (section["_text"] if section is not None else self.outside).append(text)
+        self.visible.append(text)
+
+    # --- HTMLParser ---
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         attr = {key: value or "" for key, value in attrs}
-        if tag in {"meta", "link", "img", "br", "input", "source", "hr"}:
+        if tag in VOID_TAGS:
             self._void(tag, attr)
             return
-        self._tag_stack.append(tag)
+        hidden = attr.get("aria-hidden") == "true" or "hidden" in attr
+        section = None
         if tag == "section":
             section = {"id": attr.get("id") or None, "label": attr.get("aria-label") or None, "title": None}
+            section["look"] = _look(attr)
+            section["_text"] = []
             self.sections.append(section)
-            self._open_sections.append(section)
-        elif tag == "script" and attr.get("type") == "application/ld+json":
-            self._in_jsonld = True
-            self._buffer = []
-        elif tag in {"h1", "h2"} or (tag == "dt" and self._open_sections):
-            self._capture = tag
-            self._buffer = []
-        if tag in {"nav", "header"}:
-            self._nav_depth += 1
-        if tag == "a" and self._nav_depth and attr.get("href"):
-            self._link_href = attr["href"]
-            self._link_buffer = []
+        elif any(key.startswith(("data-look", "data-hero")) for key in attr):
+            self.looks.append(json.dumps(_look(attr), ensure_ascii=False, sort_keys=True))
+        self._stack.append((tag, hidden, section))
+        if tag == "script" and attr.get("type") == "application/ld+json":
+            self._jsonld = []
+        elif tag in {"h1", "h2"} or (tag == "dt" and self._in_faq()):
+            self._capture = (tag, [])
+        elif tag == "a" and attr.get("href") and (self._in("nav") or self._in("header")):
+            self._link = (attr["href"], [])
 
     def _void(self, tag: str, attr: dict[str, str]) -> None:
         if tag == "meta":
@@ -115,43 +154,58 @@ class PageParser(HTMLParser):
                 self.meta[key] = attr.get("content", "")
         elif tag == "link" and attr.get("rel") == "canonical":
             self.canonical = attr.get("href")
+        elif tag == "br" and attr.get("class"):
+            self._emit(f"↵{attr['class']}")
+        elif tag == "img":
+            self._emit(f"[이미지:{attr.get('alt', '')}]")
 
     def handle_endtag(self, tag: str) -> None:
-        if tag == "script" and self._in_jsonld:
-            self.jsonld_raw.append("".join(self._buffer))
-            self._in_jsonld = False
-        if self._capture == tag:
-            text = _text("".join(self._buffer))
+        if not any(name == tag for name, _, _ in self._stack):
+            return  # 짝 없는 닫는 태그
+        if tag == "script" and self._jsonld is not None:
+            self.jsonld_raw.append("".join(self._jsonld))
+            self._jsonld = None
+        if self._capture is not None and self._capture[0] == tag:
+            text = _text("".join(self._capture[1]))
             if tag == "h1":
                 self.h1.append(text)
             elif tag == "h2":
                 self.h2.append(text)
-                if self._open_sections and self._open_sections[-1]["title"] is None:
-                    self._open_sections[-1]["title"] = text
+                section = self._section()
+                if section is not None and section["title"] is None:
+                    section["title"] = text
             elif tag == "dt":
-                section_id = self._open_sections[-1]["id"] if self._open_sections else None
-                if any(section["id"] == "faq" for section in self._open_sections):
-                    self.faq_screen.append(text)
-                elif section_id == "top":
-                    self.hero_facts.append(text)
+                self.faq_screen.append(text)
             self._capture = None
-        if tag == "a" and self._link_href is not None:
-            self.nav.append(f"{_text(''.join(self._link_buffer))} → {self._link_href}")
-            self._link_href = None
-        if tag in {"nav", "header"} and self._nav_depth:
-            self._nav_depth -= 1
-        if tag == "section" and self._open_sections:
-            self._open_sections.pop()
+        if tag == "a" and self._link is not None:
+            self.nav.append(f"{_text(''.join(self._link[1]))} → {self._link[0]}")
+            self._link = None
         # 닫는 태그가 빠진 HTML에도 버티게 가장 가까운 같은 태그까지 닫는다.
-        if tag in self._tag_stack:
-            while self._tag_stack and self._tag_stack.pop() != tag:
-                pass
+        while self._stack:
+            name, _, _ = self._stack.pop()
+            if name == tag:
+                break
 
     def handle_data(self, data: str) -> None:
-        if self._in_jsonld or self._capture:
-            self._buffer.append(data)
-        if self._link_href is not None:
-            self._link_buffer.append(data)
+        if self._jsonld is not None:
+            self._jsonld.append(data)
+            return
+        if not data.strip():
+            return
+        self._emit(data)
+        if self._hidden():
+            return
+        if self._capture is not None:
+            self._capture[1].append(data)
+        if self._link is not None:
+            self._link[1].append(data)
+
+
+def visible_text(body: str) -> str:
+    parser = PageParser()
+    parser.feed(body)
+    parser.close()
+    return _text(" ".join(parser.visible))
 
 
 def _jsonld_items(raw_blocks: list[str]) -> list[Any]:
@@ -209,12 +263,18 @@ def page_snapshot(status: int, headers: dict[str, str], body: str) -> dict[str, 
         "canonical": parser.canonical,
         "h1": parser.h1,
         "sections": [
-            {key: value for key, value in section.items() if value is not None} for section in parser.sections
+            {
+                **{key: value for key, value in section.items() if value is not None and not key.startswith("_")},
+                "text": _text(" ".join(section["_text"])),
+            }
+            for section in parser.sections
         ],
+        "looks": parser.looks,
+        "outside": _text(" ".join(parser.outside)),
         "h2": parser.h2,
         "faq_screen": parser.faq_screen,
         "faqpage": _faqpage_questions(items),
-        "hero_facts": parser.hero_facts,
+        "jsonld_invalid": sum(1 for item in items if isinstance(item, dict) and "@invalid" in item),
         "nav": parser.nav,
         "meta": parser.meta,
         "jsonld_types": dict(sorted(counter.items())),
@@ -241,18 +301,64 @@ def hosts_for(slug: str, hospital: dict[str, Any], platform_host: str) -> list[s
     return hosts
 
 
-def snapshot(slug: str, *, api: str, platform_host: str, fetch: Fetch = http_get) -> dict[str, Any]:
-    status, _, body = fetch(f"{api}/hospitals/{slug}")
+def fresh_fetch(
+    url: str, fetch: Fetch, *, sleep: Callable[[float], None] = time.sleep, attempts: int = 6
+) -> tuple[int, dict[str, str], str]:
+    """캐시가 오래된(STALE) 화면은 새로 만들어질 때까지 몇 번 더 읽는다.
+
+    홈은 '오늘' 칸(오늘 진료시간·요일)을 만든 날 기준으로 그린다. 어제 만든 화면과 오늘 만든 화면을 비교하면
+    설정과 무관한 차이가 난다. STALE 응답은 뒤에서 새로 만들기를 시작하므로, 잠시 뒤 다시 읽으면 지금 만든 화면이 온다.
+    """
+
+    result = fetch(url)
+    for _ in range(attempts - 1):
+        if (result[1].get("x-nextjs-cache") or "").upper() != "STALE":
+            break
+        sleep(3)
+        result = fetch(url)
+    return result
+
+
+def _seoul_date() -> str:
+    return datetime.now(timezone.utc).astimezone(SEOUL).date().isoformat()
+
+
+def _api_hospital(status: int, body: str) -> dict[str, Any] | None:
     if status != 200:
-        raise SystemExit(f"공개 API가 {status}를 돌려주었습니다 — 공개 병원 slug인지 확인하세요: {slug}")
-    hospital = json.loads(body)
+        return None
+    try:
+        value = json.loads(body)
+    except ValueError:
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _version(hospital: dict[str, Any] | None) -> int | None:
+    site_config = (hospital or {}).get("site_config")
+    version = site_config.get("version") if isinstance(site_config, dict) else None
+    return version if isinstance(version, int) and not isinstance(version, bool) else None
+
+
+def snapshot(
+    slug: str,
+    *,
+    api: str,
+    platform_host: str,
+    fetch: Fetch = http_get,
+    sleep: Callable[[float], None] = time.sleep,
+) -> dict[str, Any]:
+    status, _, body = fetch(f"{api}/hospitals/{slug}")
+    hospital = _api_hospital(status, body)
+    if hospital is None:
+        raise SystemExit(f"공개 API가 {status}(또는 읽을 수 없는 응답)를 돌려주었습니다 — 공개 병원 slug인지 확인하세요: {slug}")
     site_config = hospital.get("site_config")
     out: dict[str, Any] = {
         "captured_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "seoul_date": _seoul_date(),
         "slug": slug,
         "api": {
             "site_layout": hospital.get("site_layout"),
-            "site_config_version": site_config.get("version") if isinstance(site_config, dict) else None,
+            "site_config_version": _version(hospital),
             "site_config_layout": site_config.get("layout") if isinstance(site_config, dict) else None,
         },
         "pages": {},
@@ -260,7 +366,7 @@ def snapshot(slug: str, *, api: str, platform_host: str, fetch: Fetch = http_get
     hosts = hosts_for(slug, hospital, platform_host)
     for host in hosts:
         for path in PAGES:
-            out["pages"][f"{host}{path}"] = page_snapshot(*fetch(f"https://{host}{path}"))
+            out["pages"][f"{host}{path}"] = page_snapshot(*fresh_fetch(f"https://{host}{path}", fetch, sleep=sleep))
     primary = hosts[0]
     sitemap_status, _, sitemap_body = fetch(f"https://{primary}/sitemap.xml")
     out["sitemap"] = sitemap_snapshot(sitemap_status, sitemap_body)
@@ -281,6 +387,8 @@ def issues(snap: dict[str, Any]) -> list[str]:
         if page["status"] != 200:
             found.append(f"{key}: HTTP {page['status']}")
             continue
+        if page["jsonld_invalid"]:
+            found.append(f"{key}: 읽을 수 없는 구조화 정보(JSON-LD) {page['jsonld_invalid']}개")
         if key.endswith("/") and page["faq_screen"] != page["faqpage"]:
             found.append(f"{key}: 화면 FAQ 질문({len(page['faq_screen'])})과 FAQPage 질문({len(page['faqpage'])})이 다릅니다.")
     if snap["sitemap"]["status"] != 200:
@@ -331,34 +439,46 @@ def wait_for(
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
 ) -> int:
-    """공개 판 번호가 `version` 이상이 되고(공개 API), `text`가 있으면 대표 주소 홈에 그 글이 보일 때까지."""
+    """공개 판 번호가 `version` 이상이 되고(공개 API), `text`가 있으면 대표 주소 홈 화면 글에 보일 때까지.
+
+    화면 글은 HTML 원문이 아니라 보이는 글(스크립트·구조화 정보·숨긴 글 제외, 문자 참조 풀고 공백 하나로)에서 찾는다.
+    읽지 못한 응답은 '아직'으로 보고 다시 읽는다. 제한 시간을 넘겨 도착한 응답은 성공으로 치지 않는다.
+    """
 
     started = clock()
+    deadline = started + timeout
     hosts: list[str] | None = None
-    api_seen = False
+    wanted = _text(text) if text is not None else None
     while True:
-        elapsed = clock() - started
-        if not api_seen:
+        if hosts is None:
             status, _, body = fetch(f"{api}/hospitals/{slug}")
-            hospital = json.loads(body) if status == 200 else {}
-            current = (hospital.get("site_config") or {}).get("version")
-            if isinstance(current, int) and current >= version:
-                api_seen = True
+            hospital = _api_hospital(status, body)
+            current = _version(hospital)
+            if clock() > deadline:
+                break
+            if hospital is not None and current is not None and current >= version:
                 hosts = hosts_for(slug, hospital, platform_host)
-                print(f"[{elapsed:5.0f}초] 공개 API: 공개 판 {current}")
-                if text is None:
+                print(f"[{clock() - started:5.0f}초] 공개 API: 공개 판 {current}")
+                if wanted is None:
                     print("화면 글을 지정하지 않아 공개 API만 확인했습니다. 홈은 snapshot으로 비교하세요.")
                     return 0
-        if api_seen and hosts and text is not None:
+        if hosts is not None and wanted is not None:
             status, headers, body = fetch(f"https://{hosts[0]}/")
-            if status == 200 and text in body:
-                print(f"[{elapsed:5.0f}초] {hosts[0]}/ 에 '{text}'가 보입니다 (x-nextjs-cache={headers.get('x-nextjs-cache')}).")
+            if clock() > deadline:
+                break
+            if status == 200 and wanted in visible_text(body):
+                print(
+                    f"[{clock() - started:5.0f}초] {hosts[0]}/ 화면에 '{wanted}'가 보입니다"
+                    f" (x-nextjs-cache={headers.get('x-nextjs-cache')})."
+                )
                 return 0
-        if elapsed >= timeout:
-            where = "공개 API의 공개 판 번호" if not api_seen else f"{hosts[0] if hosts else ''}/ 화면의 '{text}'"
-            print(f"{timeout:.0f}초 안에 {where}가 바뀌지 않았습니다.", file=sys.stderr)
-            return 1
-        sleep(interval)
+        remaining = deadline - clock()
+        if remaining <= 0:
+            break
+        sleep(min(interval, remaining))
+    where = "공개 API의 공개 판 번호" if hosts is None else f"{hosts[0]}/ 화면의 '{wanted}'"
+    print(f"{timeout:.0f}초 안에 {where}가 바뀌지 않았습니다.", file=sys.stderr)
+    return 1
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -403,6 +523,11 @@ def main(argv: list[str] | None = None) -> int:
         with open(args.after, encoding="utf-8") as handle:
             after = json.load(handle)
         diffs, notes = differences(before, after)
+        if before.get("seoul_date") != after.get("seoul_date"):
+            print(
+                "[주의] 두 스냅샷의 날짜(한국 시간)가 다릅니다 — '오늘' 칸(오늘 진료시간·요일·전화 버튼 글)의 차이는"
+                " 설정과 무관할 수 있습니다. 같은 날 다시 찍어 비교하세요."
+            )
         for line in notes:
             print(f"[참고] {line}")
         for line in diffs:

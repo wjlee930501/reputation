@@ -27,17 +27,28 @@ FAQ_LD = {
 }
 
 
-def home(*, faq_title: str = "자주 묻는 질문", screen_questions=("첫 질문?", "둘째 질문?"), today: str = "09:00") -> str:
-    faq = "".join(f"<div><dt>{q}</dt><dd>답</dd></div>" for q in screen_questions)
+def home(
+    *,
+    faq_title: str = "자주 묻는 질문",
+    screen_questions=("첫 질문?", "둘째 질문?"),
+    today: str = "09:00",
+    note: str = "안내 문구",
+    align: str = "start",
+    jsonld: str | None = None,
+) -> str:
+    # C안처럼 질문 앞에 장식 'Q'(aria-hidden)가 붙는다.
+    faq = "".join(f'<div><dt><span aria-hidden="true">Q</span>{q}</dt><dd>답</dd></div>' for q in screen_questions)
+    ld = jsonld if jsonld is not None else json.dumps(FAQ_LD, ensure_ascii=False)
     return f"""<!doctype html><html><head>
 <meta name="description" content="설명"><meta property="og:title" content="병원">
 <link rel="canonical" href="https://clinic.test">
-<script type="application/ld+json">{json.dumps(FAQ_LD, ensure_ascii=False)}</script>
+<script type="application/ld+json">{ld}</script>
 </head><body>
 <header><nav><a href="/treatments">진료 영역</a><a href="tel:0212345678">전화</a></nav></header>
 <section id="top"><h1>병원  제목</h1><dl><div><dt>오늘 진료</dt><dd>{today}</dd></div></dl><br></section>
-<section id="treatments"><h2>진료 영역</h2><section aria-label="안쪽"><h2>안쪽 제목</h2></section></section>
+<section id="treatments" data-look-align="{align}"><h2>진료 영역</h2><p>{note}</p><section aria-label="안쪽"><h2>안쪽 제목</h2></section></section>
 <section id="faq"><h2>{faq_title}</h2><dl>{faq}</dl></section>
+<footer>바닥글 &amp; 안내</footer>
 </body></html>"""
 
 
@@ -86,13 +97,13 @@ def test_snapshot_reads_structure_from_both_hosts_and_only_gets():
     page = snap["pages"]["clinic.test/"]
     assert page["h1"] == ["병원 제목"]
     assert page["sections"] == [
-        {"id": "top"},
-        {"id": "treatments", "title": "진료 영역"},
-        {"label": "안쪽", "title": "안쪽 제목"},
-        {"id": "faq", "title": "자주 묻는 질문"},
+        {"id": "top", "look": {}, "text": "병원 제목 오늘 진료 09:00"},
+        {"id": "treatments", "title": "진료 영역", "look": {"data-look-align": "start"}, "text": "진료 영역 안내 문구"},
+        {"label": "안쪽", "title": "안쪽 제목", "look": {}, "text": "안쪽 제목"},
+        {"id": "faq", "title": "자주 묻는 질문", "look": {}, "text": "자주 묻는 질문 첫 질문? 답 둘째 질문? 답"},
     ]
     assert page["faq_screen"] == page["faqpage"] == ["첫 질문?", "둘째 질문?"]
-    assert page["hero_facts"] == ["오늘 진료"]
+    assert page["outside"] == "진료 영역 전화 바닥글 & 안내"
     assert page["nav"] == ["진료 영역 → /treatments", "전화 → tel:0212345678"]
     assert page["meta"] == {"description": "설명", "og:title": "병원"}
     assert page["jsonld_types"] == {"Answer": 2, "FAQPage": 1, "Question": 2}
@@ -115,10 +126,40 @@ def test_unchanged_publish_differs_only_in_version_and_headers():
     assert any(note.startswith("api.site_config_version") for note in notes)
 
 
-def test_today_values_do_not_count_as_a_change():
-    before = take(page=home(today="09:00"))
-    after = take(page=home(today="휴진"))
-    assert check.differences(before, after)[0] == []
+def test_note_and_look_changes_are_differences():
+    before = take()
+    for page in (home(note="새 안내"), home(align="center")):
+        diffs, _ = check.differences(before, take(version=2, page=page))
+        assert sorted(line.split(":", 1)[0] for line in diffs) == [
+            "pages.clinic.platform.test/.sections",
+            "pages.clinic.test/.sections",
+        ]
+
+
+def test_stale_pages_are_read_again_until_regenerated():
+    calls = []
+    answers = iter([(200, {"x-nextjs-cache": "STALE"}, "old"), (200, {"x-nextjs-cache": "HIT"}, "new")])
+
+    def fetch(url):
+        calls.append(url)
+        return next(answers)
+
+    assert check.fresh_fetch("https://x/", fetch, sleep=lambda _: None)[2] == "new"
+    assert len(calls) == 2
+
+
+def test_compare_warns_when_snapshots_are_from_different_days(tmp_path, capsys):
+    before, after = take(), take()
+    after["seoul_date"] = "2099-01-01"
+    (tmp_path / "a.json").write_text(json.dumps(before), encoding="utf-8")
+    (tmp_path / "b.json").write_text(json.dumps(after), encoding="utf-8")
+    assert check.main(["compare", str(tmp_path / "a.json"), str(tmp_path / "b.json")]) == 0
+    assert "날짜(한국 시간)가 다릅니다" in capsys.readouterr().out
+
+
+def test_broken_jsonld_is_an_issue():
+    snap = take(page=home(jsonld="{broken"))
+    assert any("읽을 수 없는 구조화 정보" in line for line in snap["issues"])
 
 
 def test_one_field_change_shows_only_that_field():
@@ -141,12 +182,14 @@ def test_issues_flag_faq_mismatch_and_diverged_layout():
 
 
 def test_wait_returns_when_version_and_text_appear():
-    states = iter([None, 1, 1])
-    pages = iter([home(), home(faq_title="궁금한 점")])
+    states = iter(["broken", None, 1])
+    pages = iter([home(), home(faq_title="궁금한 &amp; 점")])
 
     def fetch(url: str):
         if url.endswith("/hospitals/clinic"):
             version = next(states)
+            if version == "broken":
+                return 200, {}, "{not json"
             return 200, {}, json.dumps(
                 {"aeo_domain": "clinic.test", "site_config": None if version is None else {"version": version}}
             )
@@ -156,7 +199,7 @@ def test_wait_returns_when_version_and_text_appear():
     result = check.wait_for(
         "clinic",
         version=1,
-        text="궁금한 점",
+        text="궁금한 & 점",
         api=API,
         platform_host="platform.test",
         timeout=100,
@@ -184,3 +227,45 @@ def test_wait_times_out(capsys: pytest.CaptureFixture[str]):
     )
     assert result == 1
     assert "공개 판 번호" in capsys.readouterr().err
+
+
+def test_wait_does_not_find_text_that_is_only_in_scripts_or_hidden():
+    page = home().replace("</body>", '<script>"숨은 글"</script><span aria-hidden="true">숨은 글</span></body>')
+    now = [0.0]
+    result = check.wait_for(
+        "clinic",
+        version=1,
+        text="숨은 글",
+        api=API,
+        platform_host="platform.test",
+        timeout=20,
+        interval=10,
+        fetch=lambda url: (200, {}, json.dumps({"site_config": {"version": 1}}))
+        if url.endswith("/hospitals/clinic")
+        else (200, {}, page),
+        sleep=lambda seconds: now.__setitem__(0, now[0] + seconds),
+        clock=lambda: now[0],
+    )
+    assert result == 1
+
+
+def test_wait_ignores_a_success_that_arrives_after_the_deadline():
+    now = [0.0]
+
+    def slow_fetch(url):
+        now[0] += 50  # 응답이 제한 시간 뒤에 도착
+        return 200, {}, json.dumps({"site_config": {"version": 5}})
+
+    result = check.wait_for(
+        "clinic",
+        version=1,
+        text=None,
+        api=API,
+        platform_host="platform.test",
+        timeout=10,
+        interval=5,
+        fetch=slow_fetch,
+        sleep=lambda seconds: now.__setitem__(0, now[0] + seconds),
+        clock=lambda: now[0],
+    )
+    assert result == 1
