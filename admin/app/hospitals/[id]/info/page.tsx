@@ -22,6 +22,8 @@ import {
 import type { AutofillResponse, AutofillFieldMeta } from '@/lib/api'
 import { ADMIN_COPY } from '@/lib/admin-copy'
 import { movedInfoAnchorTarget } from '@/lib/hospital-tabs'
+import { changedFactFields, changedSections, unsavedSummary } from '@/lib/unsaved-changes'
+import { useLeaveGuard } from '@/lib/use-leave-guard'
 import type { DoctorPhotoOption } from '@/lib/physicians'
 import type { MissingProfileRequirement } from '@/lib/info-sections'
 import type { ProfileSourceRegistration } from '@/types'
@@ -88,6 +90,8 @@ export default function HospitalInfoPage() {
     return () => window.removeEventListener('hashchange', follow)
   }, [hospitalId, router])
   const [profile, setProfile] = useState<InfoFormProfile>({})
+  // 마지막으로 서버에서 받은 값 — 「저장 안 된 변경」을 이 값과 비교한다(결정 대기 3번 A draft).
+  const [savedProfile, setSavedProfile] = useState<InfoFormProfile>({})
   // 이 폼에 저장하지 않은 입력이 있는지. 다른 섹션이 저장한 뒤 오는 새 헤더로 다시 채울지를
   // 이 값 하나로 정한다 — 사람이 타이핑하던 내용을 서버 스냅샷이 덮지 않게.
   const [factsDirty, setFactsDirty] = useState(false)
@@ -117,7 +121,7 @@ export default function HospitalInfoPage() {
   useEffect(() => {
     if (!hospital || factsDirty) return
     const data = hospital as unknown as HospitalInfoProfile
-    setProfile((prev) => ({
+    const seed = (prev: InfoFormProfile): InfoFormProfile => ({
       ...data,
       business_hours: data.business_hours ?? {},
       region: data.region ?? [],
@@ -130,7 +134,9 @@ export default function HospitalInfoPage() {
       // 의료진은 상세 응답에 없을 수 있다 — 없으면 따로 읽어 둔 목록을 유지한다.
       // 아직 읽지 못했으면 값을 만들지 않는다(빈 목록을 저장이 전체 교체로 보내지 않게).
       physicians: data.physicians ?? prev.physicians,
-    }))
+    })
+    setProfile(seed)
+    setSavedProfile(seed)
     setSavedAddress(data.address ?? '')
   }, [hospital, factsDirty])
 
@@ -142,6 +148,7 @@ export default function HospitalInfoPage() {
         const rows = await fetchPhysicians(hospitalId)
         if (cancelled) return
         setProfile((prev) => (prev.physicians ? prev : { ...prev, physicians: seedPhysicians(rows) }))
+        setSavedProfile((prev) => (prev.physicians ? prev : { ...prev, physicians: seedPhysicians(rows) }))
         setPhysiciansLoaded(true)
       } catch {
         // 읽지 못했으면 목록을 저장 본문에 싣지 않는다 — 빈 목록이 기존 의료진을 지운다.
@@ -236,6 +243,7 @@ export default function HospitalInfoPage() {
         try {
           const rows = await fetchPhysicians(hospitalId)
           setProfile((current) => ({ ...current, physicians: seedPhysicians(rows) }))
+          setSavedProfile((current) => ({ ...current, physicians: seedPhysicians(rows) }))
         } catch {
           // 저장은 이미 끝났다. 다음 새로고침이 맞춘다.
         }
@@ -356,6 +364,12 @@ export default function HospitalInfoPage() {
     setAiFilled(newAiFilled)
   }
 
+  // 「모두 저장」 바: 탭 안 PATCH 칸 중 저장한 값과 달라진 칸과 그 구획(결정 대기 3번 A draft).
+  const changedFields = factsDirty ? changedFactFields(savedProfile, profile) : []
+  const changedFieldSet = new Set<string>(changedFields)
+  const unsavedSectionList = changedSections(changedFields)
+  useLeaveGuard(changedFields.length > 0 && !saving, ADMIN_COPY.saveBar.leaveConfirm)
+
   if (headerLoading && !hospital) {
     return <div className="p-4 text-slate-500 sm:p-6 lg:p-8">불러오는 중...</div>
   }
@@ -381,6 +395,8 @@ export default function HospitalInfoPage() {
 
   function fieldCls(fieldKey: string, isAiFilled: boolean): string {
     if (violationFields.has(fieldKey)) return 'border-red-400 bg-red-50/40'
+    // 저장하지 않은 변경은 주황 테두리 — 자동 입력 제안보다 앞선다(제안도 아직 저장 전이다).
+    if (changedFieldSet.has(fieldKey)) return 'border-amber-400 bg-amber-50/40'
     if (isAiFilled) return 'border-violet-300 bg-violet-50/30'
     return 'border-slate-300'
   }
@@ -407,7 +423,6 @@ export default function HospitalInfoPage() {
             </p>
           </div>
           <div className="flex w-full flex-wrap items-center gap-3 sm:w-auto sm:shrink-0">
-            {success && <span className="text-sm text-green-600 font-medium">저장되었습니다 ✓</span>}
             <button
               type="button"
               onClick={() => setAutofillOpen(true)}
@@ -415,13 +430,6 @@ export default function HospitalInfoPage() {
               className="min-h-11 flex-1 px-4 py-2 text-sm font-medium text-slate-700 border border-slate-300 rounded-lg hover:bg-slate-50 disabled:opacity-50 transition-colors sm:flex-none"
             >
               병원 정보 자동 입력
-            </button>
-            <button
-              type="submit"
-              disabled={saving}
-              className="min-h-11 flex-1 px-5 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors sm:flex-none"
-            >
-              {saving ? '저장 중...' : '저장'}
             </button>
           </div>
         </div>
@@ -526,6 +534,29 @@ export default function HospitalInfoPage() {
           onAddressChange={handleAddressChange}
           onCoordinateChange={handleCoordinateChange}
         />
+
+        {/* 「모두 저장」 바 — 탭 안 PATCH 칸을 한 번에 저장한다. 보내는 본문은 그대로 factsPatchPayload다. */}
+        <div
+          data-testid="info-save-bar"
+          className="sticky bottom-0 z-10 -mx-4 flex flex-col gap-2 border-t border-slate-200 bg-white/95 px-4 py-3 backdrop-blur sm:-mx-6 sm:flex-row sm:items-center sm:justify-between sm:px-6 lg:-mx-8 lg:px-8"
+        >
+          <div className="min-w-0">
+            <p
+              aria-live="polite"
+              className={`text-sm font-semibold ${unsavedSectionList.length > 0 ? 'text-amber-800' : 'text-slate-500'}`}
+            >
+              {success ? ADMIN_COPY.saveBar.saved : unsavedSummary(unsavedSectionList)}
+            </p>
+            <p className="text-xs text-slate-500">{ADMIN_COPY.saveBar.hint}</p>
+          </div>
+          <button
+            type="submit"
+            disabled={saving}
+            className="min-h-11 shrink-0 rounded-lg bg-blue-600 px-5 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:opacity-50"
+          >
+            {saving ? ADMIN_COPY.saveBar.saving : ADMIN_COPY.saveBar.save}
+          </button>
+        </div>
       </form>
 
       </div>
