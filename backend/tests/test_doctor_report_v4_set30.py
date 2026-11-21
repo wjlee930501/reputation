@@ -184,3 +184,29 @@ def test_old_payload_ignores_the_current_target_group():
 
     groups = {row.keyword: row.group for row in view.appendix.keyword_rows}
     assert groups["가상동 심장초음파 잘하는 병원"] == "B"
+
+
+def test_brand_answers_never_become_cases_or_competition_evidence():
+    from types import SimpleNamespace
+
+    from test_doctor_report_v4 import _records
+
+    brand_record = SimpleNamespace(
+        id="brand-1",
+        query_text="가상동 튼튼내과의원 어때?",
+        report_query_text="가상동 튼튼내과의원 어때?",
+        platform="chatgpt",
+        is_mentioned=True,
+        measurement_status="SUCCESS",
+        raw_response="가상동 튼튼내과의원은 좋은 병원입니다. " * 5,
+        mention_context="가상동 튼튼내과의원은 좋은 병원입니다.",
+        matched_text="가상동 튼튼내과의원",
+        competitor_mentions=[{"name": "가상동 경쟁내과", "is_mentioned": False}],
+        source_urls=[],
+        citation_urls=[],
+    )
+    legacy = build(sov_coverage=_set30_coverage())
+    view = build(sov_coverage=_set30_coverage(), records=[brand_record, *_records()])
+
+    assert view.cases.found is None or "튼튼내과의원 어때" not in (view.cases.found.keyword or "")
+    assert view.competition == legacy.competition

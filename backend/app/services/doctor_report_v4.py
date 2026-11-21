@@ -1155,6 +1155,11 @@ def build_doctor_report_v4(
     unexposed = [k for k in measured if not k.exposed]
     # 경쟁 현황은 **지금 등록된** 경쟁 병원만 등록 표기로 센다 — 등록에서 뺀 이름의 판정은 기록에 남아 있어도 보고서에
     # 싣지 않는다(경쟁 병원 반영이 기록을 지우지 않는 대신 여기서 거른다). 등록 목록이 비어 있으면 종전처럼 기록 그대로다.
+    # 병원명 질문(A)의 답변은 경쟁 현황·대표 사례에 쓰지 않는다 — 이름이 질문에 있어 노출이 당연하고, 경쟁률을
+    # 끌어내리며 "{병원명} 어때?"가 대표 성공 사례로 뽑힌다.
+    brand_texts = {keyword.text for keyword in keywords if keyword.brand}
+    if brand_texts:
+        records = [record for record in records if _record_query_text(record).strip() not in brand_texts]
     competitor_records = scope_competitor_records(records, registered_names)
     competitors_by_keyword = _competitors_by_keyword(competitor_records)
     registered = len(
@@ -3310,6 +3315,9 @@ def case_candidates_for_view(
     urls_to_title = urls_to_titles(view.content.rows)
     is_registered = bool(view.competition.rows or view.competition.basis) if registered is None else registered
     candidates: list[CaseCandidate] = []
+    brand_texts = {row.keyword for row in view.appendix.keyword_rows if row.group == "A"}
+    if brand_texts:
+        records = [record for record in records if _record_query_text(record).strip() not in brand_texts]
     for record in usable_case_records(scope_competitor_records(records, registered_names)):
         record_id = str(getattr(record, "id", "") or "")
         if not record_id:
