@@ -331,3 +331,32 @@ def test_error_body_read_failure_is_still_a_status(monkeypatch):
 
     monkeypatch.setattr(urllib.request, "urlopen", fail)
     assert check.http_get("https://x.test/")[0] == 503
+
+
+def test_wrapping_section_look_belongs_to_the_wrapped_section():
+    # 실제 SectionLook은 <section>을 바깥에서 감싼다.
+    page = """<html><body><div {a}><section id="treatments"><h2>진료 영역</h2></section></div>
+<div {b}><section id="doctor"><h2>의료진</h2></section></div><div data-look-align="end"><p>섹션 밖</p></div></body></html>"""
+    look = 'class="clinic-look" data-look-align="start" data-look-bg="tint"'
+    first = check.page_snapshot(200, {}, page.format(a=look, b=""))
+    moved = check.page_snapshot(200, {}, page.format(a="", b=look))
+    assert first["sections"][0]["look"]["wrap"] and "wrap" not in first["sections"][1]["look"]
+    assert first["sections"] != moved["sections"]
+    assert "data-look-align" in first["outside"]  # 섹션을 감싸지 않은 모양은 바깥 글에 남는다
+
+
+def test_truncated_error_body_is_still_a_status(monkeypatch):
+    import http.client
+    import io
+    import urllib.error
+    import urllib.request
+
+    class Truncated(io.BytesIO):
+        def read(self, *args):
+            raise http.client.IncompleteRead(b"par", 10)
+
+    def fail(*args, **kwargs):
+        raise urllib.error.HTTPError("https://x.test/", 503, "unavailable", {}, Truncated())
+
+    monkeypatch.setattr(urllib.request, "urlopen", fail)
+    assert check.http_get("https://x.test/")[0] == 503

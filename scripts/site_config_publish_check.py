@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import http.client
 import json
 import re
 import sys
@@ -59,10 +60,10 @@ def http_get(url: str, timeout: float = 30.0) -> tuple[int, dict[str, str], str]
     except urllib.error.HTTPError as error:
         try:
             body = error.read().decode("utf-8", "replace") if error.fp else ""
-        except (TimeoutError, OSError):
+        except (TimeoutError, OSError, http.client.HTTPException):
             body = ""
         return error.code, {k.lower(): v for k, v in (error.headers or {}).items()}, body
-    except (urllib.error.URLError, TimeoutError, OSError):
+    except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException):
         return 0, {}, ""  # 연결 실패 — 호출하는 쪽이 '아직'(wait) 또는 확인 필요(snapshot)로 본다.
 
 
@@ -112,6 +113,8 @@ class PageParser(HTMLParser):
         self._capture: tuple[str, list[str]] | None = None
         self._jsonld: list[str] | None = None
         self._link: tuple[str, list[str]] | None = None
+        # [스택 깊이, 모양 JSON, 섹션에 붙었는지] — 섹션 밖에서 열린 모양 요소
+        self._pending_looks: list[list[Any]] = []
 
     # --- 상태 ---
     def _hidden(self) -> bool:
@@ -158,12 +161,21 @@ class PageParser(HTMLParser):
             section = {"id": attr.get("id") or None, "label": attr.get("aria-label") or None, "title": None}
             section["look"] = _look(attr)
             section["_text"] = []
+            # 섹션을 바깥에서 감싼 모양 요소(SectionLook `<div data-look-…>`)는 그 안의 첫 섹션 것이다.
+            wrappers = [pending for pending in self._pending_looks if not pending[2]]
+            if wrappers:
+                section["look"]["wrap"] = [pending[1] for pending in wrappers]
+                for pending in wrappers:
+                    pending[2] = True
             self.sections.append(section)
         self._stack.append((tag, hidden, section))
         if section is None and any(key.startswith(("data-look", "data-hero")) for key in attr):
-            # 감싸는 섹션의 글에 넣는다 — 어느 섹션의 정렬·배경·모양인지 함께 비교되게.
             look = json.dumps(_look(attr), ensure_ascii=False, sort_keys=True)
-            self._emit(f" [look:{look}] ", marker=True)
+            if self._section() is not None:
+                # 섹션 안쪽 요소의 모양은 그 섹션 글에 넣는다 — 어느 섹션의 정렬·배경인지 함께 비교되게.
+                self._emit(f" [look:{look}] ", marker=True)
+            else:
+                self._pending_looks.append([len(self._stack), look, False])
         if tag == "script" and attr.get("type") == "application/ld+json":
             self._jsonld = []
         elif tag in {"h1", "h2"} or (tag == "dt" and self._in_faq()):
@@ -210,7 +222,12 @@ class PageParser(HTMLParser):
             self._link = None
         # 닫는 태그가 빠진 HTML에도 버티게 가장 가까운 같은 태그까지 닫는다.
         while self._stack:
+            depth = len(self._stack)
             name, _, _ = self._stack.pop()
+            for pending in [item for item in self._pending_looks if item[0] == depth]:
+                self._pending_looks.remove(pending)
+                if not pending[2]:
+                    self._emit(f" [look:{pending[1]}] ", marker=True)  # 섹션을 감싸지 않은 모양
             if name == tag:
                 break
 
