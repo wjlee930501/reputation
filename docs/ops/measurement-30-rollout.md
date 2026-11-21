@@ -5,6 +5,25 @@ PR ① #378 측정 계약 → ② #379 A그룹 정확도 → ③ #380 30개 초�
 
 **마감**: 12/1 00:15 KST 월간 측정(11월분) 전에 운영에 나가 있어야 한다. 매월 1일 00:15~09:00은 배포 금지이고, 그 밖에도 배치 시간대(22:15~02:00, 04·07·08·12·18·22시 앞뒤 45분)는 `deploy.sh`가 막는다. **11/27~28 낮**에 배포한다.
 
+## 0. 한 쪽 체크리스트(12/1 전 운영 실행 순서)
+
+| # | 언제 | 할 일 | 확인 |
+|---|---|---|---|
+| 1 | 배포 날(배치 시간대 밖) | env `COST_GUARD_MONTHLY_SOV_QUERIES=13500`(일 9,000 그대로) → `deploy.sh backend --accept-env-diff`·`deploy.sh admin` | readiness 통과, 마이그레이션 head `0101_add_query_target_set_roles` |
+| 2 | 배포 직후 | `measurement_set_rollout precheck` | 코호트 병원마다 `action=apply`, 고정 20·교체 10, `problems=[]` |
+| 3 | 2 직후 | (필요하면) `show --ids=<id>`로 문장 확인 | 어색한 문장은 4 뒤 어드민에서 고친다 |
+| 4 | 3 직후 | `measurement_set_rollout apply --confirm` | 병원마다 `action=applied`, `summary.fixed=20` |
+| 5 | 4 직후 | `measurement_set_rollout precheck` 다시 | 전부 `skip_curated`, `curated_now=true`, `legacy_tracked=0` |
+| 6 | 5 직후 | `ops_sql_report --only=q17` | 코호트 병원 모두 `curated=true`, 그룹 A5·B10·C8·D7 |
+| 7 | 배포 다음 날~11/30 | 마케터: 콘텐츠 > 측정 키워드에서 문구 고치기·교체 10개 고르기(시즌 강조 키워드) | **11/30 23:00 편집 마감**(1일 00:15 측정표 동결 — 그 뒤 저장은 다음 달부터) |
+| 8 | 11/30 18:45~21:30 | 워커 최소 인스턴스 1 → 2(`gcloud run services update reputation-worker --min-instances=2 …`) | 인스턴스 2대 |
+| 9 | 11/30 저녁 | §4 확인 목록, 코호트 20곳 넘으면 일 한도 상향을 대표에게 묻기 | q17 마지막 확인 |
+| 10 | 12/1 00:45·03:00·06:00 | `ops_sql_report --only=q17`의 q17b(새벽 진행) | `answers_received`가 늘고 `frozen_set30=true` |
+| 11 | 12/1 07:15~09:00 | 보고서 확인(§5) | 1면 B~D, P3 A행·정확도 줄, 부록 A 30개 |
+| 12 | 12/1 09:00 뒤 | 워커 최소 인스턴스 2 → 1 | 인스턴스 1대 |
+
+**로컬 리허설(2026-11-21)**: 로컬 테스트 DB에 운영과 같은 모양의 병원 3곳(내과·치과·한의원, 옛 15개 질문 11~14개, 코호트)을 만들어 2→3→4→5→6을 실제로 돌렸다. precheck 3곳 `apply`·문제 0 → `apply --confirm` 3곳 `applied`(곳마다 새 질문 39개 = 세트 30 + 후보 9, 옛 질문 11~14개는 측정에서만 빠짐) → 다시 precheck 3곳 `skip_curated`·`legacy_tracked=0` → 다시 apply 3곳 `skipped_curated` → q17 3곳 `curated=true`·고정 20·교체 10·A5·B10·C8·D7 → 월간 세트 등록(`register_tracking_set`) 3곳 유효·30개·바뀐 것 0. 옛 질문 문구("○○ 내과 병원 추천해줘")는 지침 3-1 문형과 달라 그대로 이어 쓴 질문은 0개였다 — 11월분은 어차피 질문 세트가 바뀐 첫 달이라 지난달과 비교하지 않는다.
+
 ## 1. 배포 전
 
 1. PR ①~⑤를 순서대로 병합한다(②~⑤는 앞 PR 위에 쌓은 PR — 앞이 병합되면 base를 main으로 바꾼다). 병합 직전 `origin/main`의 마이그레이션 head를 확인한다 — ①은 `0101_add_query_target_set_roles`를 더한다. 다른 PR이 먼저 `0101`을 쓰면 번호를 올리고 `scripts/integrity_rehearsal/check.py`·`backend/tests/test_migration_chain_linearity.py`의 head도 함께 올린다.
