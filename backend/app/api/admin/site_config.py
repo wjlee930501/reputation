@@ -44,6 +44,7 @@ from app.models.site_config import (
 )
 from app.services import site_config_refs, site_defaults
 from app.services.audit_log import default_actor, write_audit_log
+from app.services.clinic_page_copy import public_care_principles
 from app.services.hospital_lifecycle import profile_publication_verdict
 from app.services.operation_run_keys import normalize_operation_key
 from app.services.public_surface_intents import enqueue_public_surface_intent
@@ -252,7 +253,18 @@ async def get_site_config(hospital_id: uuid.UUID, db: AsyncSession = Depends(get
         "history": [_history_entry(row) for row in history],
         "warnings": warnings,
         "preview_enabled": preview_enabled(),
+        "hospital_section_titles": hospital_section_titles(hospital),
     }
+
+
+def hospital_section_titles(hospital: Hospital) -> dict[str, str | None]:
+    """설정이 기본 제목일 때 화면이 대신 쓰는 병원 정보의 제목 — 진료 원칙은 병원이 쓴 제목을 그린다.
+
+    공개 화면과 같은 값(금지 표현이 든 문장은 비운 `public_care_principles`)이라 편집기가 화면과 같은 제목을 보인다.
+    """
+
+    principles = public_care_principles(hospital.care_principles) or {}
+    return {"care_principles": principles.get("title") or None}
 
 
 @router.get("/{hospital_id}/site-config/faq-candidates")

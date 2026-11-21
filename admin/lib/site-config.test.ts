@@ -21,6 +21,7 @@ import {
   type ResolvedSiteConfig,
   type SiteSection,
   showsBOnlyFields,
+  shownSectionTitle,
 } from './site-config.ts'
 
 function section(id: string, extra: Partial<SiteSection> = {}): SiteSection {
@@ -328,4 +329,19 @@ test('an old A/C draft holding B-only values counts as changed, so it can be sav
   assert.equal(overridesCompareKey('C', base, base, true), overridesCompareKey('C', base, base))
   // B는 두 모양이 언제나 같다.
   assert.equal(overridesCompareKey('B', stored, base, true), overridesCompareKey('B', stored, base))
+})
+
+test('the shown section title follows the hospital care principles title until the title is changed', () => {
+  const titles = { care_principles: '아픈 원인부터 확인합니다' }
+  const base = '증상의 원인부터 확인합니다'
+  assert.equal(shownSectionTitle({ id: 'care_principles', title: base }, base, titles), '아픈 원인부터 확인합니다')
+  assert.equal(shownSectionTitle({ id: 'care_principles', title: '우리 병원 원칙' }, base, titles), '우리 병원 원칙')
+  assert.equal(shownSectionTitle({ id: 'care_principles', title: base }, base, {}), base)
+  assert.equal(shownSectionTitle({ id: 'faq', title: '자주 묻는 질문' }, '자주 묻는 질문', titles), '자주 묻는 질문')
+  const defaults = defaultsC()
+  const state = readSiteConfigState({
+    defaults: { A: defaults, B: defaults, C: defaults },
+    hospital_section_titles: { care_principles: '아픈 원인부터 확인합니다', faq: '' },
+  })
+  assert.deepEqual(state?.hospital_section_titles, { care_principles: '아픈 원인부터 확인합니다' })
 })

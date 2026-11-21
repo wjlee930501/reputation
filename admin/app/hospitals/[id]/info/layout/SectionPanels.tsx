@@ -48,6 +48,7 @@ export function SectionList({
   onSelect,
   onChange,
   issueCount,
+  titleOf = (section) => section.title,
   disabled,
 }: {
   sections: SiteSection[]
@@ -55,6 +56,8 @@ export function SectionList({
   onSelect: (id: SectionId) => void
   onChange: (sections: SiteSection[]) => void
   issueCount: (id: SectionId) => number
+  /** 목록에 보일 제목(화면과 같은 제목 — 기본 제목이면 병원 정보의 진료 원칙 제목). */
+  titleOf?: (section: SiteSection) => string | null
   disabled: boolean
 }) {
   return (
@@ -84,7 +87,7 @@ export function SectionList({
                 <span className="block truncate text-[11px] text-slate-500">
                   {attachedHost
                     ? COPY.attached.replace('{host}', sectionName(attachedHost))
-                    : section.title ?? ' '}
+                    : titleOf(section) ?? ' '}
                 </span>
               </button>
               {errors > 0 && (
@@ -174,12 +177,15 @@ export function Choice<T extends string>({
 export function SectionSettings({
   section,
   defaultTitle,
+  placeholderTitle,
   issues,
   onChange,
   disabled,
 }: {
   section: SiteSection
   defaultTitle: string | null
+  /** 비웠을 때 화면에 보이는 제목(기본 제목 대신 병원 정보의 제목이 보이는 섹션). 없으면 기본 제목. */
+  placeholderTitle?: string | null
   issues: readonly SiteConfigIssue[]
   onChange: (section: SiteSection) => void
   disabled: boolean
@@ -206,7 +212,7 @@ export function SectionSettings({
             type="text"
             maxLength={40}
             value={section.title === defaultTitle ? '' : section.title ?? ''}
-            placeholder={defaultTitle ?? ''}
+            placeholder={placeholderTitle ?? defaultTitle ?? ''}
             disabled={disabled}
             onChange={(event) => onChange({ ...section, title: event.target.value.trim() ? event.target.value : defaultTitle })}
             className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
