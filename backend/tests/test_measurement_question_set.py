@@ -267,3 +267,28 @@ def test_operating_show_defects_2026_11_21():
     for residue in ("수원치질", "영통치질", "팔달구치질"):
         assert residue not in texts
     assert "치질" in texts
+
+
+def _topics_of(**overrides):
+    values = {"hospital_name": "가나의원", "region": ["서울"], "specialties": ["정형외과"]}
+    values.update(overrides)
+    return {row.topic for row in draft_measurement_set(**values) if row.topic}
+
+
+def test_codex_review_of_show_fixes():
+    # 지명 무리가 없는 정상 복합어는 남는다.
+    topics = _topics_of(keywords=["허리디스크", "디스크", "긴장성두통", "두통"])
+    assert {"허리디스크", "긴장성두통"} <= topics
+    # 한글 없는 조각이 있는 이름('PET/CT', 'CD4+')은 나누지 않는다.
+    topics = _topics_of(specialties=["외과"], treatments=[{"name": "CD4+ T세포 검사"}, {"name": "PET/CT"}])
+    assert {"CD4 T세포 검사", "PET CT"} <= topics
+    # 독립 항목이 없어도 나열의 뒤 조각('치핵/치질'의 '치질')과 견줘 지명 키워드를 뺀다 — 무리 전체.
+    topics = _topics_of(
+        region=["수원시 팔달구"],
+        specialties=["외과"],
+        treatments=[{"name": "치핵/치질"}, {"name": "치루"}],
+        keywords=["수원치질", "영통치질"],
+    )
+    assert not {"수원치질", "영통치질"} & topics
+    # 신체 부위인 앞말은 지명이 아니다.
+    assert "안구건조증" in _topics_of(specialties=["안과"], keywords=["안구건조증", "건조증"])
