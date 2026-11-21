@@ -39,6 +39,7 @@ from sqlalchemy import select
 
 from app.models.content import PLAN_DISTRIBUTION, ContentType
 from app.models.sov import AIQueryTarget, ExposureGap
+from app.services import measurement_set
 from app.services.content_target_planner import (
     AFFINITY_POSSIBLE,
     MENTION_GAP_RANK,
@@ -133,6 +134,10 @@ def gap_target_rows_stmt(hospital_id: uuid.UUID):
         .where(
             AIQueryTarget.hospital_id == hospital_id,
             AIQueryTarget.status == "ACTIVE",
+            # 병원명 질문(측정 키워드 그룹 A)은 글 주제가 아니다 — 정보 정확도 점검이다.
+            measurement_set.content_eligible_clause(
+                AIQueryTarget.question_group, AIQueryTarget.name
+            ),
             ExposureGap.hospital_id == hospital_id,
             ExposureGap.status.in_(OPEN_GAP_STATUSES),
             ExposureGap.gap_type.in_(tuple(MENTION_GAP_RANK)),

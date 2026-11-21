@@ -2,8 +2,12 @@ import type { PlanCode } from '../types/index.ts'
 import { ADMIN_COPY } from './admin-copy.ts'
 import type { SiteLayout } from './site-layout.ts'
 
-/** 계약 등록 화면이 받는 값. 계약 번호·효력일·영업 담당은 받지 않는다 — 저장만 되고
- * 어떤 동작도 바꾸지 않아 의미 없는 기입이었다. 서버가 채운다(`ContractRegistration`). */
+/** 계약 등록 화면이 받는 값. 계약 번호·영업 담당은 받지 않는다 — 저장만 되고 어떤 동작도
+ * 바꾸지 않아 의미 없는 기입이었다. 서버가 채운다(`ContractRegistration`).
+ *
+ * 계약 시작일은 받는다(2026-11 개편 결정 대기 17번 A). 서버의 계약 효력일(`contract_effective_at`)이고,
+ * 첫 발행 일정이 이 날짜부터(지났으면 내일부터) 시작하며 시작 달 편수도 이 날짜로 나눈다
+ * (`initial_schedule.initial_schedule_terms`·`content_month_target.prorated_first_month_quota`). */
 export type ContractRegistrationForm = {
   readonly name: string
   readonly leadId: string | null
@@ -11,6 +15,8 @@ export type ContractRegistrationForm = {
   readonly aeOwnerId: string
   /** 공개 페이지 레이아웃. 계약 등록에서 반드시 고른다(2026-11-13 결정). */
   readonly siteLayout: SiteLayout | null
+  /** 계약 시작일 "YYYY-MM-DD". 비우면 서버가 등록일로 채운다. */
+  readonly contractStartOn?: string
 }
 
 export type ContractRegistrationPayload = {
@@ -19,6 +25,24 @@ export type ContractRegistrationPayload = {
   readonly plan: PlanCode
   readonly ae_owner_id: string
   readonly site_layout: SiteLayout | null
+  readonly contract_effective_at?: string
+}
+
+export const CONTRACT_START_COPY = {
+  label: '계약 시작일(첫 발행 기준)',
+  // 첫 일정은 운영 기준 적용 등 준비가 끝난 뒤 만들어진다 — 시작일은 이 날짜와 일정이 만들어진 다음 날 중
+  // 늦은 날이고, 시작 달 편수는 그 실제 시작일로 나눈다(`initial_schedule.initial_schedule_terms`).
+  hint: '첫 발행 일정은 준비가 끝난 뒤 이 날짜와 그다음 날 중 늦은 날부터 시작합니다. 시작 달 편수는 실제 시작일 뒤에 남은 발행 요일만큼 나눕니다. 비우면 등록한 날입니다.',
+  invalid: '계약 시작일을 날짜로 입력해 주세요.',
+} as const
+
+const DATE_INPUT = /^\d{4}-\d{2}-\d{2}$/
+
+function validDateInput(value: string): boolean {
+  if (!DATE_INPUT.test(value)) return false
+  const [year, month, day] = value.split('-').map(Number)
+  const parsed = new Date(Date.UTC(year, month - 1, day))
+  return parsed.getUTCFullYear() === year && parsed.getUTCMonth() === month - 1 && parsed.getUTCDate() === day
 }
 
 /** 화면 입력을 `POST /admin/hospitals/register-contract` 본문으로 옮긴다. */
@@ -29,6 +53,7 @@ export function registrationPayload(form: ContractRegistrationForm): ContractReg
     plan: form.plan,
     ae_owner_id: form.aeOwnerId,
     site_layout: form.siteLayout,
+    ...(form.contractStartOn?.trim() ? { contract_effective_at: form.contractStartOn.trim() } : {}),
   }
 }
 
@@ -37,6 +62,7 @@ export function registrationBlockReason(form: ContractRegistrationForm): string 
   if (!form.name.trim()) return '병원명을 입력해야 등록할 수 있습니다.'
   if (!form.aeOwnerId) return '담당 AE를 선택해야 등록할 수 있습니다.'
   if (!form.siteLayout) return ADMIN_COPY.siteLayout.required
+  if (form.contractStartOn?.trim() && !validDateInput(form.contractStartOn.trim())) return CONTRACT_START_COPY.invalid
   return null
 }
 

@@ -27,12 +27,21 @@ test('the payload trims the name and leaves the server-filled contract facts out
     ae_owner_id: 'ae-1',
     site_layout: 'C',
   })
-  // 계약 번호·효력일·영업 담당은 저장만 되고 아무 동작도 바꾸지 않는다 — 서버가 채운다.
-  const payload = registrationPayload(form({ leadId: null })) as Record<string, unknown>
+  // 계약 번호·영업 담당은 저장만 되고 아무 동작도 바꾸지 않는다 — 서버가 채운다. 계약 시작일은 비우면
+  // 보내지 않는다(서버가 등록일로 채운다).
+  const payload = registrationPayload(form({ leadId: null, contractStartOn: '  ' })) as Record<string, unknown>
   assert.equal(payload.lead_id, null)
   for (const key of ['contract_reference', 'contract_effective_at', 'sales_owner_id']) {
     assert.ok(!(key in payload), `unexpected field: ${key}`)
   }
+})
+
+test('계약 시작일을 적으면 계약 효력일로 보낸다(첫 발행 일정·시작 달 편수 기준)', () => {
+  const payload = registrationPayload(form({ contractStartOn: '2026-12-01' })) as Record<string, unknown>
+  assert.equal(payload.contract_effective_at, '2026-12-01')
+  assert.equal(registrationBlockReason(form({ contractStartOn: '2026-12-01' })), null)
+  assert.match(registrationBlockReason(form({ contractStartOn: '2026-02-30' })) ?? '', /계약 시작일/)
+  assert.match(registrationBlockReason(form({ contractStartOn: '12/01' })) ?? '', /계약 시작일/)
 })
 
 test('the block reason names the one field that is still missing', () => {
@@ -92,4 +101,11 @@ test('each failure code gets its own line naming what to fix', () => {
   // 알 수 없는 실패만 예전의 뭉뚱그린 한 줄로 떨어진다.
   assert.match(registrationFailure({ code: 'NOPE' }).message, /계약 정보를 확인/)
   assert.match(registrationFailure(undefined).message, /계약 정보를 확인/)
+})
+
+test('계약 시작일 안내는 실제 시작일(준비 뒤, 입력일과 다음 날 중 늦은 날) 기준으로 말한다', async () => {
+  const { CONTRACT_START_COPY } = await import('./contract-registration.ts')
+  assert.match(CONTRACT_START_COPY.hint, /늦은 날/)
+  assert.match(CONTRACT_START_COPY.hint, /실제 시작일/)
+  assert.doesNotMatch(CONTRACT_START_COPY.hint, /비우면 오늘/)
 })

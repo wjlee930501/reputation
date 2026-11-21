@@ -26,6 +26,7 @@ import { ADMIN_COPY } from '@/lib/admin-copy'
 import {
   hospitalMatchesStatus,
   hospitalStatusCounts,
+  isContractEnded,
   type HospitalStatusFilter,
 } from '@/lib/hospital-list-filter'
 import { HospitalListRow, PLAN_LABELS } from '@/types'
@@ -142,9 +143,16 @@ export default function HospitalsPage() {
     )
   }, [hospitals, query, statusFilter, reportGapIds, sort, metrics])
 
+  // 기본 목록 아래 접힌 묶음 둘 — 일시 정지(다시 열 수 있음)와 운영 종료(계약 종료일 지남, 서버 판정).
   const pausedRows = useMemo(
     () => (statusFilter === 'default' && !query.trim()
-      ? sortHospitals(hospitals.filter((h) => h.status === 'PAUSED'), sort, metrics)
+      ? sortHospitals(hospitals.filter((h) => h.status === 'PAUSED' && !isContractEnded(h)), sort, metrics)
+      : []),
+    [hospitals, statusFilter, query, sort, metrics],
+  )
+  const endedRows = useMemo(
+    () => (statusFilter === 'default' && !query.trim()
+      ? sortHospitals(hospitals.filter((h) => isContractEnded(h)), sort, metrics)
       : []),
     [hospitals, statusFilter, query, sort, metrics],
   )
@@ -181,6 +189,9 @@ export default function HospitalsPage() {
             <StatPill label="준비 중" value={stats.onboarding} tone="warn" selected={statusFilter === 'onboarding'} onClick={() => setStatusFilter('onboarding')} />
             <StatPill label={ADMIN_COPY.hospitalList.filterReportGap} value={stats.reportGap} tone="warn" selected={statusFilter === 'reportGap'} onClick={() => setStatusFilter('reportGap')} />
             <StatPill label="일시 정지" value={stats.paused} selected={statusFilter === 'paused'} onClick={() => setStatusFilter('paused')} />
+            {stats.ended > 0 && (
+              <StatPill label={ADMIN_COPY.contractEnd.filter} value={stats.ended} selected={statusFilter === 'ended'} onClick={() => setStatusFilter('ended')} />
+            )}
             <StatPill label="전체" value={stats.total} selected={statusFilter === 'all'} onClick={() => setStatusFilter('all')} />
           </div>
         )}
@@ -297,24 +308,27 @@ export default function HospitalsPage() {
               </tbody>
             </table>
             </div>
-            {pausedRows.length > 0 && (
-              <details className="border-t border-slate-200" data-testid="paused-hospitals">
+            {[
+              { key: 'paused', label: ADMIN_COPY.hospitalList.pausedGroup, rows: pausedRows },
+              { key: 'ended', label: ADMIN_COPY.contractEnd.group, rows: endedRows },
+            ].map((group) => group.rows.length > 0 && (
+              <details key={group.key} className="border-t border-slate-200" data-testid={`${group.key}-hospitals`}>
                 <summary className="flex min-h-11 cursor-pointer items-center gap-2 px-6 text-sm font-semibold text-slate-600">
-                  {ADMIN_COPY.hospitalList.pausedGroup}
-                  <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-bold text-slate-600">{pausedRows.length}</span>
+                  {group.label}
+                  <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-bold text-slate-600">{group.rows.length}</span>
                 </summary>
                 <div className="admin-responsive-table-wrap overflow-x-auto">
                   <table className="admin-responsive-table min-w-[1180px] w-full text-sm">
                     <HospitalTableHead />
                     <tbody className="divide-y divide-slate-100">
-                      {pausedRows.map((h) => (
+                      {group.rows.map((h) => (
                         <HospitalRow key={h.id} h={h} metrics={metrics.get(h.id)} reportGap={reportGapIds.has(h.id)} />
                       ))}
                     </tbody>
                   </table>
                 </div>
               </details>
-            )}
+            ))}
             {hasMore && (
               <div className="border-t border-slate-100 px-6 py-3 text-center">
                 <button
@@ -397,6 +411,11 @@ function HospitalRow({
       <td className="px-4 py-4" data-label="상태">
         <div className="flex flex-col gap-1.5">
           <StateCell kind={h.public_service_state.kind} description={publicService} />
+          {isContractEnded(h) && h.contract_ended_on && (
+            <span className="text-[11px] font-medium text-slate-500">
+              {ADMIN_COPY.contractEnd.endedBadge.replace('{date}', h.contract_ended_on)}
+            </span>
+          )}
           <StateCell kind={h.content_state.kind} description={contentReady} />
           {/* 자기 도메인을 쓰지 않는 병원은 아무 말도 하지 않는다 — 링크는 사람이 결정할 문제
               (`problem`)에만 붙인다. */}

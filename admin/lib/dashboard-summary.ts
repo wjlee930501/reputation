@@ -20,6 +20,8 @@ export interface DashboardHospital {
   readonly open_exception_count: number
   readonly visual_approval_missing?: readonly string[] | null
   readonly public_service_state: { readonly kind: string; readonly remaining: readonly unknown[] }
+  /** 서버 판정 「운영 종료」(일시정지 + 계약 종료일 지남). */
+  readonly contract_ended?: boolean
 }
 
 export interface DashboardReportGaps {
@@ -44,6 +46,8 @@ export interface DashboardSummary {
   readonly live: number
   readonly preparing: number
   readonly paused: number
+  /** 일시 정지 중 운영 종료(계약 종료일 지남) — paused 안에 든다. */
+  readonly ended: number
   readonly total: number
   readonly visualMissingHospitals: number
   readonly operatorTodo: number | null
@@ -77,6 +81,8 @@ export function summarizeDashboard(
     live: hospitals.filter((h) => h.public_service_state.kind === 'live').length,
     preparing: hospitals.filter((h) => h.public_service_state.kind === 'not_live').length,
     paused: hospitals.filter((h) => h.public_service_state.kind === 'paused').length,
+    // 일시 정지 중 계약이 끝난 병원 — 일시 정지 수 안에 든다(하위 묶음).
+    ended: hospitals.filter((h) => h.status === 'PAUSED' && h.contract_ended === true).length,
     total: hospitals.length,
     visualMissingHospitals: active.filter((h) => (h.visual_approval_missing?.length ?? 0) > 0).length,
     operatorTodo: counts ? counts.operator_todo_groups : null,
@@ -128,7 +134,8 @@ export function todoLines(
     if (isOnboardingHospital({ status: h.status as never }) && humanLeft > 0) {
       add('preparing', h, COPY.todoPreparing.replace('{count}', String(humanLeft)), `/hospitals/${h.id}`, COPY.todoStateAction)
     }
-    if (h.status === 'PAUSED') {
+    // 계약이 끝난 병원은 다시 열 일이 아니라 「오늘 할 일」에 올리지 않는다.
+    if (h.status === 'PAUSED' && h.contract_ended !== true) {
       add('paused', h, COPY.todoPaused, `/hospitals/${h.id}`, COPY.todoStateAction)
     }
   }

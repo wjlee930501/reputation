@@ -498,6 +498,8 @@ def test_alert_copy_is_split_by_audience_without_codes_or_pii(monkeypatch):
             assert code not in text
     assert "예약 실행기" in developer
     assert "공개된 글이" in operator
+    # 처리 목록 기본 탭은 문제·복구다 — 발행 정지 경보는 오늘 발행 예정 글 목록으로 바로 연다.
+    assert "https://admin.example.com/operations?queue=today" in operator
     assert "예약 실행기" not in operator
 
 

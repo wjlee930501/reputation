@@ -99,11 +99,27 @@ export function __clearDomainSlugCacheForTest(): void {
   domainSlugCache.clear()
 }
 
+/** 경로의 퍼센트 인코딩이 온전한가(`decodeURIComponent`가 실패하지 않는가). */
+export function decodablePath(pathname: string): boolean {
+  try {
+    decodeURIComponent(pathname)
+    return true
+  } catch {
+    return false
+  }
+}
+
 export function __setDomainSlugCacheEntryForTest(hostname: string, entry: CacheEntry): void {
   domainSlugCache.set(hostname, entry)
 }
 
 export async function proxy(request: NextRequest) {
+  // 퍼센트 인코딩이 깨진 경로(`/%E0%A4%A` — 보안 스캐너)는 Next가 경로를 디코드하다 500을 낸다. 어떤 페이지도 아니므로 404.
+  if (!decodablePath(request.nextUrl.pathname)) {
+    const res = new NextResponse('Not found', { status: 404 })
+    res.headers.set('cache-control', 'no-store')
+    return res
+  }
   // 미리보기 사진은 이미지 최적화기로 받지 않는다 — 최적화 결과는 공용 캐시(하루)라 토큰이 만료된 뒤에도
   // 사진을 내준다. 미리보기 화면은 이 주소를 최적화 없이 쓴다(`isPreviewAssetUrl`).
   if (request.nextUrl.pathname === '/_next/image' && isPreviewAssetUrl(request.nextUrl.searchParams.get('url'))) {

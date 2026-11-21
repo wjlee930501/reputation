@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useId, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 
 import { ADMIN_COPY } from '@/lib/admin-copy'
@@ -23,6 +23,7 @@ export function ConfirmDialog({
   error,
   onConfirm,
   onClose,
+  children,
 }: {
   open: boolean
   title: string
@@ -35,6 +36,8 @@ export function ConfirmDialog({
   error?: string | null
   onConfirm: () => void
   onClose: () => void
+  /** 설명과 오류 사이에 넣는 입력 칸(계약 종료일 등). 첫 칸이 포커스를 받는다. */
+  children?: ReactNode
 }) {
   const [typed, setTyped] = useState('')
   const titleId = useId()
@@ -55,7 +58,10 @@ export function ConfirmDialog({
     setTyped('')
     // 닫히면 연 자리(⋯ 메뉴 버튼 등)로 포커스를 돌려준다.
     const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
-    const focusTarget = inputRef.current ?? cancelRef.current
+    const focusTarget =
+      inputRef.current
+      ?? panelRef.current?.querySelector<HTMLElement>('[data-dialog-field] input, [data-dialog-field] select')
+      ?? cancelRef.current
     focusTarget?.focus()
     // 캡처 단계에서 먼저 받는다 — Escape가 뒤의 콘텐츠 상세까지 닫지 않게, Tab이 창 밖
     // (배경 버튼)으로 빠지지 않게 창 안에서만 돈다.
@@ -129,6 +135,7 @@ export function ConfirmDialog({
             />
           </label>
         )}
+        {children && <div data-dialog-field className="mt-4">{children}</div>}
         {error && (
           <p role="alert" className="mt-3 rounded-lg bg-red-50 p-3 text-sm leading-6 text-red-700 [word-break:keep-all]">
             {error}

@@ -70,7 +70,11 @@ from app.services.content_engine import (
 )
 from app.services.content_month_target import (
     CONTRACT_QUOTA_MONTH_KEY,
+    OPERATOR_MONTH_TARGET_KEY,
+    month_content_target,
     month_is_voided,
+    operator_cancelled_ids,
+    operator_month_target,
     schedule_change_records_stmt,
 )
 from app.services.content_publication import (
@@ -147,9 +151,11 @@ from app.services.reference_verification import (
 )
 from app.services.schedule_reconciliation import (
     DEFERRED_START_KEY,
+    cancel_allocations,
     defer_unstarted_contract,
     month_items_query,
     place_open_slots,
+    plan_allocation_trim,
     remaining_month_slots,
     retime_open_allocations,
 )
@@ -209,6 +215,10 @@ class ScheduleCreate(BaseModel):
     active_from: date
     # 발행 요일 하루에 놓을 수 있는 최대 편수(0099). 옛 Admin은 보내지 않으므로 1이 기본이다.
     daily_max: int = Field(default=1, ge=1, le=MAX_DAILY_ARTICLES)
+    # 계약 첫 달(시작일의 달)의 약속 편수를 마케터가 정한다(2026-11-21 마케팅 요청 #8). 요금제 편수가
+    # 상한이고 0도 된다(그 달은 발행 없이 다음 달부터). 보내지 않으면 이미 정한 값이 있으면 그 값,
+    # 없으면 요금제 편수다(`content_month_target.operator_month_target`).
+    month_target: int | None = Field(default=None, ge=0, le=20)
 
     @field_validator("publish_days")
     @classmethod
@@ -451,9 +461,8 @@ async def set_schedule(
     # 그 사실을 남겨 보고서·현황·당월 조정이 같은 값을 읽는다(content_month_target).
     # 시작일을 미뤄 0편으로 둔 달 안이나 앞으로 다시 당기면 그 달은 다시 약속 달이다 — 미룰 때
     # 종료한 슬롯(공개된 적 없는 CANCELLED)은 배정으로 세지 않고 새 슬롯으로 채운다.
-    reopening_voided_month = month_is_voided(
-        (await db.execute(schedule_change_records_stmt(hospital_id))).all(), target_month
-    )
+    schedule_records = (await db.execute(schedule_change_records_stmt(hospital_id))).all()
+    reopening_voided_month = month_is_voided(schedule_records, target_month)
     if reopening_voided_month:
         existing_rows = [
             row
@@ -465,6 +474,71 @@ async def set_schedule(
             )
         ]
     month_target = monthly_quota_for_plan(period_plan)
+    # 마케터가 정한 계약 첫 달 편수(마케팅 요청 #8). 이 저장이 편수를 보내지 않아도 이미 정한 값은
+    # 남는다 — 옛 탭이나 요일만 바꾼 저장이 편수를 요금제로 되돌려 종료한 슬롯을 다시 사지 않게.
+    standing_target = operator_month_target(schedule_records, target_month)
+    requested_target: int | None = None
+    if body.month_target is not None:
+        if month_target is None or body.month_target > month_target:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "MONTH_TARGET_OVER_CONTRACT",
+                    "message": f"그 달 편수는 계약 편수({month_target}편)보다 많이 정할 수 없습니다.",
+                    "contract_quota": month_target,
+                },
+            )
+        if not await _is_first_contract_month(db, hospital_id, target_month):
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "MONTH_TARGET_FIRST_MONTH_ONLY",
+                    "message": "발행 편수는 계약 첫 달(앞 달에 공개한 글이 없는 달)에만 정할 수 있습니다.",
+                },
+            )
+        requested_target = body.month_target
+    elif standing_target is not None and month_target is not None:
+        requested_target = min(standing_target, month_target)
+    operator_cancelled: list[str] = []
+    if requested_target is not None:
+        # 편수를 다시 늘리면 이 기능이 줄이며 종료한 슬롯만 배정으로 세지 않는다(새로 채운다).
+        previously_trimmed = operator_cancelled_ids(schedule_records, target_month)
+        existing_rows = [row for row in existing_rows if str(row.id) not in previously_trimmed]
+        trim_rows, shortfall = plan_allocation_trim(
+            existing_rows, keep=requested_target, today=today_kst
+        )
+        if shortfall:
+            # 종료할 수 없는 글(공개·이월·사람 편집·생성 중·지난 날짜)만큼은 남는다.
+            minimum = requested_target + shortfall
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "MONTH_TARGET_BELOW_KEPT",
+                    "message": (
+                        f"이미 공개했거나 사람이 고친 글·생성 중인 글이 남아 그 달 편수를 {minimum}편 "
+                        f"아래로 줄일 수 없습니다. {minimum}편 이상으로 정해 주세요."
+                    ),
+                    "minimum": minimum,
+                },
+            )
+        if trim_rows:
+            operator_cancelled, raced = await cancel_allocations(db, trim_rows)
+            if raced:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "MONTH_TARGET_RACE",
+                        "message": "그 사이 글 생성·편집이 시작됐습니다. 화면을 다시 불러온 뒤 저장해 주세요.",
+                    },
+                )
+            trimmed = set(operator_cancelled)
+            existing_rows = [row for row in existing_rows if str(row.id) not in trimmed]
+        month_target = requested_target
+    operator_marked = (
+        requested_target is not None
+        and monthly_quota_for_plan(period_plan) is not None
+        and requested_target < monthly_quota_for_plan(period_plan)
+    )
 
     schedule = ContentSchedule(
         hospital_id=hospital_id,
@@ -620,8 +694,20 @@ async def set_schedule(
             "slots_rescheduled": rescheduled_count,
             "future_contract_preserved": bool(future_heads),
             "superseded_schedule_ids": [str(later.id) for later in superseded],
-            # 이 저장이 시작 달의 약속을 계약 편수로 되돌렸다(content_month_target).
-            CONTRACT_QUOTA_MONTH_KEY: target_month.format("YYYY-MM"),
+            # 저장마다 표지는 하나 — 마케터가 계약 편수보다 적게 정했으면 그 편수, 아니면 시작 달의
+            # 약속을 계약 편수로 되돌렸다는 표지(content_month_target.last_month_marker).
+            **(
+                {
+                    OPERATOR_MONTH_TARGET_KEY: {
+                        "month": target_month.format("YYYY-MM"),
+                        "target": month_target,
+                        "cancelled_ids": operator_cancelled,
+                        "requested": body.month_target is not None,
+                    }
+                }
+                if operator_marked
+                else {CONTRACT_QUOTA_MONTH_KEY: target_month.format("YYYY-MM")}
+            ),
             "month_target": month_target,
             "slots_cancelled_before_start": len(deferred_start["cancelled_ids"])
             if deferred_start
@@ -694,6 +780,62 @@ async def set_schedule(
         "slots_cancelled_before_start": len(deferred_start["cancelled_ids"]) if deferred_start else 0,
         "slots_kept_before_start": len(deferred_start["kept_human_edited_ids"]) if deferred_start else 0,
         "first_publish_date": str(created_items[0].scheduled_date) if created_items else None,
+    }
+
+
+async def _is_first_contract_month(db: AsyncSession, hospital_id: uuid.UUID, month: arrow.Arrow) -> bool:
+    """그 달 앞에 공개한 글이 한 편도 없는가 — 마케터가 편수를 정할 수 있는 계약 첫 달."""
+
+    contract_date = func.coalesce(ContentItem.carried_over_from, ContentItem.scheduled_date)
+    published = func.coalesce(ContentItem.first_published_at, ContentItem.published_at)
+    earlier = (
+        await db.execute(
+            select(ContentItem.id)
+            .where(
+                ContentItem.hospital_id == hospital_id,
+                contract_date < month.floor("month").date(),
+                published.is_not(None),
+            )
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    return earlier is None
+
+
+@router.get("/{hospital_id}/schedule/month-target")
+async def get_schedule_month_target(
+    hospital_id: uuid.UUID,
+    month: str = Query(pattern=r"^\d{4}-(0[1-9]|1[0-2])$"),
+    db: AsyncSession = Depends(get_db),
+):
+    """일정 화면이 시작 달 편수 칸을 채운다 — 그 달 약속 편수·계약 편수·마케터가 정한 값·정할 수 있는지."""
+
+    hospital = await _get_hospital(db, hospital_id)
+    target_month = arrow.get(month, "YYYY-MM").floor("month")
+    plan = (
+        await db.execute(
+            select(ContentSchedule.plan)
+            .where(
+                ContentSchedule.hospital_id == hospital_id,
+                ContentSchedule.active_from <= target_month.ceil("month").date(),
+                ContentSchedule.superseded_at.is_(None),
+            )
+            .order_by(ContentSchedule.active_from.desc(), ContentSchedule.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none() or _enum_value(hospital.plan)
+    quota = monthly_quota_for_plan(plan)
+    records = (await db.execute(schedule_change_records_stmt(hospital_id))).all()
+    operator = operator_month_target(records, target_month)
+    target = (
+        await month_content_target(db, hospital_id, target_month, plan) if quota is not None else None
+    )
+    return {
+        "month": target_month.format("YYYY-MM"),
+        "contract_quota": quota,
+        "month_target": target,
+        "operator_target": operator,
+        "editable": quota is not None and await _is_first_contract_month(db, hospital_id, target_month),
     }
 
 
