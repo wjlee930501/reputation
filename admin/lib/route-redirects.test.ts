@@ -41,8 +41,9 @@ test('환자 질문과 노출 보완은 콘텐츠 화면의 읽기 전용 신호
     '/hospitals/h-1/content#content-signals',
   )
   assert.equal(
+    // 노출 보완 제안은 기본으로 접혀 있다 — 옛 경로로 오면 그 칸으로 가서 펼친다.
     legacyHospitalRedirect(ID, 'exposure-actions'),
-    '/hospitals/h-1/content#content-signals',
+    '/hospitals/h-1/content#content-exposure-actions',
   )
 })
 
@@ -59,7 +60,7 @@ test('콘텐츠 딥링크의 content 파라미터는 앵커와 함께 살아남�
   )
   assert.equal(
     legacyHospitalRedirect(ID, 'exposure-actions', { content: 'abc', year: '2026', month: '9' }),
-    '/hospitals/h-1/content?content=abc&year=2026&month=9#content-signals',
+    '/hospitals/h-1/content?content=abc&year=2026&month=9#content-exposure-actions',
   )
 })
 
