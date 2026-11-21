@@ -61,3 +61,14 @@ test('contract registration requires a site layout and shows the same-region dis
   assert.match(PAGE, /layoutDistributionPath\(\{ region: \[leadRegion\] \}\)/)
   assert.match(PAGE, /\{ADMIN_COPY\.siteLayout\.title\} <span className="text-red-500">\*<\/span>/)
 })
+
+test('contract registration pre-picks the least-used same-region layout but never overrides the operator', () => {
+  // 칸은 그대로 필수이고(9번 B — 칸 유지), 분포를 읽으면 추천을 미리 고른다.
+  assert.match(PAGE, /const suggested = suggestedLayout\(parsed\)/)
+  assert.match(PAGE, /if \(suggested && !layoutChosenByOperator\.current\) \{\s+setSiteLayout\(suggested\)/)
+  // 사람이 고르면 그 뒤로 추천이 덮지 않는다.
+  assert.match(PAGE, /layoutChosenByOperator\.current = true\s+setSuggestionApplied\(false\)\s+setSiteLayout\(layout\)/)
+  // 안내 표시는 렌더 중 ref를 읽지 않는다(react-hooks/refs).
+  assert.doesNotMatch(PAGE, /\{[^}]*!layoutChosenByOperator\.current &&/)
+  assert.match(PAGE, /suggested=\{suggestion\}/)
+})
