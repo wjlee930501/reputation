@@ -107,6 +107,9 @@ def _shell(monkeypatch, *, measurement_mode="monthly", retries=0, slots_per_cell
     )
     monkeypatch.setattr(tasks, "hospital_in_monthly_cohort", lambda *_a, **_k: True)
     monkeypatch.setattr(tasks, "tracking_set_members", lambda targets: targets)
+    # 이어가기 경계만 본다 — 얼린 새벽 측정표 재사용·답변 동시 선구매는 따로 시험한다.
+    monkeypatch.setattr(tasks, "frozen_dawn_manifest", lambda *_a, **_k: None)
+    monkeypatch.setattr(tasks, "_prefetch_monthly_answers", lambda *_a, **_k: 0)
     monkeypatch.setattr(tasks, "_build_measurement_specs", lambda **_k: (specs, 0))
     manifest = SimpleNamespace(cells=cells)
     monkeypatch.setattr(tasks, "freeze_dispatch_manifest", lambda *_a, **_k: manifest)
@@ -346,12 +349,14 @@ def test_real_slot_failures_still_open_partial_incident(monkeypatch):
     assert calls.finished[0][0][2] == tasks.OperationRunState.PARTIAL
 
 
-def test_partial_budget_actual_worker_entrypoint_executes_at_most_ten_pending_stages(
+def test_partial_budget_actual_worker_entrypoint_executes_at_most_one_page_of_pending_stages(
     monkeypatch,
 ):
     task, hospital, cells, _default_slots, calls = _shell(monkeypatch)
-    pending = [_slot(terminal=False) for _index in range(14)]
-    slots = {cells[0].id: pending[:7], cells[1].id: pending[7:]}
+    page = tasks.MONTHLY_SOV_PAGE_SIZE
+    pending = [_slot(terminal=False) for _index in range(page + 4)]
+    half = len(pending) // 2
+    slots = {cells[0].id: pending[:half], cells[1].id: pending[half:]}
     for cell in cells:
         cell.observation_slots = slots[cell.id]
     monkeypatch.setattr(

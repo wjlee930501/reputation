@@ -249,3 +249,45 @@ def test_paused_hospital_keeps_its_domain_fact():
         )
     )
     assert state.kind == "problem"
+
+
+# ── 운영 종료(계약 종료일, 개편 결정 대기 1번 B) ────────────────────
+def test_contract_ended_needs_paused_and_a_passed_kst_date():
+    from datetime import date, datetime, timezone
+    from types import SimpleNamespace
+
+    from app.models.hospital import HospitalStatus
+    from app.services.hospital_states import contract_ended
+
+    # 2026-11-21 00:30 KST = 2026-11-20 15:30 UTC — 오늘은 KST로 센다.
+    now = datetime(2026, 11, 20, 15, 30, tzinfo=timezone.utc)
+
+    def h(status, ended_on):
+        return SimpleNamespace(status=status, contract_ended_on=ended_on)
+
+    assert contract_ended(h(HospitalStatus.PAUSED, date(2026, 11, 21)), now=now) is True
+    assert contract_ended(h(HospitalStatus.PAUSED, date(2026, 11, 20)), now=now) is True
+    assert contract_ended(h(HospitalStatus.PAUSED, date(2026, 11, 22)), now=now) is False
+    assert contract_ended(h(HospitalStatus.PAUSED, None), now=now) is False
+    # 운영 중이면 종료일이 지나도 운영 종료가 아니다 — 3상태는 그대로다.
+    assert contract_ended(h(HospitalStatus.ACTIVE, date(2026, 1, 1)), now=now) is False
+    assert contract_ended(h(HospitalStatus.PENDING_DOMAIN, date(2026, 1, 1)), now=now) is False
+
+
+def test_contract_end_date_is_read_only_by_admin_grouping():
+    """계약 종료일은 화면 분류 전용이다 — 공개·발행·서비스 구간·보고서·할 일 판정이 읽지 않는다."""
+    from pathlib import Path
+
+    app_dir = Path(__file__).resolve().parents[1] / "app"
+    allowed = {
+        "models/hospital.py",
+        "services/hospital_states.py",
+        "schemas/hospital.py",
+        "api/admin/hospitals.py",
+    }
+    readers = {
+        str(path.relative_to(app_dir))
+        for path in app_dir.rglob("*.py")
+        if "contract_ended" in path.read_text(encoding="utf-8")
+    }
+    assert readers == allowed

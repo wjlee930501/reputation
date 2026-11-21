@@ -115,7 +115,12 @@ export default function DashboardPage() {
         <>
           <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
             <NumberCard href="/hospitals" label={COPY.cardLive} value={summary.live} unit={COPY.unitHospital} emphasis
-              sub={COPY.cardLiveSub.replace('{preparing}', String(summary.preparing)).replace('{paused}', String(summary.paused))} />
+              sub={COPY.cardLiveSub.replace('{preparing}', String(summary.preparing)).replace(
+                '{paused}',
+                summary.ended > 0
+                  ? ADMIN_COPY.contractEnd.dashboardPausedCount.replace('{paused}', String(summary.paused)).replace('{ended}', String(summary.ended))
+                  : String(summary.paused),
+              )} />
             <NumberCard href="/operations" label={COPY.cardTodo} value={summary.operatorTodo} unit={COPY.unitCase} sub={COPY.cardTodoSub} />
             <NumberCard href="/hospitals" label={COPY.cardReports.replace('{month}', String(reports?.period_month ?? ''))} value={summary.reportGapHospitals} unit={COPY.unitHospital} sub={COPY.cardReportsSub} />
             <NumberCard href="/hospitals" label={ADMIN_COPY.visualItemsMissing} value={summary.visualMissingHospitals} unit={COPY.unitHospital} sub={COPY.cardVisualSub} />

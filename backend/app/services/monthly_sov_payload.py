@@ -3,7 +3,10 @@ from typing import Literal, NotRequired, TypedDict
 from app.services.sov_statistics import DeltaSignificance
 
 CellState = Literal["SUCCESS", "FAILED", "EXCLUDED"]
-QueryIntent = Literal["LOCAL", "INFO"]
+QueryIntent = Literal["LOCAL", "INFO", "BRAND"]
+# 측정 키워드 30개 세트의 그룹(A~D)·역할(고정·교체). 옛 세트는 칸이 없다.
+QuestionGroup = Literal["A", "B", "C", "D"]
+SetRole = Literal["FIXED", "ROTATING"]
 QueryIntentSource = Literal["FROZEN", "LEGACY_LIVE"]
 ComparabilityStatus = Literal["COMPARABLE", "NON_COMPARABLE"]
 ComparisonReason = Literal[
@@ -36,6 +39,8 @@ class CellPayload(TypedDict):
     mentioned_attempts: int
     mention_frequency: float | None
     observation_slots: NotRequired[dict[str, int | str]]
+    question_group: NotRequired[QuestionGroup]
+    set_role: NotRequired[SetRole]
 
 
 class SegmentPayload(TypedDict):
@@ -80,6 +85,8 @@ class QueryPayload(TypedDict):
     mentioned_count: int
     attempts_used: int
     mentioned_attempts: int
+    question_group: NotRequired[QuestionGroup]
+    set_role: NotRequired[SetRole]
 
 
 class MeasurementBasisPayload(TypedDict):

@@ -18,6 +18,11 @@
 `contract_quota_month`(그 달 "YYYY-MM")를 남기고, 이 판정은 그 달의 안분을 쓰지 않는다
 (`month_quota_restored`). 표지가 없는 그 전 사람 저장은 소급하지 않는다.
 
+2026-11-21 마케팅 요청 #8: 마케터가 계약 첫 달의 약속 편수를 일정 화면에서 직접 정한다(요금제 편수가
+상한, 0 가능). 일정 저장 감사행이 `operator_month_target`({month, target, cancelled_ids})을 남기고,
+같은 달에는 마지막 표지(이 표지 또는 `contract_quota_month`)가 이긴다(`last_month_marker`). 편수 없이
+다시 저장해도 이미 정한 편수는 남는다 — 저장 경로가 그 값을 다시 기록한다.
+
 슬롯 생성(당월 조정 포함)·일정 교체·운영 계약 이행 집계·월간 보고서·현황 카드가 모두 이
 판정을 쓴다.
 """
@@ -43,6 +48,11 @@ INITIAL_SCHEDULE_ACTOR = "system:essence-auto-approval"
 #: 2026-11-19 대표 결정: 사람이 일정을 저장하면 그 달 약속은 요금제 편수다(안분을 쓰지 않는다).
 #: 표지를 남긴 저장부터만 적용한다 — 그 전 사람 저장은 소급하지 않는다.
 CONTRACT_QUOTA_MONTH_KEY = "contract_quota_month"
+
+#: 마케터가 정한 그 달 약속 편수(2026-11-21 마케팅 요청 #8). 값은 {"month": "YYYY-MM", "target": N,
+#: "cancelled_ids": [...]} — `cancelled_ids`는 편수를 줄이며 이 기능이 종료한 슬롯이라, 나중에 편수를
+#: 다시 늘리면 그 슬롯만 배정으로 세지 않는다(다른 이유로 종료한 슬롯은 종전대로 센다).
+OPERATOR_MONTH_TARGET_KEY = "operator_month_target"
 
 
 def prorated_first_month_quota(plan: object, publish_days: list[int], start: date) -> int | None:
@@ -165,19 +175,65 @@ def month_is_voided(records, month: arrow.Arrow) -> bool:
     return voided
 
 
+def _operator_marker(detail: object, key: str) -> dict | None:
+    if not isinstance(detail, dict):
+        return None
+    marker = detail.get(OPERATOR_MONTH_TARGET_KEY)
+    if not isinstance(marker, dict) or marker.get("month") != key:
+        return None
+    target = marker.get("target")
+    if not isinstance(target, int) or isinstance(target, bool) or target < 0:
+        return None
+    return marker
+
+
+def last_month_marker(records, month: arrow.Arrow) -> tuple[str, int | None] | None:
+    """그 달에 남은 사람의 마지막 편수 표지 — ("contract", None) | ("operator", N) | None.
+
+    사람의 일정 저장은 저장마다 표지 하나만 남긴다(계약 편수면 `contract_quota_month`, 마케터가 정한
+    편수면 `operator_month_target`). 같은 달이면 나중 표지가 이긴다. `records`는 시각 순서다.
+    """
+
+    key = month.floor("month").format("YYYY-MM")
+    last: tuple[str, int | None] | None = None
+    for _created_at, detail in records:
+        marker = _operator_marker(detail, key)
+        if marker is not None:
+            last = ("operator", int(marker["target"]))
+        elif isinstance(detail, dict) and detail.get(CONTRACT_QUOTA_MONTH_KEY) == key:
+            last = ("contract", None)
+    return last
+
+
 def month_quota_restored(records, month: arrow.Arrow) -> bool:
     """사람이 그 달을 시작 달로 일정을 저장해 그 달 약속을 계약 편수로 되돌렸는가.
 
     `records`는 `schedule_change_records_stmt`의 (시각, detail)이다. 표지
     (`CONTRACT_QUOTA_MONTH_KEY`)는 사람의 일정 저장만 남긴다. 미룬 달 판정
-    (`month_is_voided`)이 이보다 먼저다.
+    (`month_is_voided`)이 이보다 먼저고, 뒤에 마케터가 편수를 정했으면 그 값이 이긴다.
     """
 
+    marker = last_month_marker(records, month)
+    return marker is not None and marker[0] == "contract"
+
+
+def operator_month_target(records, month: arrow.Arrow) -> int | None:
+    """마케터가 정해 아직 유효한 그 달 약속 편수. 없거나 뒤에 계약 편수로 되돌렸으면 None."""
+
+    marker = last_month_marker(records, month)
+    return marker[1] if marker is not None and marker[0] == "operator" else None
+
+
+def operator_cancelled_ids(records, month: arrow.Arrow) -> set[str]:
+    """그 달 편수를 줄이며 이 기능이 종료한 슬롯 id — 편수를 다시 늘릴 때 배정으로 세지 않는다."""
+
     key = month.floor("month").format("YYYY-MM")
-    return any(
-        isinstance(detail, dict) and detail.get(CONTRACT_QUOTA_MONTH_KEY) == key
-        for _created_at, detail in records
-    )
+    ids: set[str] = set()
+    for _created_at, detail in records:
+        marker = _operator_marker(detail, key)
+        if marker is not None:
+            ids.update(str(item) for item in marker.get("cancelled_ids") or [])
+    return ids
 
 
 def resolve_month_target(
@@ -187,6 +243,7 @@ def resolve_month_target(
     *,
     voided: bool = False,
     quota_restored: bool = False,
+    operator_target: int | None = None,
 ) -> int | None:
     """요금제 편수와 첫 일정이 기록한 첫 달 약속 편수로 그 달 약속 편수를 정한다.
 
@@ -200,6 +257,9 @@ def resolve_month_target(
     if voided:
         # 시작을 뒤 달로 미룬 달 — 그 뒤에 살아 있는 슬롯이 생겼으면 그 수까지만 약속이다.
         return min(quota, allocated)
+    if operator_target is not None:
+        # 마케터가 정한 편수. 살아 있는 슬롯이 더 많으면(사람이 남긴 원고 등) 그 수다 — 안분과 같은 규칙.
+        return min(quota, max(operator_target, allocated))
     if quota_restored:
         return quota
     if first_month_target is not None and first_month_target < quota:
@@ -217,6 +277,10 @@ def month_content_target_sync(
     if month_is_voided(records, month):
         allocated = db.scalar(month_allocation_count_stmt(hospital_id, month)) or 0
         return resolve_month_target(quota, None, allocated, voided=True)
+    operator_target = operator_month_target(records, month)
+    if operator_target is not None:
+        allocated = db.scalar(month_allocation_count_stmt(hospital_id, month)) or 0
+        return resolve_month_target(quota, None, allocated, operator_target=operator_target)
     if month_quota_restored(records, month):
         return quota
     detail = db.scalar(initial_schedule_record_stmt(hospital_id))
@@ -250,6 +314,12 @@ async def month_content_target(
             await db.execute(month_allocation_count_stmt(hospital_id, month))
         ).scalar_one_or_none() or 0
         return resolve_month_target(quota, None, allocated, voided=True)
+    operator_target = operator_month_target(records, month)
+    if operator_target is not None:
+        allocated = (
+            await db.execute(month_allocation_count_stmt(hospital_id, month))
+        ).scalar_one_or_none() or 0
+        return resolve_month_target(quota, None, allocated, operator_target=operator_target)
     if month_quota_restored(records, month):
         return quota
     detail = (await db.execute(initial_schedule_record_stmt(hospital_id))).scalar_one_or_none()

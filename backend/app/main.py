@@ -28,6 +28,7 @@ from app.api.admin import hospital_overview as admin_hospital_overview
 from app.api.admin import hospitals as admin_hospitals
 from app.api.admin import lead_diagnosis_creation as admin_lead_diagnosis_creation
 from app.api.admin import leads as admin_leads
+from app.api.admin import measurement_set as admin_measurement_set
 from app.api.admin import operations as admin_operations
 from app.api.admin import operations_center as admin_operations_center
 from app.api.admin import query_targets as admin_query_targets
@@ -199,6 +200,7 @@ app.include_router(admin_reports.router, prefix="/api/v1", dependencies=admin_de
 app.include_router(admin_director_feedback.router, prefix="/api/v1", dependencies=admin_deps)
 app.include_router(admin_sov.router, prefix="/api/v1", dependencies=admin_deps)
 app.include_router(admin_query_targets.router, prefix="/api/v1", dependencies=admin_deps)
+app.include_router(admin_measurement_set.router, prefix="/api/v1", dependencies=admin_deps)
 app.include_router(admin_domain_connect.router, prefix="/api/v1", dependencies=admin_deps)
 app.include_router(admin_domain_setup.router, prefix="/api/v1", dependencies=admin_deps)
 app.include_router(admin_domain.router, prefix="/api/v1", dependencies=admin_deps)
