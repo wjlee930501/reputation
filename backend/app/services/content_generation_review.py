@@ -43,10 +43,17 @@ from app.services.essence_engine import (
     ESSENCE_STATUS_NEEDS_REVIEW,
     EssenceScreeningResult,
 )
+from app.services.must_use_verbatim import required_must_use_messages
 from app.services.reference_requirement import (
     REFERENCES_OMITTED_KEY,
     references_omitted_reason,
     references_required_for,
+)
+from app.services.source_copy_check import (
+    SOURCE_COPY_SUMMARY_KEY,
+    copied_source_sentences,
+    source_copy_record,
+    source_copy_remediation,
 )
 
 logger = logging.getLogger(__name__)
@@ -115,6 +122,8 @@ async def generate_reviewed_content(
     """Generate, independently review, and rewrite without bypassing hard gates."""
 
     summary = getattr(item, "essence_check_summary", None)
+    # 원문 그대로가 규칙인 필수 문구 — 자료 문장 복사 검사에서 뺀다(작가 검증과 같은 집합).
+    must_use_messages = required_must_use_messages(philosophy)
     # 일일 갱신 구간이 같은 주제를 다시 쓰면 지난 날들의 거절 사유를 첫 회차부터 싣는다(누적 피드백).
     findings = review_findings(summary) or renewal_feedback(summary)
     automatic_rewrites = int(bool(findings))
@@ -234,7 +243,18 @@ async def generate_reviewed_content(
                     if soft_rewrites < limits.soft_rewrites
                     else []
                 )
-                soft_findings = bounded_soft_findings + duplicate_remediation
+                # 운영 기준·자료 문장(원장 설문 등)을 그대로 옮긴 문장도 같은 한 번의 보완 예산으로
+                # 다시 쓰게 한다(결정 대기 15번 A). 필수 문구 문장은 보지 않고, 남아도 기록만 한다.
+                copy_remediation = (
+                    source_copy_remediation(
+                        copied_source_sentences(
+                            candidate.get("body"), hospital, philosophy, must_use_messages
+                        )
+                    )
+                    if soft_rewrites < limits.soft_rewrites
+                    else []
+                )
+                soft_findings = bounded_soft_findings + duplicate_remediation + copy_remediation
                 if soft_findings and soft_rewrites < limits.soft_rewrites and _generation_budget_left():
                     soft_rewrites += 1
                     findings = soft_findings
@@ -328,6 +348,12 @@ async def generate_reviewed_content(
         summary["duplicate_topic_findings"] = [
             {"title": title, "score": score} for title, score in residual_duplicates
         ]
+    # 자료 문장을 그대로 옮긴 문장은 발행을 막지 않는다 — 재작성 뒤에도 남으면 기록만 남긴다.
+    residual_copies = copied_source_sentences(
+        last_content.get("body"), hospital, philosophy, must_use_messages
+    )
+    if residual_copies:
+        summary[SOURCE_COPY_SUMMARY_KEY] = source_copy_record(residual_copies)
     if accepted_reference_findings:
         summary["reference_findings"] = accepted_reference_findings[:5]
     # D36: 참고자료 필수 글이 검증된 참고자료 없이 저장된다 — 막지 않고 기록한다. 검수 지적으로
