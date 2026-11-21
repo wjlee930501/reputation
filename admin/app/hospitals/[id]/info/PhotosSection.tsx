@@ -70,6 +70,7 @@ export function PhotosSection({
   heroImageUrl,
   physicians,
   onHeroChanged,
+  onPhotosChanged,
 }: {
   hospitalId: string
   hospitalName: string | null
@@ -78,6 +79,8 @@ export function PhotosSection({
   heroImageUrl: string | null
   physicians: Physician[]
   onHeroChanged: () => void
+  /** 사진을 올리거나 공개·제외를 바꾼 뒤. 의료진 사진 선택 칸이 새 목록·공개 상태를 읽게 한다. */
+  onPhotosChanged?: () => void
 }) {
   const [photos, setPhotos] = useState<PhotoSource[]>([])
   const [loading, setLoading] = useState(true)
@@ -106,6 +109,11 @@ export function PhotosSection({
     void refresh()
   }, [refresh])
 
+  const changed = useCallback(() => {
+    void refresh()
+    onPhotosChanged?.()
+  }, [refresh, onPhotosChanged])
+
   // 되돌릴 수 있는 시간은 8초. 지나면 안내만 사라지고 제외는 그대로 남는다.
   useEffect(() => {
     if (!undoTarget) return
@@ -118,6 +126,7 @@ export function PhotosSection({
     setPhotos((prev) => prev.filter((row) => row.id !== photo.id))
     setUndoError(null)
     setUndoTarget({ photo, index: index < 0 ? photos.length : index })
+    onPhotosChanged?.()
   }
 
   async function undoExclude() {
@@ -133,6 +142,7 @@ export function PhotosSection({
         return next
       })
       setUndoTarget(null)
+      onPhotosChanged?.()
     } catch {
       setUndoError(safeOperatorError('onboarding', '사진 목록을 다시 불러온 뒤 확인하세요.'))
     }
@@ -151,7 +161,7 @@ export function PhotosSection({
       <PhotoUploadForm
         hospitalId={hospitalId}
         hospitalName={hospitalName}
-        onUploaded={() => void refresh()}
+        onUploaded={changed}
       />
 
       {loadError && <p className="text-sm font-semibold text-red-700">{loadError}</p>}
@@ -187,7 +197,7 @@ export function PhotosSection({
                 && heroImageUrl === publicPhotoAssetUrl(hospitalSlug, photo.id)
               }
               usedBy={physicianUsingPhoto(physicians, photo.id)?.name ?? null}
-              onChanged={() => void refresh()}
+              onChanged={changed}
               onExcluded={() => handleExcluded(photo)}
               onHeroChanged={onHeroChanged}
             />
