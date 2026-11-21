@@ -259,6 +259,17 @@ export const UNRENDERED_FIELDS: readonly (readonly [group: string, key: string])
   ['nav', 'section_index'],
 ]
 
+/**
+ * 병원 화면이 그리지 않는 안내 문구 칸(서버 `_UNRENDERED_COPY_KEYS`와 같다) — 편집기는 숨기고 저장에 싣지 않는다.
+ * 진료시간 '주말 진료 이름'은 A·C 진료시간 어디에도 그릴 자리가 정해지지 않았다.
+ */
+export const UNRENDERED_COPY_KEYS: readonly string[] = ['hours.weekend_label']
+
+/** 편집기가 보이는 섹션 안내 문구 칸. */
+export function shownCopyKeys(section: SectionId): readonly string[] {
+  return (COPY_KEYS_BY_SECTION[section] ?? []).filter((key) => !UNRENDERED_COPY_KEYS.includes(key))
+}
+
 /** B에만 있는 글의 줄바꿈 — A·C는 진료 원칙 안내 문구를 그리지 않는다(서버 `_B_ONLY_LINE_BREAKS`와 같다). */
 export const B_ONLY_LINE_BREAK_PATHS: readonly string[] = ['care_principles.lede']
 
@@ -323,6 +334,7 @@ export function buildOverrides(
     for (const [group, key] of B_ONLY_FIELDS) withoutKey(out, group, key)
   }
   for (const [group, key] of UNRENDERED_FIELDS) withoutKey(out, group, key)
+  for (const key of UNRENDERED_COPY_KEYS) withoutKey(out, 'copy', key)
   const hero = out.hero
   if (isRecord(hero) && isRecord(hero.line_breaks)) {
     const kept = Object.fromEntries(Object.entries(hero.line_breaks).filter(([path]) => lineBreakPathShown(layout, path)))
@@ -558,11 +570,6 @@ export function previewUrl(siteHost: string, previewPath: unknown): string | nul
   return `https://${siteHost}${previewPath}`
 }
 
-/**
- * 공개 페이지(사이트)가 섹션 설정을 읽는가. 3b(사이트 렌더링·미리보기 경로)가 배포되기 전에는 공개 반영이
- * 레이아웃 칸만 바꾸고 나머지 설정은 화면에 나가지 않으므로 공개 반영을 막아 둔다. 3b 배포와 함께 켠다.
- */
-export const SITE_RENDERS_SITE_CONFIG = false
 
 /**
  * 이력의 「바뀐 곳」(서버 `changed_sections` 키)을 화면 이름으로. 섹션 키(`sections.faq`)는 섹션 이름,

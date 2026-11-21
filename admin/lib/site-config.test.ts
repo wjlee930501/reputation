@@ -8,6 +8,8 @@ import {
   BACKGROUND_FIXED,
   B_ONLY_FIELDS,
   B_ONLY_LINE_BREAK_PATHS,
+  UNRENDERED_COPY_KEYS,
+  shownCopyKeys,
   lineBreakPathShown,
   UNRENDERED_FIELDS,
   sectionLookShown,
@@ -396,4 +398,17 @@ test('the lede line break is B-only: hidden on A·C, never saved there, and matc
   const source = readFileSync(new URL('../../backend/app/services/site_config_validation.py', import.meta.url), 'utf8')
   const line = source.match(/_B_ONLY_LINE_BREAKS[^=]*= frozenset\(\{([^}]*)\}\)/)?.[1] ?? ''
   assert.deepEqual([...line.matchAll(/"([a-z_.]+)"/g)].map((m) => m[1]).sort(), [...B_ONLY_LINE_BREAK_PATHS].sort())
+})
+
+test('the weekend label copy is hidden, never saved, and matches the backend list', () => {
+  assert.deepEqual([...shownCopyKeys('hours')], [])
+  assert.deepEqual([...shownCopyKeys('faq')], ['faq.note'])
+  const base = clone(defaultsC())
+  const edited = clone(base)
+  ;(edited as Record<string, any>).copy = { 'hours.weekend_label': '토요일 진료', 'faq.note': '안내' }
+  assert.deepEqual(buildOverrides(edited, base, 'C').copy, { 'faq.note': '안내' })
+  assert.deepEqual((buildOverrides(edited, base, 'C', true).copy as Record<string, string>)['hours.weekend_label'], '토요일 진료')
+  const source = readFileSync(new URL('../../backend/app/services/site_config_validation.py', import.meta.url), 'utf8')
+  const line = source.match(/_UNRENDERED_COPY_KEYS[^=]*= frozenset\(\{([^}]*)\}\)/)?.[1] ?? ''
+  assert.deepEqual([...line.matchAll(/"([a-z_.]+)"/g)].map((m) => m[1]).sort(), [...UNRENDERED_COPY_KEYS].sort())
 })

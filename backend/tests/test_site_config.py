@@ -808,6 +808,8 @@ def test_b_keeps_the_info_strip_blocks_and_treatment_style() -> None:
         ("C", {"sections": [{"id": "news", "background": "band"}]}),
         ("A", {"hero": {"line_breaks": {"care_principles.lede": {"pc": "LEDE", "mobile": None}}}}),
         ("C", {"hero": {"line_breaks": {"care_principles.lede": {"pc": None, "mobile": "LEDE"}}}}),
+        ("A", {"copy": {"hours.weekend_label": "토요일 진료"}}),
+        ("C", {"copy": {"hours.weekend_label": "토요일 진료"}}),
     ],
 )
 def test_fields_the_site_does_not_render_are_rejected(layout: str, config: dict) -> None:
@@ -855,3 +857,13 @@ def test_lede_line_breaks_are_b_only_and_stripped_from_a_c_on_restore() -> None:
     stripped = strip_unrendered("C", {"hero": {"line_breaks": dict(lede)}})
     assert stripped["hero"]["line_breaks"] == {"hero.headline": {"pc": "H", "mobile": None}}
     assert strip_unrendered("B", {"hero": {"line_breaks": dict(lede)}})["hero"]["line_breaks"] == lede
+
+
+def test_weekend_label_is_not_rendered_and_is_stripped_on_restore() -> None:
+    notes = {"copy": {"hours.weekend_label": "토요일 진료", "faq.note": "자주 묻는 질문입니다."}}
+    errors = validate_site_config("C", notes, _ctx()).errors
+    assert [e["path"] for e in errors if e["code"] == "FIELD_NOT_RENDERED"] == ["copy.hours.weekend_label"]
+    stripped = strip_unrendered("C", notes)
+    assert stripped["copy"] == {"faq.note": "자주 묻는 질문입니다."}
+    assert validate_site_config("C", stripped, _ctx()).ok
+    assert "copy" not in strip_unrendered("A", {"copy": {"hours.weekend_label": "토요일 진료"}})
