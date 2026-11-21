@@ -232,7 +232,6 @@ def test_a_published_image_recertification_incident_is_not_closed_for_a_missing_
     """이미지 재인증 사고도 대상 종류가 content_item이다(실제 키 생성 경로로 만든다) — 글이 없다고 닫지 않는다."""
 
     from app.services import published_image_recertification as recertification
-    from app.services.incident_safety import build_incident_key
 
     code = sorted(recertification.OPERATOR_REQUIRED_CODES)[0]
     hospital = _hospital(db)
@@ -240,12 +239,7 @@ def test_a_published_image_recertification_incident_is_not_closed_for_a_missing_
     incident = _incident(
         db, "CONTENT_GENERATION_FAILED", hospital=hospital, source_id=str(item_id)
     )
-    incident.dedupe_key = build_incident_key(
-        "content_generation",
-        recertification.INCIDENT_OBJECT_TYPE,
-        recertification.incident_object_id(item_id, "a" * 64),
-        "MISSING_PREREQUISITE",
-    )
+    incident.dedupe_key = recertification.incident_dedupe_key(item_id, "a" * 64)
     incident.safe_error_code = code
     incident.state = "RETRYING"
     db.flush()
