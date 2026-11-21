@@ -1,6 +1,16 @@
 # Re:putation — 현재 프로젝트 개발 안내
 
-## 최신 운영 배포 — 2026-11-21 새벽 어드민 개편 1단계·레이아웃 편집기 3a (두 번)
+## 최신 운영 배포 — 2026-11-21 오전 레이아웃 편집기 3b·3c·③-1 (그날 세 번째)
+
+main `0f93551b`(3b ① #351 사이트가 공개 `site_config`로 홈을 그림, 3b ② #352 초안 미리보기 `/preview/{token}`, 3c #350·#353 Admin 편집 화면, ③-1 #355 아직 읽지 않는 칸 기본값 `DEFAULTS_VERSION 2026-11-21.3`·옛 판 보호)를
+08:46~08:52 KST에 Backend·Site·Admin에 배포했다(같은 날 세 번째 릴리스라 `--override-reason`, 마이그레이션 없음, 사용자 지시 "다음도 이어서 알아서 진행해").
+리비전은 api `00300-gpw`, worker `00293-89h`, beat `00288-wn7`, site `00158-qt2`, admin `00132-ssx`, DB head `0100` 그대로. 이어 10:13~10:17에 같은 코드를 Backend만 다시 배포해 새로 만든 미리보기 비밀값 `SITE_PREVIEW_TOKEN_SECRET`(Secret Manager, `reputation-sa`만 읽기)을 주입했다(사용자 지시) — **현재 리비전은 api `00301-pjs`, worker `00294-zv7`, beat `00289-m8j`, site `00158-qt2`, admin `00132-ssx`**, 롤백 `.omo/rollback-4th1121/rollback.state`.
+readiness·공개 표면 확인 통과, 공개 병원 16곳 200·자기 도메인 hospital ID 일치, 16곳 모두 `site_config` null 그대로, 홈 4곳의 보이는 글자·링크·이미지·섹션 class가 배포 전과 같다.
+**'공개 반영'은 아직 막혀 있다**(`SITE_RENDERS_SITE_CONFIG = false`). ③-1로 틀린 기본값이 공개 판에 굳는 위험은 막혔지만(옛 판은 읽지 않던 칸만 지금 기본값으로 다시 합쳐 낸다, `site_defaults.refresh_stale_defaults`),
+미리보기 비밀값은 4차로 들어갔지만(실제 발급은 로그인한 편집 화면에서 미확인) ③-2(모양 칸을 화면에 반영, 첫 화면 정보 블록·진료 항목 모양은 B에만)가 남았다 — 공개 반영은 ③-2와 함께 연다(사용자 결정).
+편집 화면의 로그인 조작 확인은 하지 않았다. 롤백 좌표 `.omo/rollback-3rd1121/rollback.state`(Site 포함). 상세는 [배포 기록](docs/releases/2026-11-21-admin-revamp-production.md)의 '3차'.
+
+## 이전 운영 배포 — 2026-11-21 새벽 어드민 개편 1단계·레이아웃 편집기 3a (두 번)
 
 main `2241f431`(어드민 1단계 ①~⑥ PR #323·#330~#333·#341·#342, 생성 품질 ⑦ PR #339, 그리고 11-20엔 Site·Admin만 나간 #340의 원장 PDF 검증기 수정)을 02:01~02:07 KST에, 이어 main `85754f20`(1단계 잔여 #344·#345·#347·#348, 설계 문서 #329,
 **레이아웃 편집기 3a #349**)을 04:46~04:51 KST에 Backend·Admin에 배포했다(2차는 같은 날 두 번째 릴리스라 `--override-reason`, 사용자 지시 "완료되면 병합·배포까지").
@@ -368,7 +378,7 @@ BaseEssence의 일반 자료 추가 drift는 재합성하지 않는다. 명시�
 Site/Admin IAM 분리는 단계적으로 적용한다. 구 revision 종료 전 legacy grants를 회수하지 않는다.
 
 
-문서 버전: **2.37** · 갱신일: **2026-11-21 (Asia/Seoul)**
+문서 버전: **2.38** · 갱신일: **2026-11-21 (Asia/Seoul)**
 소스 기준선: **`4db1b69` 이후 커밋 이력 정합성 보완**
 구현 상태: **체크포인트 2(`a774851`) 운영 배포 완료. 그 뒤 main의 stable-base Essence(`8c59141`) 등 31개 커밋과 콘텐츠 수율 버전업 v2.7(`claude/system-performance-review-x6vtn4`, [계획](docs/plans/2026-09-12-content-yield-versionup-plan.md))은 미배포**
 
