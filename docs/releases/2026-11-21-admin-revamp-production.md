@@ -1,9 +1,10 @@
-# 2026-11-21 세 번 배포 — 어드민 개편 1단계·레이아웃 편집기 3a·3b·3c·③-1
+# 2026-11-21 네 번 배포 — 어드민 개편 1단계·레이아웃 편집기 3a·3b·3c·③-1·미리보기 비밀값
 
-상태: **2026-11-21 KST에 세 번 배포했다.**
+상태: **2026-11-21 KST에 네 번 배포했다.**
 - 1차: 02:01~02:07, main `2241f431`, Backend·Admin.
 - 2차: 04:46~04:51, main `85754f20`, Backend·Admin. 2차에는 마이그레이션 `0100`이 있다.
 - 3차: 08:46~08:52, main `0f93551b`, **Backend·Site·Admin**. 마이그레이션은 없다.
+- 4차: 10:13~10:17, 같은 main `0f93551b`, Backend만. 코드 변경 없이 새로 만든 미리보기 비밀값 `SITE_PREVIEW_TOKEN_SECRET`을 주입했다(사용자 지시 "만들고 배포").
 - 사용자 지시: "완료 되면 병합, 배포까지 하고 바로 다음 단계로", "1단계에서 할 수 있는 것들 바로 진행 먼저 싹하고, 다음으로 레이아웃 편집기 3a 진행", "배포 2차 끝나고 문서 쓰고, 다음도 이어서 알아서 진행해".
 - 1·2차는 Site를 바꾸지 않았다. 3차에서 Site가 `00157-q7b` → `00158-qt2`가 됐다.
 
@@ -130,6 +131,16 @@ DEPLOY_ROLLBACK_STATE_FILE=.deploy-rollback-admin bash scripts/deploy.sh admin
 - [x] 08:43~09:18(배포 뒤 약 30분) 사이 Re:putation 서비스(`reputation-*`) ERROR 0건.
 - [ ] 편집 화면을 로그인해서 조작해 보는 확인은 하지 않았다(임시 저장도 운영 데이터를 남긴다).
 
+### 4차 — 미리보기 비밀값(10:13~10:17)
+- Secret Manager에 `SITE_PREVIEW_TOKEN_SECRET`을 만들었다(자동 복제, 무작위 32바이트 hex 한 버전, 값은 어디에도 출력하지 않았다).
+  - `reputation-sa`에 그 비밀 하나만 `secretAccessor`를 줬다(다른 비밀과 같은 비밀 단위 권한). API·Worker·Beat·readiness·migrate Job이 모두 이 계정이다. Site는 이 값을 쓰지 않는다.
+- `deploy.sh backend --override-reason=…`(오늘 네 번째 릴리스). 선택 비밀은 배포 때만 주입되므로 같은 코드를 다시 배포했다.
+  - 배포 전 리비전: api `00300-gpw`, worker `00293-89h`, beat `00288-wn7` → `.omo/rollback-4th1121/rollback.state`.
+  - 결과: worker `00294-zv7`, beat `00289-m8j`, readiness `9xntv` 통과, api `00301-pjs`, 공개 표면 확인 통과.
+- 확인: 세 새 리비전 모두 `SITE_PREVIEW_TOKEN_SECRET`을 Secret Manager 참조로 갖는다. release `0f93551b` 그대로, 공개 병원 16곳 200·hospital ID 일치, 가짜 토큰 미리보기는 여전히 404.
+- 확인하지 않은 것: 편집 화면에서 실제 미리보기 링크를 발급해 열어 보는 것(로그인한 사람 계정 서명이 필요하다).
+- **공개 반영은 여전히 막혀 있다**(`SITE_RENDERS_SITE_CONFIG = false`, Admin 배포가 따로 필요). 이 비밀값을 바꾸면 그때까지 발급된 미리보기 링크(10분짜리)만 무효가 된다.
+
 ## 알게 된 것·주의
 - **3차 뒤 공개 반영을 풀 수 있는가:** ③-1로 '틀린 기본값이 공개 판에 굳는' 위험은 막혔다. 옛 판도 그 칸만 지금 기본값으로 낸다. 그래도 이번에는 풀지 않았다. 남은 두 가지가 사용자 결정이기 때문이다.
   - 미리보기 비밀 `SITE_PREVIEW_TOKEN_SECRET`이 운영에 없어 편집 화면의 미리보기가 503이다. 미리보기 없이 공개 반영만 여는 것은 위험하다.
@@ -149,7 +160,7 @@ DEPLOY_ROLLBACK_STATE_FILE=.deploy-rollback-admin bash scripts/deploy.sh admin
 - **CI 리허설은 DB head를 하드코딩한다.** 위치는 `scripts/integrity_rehearsal/check.py`다. 마이그레이션을 더하는 PR은 이 값도 함께 올려야 한다(#349가 0100으로 올렸다).
 
 ## 지금 운영 리비전
-- api `00300-gpw`, worker `00293-89h`, beat `00288-wn7`, site `00158-qt2`, admin `00132-ssx`.
+- api `00301-pjs`, worker `00294-zv7`, beat `00289-m8j`, site `00158-qt2`, admin `00132-ssx`.
 - DB head는 `0100_add_hospital_site_configs`다.
 
 ## 롤백
@@ -161,6 +172,7 @@ DEPLOY_ROLLBACK_STATE_FILE=$PWD/.omo/rollback-admin1121/rollback.state bash scri
 ```bash
 DEPLOY_ROLLBACK_STATE_FILE=$PWD/.omo/rollback-3rd1121/rollback.state bash scripts/deploy.sh rollback   # 3차만(Site 포함 다섯 서비스)
 ```
+- 4차만 되돌릴 때: `DEPLOY_ROLLBACK_STATE_FILE=$PWD/.omo/rollback-4th1121/rollback.state` — api `00300-gpw`, worker `00293-89h`, beat `00288-wn7`(코드는 같고 비밀값만 빠진다 → 미리보기 발급 503).
 - 3차만 되돌릴 때: api `00299-5cz`, worker `00292-dng`, beat `00287-nlk`, site `00157-q7b`, admin `00131-szn`.
   - 아직 공개 반영된 설정이 없으므로(16곳 모두 null) Site를 되돌려도 화면은 같다.
 - 2차만 되돌릴 때:
