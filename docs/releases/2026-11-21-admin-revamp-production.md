@@ -141,7 +141,7 @@ DEPLOY_ROLLBACK_STATE_FILE=.deploy-rollback-admin bash scripts/deploy.sh admin -
 - 운영 Worker env: `COST_GUARD_MONTHLY_SOV_QUERIES=13500`, `COST_GUARD_DAILY_SOV_QUERIES=9000`(그대로 — 12/1 새벽 16곳 × 300회 = 4,800회라 넉넉하다).
 - `measurement_set_rollout precheck`(읽기 전용, `kkxt9`): 16곳 모두 `action=apply`·`curated_now=false`, 초안은 A 고정 5 / B 고정 7+순환 3 / C 고정 4+순환 4 / D 고정 4+순환 3 = 30. 코호트 13곳(옛 추적 질문 15개), 코호트 밖 3곳. **아직 apply하지 않았다** — 측정 세션 검토 뒤 12/1 00:15 전에 `apply --confirm`.
 - #377 영향 조회(`docs/ops/snippets/first_month_target_impact.py`, #393, `zj9zq`): `operator_markers 0`, `changed []`, 새 판정 ≠ 옛 판정 0건, `new < live` 0건. `new > live`는 2026-12의 15곳(live 0 — 월말 배치가 만들 몫)뿐이라 기대와 같다.
-- ERROR: 배포 시작(19:29) 뒤 19:41까지 0건. +30분 확인은 아래에 덧붙인다.
+- ERROR: 배포 시작(19:29) 뒤 20:06까지 `reputation-*` 리비전 ERROR 0건(19:41 즉시 조회 + 20:06 35분 창 조회).
 
 ### 주의
 - **공개 반영이 열렸다.** 다시 막으려면 #373을 되돌리고 Admin만 배포한다. 이미 공개된 판은 그대로 남는다. 첫 공개 반영 점검 절차는 #385.
