@@ -142,7 +142,10 @@ test('좌표 변환 실패는 저장 실패가 아니다 — 주소 칸 아래 �
 
 test('사진 화면은 원장 사진을 쓰는 의료진을 말하고 공간 사진만 대표 이미지로 지정한다', () => {
   assert.match(photosSection, /physicianUsingPhoto\(physicians, photo\.id\)/)
-  assert.match(photosSection, /사진으로 사용 중/)
+  assert.match(photosSection, /사진으로 연결됨/)
+  // 연결만으로는 공개 페이지에 나가지 않는다 — 실제 인물 분류·공개·권리가 함께 맞아야 한다.
+  assert.match(photosSection, /doctorPhotoPublicBlocker\(photo\)/)
+  assert.match(photosSection, /usedBy && doctorBlocker/)
   assert.match(photosSection, /isFacilityPhotoType\(photo\.source_type\)/)
   assert.match(photosSection, /대표 이미지로 지정/)
   assert.match(photosSection, /현재 대표 이미지/)

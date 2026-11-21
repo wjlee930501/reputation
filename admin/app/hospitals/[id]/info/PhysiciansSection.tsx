@@ -9,6 +9,7 @@ import {
   removePhysician,
 } from '@/lib/physicians'
 import type { DoctorPhotoOption } from '@/lib/physicians'
+import { doctorPhotoBlockerMessage } from '@/lib/photo-public-gate'
 import type { Physician, PhysicianCredentials } from '@/types'
 
 const FIELD_CLASS =
@@ -48,6 +49,8 @@ export function PhysiciansSection({
     <div className="space-y-3">
       {rows.map((row, i) => {
         const credentials = credentialsOf(row)
+        const chosenBlocker =
+          photoOptions.find((option) => option.id === row.photo_source_id)?.blocker ?? null
         return (
           <div key={i} className="space-y-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
             <div className="flex items-start justify-between gap-2">
@@ -173,14 +176,27 @@ export function PhysiciansSection({
                   className={FIELD_CLASS}
                 >
                   <option value="">사진 없음</option>
-                  {photoOptions.map((option) => (
-                    <option key={option.id} value={option.id}>{option.title}</option>
-                  ))}
+                  {photoOptions
+                    .filter((option) => !option.excluded || option.id === row.photo_source_id)
+                    .map((option) => (
+                      <option key={option.id} value={option.id} disabled={option.excluded}>
+                        {option.excluded
+                          ? `${option.title} (제외한 사진)`
+                          : option.blocker
+                            ? `${option.title} (공개 페이지에 안 나감)`
+                            : option.title}
+                      </option>
+                    ))}
                 </select>
                 <p className="mt-1 text-xs text-slate-500">
                   {photoOptionsError
                     ?? '아래 사진 섹션에 올린 원장 사진 중에서 고릅니다.'}
                 </p>
+                {chosenBlocker && (
+                  <p role="note" className="mt-1 rounded bg-amber-50 px-2 py-1 text-xs leading-5 text-amber-900">
+                    {doctorPhotoBlockerMessage(chosenBlocker)}
+                  </p>
+                )}
               </div>
               <label className="flex min-h-11 cursor-pointer items-center gap-2 text-sm text-slate-700">
                 <input

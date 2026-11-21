@@ -8,6 +8,7 @@
  */
 
 import { fetchAPI } from './api.ts'
+import { doctorPhotoPublicBlocker, type DoctorPhotoBlocker, type DoctorPhotoSourceLike } from './photo-public-gate.ts'
 import type { Physician } from '../types/index.ts'
 
 /** 직함 제안. 고르지 않고 직접 적을 수도 있다 — 서버는 자유 문자열을 받는다. */
@@ -91,20 +92,31 @@ export function seedPhysicians(rows: Physician[] | null | undefined): Physician[
 export interface DoctorPhotoOption {
   id: string
   title: string
+  /** 공개 페이지에 의료진 사진으로 나가지 못하는 이유. 나가면 null. */
+  blocker: DoctorPhotoBlocker | null
+  /** 제외한 사진 — 새로 고를 수 없지만, 이미 연결된 의료진에게는 이유를 보여야 한다. */
+  excluded: boolean
 }
 
-interface SourceRowLike {
+interface SourceRowLike extends DoctorPhotoSourceLike {
   id: string
-  source_type: string
   title: string
   status: string
 }
 
-/** 이 병원의 원장 사진 자료. 제외된 사진은 고를 수 없다. */
+/**
+ * 이 병원의 원장 사진 자료. 제외된 사진은 고를 수 없지만(`excluded`) 목록에는 남긴다 —
+ * 이미 연결된 의료진의 선택 칸이 그 사진과 「제외한 사진」이라는 이유를 보여야 한다.
+ */
 export function doctorPhotoOptions(rows: SourceRowLike[]): DoctorPhotoOption[] {
   return rows
-    .filter((row) => row.source_type === 'PHOTO_DOCTOR' && row.status !== 'EXCLUDED')
-    .map((row) => ({ id: row.id, title: row.title }))
+    .filter((row) => row.source_type === 'PHOTO_DOCTOR')
+    .map((row) => ({
+      id: row.id,
+      title: row.title,
+      blocker: doctorPhotoPublicBlocker(row),
+      excluded: row.status === 'EXCLUDED',
+    }))
 }
 
 /**
