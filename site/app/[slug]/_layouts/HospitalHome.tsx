@@ -412,7 +412,7 @@ export function HospitalHome({
               쓰고 생김새만 바꾼다(_layouts/layout-b.module.css). 섹션은 `sectionsB` 표를 섹션 계획 순서로
               그린다 — 선택 섹션은 승인된 데이터가 있을 때만 보이고, 빈 자리를 지어내지 않는다. */}
           {plan.order.map((id) => (
-            <SectionLook key={id} align={plan.align(id)}>
+            <SectionLook key={id} align={plan.align(id)} background={plan.background(id)}>
               {sectionsB[id]}
             </SectionLook>
           ))}

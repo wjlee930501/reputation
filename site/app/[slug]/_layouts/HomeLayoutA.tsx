@@ -296,8 +296,15 @@ export function HomeLayoutA({ model }: { model: ClinicHomeModel }) {
     contents: (
       <div id={contents.length > 0 ? 'contents' : undefined}>
       {questionsBlock}
+      {/* 질문 목록 바로 뒤의 FAQ는 질문 목록과 한 덩어리로 보인다 — FAQ 배경 설정이 없으면 질문 목록의 배경을 따른다
+          (질문 목록이 진한 띠면 FAQ도 같은 띠 규칙으로 — 어두운 글자가 진한 바탕에 남지 않게). */}
       {faqWithContents ? (
-        <SectionLook nested align={plan.align('faq')} force={plan.align('contents') !== null}>
+        <SectionLook
+          nested
+          align={plan.align('faq')}
+          background={plan.background('faq') ?? plan.background('contents')}
+          force={plan.align('contents') !== null}
+        >
           {faqBlock}
         </SectionLook>
       ) : null}
@@ -423,7 +430,7 @@ export function HomeLayoutA({ model }: { model: ClinicHomeModel }) {
   return (
     <main id="main-content" className={s.home}>
       {plan.order.map((id) => (
-        <SectionLook key={id} align={plan.align(id)}>
+        <SectionLook key={id} align={plan.align(id)} background={plan.background(id)}>
           {sections[id]}
         </SectionLook>
       ))}
