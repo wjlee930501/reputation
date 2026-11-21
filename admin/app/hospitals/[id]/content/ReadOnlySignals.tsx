@@ -37,9 +37,14 @@ export function ReadOnlySignals({
   const [failed, setFailed] = useState<string[]>([])
   const [actionsOpen, setActionsOpen] = useState(false)
 
-  // 옛 노출 보완 경로에서 넘어온 사람은 바로 제안을 봐야 한다.
+  // 옛 노출 보완 경로에서 넘어온 사람은 바로 제안을 봐야 한다. 처음 열 때와 해시가 바뀔 때 본다.
   useEffect(() => {
-    if (window.location.hash === `#${EXPOSURE_ACTIONS_ANCHOR}`) setActionsOpen(true)
+    const openIfTargeted = () => {
+      if (window.location.hash === `#${EXPOSURE_ACTIONS_ANCHOR}`) setActionsOpen(true)
+    }
+    openIfTargeted()
+    window.addEventListener('hashchange', openIfTargeted)
+    return () => window.removeEventListener('hashchange', openIfTargeted)
   }, [])
 
   useEffect(() => {
@@ -104,7 +109,9 @@ export function ReadOnlySignals({
         <summary className="flex min-h-11 cursor-pointer items-center justify-between gap-2 text-sm font-semibold text-slate-800">
           <span>노출 보완 제안</span>
           <span className="text-xs font-normal text-slate-500">
-            {loading ? '불러오는 중…' : `${actions.length}건 · ${actionsOpen ? '접기' : '펼쳐 보기'}`}
+            {loading
+              ? '불러오는 중…'
+              : `${actions.length >= EXPOSURE_ACTION_LIST_LIMIT ? `${EXPOSURE_ACTION_LIST_LIMIT}건 이상` : `${actions.length}건`} · ${actionsOpen ? '접기' : '펼쳐 보기'}`}
           </span>
         </summary>
         <p className="mt-1 text-xs text-slate-500">

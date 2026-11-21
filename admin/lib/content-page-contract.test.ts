@@ -116,6 +116,9 @@ test('노출 보완 제안은 기본으로 접고 건수만 보인다 — 옛 �
   assert.match(signals, /<details\s+id=\{EXPOSURE_ACTIONS_ANCHOR\}/)
   assert.match(signals, /useState\(false\)/)
   assert.match(signals, /\$\{actions\.length\}건/)
+  // 목록은 상한까지만 받는다 — 상한에 닿으면 전체 건수처럼 말하지 않는다.
+  assert.match(signals, /\$\{EXPOSURE_ACTION_LIST_LIMIT\}건 이상/)
+  assert.match(signals, /addEventListener\('hashchange', openIfTargeted\)/)
   assert.match(signals, /window\.location\.hash === `#\$\{EXPOSURE_ACTIONS_ANCHOR\}`/)
   assert.match(signals, /EXPOSURE_ACTIONS_ANCHOR = 'content-exposure-actions'/)
 })
