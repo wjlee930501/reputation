@@ -89,9 +89,9 @@ export function mutationRequestBody(
   return { expected_version: input.expectedVersion ?? null, reason }
 }
 // 「오늘의 운영」 탭은 뺐다(2026-11 개편 결정 대기 13번 B — 대시보드 첫 화면이 그 일을 맡는다). 남은 상태가
-// 오늘 발행 예정(PUBLISH_DUE) 하나뿐이라 사람의 일이 없었다. 옛 `?queue=today` 주소는 문제·복구로 연다.
-// 서버의 TODAY 큐는 그대로 둔다(옛 화면·다른 호출 호환).
-const QUEUES: readonly OperationsQueueParam[] = ['onboarding', 'reports', 'incidents']
+// 오늘 발행 예정(PUBLISH_DUE) 하나뿐이라 평소 사람의 일이 없다. 기본 탭은 문제·복구다. 다만 `?queue=today`
+// 주소로는 계속 연다 — 아침 발행 정지 경보(`pipeline_watchdog`)가 오늘 발행 예정 글을 보라고 그 주소를 준다.
+const QUEUES: readonly OperationsQueueParam[] = ['onboarding', 'today', 'reports', 'incidents']
 const DEFAULT_QUEUE: OperationsQueueParam = 'incidents'
 const FILTER_KEYS = ['queue', 'hospitalId', 'owner', 'status', 'severity', 'sla', 'recovery', 'q', 'detail', 'page'] as const
 

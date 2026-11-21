@@ -864,11 +864,12 @@ test('처리 목록 훅은 깊은 링크를 해석기 한 곳으로 처리한다
   assert.match(hook, /assignable_accounts: incident\?\.assignable_accounts \?\? \[\]/)
 })
 
-test('「오늘의 운영」 탭은 없다 — 기본과 옛 queue=today 주소는 문제·복구로 연다', () => {
+test('「오늘의 운영」 탭은 없다 — 기본은 문제·복구, 발행 정지 경보의 queue=today 주소는 그대로 연다', () => {
   assert.equal(readOperationsQuery(new URLSearchParams('')).queue, 'incidents')
-  assert.equal(readOperationsQuery(new URLSearchParams('queue=today')).queue, 'incidents')
-  assert.equal(readOperationsQuery(new URLSearchParams('queue=TODAY')).queue, 'incidents')
+  assert.equal(readOperationsQuery(new URLSearchParams('queue=nope')).queue, 'incidents')
+  assert.equal(readOperationsQuery(new URLSearchParams('queue=today')).queue, 'today')
   assert.equal(readOperationsQuery(new URLSearchParams('queue=reports')).queue, 'reports')
   const filters = readFileSync(new URL('../app/operations/OperationsFilters.tsx', import.meta.url), 'utf8')
   assert.doesNotMatch(filters, /오늘의 운영/)
+  assert.match(filters, /query\.queue === 'today'/)
 })
