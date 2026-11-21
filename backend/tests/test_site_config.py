@@ -876,3 +876,20 @@ def test_notes_for_sections_the_layout_does_not_have_are_rejected_and_stripped(l
     assert [e["path"] for e in errors if e["code"] == "FIELD_NOT_RENDERED"] == [f"copy.{key}"]
     assert strip_unrendered(layout, notes)["copy"] == {"faq.note": "자주 묻는 질문입니다."}
     assert validate_site_config("B", {"copy": {"visit.note": "오시는 길 안내입니다."}}, _ctx()).ok
+
+
+@pytest.mark.parametrize("layout", ["A", "B", "C"])
+def test_veil_fields_are_drawn_only_on_overlay_and_opacity_only_on_full(layout: str) -> None:
+    def veil_errors(hero: dict) -> list[str]:
+        errors = validate_site_config(layout, {"hero": hero}, _ctx()).errors
+        return [e["path"] for e in errors if e["code"] == "FIELD_NOT_RENDERED"]
+
+    split_veil = {"image": {"veil": {"extent": "full", "opacity": 0.3}}}
+    assert veil_errors(split_veil) == ["hero.image.veil.extent", "hero.image.veil.opacity"]
+    text_veil = {"arrangement": "overlay", "image": {"veil": {"extent": "text", "opacity": 0.3}}}
+    assert veil_errors(text_veil) == ["hero.image.veil.opacity"]
+    assert veil_errors({"arrangement": "overlay", "image": {"veil": {"extent": "full", "opacity": 0.3}}}) == []
+    assert veil_errors({"arrangement": "overlay", "image": {"veil": {"extent": "text", "opacity": 0.6}}}) == []
+    stripped = strip_unrendered(layout, {"hero": {"arrangement": "overlay", "image": {"veil": {"extent": "text", "opacity": 0.3}}}})
+    assert stripped["hero"]["image"]["veil"] == {"extent": "text"}
+    assert strip_unrendered(layout, {"hero": split_veil})["hero"]["image"]["veil"] == {}

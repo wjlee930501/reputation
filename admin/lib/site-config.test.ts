@@ -10,6 +10,7 @@ import {
   B_ONLY_LINE_BREAK_PATHS,
   UNRENDERED_COPY_KEYS,
   shownCopyKeys,
+  veilShown,
   lineBreakPathShown,
   UNRENDERED_FIELDS,
   sectionLookShown,
@@ -418,4 +419,19 @@ test('notes for sections the layout does not have are never saved', () => {
   const edited = clone(base)
   ;(edited as Record<string, any>).copy = { 'contents.note': '먼저 정리한 글', 'faq.note': '안내' }
   assert.deepEqual(buildOverrides(edited, base, 'C').copy, { 'faq.note': '안내' })
+})
+
+test('the veil is shown and saved only where it is drawn (overlay; opacity on full)', () => {
+  assert.deepEqual(veilShown({ arrangement: 'split', image: { veil: { extent: 'full' } } }), { extent: false, opacity: false })
+  assert.deepEqual(veilShown({ arrangement: 'overlay', image: { veil: { extent: 'text' } } }), { extent: true, opacity: false })
+  assert.deepEqual(veilShown({ arrangement: 'overlay', image: { veil: { extent: 'full' } } }), { extent: true, opacity: true })
+  const base = clone(defaultsC())
+  const edited = clone(base) as Record<string, any>
+  edited.hero = { ...edited.hero, arrangement: 'overlay', image: { ...edited.hero.image, veil: { extent: 'text', opacity: 0.2 } } }
+  const hero = buildOverrides(edited as ResolvedSiteConfig, base, 'C').hero as Record<string, any>
+  assert.equal(hero.arrangement, 'overlay')
+  assert.notEqual(hero.image?.veil?.opacity, 0.2)
+  edited.hero.arrangement = 'split'
+  const split = buildOverrides(edited as ResolvedSiteConfig, base, 'C').hero as Record<string, any> | undefined
+  assert.equal(split?.image?.veil?.extent, undefined)
 })

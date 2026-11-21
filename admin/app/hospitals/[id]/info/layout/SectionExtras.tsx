@@ -13,6 +13,7 @@ import {
   type LineBreakPath,
   type LineBreakSourceInput,
   type SiteConfigIssue,
+  veilShown,
 } from '@/lib/site-config'
 import { isRecord } from '@/lib/type-guards'
 import { Choice, IssueList } from './SectionPanels'
@@ -254,14 +255,17 @@ export function HeroImageSettings({ hero, onChange, disabled }: { hero: Group; o
       <p className="text-sm font-semibold text-slate-800">{COPY.imageTitle}</p>
       <Slider label={COPY.focusX} value={focus.x} onChange={(x) => setImage({ focus: { ...focus, x } })} disabled={disabled} />
       <Slider label={COPY.focusY} value={focus.y} onChange={(y) => setImage({ focus: { ...focus, y } })} disabled={disabled} />
-      <Choice
-        label={COPY.veilExtent}
-        value={extent}
-        options={COPY.veilExtents}
-        onChange={(next) => setImage({ veil: { opacity, extent: next } })}
-        disabled={disabled}
-      />
-      {extent !== 'none' && (
+      {/* 덮개는 '사진 위 글자' 배치에서만, 농도는 '사진 전체' 덮개에서만 그려진다 — 그 밖에는 칸을 숨긴다. */}
+      {veilShown(hero).extent && (
+        <Choice
+          label={COPY.veilExtent}
+          value={extent}
+          options={COPY.veilExtents}
+          onChange={(next) => setImage({ veil: { opacity, extent: next } })}
+          disabled={disabled}
+        />
+      )}
+      {veilShown(hero).opacity && (
         <Slider label={COPY.veilOpacity} value={opacity} max={0.9} onChange={(next) => setImage({ veil: { opacity: next, extent } })} disabled={disabled} />
       )}
     </div>

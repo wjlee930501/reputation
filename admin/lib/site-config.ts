@@ -311,6 +311,33 @@ function withoutKey(out: Record<string, unknown>, group: string, key: string): v
   else delete out[group]
 }
 
+/** 첫 화면 덮개가 화면에 그려지는가 — 덮개는 '사진 위 글자' 배치에서만, 농도는 '사진 전체' 덮개에서만 그린다. */
+export function veilShown(hero: unknown): { extent: boolean; opacity: boolean } {
+  const group = isRecord(hero) ? hero : {}
+  const image = isRecord(group.image) ? group.image : {}
+  const veil = isRecord(image.veil) ? image.veil : {}
+  const overlay = group.arrangement === 'overlay'
+  return { extent: overlay, opacity: overlay && veil.extent === 'full' }
+}
+
+/** 그려지지 않는 덮개 칸을 기본값으로 되돌린 완성본(저장에 싣지 않게). */
+function withDrawnVeil(resolved: ResolvedSiteConfig, defaults: ResolvedSiteConfig): ResolvedSiteConfig {
+  const hero = isRecord(resolved.hero) ? resolved.hero : null
+  const image = hero && isRecord(hero.image) ? hero.image : null
+  const veil = image && isRecord(image.veil) ? image.veil : null
+  const baseHero = isRecord(defaults.hero) ? defaults.hero : {}
+  const baseImage = isRecord(baseHero.image) ? baseHero.image : {}
+  const baseVeil = isRecord(baseImage.veil) ? baseImage.veil : {}
+  if (!hero || !image || !veil) return resolved
+  const shown = veilShown(hero)
+  const next = {
+    ...veil,
+    ...(shown.extent ? {} : { extent: baseVeil.extent }),
+    ...(shown.opacity ? {} : { opacity: baseVeil.opacity }),
+  }
+  return { ...resolved, hero: { ...hero, image: { ...image, veil: next } } }
+}
+
 /**
  * 편집한 완성본을 레이아웃 기본값과 비교해 저장할 덮어쓰기만 만든다. 숨긴 칸(A·C의 B 전용 칸, 화면이 아직 그리지
  * 않는 칸, 머리 없는 섹션·배경 고정 섹션의 모양 칸)은 싣지 않는다 — 옛 초안에 값이 남아 있어도 저장이 거절되지
@@ -323,6 +350,7 @@ export function buildOverrides(
   keepAll = false,
 ): Record<string, unknown> {
   const out: Record<string, unknown> = {}
+  if (!keepAll) resolved = withDrawnVeil(resolved, defaults)
   const sections = sectionOverrides(resolved.sections, defaults.sections, keepAll ? null : layout)
   if (sections.length) out.sections = sections
   for (const [key, value] of Object.entries(resolved)) {

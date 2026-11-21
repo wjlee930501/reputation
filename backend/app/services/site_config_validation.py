@@ -272,6 +272,20 @@ def _set_line_break(spec: Any) -> bool:
     )
 
 
+def _undrawn_veil_keys(layout: str, hero: Any) -> list[str]:
+    """그려지지 않는 첫 화면 덮개 칸 — 덮개는 '사진 위 글자' 배치에서만, 농도는 '사진 전체' 덮개에서만 그린다."""
+
+    base = site_defaults.defaults(layout)["hero"]
+    hero = hero if isinstance(hero, dict) else {}
+    image = hero.get("image") if isinstance(hero.get("image"), dict) else {}
+    veil = image.get("veil") if isinstance(image.get("veil"), dict) else {}
+    arrangement = hero.get("arrangement", base["arrangement"])
+    extent = veil.get("extent", base["image"]["veil"]["extent"])
+    if arrangement != "overlay":
+        return ["extent", "opacity"]
+    return [] if extent == "full" else ["opacity"]
+
+
 def strip_unrendered(layout: str, config: Any) -> Any:
     """옛 판 복원용 — 화면이 그리지 않는 칸(A·C의 B 전용 칸 포함)을 덮어쓰기에서 뺀다(그 칸은 기본값으로 돌아간다).
 
@@ -296,6 +310,11 @@ def strip_unrendered(layout: str, config: Any) -> Any:
         if not copy_notes:
             out.pop("copy")
     hero = out.get("hero")
+    image = hero.get("image") if isinstance(hero, dict) else None
+    veil = image.get("veil") if isinstance(image, dict) else None
+    if isinstance(veil, dict):
+        for key in _undrawn_veil_keys(layout, hero):
+            veil.pop(key, None)
     breaks = hero.get("line_breaks") if isinstance(hero, dict) else None
     if layout != "B" and isinstance(breaks, dict):
         for path in _B_ONLY_LINE_BREAKS:
@@ -331,6 +350,13 @@ def _check_unrendered(check: SiteConfigCheck, layout: str, stored: dict[str, Any
             unrendered = key in _UNRENDERED_COPY_KEYS or not _copy_section_in_layout(layout, key)
             if unrendered and isinstance(value, str) and value.strip():
                 check.error(f"copy.{key}", "FIELD_NOT_RENDERED", message)
+    stored_hero = stored.get("hero") or {}
+    stored_veil = ((stored_hero.get("image") or {}) if isinstance(stored_hero, dict) else {}).get("veil") or {}
+    base_veil = base["hero"]["image"]["veil"]
+    for key in _undrawn_veil_keys(layout, stored_hero):
+        value = stored_veil.get(key) if isinstance(stored_veil, dict) else None
+        if value is not None and value != base_veil[key]:
+            check.error(f"hero.image.veil.{key}", "FIELD_NOT_RENDERED", message)
     breaks = (stored.get("hero") or {}).get("line_breaks") or {}
     if layout != "B" and isinstance(breaks, dict):
         for path in sorted(_B_ONLY_LINE_BREAKS):
