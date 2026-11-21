@@ -13,6 +13,7 @@
 4. 참조 — 공유 이미지는 그 병원의 공개 사진(원장 사진이면 실인물·신원 승인)이어야 하고, 고른 FAQ
    글은 그 병원의 공개 FAQ 글 중 승인 질문·답이 있는 것이어야 한다.
 5. 메뉴 — 꺼진 섹션을 가리키는 항목은 경고(저장은 된다). 공개 응답이 그 항목을 뺀다.
+6. 정보 띠 — B안의 '예약' 칸은 네이버 플레이스가 없으면 경고(저장은 된다). 공개 화면이 그 칸을 뺀다.
 """
 
 from __future__ import annotations
@@ -37,6 +38,8 @@ class SiteConfigContext:
     care_principles: dict[str, Any] | None = None
     share_image_ids: frozenset[uuid.UUID] = frozenset()
     faq_content_ids: frozenset[uuid.UUID] = frozenset()
+    # '예약' 칸이 여는 네이버 플레이스가 있는가(주소나 플레이스 번호). 모르면 경고하지 않는다.
+    has_naver_place: bool = True
 
 
 @dataclass
@@ -170,6 +173,7 @@ def validate_site_config(
     _check_line_breaks(check, stored, ctx)
     _check_references(check, stored, ctx)
     _check_nav(check, layout, resolved)
+    _check_hero_blocks(check, layout, resolved, ctx)
     check.config = stored
     check.resolved = resolved
     return check
@@ -360,6 +364,18 @@ def _check_nav(check: SiteConfigCheck, layout: str, resolved: dict[str, Any]) ->
                 "NAV_TARGET_DISABLED",
                 "이 메뉴가 가리키는 섹션이 꺼져 있어 공개 화면에서는 메뉴에서 빠집니다.",
             )
+
+
+def _check_hero_blocks(
+    check: SiteConfigCheck, layout: str, resolved: dict[str, Any], ctx: SiteConfigContext
+) -> None:
+    blocks = (resolved.get("hero") or {}).get("blocks") or []
+    if layout == "B" and "booking" in blocks and not ctx.has_naver_place:
+        check.warn(
+            "hero.blocks",
+            "BOOKING_NO_PLACE",
+            "네이버 플레이스가 없어 공개 화면에서는 '예약' 칸이 빠집니다.",
+        )
 
 
 def changed_sections(before: dict[str, Any] | None, after: dict[str, Any]) -> list[str]:
