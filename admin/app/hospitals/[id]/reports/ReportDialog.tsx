@@ -23,7 +23,8 @@ import { ReportAeEditPanel } from './ReportAeEditPanel'
 import { ReportEvidence } from './ReportEvidence'
 
 export type DeliveryAction =
-  | { kind: 'deliver'; artifactSha256: string; recipient: string; channel: string; note?: string }
+  // artifactSha256이 없으면 받기 없이 기록한다 — 서버가 지금 검증본에 묶는다(결정 대기 7번 A).
+  | { kind: 'deliver'; artifactSha256: string | null; recipient: string; channel: string; note?: string }
   | { kind: 'correct'; artifactSha256: string; recipient: string; channel: string; note?: string; reason: string }
   | { kind: 'rescind'; reason: string }
 
@@ -257,9 +258,14 @@ export function ReportDialog({
             ) : (
               <>
                 <DeliveryFields recipient={recipient} channel={channel} note={note} onRecipient={setRecipient} onChannel={setChannel} onNote={setNote} />
-                <button type="button" disabled={busy || !doctorUrl || !deliveryValid || !downloadedSha256} onClick={() => downloadedSha256 && onAction({ kind: 'deliver', artifactSha256: downloadedSha256, recipient: recipient.trim(), channel: channel.trim(), note: note.trim() || undefined })} className="mt-3 min-h-11 w-full rounded-lg bg-[var(--color-revisit-green-50)] px-4 text-sm font-bold text-white disabled:opacity-40">
-                  {busy ? '최신 상태 확인 중' : !report.deliveryReady ? '차단 항목을 해결한 뒤 기록할 수 있습니다' : !downloadedSha256 ? DOWNLOAD_REQUIRED : '이 파일의 원장 전달 기록 남기기'}
+                <button type="button" disabled={busy || !doctorUrl || !deliveryValid || !report.deliveryReady} onClick={() => onAction({ kind: 'deliver', artifactSha256: downloadedSha256, recipient: recipient.trim(), channel: channel.trim(), note: note.trim() || undefined })} className="mt-3 min-h-11 w-full rounded-lg bg-[var(--color-revisit-green-50)] px-4 text-sm font-bold text-white disabled:opacity-40">
+                  {busy ? '최신 상태 확인 중' : !report.deliveryReady ? '차단 항목을 해결한 뒤 기록할 수 있습니다' : downloadedSha256 ? '이 파일의 원장 전달 기록 남기기' : '원장 전달 완료 기록'}
                 </button>
+                {!downloadedSha256 && report.deliveryReady && (
+                  <p className="mt-2 text-xs leading-5 text-[var(--color-revisit-text-helper)] [word-break:keep-all]">
+                    파일을 여기서 받지 않아도 기록할 수 있습니다. 지금 검증된 원장 보고서({report.review?.versionLabel ?? '최신 판'} · 확인 번호 앞 12자리 {report.doctorArtifact.sha256?.slice(0, 12) ?? '확인 불가'})에 묶입니다.
+                  </p>
+                )}
               </>
             )}
           </section>

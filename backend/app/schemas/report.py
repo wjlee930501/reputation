@@ -114,13 +114,18 @@ class ReportResponse(ReportListResponse):
 
 
 class ReportDeliveryRequest(BaseModel):
-    artifact_sha256: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")
+    # 화면이 실제로 내려받은 원장 PDF의 확인 번호. 비우면(2026-11 개편 결정 대기 7번 A) 서버가 지금 검증된
+    # 원장 PDF에 묶는다 — 받기 없이 「전달 완료」를 남기는 경우다. 정정(`correct-delivery`)은 계속 필수다.
+    artifact_sha256: Optional[str] = Field(
+        default=None, min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$"
+    )
     recipient_label: str = Field(min_length=1, max_length=255)
     channel: str = Field(min_length=1, max_length=100)
     note: Optional[str] = Field(default=None, max_length=1000)
 
 
 class ReportDeliveryCorrectionRequest(ReportDeliveryRequest):
+    artifact_sha256: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")
     reason: str = Field(min_length=2, max_length=1000)
 
 

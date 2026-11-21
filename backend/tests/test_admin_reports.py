@@ -604,6 +604,46 @@ async def test_mark_report_sent_sets_sent_at_and_audits(monkeypatch):
     assert payload["effective_delivery"]["operator"] == actor.email
 
 
+async def test_mark_report_sent_without_a_download_binds_to_the_verified_artifact(monkeypatch):
+    """결정 대기 7번 A: 받은 파일의 확인 번호 없이도 기록한다 — 서버가 지금 검증본에 묶고 그 사실을 남긴다."""
+    hospital, report, actor, db = _ready_db()
+
+    async def _fresh_essence(db, hospital_id):
+        del db, hospital_id
+        philosophy = SimpleNamespace(version=3)
+        return EssenceReadiness(
+            approved=philosophy,
+            current=philosophy,
+            processed_source_count=4,
+            required_source_count=4,
+            current_snapshot_hash="snapshot",
+        )
+
+    monkeypatch.setattr(reports_api, "get_essence_readiness", _fresh_essence)
+
+    await reports_api.mark_report_sent(
+        hospital.id,
+        report.id,
+        ReportDeliveryRequest(recipient_label="김원장", channel="카카오톡"),
+        db=db,
+        actor=actor,
+    )
+
+    event = next(item for item in db.added if item.__class__.__name__ == "MonthlyDeliveryEvent")
+    assert event.artifact_id == db.artifact.id
+    assert event.metadata_json["artifact_sha256"] == db.artifact.sha256
+    assert event.metadata_json["download_confirmed"] is False
+
+
+def test_delivery_correction_still_requires_the_downloaded_hash():
+    from pydantic import ValidationError
+
+    from app.schemas.report import ReportDeliveryCorrectionRequest
+
+    with pytest.raises(ValidationError):
+        ReportDeliveryCorrectionRequest(recipient_label="김원장", channel="대면", reason="받은 분 정정")
+
+
 async def test_v0_generation_artifact_can_be_recorded_as_delivered(monkeypatch):
     hospital, report, actor, db = _ready_v0_db()
 

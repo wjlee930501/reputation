@@ -458,7 +458,10 @@ async def mark_report_sent(
     manifest = await _get_manifest(db, report.manifest_id)
     artifact = await _get_doctor_artifact(db, report.id)
     await _assert_customer_ready(db, report, manifest, artifact)
-    if artifact is None or body.artifact_sha256 != artifact.sha256:
+    # 받은 파일의 확인 번호를 보냈으면 그 파일이 지금 검증본이어야 한다. 비우면 지금 검증본에 묶는다
+    # (결정 대기 7번 A — 받기 없이 기록). 어느 판에 묶였는지는 기록·감사에 남는다.
+    download_confirmed = body.artifact_sha256 is not None
+    if artifact is None or (download_confirmed and body.artifact_sha256 != artifact.sha256):
         raise _delivery_conflict(
             "artifact_mismatch", "다운로드한 원장 보고용 PDF와 현재 검증본이 일치하지 않습니다."
         )
@@ -486,6 +489,7 @@ async def mark_report_sent(
         reason=None,
         now=now,
     )
+    event.metadata_json = {**(event.metadata_json or {}), "download_confirmed": download_confirmed}
     db.add(event)
     if report.sent_at is None:
         report.sent_at = now

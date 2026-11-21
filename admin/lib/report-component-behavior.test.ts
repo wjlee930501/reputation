@@ -78,9 +78,9 @@ test('the reports tab opens exactly one dialog, ordered 열기 → 보고서 고
   }
 })
 
-test('the delivery record binds to the downloaded bytes, never to the server hash echo', () => {
+test('the delivery record binds to the downloaded bytes, or — without a download — to the server-verified version', () => {
   // M-08: 화면이 서버가 준 확인 번호를 그대로 되돌려 보내면 전달 기록이 무엇을
-  // 증명하는지 사라진다. 담당자가 이 화면에서 실제로 내려받은 파일에만 결합한다.
+  // 증명하는지 사라진다. 내려받았으면 그 파일의 확인 번호만 보낸다(서버 값을 복사하지 않는다).
   assert.match(pageSource, /artifact_sha256: action\.artifactSha256/)
   assert.equal(pageSource.includes('fresh.doctorArtifact.sha256'), false)
   assert.match(pageSource, /isArtifactMismatch\(caught\.detail\)\) setDownloadedSha256\(null\)/)
@@ -88,6 +88,11 @@ test('the delivery record binds to the downloaded bytes, never to the server has
   assert.match(dialogSource, /sha256OfDownloadedPdf\(doctorUrl/)
   assert.match(dialogSource, /URL\.createObjectURL\(blob\)/)
   assert.match(dialogSource, /URL\.revokeObjectURL\(objectUrl\)/)
-  assert.match(dialogSource, /disabled=\{busy \|\| !doctorUrl \|\| !deliveryValid \|\| !downloadedSha256\}/)
+  // 결정 대기 7번 A: 받지 않아도 「원장 전달 완료 기록」을 남긴다 — 확인 번호 없이 보내면 서버가
+  // 지금 검증본에 묶고, 화면은 어느 판에 묶이는지 미리 보여 준다.
+  assert.match(dialogSource, /disabled=\{busy \|\| !doctorUrl \|\| !deliveryValid \|\| !report\.deliveryReady\}/)
+  assert.match(dialogSource, /artifactSha256: downloadedSha256,/)
+  assert.match(dialogSource, /파일을 여기서 받지 않아도 기록할 수 있습니다/)
+  // 정정 기록은 계속 받은 파일에만 묶는다.
   assert.match(dialogSource, /먼저 원장 전달용 파일을 여기서 내려받아야 합니다/)
 })
