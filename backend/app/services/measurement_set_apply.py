@@ -27,7 +27,7 @@ from app.services import measurement_set
 from app.services.measurement_question_set import (
     PROBLEM_LABELS,
     DraftQuestion,
-    common_clinic_name,
+    clinic_name_for,
     draft_measurement_set,
     measurement_question_problems,
 )
@@ -72,7 +72,7 @@ def draft_rows(hospital: Hospital) -> list[DraftQuestion]:
 def validate_rows(hospital: Hospital, rows: Sequence[SetRow]) -> list[dict[str, Any]]:
     """질문별 문형(지침 3-1)과 세트 모양 검사. 비어 있으면 저장할 수 있다."""
 
-    clinic = common_clinic_name((list(hospital.specialties or []) or [""])[0])
+    clinic = clinic_name_for(list(hospital.specialties or []))
     problems: list[dict[str, Any]] = []
     seen: set[str] = set()
     for index, row in enumerate(rows):

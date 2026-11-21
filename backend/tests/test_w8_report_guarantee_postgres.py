@@ -612,7 +612,29 @@ def test_ready_reports_without_a_delivery_record_are_counted_after_the_tenth(
     eleventh = datetime(2026, 11, 11, 9, 0, tzinfo=KST)
     try:
         assert fleet_heartbeat.count_undelivered_ready_reports(env.db, now=eleventh) == 1
-        env.db.add(MonthlyDeliveryEvent(report_id=report.id, event_type="DELIVERED"))
+        delivered_at = datetime(2026, 11, 3, 10, 0, tzinfo=KST)
+        env.db.add(
+            MonthlyDeliveryEvent(report_id=report.id, event_type="DELIVERED", created_at=delivered_at)
+        )
+        env.db.flush()
+        assert fleet_heartbeat.count_undelivered_ready_reports(env.db, now=eleventh) == 0
+        # 전달 기록을 철회하면 다시 미전달이다 — 재전달하면 다시 빠진다.
+        env.db.add(
+            MonthlyDeliveryEvent(
+                report_id=report.id,
+                event_type="RESCINDED",
+                created_at=delivered_at + timedelta(days=1),
+            )
+        )
+        env.db.flush()
+        assert fleet_heartbeat.count_undelivered_ready_reports(env.db, now=eleventh) == 1
+        env.db.add(
+            MonthlyDeliveryEvent(
+                report_id=report.id,
+                event_type="REDELIVERED",
+                created_at=delivered_at + timedelta(days=2),
+            )
+        )
         env.db.flush()
         assert fleet_heartbeat.count_undelivered_ready_reports(env.db, now=eleventh) == 0
     finally:

@@ -613,7 +613,9 @@ async def restore_site_config_version(
         body,
         layout=source.layout,
         # 그 판 이후 거절하게 된 칸(화면이 그리지 않는 칸)은 빼고 복원한다 — 기본값으로 돌아간다.
-        config=strip_unrendered(source.layout, dict(source.config or {})),
+        config=strip_unrendered(
+            source.layout, dict(source.config or {}), hero_headline=getattr(hospital, "hero_headline", None)
+        ),
         origin=ORIGIN_RESTORE,
         based_on_id=source.id,
         audit_action="site_config_restore",

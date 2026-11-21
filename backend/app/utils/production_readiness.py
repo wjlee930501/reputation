@@ -123,6 +123,17 @@ EXPECTED_TASKS = {
 }
 
 
+# 섹션 설정 공개 판·초안 수와 레이아웃이 갈라진 공개 판 수(참고 사실).
+SITE_CONFIG_COUNTS_SQL = (
+    "SELECT "
+    "count(*) FILTER (WHERE c.state = 'PUBLISHED') AS published, "
+    "count(*) FILTER (WHERE c.state = 'DRAFT') AS drafts, "
+    "count(*) FILTER (WHERE c.state = 'PUBLISHED' AND c.layout IS DISTINCT FROM h.site_layout) AS layout_diverged "
+    "FROM hospital_site_configs c JOIN hospitals h ON h.id = c.hospital_id "
+    "WHERE c.state IN ('PUBLISHED', 'DRAFT')"
+)
+
+
 def _database_facts() -> dict[str, Any]:
     expected_head = ScriptDirectory.from_config(Config("alembic.ini")).get_current_head()
     with SyncSessionLocal() as db:
@@ -160,7 +171,15 @@ def _database_facts() -> dict[str, Any]:
                 )
             ).scalar_one()
         )
+        # 섹션 설정(레이아웃 편집기) — 참고 사실. 공개 판의 레이아웃이 병원 레이아웃과 갈라지면 공개 응답이
+        # `site_config: null`이라 사이트는 설정 없이 그린다(설계 22절). 병원 id는 싣지 않는다.
+        site_configs = db.execute(text(SITE_CONFIG_COUNTS_SQL)).one()
     return {
+        "site_configs": {
+            "published": int(site_configs.published),
+            "drafts": int(site_configs.drafts),
+            "layout_diverged": int(site_configs.layout_diverged),
+        },
         "recertify_candidate_count": recertify_candidate_count,
         "null_noise_hash_approvals": null_noise_hash_approvals,
         "schema_current": current_head == expected_head,
