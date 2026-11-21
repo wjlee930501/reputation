@@ -26,6 +26,7 @@ import {
 import {
   buildHomeSectionPlan,
   naverBookingUrl,
+  physicianPhotoLook,
   resolveCareFlow,
   resolveHeroBlocks,
   resolveHomeFaqEntries,
@@ -261,6 +262,8 @@ export function HospitalHome({
           contentCount={contents.length}
           title={plan.customTitle('doctor')}
           note={plan.customNote('doctor')}
+          photoLook={physicianPhotoLook(siteConfig)}
+          titleBelow={siteConfig?.doctor.titleBelow ?? false}
         />
       </div>
     ),

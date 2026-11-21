@@ -14,7 +14,8 @@
  * 3b ①이 쓰는 칸: 섹션 순서·켜기·제목, 섹션 안내 문장(`copy.*.note`), 진료 원칙 카드 수,
  * 진료 과정 안내·단계, FAQ 자동·직접, 상단 메뉴·모바일 하단 바, 공유 이미지·설명.
  * ③-2a가 더한 칸(B안만): 첫 화면 정보 띠 칸(`hero.blocks`), 진료 항목 모양·설명(`treatments`).
- * 첫 화면 배치·배경·정렬·영문 소제목·줄바꿈·의료진 사진 같은 나머지 모양 칸은 다음 PR이다(받아 두기만 한다).
+ * ③-2b가 더한 칸(A·B·C): 의료진 사진 비율·초점, 직함 위치(`doctor`).
+ * 첫 화면 배치·배경·정렬·영문 소제목·줄바꿈·진료 철학 같은 나머지 모양 칸은 다음 PR이다(받아 두기만 한다).
  */
 
 import type { ContentSummary } from './api.ts'
@@ -76,6 +77,11 @@ const HERO_BLOCKS: ReadonlySet<string> = new Set<SiteHeroBlock>(['today', 'phone
 /** 지금 B안 띠의 칸과 순서(백엔드 `site_defaults`의 `hero.blocks`와 같다). */
 export const DEFAULT_HERO_BLOCKS: readonly SiteHeroBlock[] = ['today', 'phone', 'location', 'hours']
 export type SiteTreatmentStyle = 'cards' | 'list'
+export type SitePhotoRatio = 'portrait' | 'square' | 'landscape'
+/** 레이아웃별 지금 의료진 사진 비율 — A 4:3 가로(`.doctorPhoto`), B 4:5·C 3:4 세로. */
+export const DEFAULT_PHOTO_RATIO: Readonly<Record<ClinicLayout, SitePhotoRatio>> = { A: 'landscape', B: 'portrait', C: 'portrait' }
+/** 바꾼 비율의 CSS 값. 세로는 B의 4:5(지금 세로인 B·C는 세로를 고르면 바꾼 것이 아니다). */
+export const PHOTO_ASPECT: Readonly<Record<SitePhotoRatio, string>> = { portrait: '4 / 5', square: '1 / 1', landscape: '4 / 3' }
 
 /** 레이아웃별 홈 섹션 기본 순서 = 지금 마크업 순서. 레이아웃을 고르지 않은 병원(null)은 B와 같다. */
 export const DEFAULT_SECTION_ORDER: Readonly<Record<ClinicLayout, readonly SiteSectionId[]>> = {
@@ -163,6 +169,11 @@ export interface ClinicSiteConfig {
   hero: { blocks: SiteHeroBlock[] | null }
   /** B안만. A·C는 언제나 지금 모양(카드·설명 보임)이다 — A 알약·C 타일은 이 칸을 읽지 않는다. */
   treatments: { style: SiteTreatmentStyle; showDescription: boolean }
+  /**
+   * 의료진 사진·직함(A·B·C). 기본값과 같은 칸은 null·false — 컴포넌트는 지금 마크업을 그대로 그린다.
+   * 비율·초점은 사진이 있을 때만 쓴다(사진이 없으면 지금의 이름 첫 글자 타일).
+   */
+  doctor: { photoRatio: SitePhotoRatio | null; photoFocus: { x: number; y: number } | null; titleBelow: boolean }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -291,6 +302,41 @@ export function normalizeSiteConfig(value: unknown, siteLayout: ClinicLayout | n
     share: { imageAssetId: text(share.image_asset_id), description: text(share.description) },
     hero: { blocks: layout === 'B' ? customHeroBlocks(value.hero) : null },
     treatments: layout === 'B' ? treatmentLook(value.treatments) : { ...DEFAULT_TREATMENT_LOOK },
+    doctor: doctorLook(value.doctor, layout),
+  }
+}
+
+function unit(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1 ? value : null
+}
+
+function doctorLook(raw: unknown, layout: ClinicLayout): ClinicSiteConfig['doctor'] {
+  const doctor = isRecord(raw) ? raw : {}
+  const ratio = doctor.photo_ratio
+  const photoRatio =
+    (ratio === 'portrait' || ratio === 'square' || ratio === 'landscape') && ratio !== DEFAULT_PHOTO_RATIO[layout]
+      ? ratio
+      : null
+  const focus = isRecord(doctor.photo_focus) ? doctor.photo_focus : {}
+  const x = unit(focus.x)
+  const y = unit(focus.y)
+  // 지금 사진 초점은 세 안 모두 가운데다(설계 14절) — 가운데면 바꾼 것이 아니다.
+  const photoFocus = x !== null && y !== null && (x !== 0.5 || y !== 0.5) ? { x, y } : null
+  return { photoRatio, photoFocus, titleBelow: doctor.title_position === 'below' }
+}
+
+/** 의료진 사진 상자·사진에 덧입힐 모양(바꾼 칸만). 설정이 없으면 null — 지금 마크업 그대로. */
+export function physicianPhotoLook(config: ClinicSiteConfig | null): {
+  aspectRatio: string | null
+  objectPosition: string | null
+} | null {
+  const doctor = config?.doctor
+  if (!doctor || (!doctor.photoRatio && !doctor.photoFocus)) return null
+  return {
+    aspectRatio: doctor.photoRatio ? PHOTO_ASPECT[doctor.photoRatio] : null,
+    objectPosition: doctor.photoFocus
+      ? `${Math.round(doctor.photoFocus.x * 100)}% ${Math.round(doctor.photoFocus.y * 100)}%`
+      : null,
   }
 }
 

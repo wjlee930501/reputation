@@ -21,7 +21,7 @@ import {
   WEEK_DAY_KEYS,
 } from '@/lib/clinic-layout'
 import { fullClinicAddress } from '@/lib/clinic-schema'
-import { limitCarePrincipleCards, type SiteSectionId } from '@/lib/clinic-site-config'
+import { physicianPhotoLook, limitCarePrincipleCards, type SiteSectionId } from '@/lib/clinic-site-config'
 import {
   CARE_FLOW_TITLE,
   resolveCarePrinciples,
@@ -294,6 +294,8 @@ export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
                 className={s.doctor}
                 photoClassName={s.doctorPhoto}
                 bodyClassName={s.doctorBody}
+                photoLook={physicianPhotoLook(model.siteConfig)}
+                titleBelow={model.siteConfig?.doctor.titleBelow ?? false}
                 asTable
                 tableClassName={s.doctorTable}
               />

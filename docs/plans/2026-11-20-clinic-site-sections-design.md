@@ -378,4 +378,15 @@ gpt-6.1-sol high로 이 문서를 코드와 대조했다. 15건 모두 받아들
 | 진료 항목 목록(B만) | 한 줄에 이름(명조)과 설명 한 줄(말줄임), 줄 사이 점선, 두 열(720px 아래 한 열), 8개까지 + '전체 N개 보기'. 설명 숨김은 카드·목록 모두 |
 | A·C | 두 칸을 읽지 않는다(A 알약·C 타일). A·C 편집 화면에서 숨기고 저장 검증이 거절하는 것은 어드민 숨김과 함께 나가야 해 별도 PR이다 |
 | 판 | 기본값을 바꾸지 않았다 — `DEFAULTS_VERSION`·`REFRESHED_SINCE` 그대로 |
-| 공개 반영 막음 | Admin `SITE_RENDERS_SITE_CONFIG`는 ③-2d까지 닫아 둔다 — 그 전에 열면 사이트가 아직 그리지 않는 칸(첫 화면 배치 등)을 공개할 수 있고, 다음 사이트 배포가 재공개 없이 화면을 바꾼다 |
+| 공개 반영 막음 | Admin `SITE_RENDERS_SITE_CONFIG`는 **`REFRESHED_SINCE`의 모든 칸을 사이트가 그리거나, 어드민에서 숨기고 서버가 거절할 때까지** 닫아 둔다. ③-2a~d가 다루는 칸은 `hero`·`treatments`·`doctor`·`sections.*`뿐이라 ③-2d 뒤에도 `care_principles.use_default_cards`·`visit`·`faq.merge_questions`·`region_tags`·`nav.section_index`·`type`·`article`, 그리고 `hero.line_breaks`·`doctor.show_philosophy`가 남는다. 그 전에 열면 사이트가 아직 그리지 않는 칸을 공개할 수 있고, 다음 사이트 배포가 재공개 없이 화면을 바꾼다 |
+
+## 16. ③-2b 의료진 사진 비율·초점, 직함 위치(2026-11-21, 브랜치 `claude/site-config-3c2b-doctor`)
+
+| 항목 | 정한 것 |
+|---|---|
+| 범위 | A·B·C 모두. `doctor.photo_ratio`·`photo_focus`·`title_position`. 진료 철학(`show_philosophy`)은 뒤로 미룬다(공개 응답에 검수된 철학 문장이 있는지 먼저 확인 — 없으면 숨기고 거절) |
+| 기본값 = 지금 마크업 | 레이아웃의 지금 비율(A 가로·B·C 세로)과 같은 비율, 가운데 초점, 직함 위는 '바꾼 것이 아니다' — 사진 상자에 아무 스타일도 더하지 않는다 |
+| 비율 | 바꾼 비율만 사진 상자에 `aspect-ratio`로 준다: 세로 4:5(B와 같음), 정사각 1:1, 가로 4:3. 상자 너비 규칙(레이아웃별 최대 폭)은 그대로다. **사진이 있을 때만** — 사진이 없거나 못 불러오면 지금의 이름 첫 글자 타일 모양 그대로(`ClinicAvatar look`) |
+| 초점 | 가운데가 아니면 사진의 `object-position`(x%·y%). 0~1 밖·형식이 틀린 값은 버린다 |
+| 직함 위치 | '아래'면 직함(`physician.title`)을 이름 바로 아래에 둔다(B `clinic-curator-eyebrow--below`, A·C `[data-role=eyebrow][data-position=below]`). 직함이 없을 때의 역할 라벨은 원래부터 이름 아래다 |
+| 판 | 기본값을 바꾸지 않았다 — `DEFAULTS_VERSION`·`REFRESHED_SINCE` 그대로 |
