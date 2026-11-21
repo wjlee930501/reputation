@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { joinedText, lineBreakMap, lineBreakOffsets, lineBreakPieces } from './clinic-line-breaks.ts'
+import { joinedText, lineBreakMap, lineBreakOffsets, lineBreakPieces, partStarts } from './clinic-line-breaks.ts'
 
 const SOURCE = '365서귀포삼성정형외과 제주 서귀포 정형외과 전문의 진료'
 
@@ -79,4 +79,18 @@ test('a part that continues the previous line draws the break at its start', () 
     { kind: 'text', text: '가운데 줄' },
   ])
   assert.deepEqual(lineBreakPieces('가운데 줄', 4, map), [{ kind: 'text', text: '가운데 줄' }])
+})
+
+test('a part that joins to nothing takes no place in the joined text', () => {
+  assert.deepEqual(partStarts(['앞', '\u0085', '가나다라']), [
+    { text: '앞', start: 0 },
+    { text: '', start: 2 },
+    { text: '가나다라', start: 2 },
+  ])
+  const map = lineBreakMap('앞\n\u0085\n가나다라', { pc: '앞 가나다\n라' })
+  assert.deepEqual(lineBreakPieces('가나다라', 2, map), [
+    { kind: 'text', text: '가나다' },
+    { kind: 'br', device: 'pc' },
+    { kind: 'text', text: '라' },
+  ])
 })

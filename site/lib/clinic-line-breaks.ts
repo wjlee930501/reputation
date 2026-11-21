@@ -106,7 +106,8 @@ export function partStarts(parts: readonly string[]): Array<{ text: string; star
   return parts.map((part) => {
     const text = joinedText(part)
     const entry = { text, start }
-    start += text.length + 1
+    // 이으면 비는 조각(공백뿐)은 이은 글에 자리를 차지하지 않는다 — 구분 공백도 더하지 않는다.
+    if (text) start += text.length + 1
     return entry
   })
 }
