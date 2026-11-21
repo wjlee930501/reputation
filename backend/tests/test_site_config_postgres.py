@@ -519,6 +519,27 @@ async def test_share_candidates_follow_the_share_image_rule(db, client, monkeypa
     ]
 
 
+async def test_editor_gets_the_hospital_care_principles_title_the_site_draws(db, client):
+    hospital_id = await _hospital(db, layout="B")
+    empty = (await client.get(_base(hospital_id), headers=ADMIN)).json()
+    assert empty["hospital_section_titles"] == {"care_principles": None}
+    await db.execute(
+        text("UPDATE hospitals SET care_principles = CAST(:value AS jsonb) WHERE id = :id"),
+        {"id": hospital_id, "value": '{"title": "아픈 원인부터 확인합니다", "lede": null, "cards": []}'},
+    )
+    await db.commit()
+    body = (await client.get(_base(hospital_id), headers=ADMIN)).json()
+    assert body["hospital_section_titles"] == {"care_principles": "아픈 원인부터 확인합니다"}
+    # 공개 화면처럼 금지 표현이 든 제목은 비운다(화면은 기본 제목을 그린다).
+    await db.execute(
+        text("UPDATE hospitals SET care_principles = CAST(:value AS jsonb) WHERE id = :id"),
+        {"id": hospital_id, "value": '{"title": "완치를 보장합니다", "lede": "설명", "cards": []}'},
+    )
+    await db.commit()
+    body = (await client.get(_base(hospital_id), headers=ADMIN)).json()
+    assert body["hospital_section_titles"] == {"care_principles": None}
+
+
 async def test_restoring_an_old_version_drops_fields_the_site_does_not_render(db, client, monkeypatch):
     """옛 공개 판에 지금은 거절하는 칸(FIELD_NOT_RENDERED)이 있어도 복원된다 — 그 칸은 기본값으로 돌아간다."""
 

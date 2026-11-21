@@ -96,6 +96,8 @@ export interface SiteConfigState {
   history: SiteConfigHistoryEntry[]
   warnings: SiteConfigIssue[]
   preview_enabled: boolean
+  /** 설정이 기본 제목일 때 화면이 대신 그리는 병원 정보의 제목(진료 원칙). */
+  hospital_section_titles: Partial<Record<SectionId, string>>
 }
 
 // --- 서버와 같은 섹션 규칙(`site_defaults.py`) ---
@@ -535,7 +537,30 @@ export function readSiteConfigState(value: unknown): SiteConfigState | null {
     history,
     warnings: readIssues(value.warnings),
     preview_enabled: value.preview_enabled === true,
+    hospital_section_titles: readHospitalSectionTitles(value.hospital_section_titles),
   }
+}
+
+function readHospitalSectionTitles(value: unknown): Partial<Record<SectionId, string>> {
+  if (!isRecord(value)) return {}
+  const out: Partial<Record<SectionId, string>> = {}
+  for (const [id, title] of Object.entries(value)) {
+    if (typeof title === 'string' && title.trim()) out[id as SectionId] = title
+  }
+  return out
+}
+
+/**
+ * 화면에 보이는 섹션 제목 — 바꾼 제목이 있으면 그 제목, 기본 제목이면 병원 정보의 제목(진료 원칙)이 있을 때 그 제목.
+ * 저장 비교 기준(레이아웃 기본 제목)은 바꾸지 않는다 — 병원 제목이 덮어쓰기로 저장되지 않게.
+ */
+export function shownSectionTitle(
+  section: Pick<SiteSection, 'id' | 'title'>,
+  defaultTitle: string | null,
+  hospitalTitles: Partial<Record<SectionId, string>>,
+): string | null {
+  if (section.title && section.title !== defaultTitle) return section.title
+  return hospitalTitles[section.id] ?? defaultTitle ?? section.title ?? null
 }
 
 export type SiteConfigFailure =

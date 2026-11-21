@@ -15,6 +15,7 @@ import {
   LINE_BREAK_PATHS,
   lineBreakPathShown,
   issuesFor,
+  shownSectionTitle,
   type SectionId,
   type SiteSection,
 } from '@/lib/site-config'
@@ -119,6 +120,8 @@ export default function SiteLayoutEditorPage() {
   }
 
   const defaults = state.defaults[working.layout]
+  const defaultTitleOf = (id: SectionId) => defaults.sections.find((section) => section.id === id)?.title ?? null
+  const hospitalTitles = state.hospital_section_titles
   const overrides = buildOverrides(working.resolved, defaults, working.layout)
   const bOnly = showsBOnlyFields(working.layout)
   const live = isPubliclyServing(hospital)
@@ -272,6 +275,7 @@ export default function SiteLayoutEditorPage() {
             onSelect={setSelected}
             onChange={setSections}
             issueCount={(id) => issuesFor(issues, overrides, id).length}
+            titleOf={(section) => shownSectionTitle(section, defaultTitleOf(section.id), hospitalTitles)}
             disabled={locked}
           />
         </Card>
@@ -281,7 +285,8 @@ export default function SiteLayoutEditorPage() {
             <div className="space-y-6">
               <SectionSettings
                 section={current}
-                defaultTitle={defaults.sections.find((section) => section.id === current.id)?.title ?? null}
+                defaultTitle={defaultTitleOf(current.id)}
+                placeholderTitle={shownSectionTitle({ id: current.id, title: null }, defaultTitleOf(current.id), hospitalTitles)}
                 issues={issuesFor(issues, overrides, current.id)}
                 onChange={(next) => setSections(sections.map((section) => (section.id === next.id ? next : section)))}
                 disabled={locked}
