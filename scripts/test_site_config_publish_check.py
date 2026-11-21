@@ -97,13 +97,13 @@ def test_snapshot_reads_structure_from_both_hosts_and_only_gets():
     page = snap["pages"]["clinic.test/"]
     assert page["h1"] == ["병원 제목"]
     assert page["sections"] == [
-        {"id": "top", "look": {}, "text": "병원 제목 오늘 진료 09:00"},
+        {"id": "top", "look": {}, "text": "병원 제목 오늘 진료 09:00 ↵"},
         {"id": "treatments", "title": "진료 영역", "look": {"data-look-align": "start"}, "text": "진료 영역 안내 문구"},
         {"label": "안쪽", "title": "안쪽 제목", "look": {}, "text": "안쪽 제목"},
-        {"id": "faq", "title": "자주 묻는 질문", "look": {}, "text": "자주 묻는 질문 첫 질문? 답 둘째 질문? 답"},
+        {"id": "faq", "title": "자주 묻는 질문", "look": {}, "text": "자주 묻는 질문 Q첫 질문? 답 Q둘째 질문? 답"},
     ]
     assert page["faq_screen"] == page["faqpage"] == ["첫 질문?", "둘째 질문?"]
-    assert page["outside"] == "진료 영역 전화 바닥글 & 안내"
+    assert page["outside"] == "진료 영역전화 바닥글 & 안내"
     assert page["nav"] == ["진료 영역 → /treatments", "전화 → tel:0212345678"]
     assert page["meta"] == {"description": "설명", "og:title": "병원"}
     assert page["jsonld_types"] == {"Answer": 2, "FAQPage": 1, "Question": 2}
@@ -154,7 +154,7 @@ def test_compare_warns_when_snapshots_are_from_different_days(tmp_path, capsys):
     (tmp_path / "a.json").write_text(json.dumps(before), encoding="utf-8")
     (tmp_path / "b.json").write_text(json.dumps(after), encoding="utf-8")
     assert check.main(["compare", str(tmp_path / "a.json"), str(tmp_path / "b.json")]) == 0
-    assert "날짜(한국 시간)가 다릅니다" in capsys.readouterr().out
+    assert "날짜(한국 시간)나 화면을 만든 요일이 다릅니다" in capsys.readouterr().out
 
 
 def test_broken_jsonld_is_an_issue():
@@ -269,3 +269,38 @@ def test_wait_ignores_a_success_that_arrives_after_the_deadline():
         clock=lambda: now[0],
     )
     assert result == 1
+
+
+def test_hidden_label_doctor_photo_style_plain_breaks_and_title_spaces_are_compared():
+    base = """<html><body><section id="doctor" data-look-align="start"><span aria-hidden="true">{label}</span>
+<h2><span>내과,</span>{space}<strong>방문 전에{br}확인하세요</strong></h2>
+<div style="aspect-ratio:{ratio}"><img alt="원장" style="object-position:{focus}"></div></section></body></html>"""
+
+    def page(label="DOCTOR", space=" ", br="", ratio="4/5", focus="50% 50%"):
+        return check.page_snapshot(200, {}, base.format(label=label, space=space, br=br, ratio=ratio, focus=focus))
+
+    original = page()
+    assert original["h2"] == ["내과, 방문 전에확인하세요"]
+    for changed in (page(label=""), page(br="<br>"), page(ratio="1/1"), page(focus="50% 20%")):
+        assert changed["sections"] != original["sections"]
+    assert check.visible_text(base.format(label="DOCTOR", space=" ", br="<br>", ratio="1", focus="0")).count("DOCTOR") == 0
+
+
+def test_rendered_day_comes_from_the_page():
+    b_payload = 'self.__next_f.push([1,"{\\"renderedTodayKey\\":\\"sat\\"}"])'
+    assert check.rendered_days(f"<script>{b_payload}</script>") == ["sat"]
+    assert check.rendered_days("<p>오늘(<!-- -->토<!-- -->) 09:00</p>") == ["sat"]
+    assert check.rendered_days("<p>11<!-- -->월 <!-- -->21<!-- -->일 (<!-- -->토<!-- -->)</p>") == ["sat"]
+    snap = {"pages": {"x/": {"rendered_day": ["fri"]}}}
+    assert check.day_warnings(snap, today="sat") and not check.day_warnings(snap, today="fri")
+
+
+def test_connection_errors_are_a_status_not_a_crash(monkeypatch):
+    import urllib.error
+    import urllib.request
+
+    def boom(*args, **kwargs):
+        raise urllib.error.URLError("down")
+
+    monkeypatch.setattr(urllib.request, "urlopen", boom)
+    assert check.http_get("https://x.test/") == (0, {}, "")

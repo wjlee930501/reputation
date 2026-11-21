@@ -59,6 +59,8 @@ def http_get(url: str, timeout: float = 30.0) -> tuple[int, dict[str, str], str]
     except urllib.error.HTTPError as error:
         body = error.read().decode("utf-8", "replace") if error.fp else ""
         return error.code, {k.lower(): v for k, v in (error.headers or {}).items()}, body
+    except (urllib.error.URLError, TimeoutError, OSError):
+        return 0, {}, ""  # 연결 실패 — 호출하는 쪽이 '아직'(wait) 또는 확인 필요(snapshot)로 본다.
 
 
 def _text(value: str) -> str:
@@ -67,6 +69,14 @@ def _text(value: str) -> str:
 
 VOID_TAGS = frozenset({"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"})
 SKIP_TEXT_TAGS = frozenset({"script", "style", "template", "noscript"})
+# 글 사이에 공백을 넣지 않는 태그. 나머지(블록) 태그의 경계에는 공백을 둔다 — React가 글 조각 사이에 넣는 `<!-- -->`나
+# 조각 사이의 `{' '}`를 그대로 살리고, '11월 21일'을 '11 월 21 일'로 쪼개지 않게.
+INLINE_TAGS = frozenset(
+    {"a", "abbr", "b", "bdi", "cite", "code", "em", "i", "kbd", "mark", "q", "s", "small", "span", "strong", "sub", "sup", "time", "u"}
+)
+WEEKDAY_KEYS = {"월": "mon", "화": "tue", "수": "wed", "목": "thu", "금": "fri", "토": "sat", "일": "sun"}
+_RENDERED_KEY = re.compile(r'renderedTodayKey\\?"\s*:\s*\\?"(mon|tue|wed|thu|fri|sat|sun)')
+_RENDERED_LABEL = re.compile(r"(?:\d{1,2}월 ?\d{1,2}일|오늘) ?\(([월화수목금토일])\)")
 # 모양을 정하는 속성(섹션 정렬·배경·첫 화면 모양·사진 초점 등). 클래스는 레이아웃 CSS 모듈 이름이 섞여도 배포 사이에만 바뀐다.
 LOOK_ATTRS = ("class", "style")
 
@@ -117,12 +127,19 @@ class PageParser(HTMLParser):
     def _in_faq(self) -> bool:
         return any(section is not None and section.get("id") == "faq" for _, _, section in self._stack)
 
-    def _emit(self, text: str) -> None:
-        if self._hidden() or any(name in SKIP_TEXT_TAGS for name, _, _ in self._stack):
+    def _emit(self, text: str, *, marker: bool = False) -> None:
+        """섹션 글에는 숨긴 글(영문 소제목 등 aria-hidden)과 표지도 넣고, 보이는 글(wait)에는 보이는 글만 넣는다."""
+
+        if any(name in SKIP_TEXT_TAGS for name, _, _ in self._stack):
             return
         section = self._section()
         (section["_text"] if section is not None else self.outside).append(text)
-        self.visible.append(text)
+        if not self._hidden():
+            self.visible.append(" " if marker else text)
+
+    def _boundary(self, tag: str) -> None:
+        if tag not in INLINE_TAGS:
+            self._emit(" ", marker=True)
 
     # --- HTMLParser ---
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
@@ -130,6 +147,9 @@ class PageParser(HTMLParser):
         if tag in VOID_TAGS:
             self._void(tag, attr)
             return
+        self._boundary(tag)
+        if attr.get("style") and tag != "section":
+            self._emit(f" [style:{attr['style']}] ", marker=True)
         hidden = attr.get("aria-hidden") == "true" or "hidden" in attr
         section = None
         if tag == "section":
@@ -154,14 +174,18 @@ class PageParser(HTMLParser):
                 self.meta[key] = attr.get("content", "")
         elif tag == "link" and attr.get("rel") == "canonical":
             self.canonical = attr.get("href")
-        elif tag == "br" and attr.get("class"):
-            self._emit(f"↵{attr['class']}")
+        elif tag == "br":
+            self._emit(f" ↵{attr.get('class', '')} ", marker=True)
+            if self._capture is not None:
+                self._capture[1].append(" ")
         elif tag == "img":
-            self._emit(f"[이미지:{attr.get('alt', '')}]")
+            style = f" style:{attr['style']}" if attr.get("style") else ""
+            self._emit(f" [이미지:{attr.get('alt', '')}{style}] ", marker=True)
 
     def handle_endtag(self, tag: str) -> None:
         if not any(name == tag for name, _, _ in self._stack):
             return  # 짝 없는 닫는 태그
+        self._boundary(tag)
         if tag == "script" and self._jsonld is not None:
             self.jsonld_raw.append("".join(self._jsonld))
             self._jsonld = None
@@ -190,8 +214,6 @@ class PageParser(HTMLParser):
         if self._jsonld is not None:
             self._jsonld.append(data)
             return
-        if not data.strip():
-            return
         self._emit(data)
         if self._hidden():
             return
@@ -205,7 +227,21 @@ def visible_text(body: str) -> str:
     parser = PageParser()
     parser.feed(body)
     parser.close()
-    return _text(" ".join(parser.visible))
+    return _text("".join(parser.visible))
+
+
+def _compact(text: str) -> str:
+    """공백을 모두 뺀 글 — 줄바꿈(<br>) 자리가 단어 중간이든 공백 자리든 같은 글로 찾게."""
+
+    return "".join(text.split())
+
+
+def rendered_days(body: str) -> list[str]:
+    """화면을 만든 날의 요일(B는 RSC 데이터의 `renderedTodayKey`, A·C는 '오늘(토)'·'11월 21일 (토)')."""
+
+    keys = set(_RENDERED_KEY.findall(body))
+    keys |= {WEEKDAY_KEYS[day] for day in _RENDERED_LABEL.findall(visible_text(body))}
+    return sorted(keys)
 
 
 def _jsonld_items(raw_blocks: list[str]) -> list[Any]:
@@ -265,18 +301,19 @@ def page_snapshot(status: int, headers: dict[str, str], body: str) -> dict[str, 
         "sections": [
             {
                 **{key: value for key, value in section.items() if value is not None and not key.startswith("_")},
-                "text": _text(" ".join(section["_text"])),
+                "text": _text("".join(section["_text"])),
             }
             for section in parser.sections
         ],
         "looks": parser.looks,
-        "outside": _text(" ".join(parser.outside)),
+        "outside": _text("".join(parser.outside)),
         "h2": parser.h2,
         "faq_screen": parser.faq_screen,
         "faqpage": _faqpage_questions(items),
         "jsonld_invalid": sum(1 for item in items if isinstance(item, dict) and "@invalid" in item),
         "nav": parser.nav,
         "meta": parser.meta,
+        "rendered_day": rendered_days(body) if status == 200 else [],
         "jsonld_types": dict(sorted(counter.items())),
         "jsonld_sha256": hashlib.sha256(canonical_jsonld.encode()).hexdigest(),
     }
@@ -321,6 +358,21 @@ def fresh_fetch(
 
 def _seoul_date() -> str:
     return datetime.now(timezone.utc).astimezone(SEOUL).date().isoformat()
+
+
+def _seoul_weekday() -> str:
+    return ("mon", "tue", "wed", "thu", "fri", "sat", "sun")[datetime.now(timezone.utc).astimezone(SEOUL).weekday()]
+
+
+def day_warnings(snap: dict[str, Any], today: str | None = None) -> list[str]:
+    """어제(다른 날) 만든 화면이 섞였는지 — 자정 직후엔 전날 만든 화면도 30분 동안 캐시(HIT)로 나온다."""
+
+    today = today or _seoul_weekday()
+    return [
+        f"{key}: 다른 날({','.join(page['rendered_day'])}) 만든 화면입니다 — 30분 뒤 다시 찍으세요."
+        for key, page in snap["pages"].items()
+        if page.get("rendered_day") and today not in page["rendered_day"]
+    ]
 
 
 def _api_hospital(status: int, body: str) -> dict[str, Any] | None:
@@ -420,7 +472,7 @@ def differences(before: dict[str, Any], after: dict[str, Any]) -> tuple[list[str
     for key in sorted(set(left) | set(right)):
         if left.get(key) == right.get(key):
             continue
-        informational = key in INFO_KEYS or key.endswith(".headers") or key == "issues"
+        informational = key in INFO_KEYS or key.endswith((".headers", ".rendered_day")) or key == "issues"
         line = f"{key}:\n  전: {json.dumps(left.get(key), ensure_ascii=False)}\n  후: {json.dumps(right.get(key), ensure_ascii=False)}"
         (notes if informational else diffs).append(line)
     return diffs, notes
@@ -449,6 +501,7 @@ def wait_for(
     deadline = started + timeout
     hosts: list[str] | None = None
     wanted = _text(text) if text is not None else None
+    wanted_compact = _compact(wanted) if wanted else None
     while True:
         if hosts is None:
             status, _, body = fetch(f"{api}/hospitals/{slug}")
@@ -466,7 +519,7 @@ def wait_for(
             status, headers, body = fetch(f"https://{hosts[0]}/")
             if clock() > deadline:
                 break
-            if status == 200 and wanted in visible_text(body):
+            if status == 200 and wanted_compact and wanted_compact in _compact(visible_text(body)):
                 print(
                     f"[{clock() - started:5.0f}초] {hosts[0]}/ 화면에 '{wanted}'가 보입니다"
                     f" (x-nextjs-cache={headers.get('x-nextjs-cache')})."
@@ -511,6 +564,8 @@ def main(argv: list[str] | None = None) -> int:
             print(rendered)
         for line in result["issues"]:
             print(f"확인 필요: {line}", file=sys.stderr)
+        for line in day_warnings(result):
+            print(f"주의: {line}", file=sys.stderr)
         print(
             f"공개 판 {result['api']['site_config_version'] or '없음'} · 레이아웃 {result['api']['site_layout'] or '없음'}"
             f" · 페이지 {len(result['pages'])}개 · 확인 필요 {len(result['issues'])}건",
@@ -523,9 +578,14 @@ def main(argv: list[str] | None = None) -> int:
         with open(args.after, encoding="utf-8") as handle:
             after = json.load(handle)
         diffs, notes = differences(before, after)
-        if before.get("seoul_date") != after.get("seoul_date"):
+        days = {key: page.get("rendered_day") for key, page in before.get("pages", {}).items()}
+        day_changed = any(
+            days.get(key) not in (None, [], page.get("rendered_day")) and page.get("rendered_day")
+            for key, page in after.get("pages", {}).items()
+        )
+        if before.get("seoul_date") != after.get("seoul_date") or day_changed:
             print(
-                "[주의] 두 스냅샷의 날짜(한국 시간)가 다릅니다 — '오늘' 칸(오늘 진료시간·요일·전화 버튼 글)의 차이는"
+                "[주의] 두 스냅샷의 날짜(한국 시간)나 화면을 만든 요일이 다릅니다 — '오늘' 칸(오늘 진료시간·요일·전화 버튼 글)의 차이는"
                 " 설정과 무관할 수 있습니다. 같은 날 다시 찍어 비교하세요."
             )
         for line in notes:
