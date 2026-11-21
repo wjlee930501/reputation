@@ -78,6 +78,7 @@ from app.models.sov import (
 from app.services import (
     cost_guard,
     indexnow,
+    measurement_set,
     mention_identity,
     notifier,
     openrouter_key_limit,
@@ -10594,8 +10595,10 @@ def _prefetch_monthly_answers(
         )
         db.commit()
 
-    async def _one(item: _PrefetchClaim, gate: asyncio.Semaphore) -> bool:
-        async with gate:
+    async def _one(item: _PrefetchClaim, gates: Mapping[str, asyncio.Semaphore]) -> bool:
+        # Gemini는 공급자 풀이 프로세스당 1개라(`sov_engine._pool_limit`) 우리 대기열도 1개로 맞춘다 — 그래야
+        # 이 대기열을 통과한 바로 그때가 실제 호출 직전이고, 아래 마감 재확인이 공급자 대기열 뒤에 숨지 않는다.
+        async with gates["gemini" if item.platform == "gemini" else "default"]:
             if _deadline_reached(deadline, arrow.now().datetime):
                 # 마감 뒤 새 유료 단계는 사지 않는다 — 예약은 정상 정산하고 시도는 되돌린다.
                 item.state = "SETTLING_ZERO"
@@ -10653,8 +10656,8 @@ def _prefetch_monthly_answers(
             return checkpointed.answer_status == "RECEIVED"
 
     async def _fetch_all() -> list[bool]:
-        gate = asyncio.Semaphore(concurrency)
-        tasks_in_flight.extend(asyncio.ensure_future(_one(item, gate)) for item in claims)
+        gates = {"default": asyncio.Semaphore(concurrency), "gemini": asyncio.Semaphore(1)}
+        tasks_in_flight.extend(asyncio.ensure_future(_one(item, gates)) for item in claims)
         # 첫 예외(DB 오류·soft limit)는 곧바로 올린다 — 남은 호출은 호출부가 취소한다.
         return list(await asyncio.gather(*tasks_in_flight))
 
@@ -11105,10 +11108,15 @@ def _ensure_variant_query_matrix(db, hospital: Hospital, variant: AIQueryVariant
     # variant 질문은 템플릿을 거치지 않고 들어오므로 유형을 텍스트에서 되짚는다.
     # 여기서 빠뜨리면 AE가 등록한 정보성 질문("무릎 통증 초기 증상")이 LOCAL로 들어가
     # 언급률 분모를 다시 희석한다 — 분모 분리가 조용히 무력화되는 지점이다.
+    # 30개 세트 질문은 저장된 그룹이 의도를 정한다(A=BRAND) — 어드민 노출 추이처럼 QueryMatrix 의도를 읽는
+    # 곳에서도 병원명 질문이 대표 노출률(LOCAL)에 섞이지 않게.
     query = QueryMatrix(
         hospital_id=hospital.id,
         query_text=variant.query_text,
-        query_intent=classify_query_intent(variant.query_text),
+        query_intent=(
+            measurement_set.set_measurement_intent(getattr(variant, "query_target", None))
+            or classify_query_intent(variant.query_text)
+        ),
         priority="HIGH",
     )
     db.add(query)

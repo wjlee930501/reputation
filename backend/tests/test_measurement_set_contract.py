@@ -693,3 +693,61 @@ def test_prefetch_db_error_rolls_back_at_once_and_leaves_no_task_behind(monkeypa
     assert [task for task in asyncio.all_tasks(loop) if not task.done()] == []
     # 끝내지 못한 칸은 claim을 돌려받는다.
     assert events.released
+
+
+def test_prefetch_serializes_gemini_like_the_provider_pool(monkeypatch):
+    """Gemini는 프로세스당 1개 — 우리 대기열을 지나면 곧바로 호출이라 07:00 재확인이 공급자 대기열 뒤에 숨지 않는다."""
+
+    import asyncio
+
+    tasks, events, _ = _prefetch_shell(monkeypatch)
+    in_flight = SimpleNamespace(gemini=0, peak=0)
+
+    async def fetch(query_text, platform, **_kw):
+        if platform == "gemini":
+            in_flight.gemini += 1
+            in_flight.peak = max(in_flight.peak, in_flight.gemini)
+        await asyncio.sleep(0.01)
+        if platform == "gemini":
+            in_flight.gemini -= 1
+        return {"measurement_status": "SUCCESS", "raw_response": "답", "provider_calls": 1}
+
+    def claim(_db, slot_id, *, stage, deadline):
+        events.claims.append(slot_id)
+        return SimpleNamespace(
+            id=slot_id, platform="gemini", scope="MONTHLY", measurement_run_id=uuid.uuid4(),
+            answer_attempt_count=1,
+        ), uuid.uuid4()
+
+    monkeypatch.setattr(tasks, "fetch_answer", fetch)
+    monkeypatch.setattr(tasks, "claim_slot_stage", claim)
+
+    assert _run_prefetch(tasks, {uuid.uuid4(): [_slot(), _slot(), _slot()]}, concurrency=6) == 3
+    assert in_flight.peak == 1
+
+
+def test_new_query_matrix_for_a_brand_target_is_stored_as_brand():
+    from app.workers import tasks
+
+    class _DB:
+        def __init__(self):
+            self.added = []
+
+        def get(self, *_a):
+            return None
+
+        def add(self, row):
+            self.added.append(row)
+
+        def flush(self):
+            self.added[-1].id = uuid.uuid4()
+
+    db = _DB()
+    target = _target("행복의원 어때?", group="A", role="FIXED")
+    variant = target.variants[0]
+    variant.query_matrix_id = None
+    variant.query_target = target
+
+    query = tasks._ensure_variant_query_matrix(db, SimpleNamespace(id=uuid.uuid4()), variant)
+
+    assert query.query_intent == "BRAND"
