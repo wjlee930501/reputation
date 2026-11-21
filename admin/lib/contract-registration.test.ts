@@ -102,3 +102,10 @@ test('each failure code gets its own line naming what to fix', () => {
   assert.match(registrationFailure({ code: 'NOPE' }).message, /계약 정보를 확인/)
   assert.match(registrationFailure(undefined).message, /계약 정보를 확인/)
 })
+
+test('계약 시작일 안내는 실제 시작일(준비 뒤, 입력일과 다음 날 중 늦은 날) 기준으로 말한다', async () => {
+  const { CONTRACT_START_COPY } = await import('./contract-registration.ts')
+  assert.match(CONTRACT_START_COPY.hint, /늦은 날/)
+  assert.match(CONTRACT_START_COPY.hint, /실제 시작일/)
+  assert.doesNotMatch(CONTRACT_START_COPY.hint, /비우면 오늘/)
+})

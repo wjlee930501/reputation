@@ -30,7 +30,9 @@ export type ContractRegistrationPayload = {
 
 export const CONTRACT_START_COPY = {
   label: '계약 시작일(첫 발행 기준)',
-  hint: '첫 발행 일정이 이 날짜부터 시작합니다(이미 지난 날이면 내일부터). 시작 달 편수는 이 날짜 뒤에 남은 발행 요일만큼 나눕니다. 비우면 오늘입니다.',
+  // 첫 일정은 운영 기준 적용 등 준비가 끝난 뒤 만들어진다 — 시작일은 이 날짜와 일정이 만들어진 다음 날 중
+  // 늦은 날이고, 시작 달 편수는 그 실제 시작일로 나눈다(`initial_schedule.initial_schedule_terms`).
+  hint: '첫 발행 일정은 준비가 끝난 뒤 이 날짜와 그다음 날 중 늦은 날부터 시작합니다. 시작 달 편수는 실제 시작일 뒤에 남은 발행 요일만큼 나눕니다. 비우면 등록한 날입니다.',
   invalid: '계약 시작일을 날짜로 입력해 주세요.',
 } as const
 
