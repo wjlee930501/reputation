@@ -246,12 +246,25 @@ async def generate_reviewed_content(
                     continue
                 break
 
-            last_ai_review = await dependencies.review(
-                hospital=hospital,
-                philosophy=philosophy,
-                content=candidate,
-                content_brief=approved_brief,
-            )
+            try:
+                last_ai_review = await dependencies.review(
+                    hospital=hospital,
+                    philosophy=philosophy,
+                    content=candidate,
+                    content_brief=approved_brief,
+                )
+            except Exception as exc:
+                if soft_fallback is None:
+                    raise
+                # 선택적 보완 뒤 재검수가 예산·공급자 오류로 끝났다 — 보완 전 PASS 후보로 돌아간다.
+                logger.info(
+                    "Optional soft rewrite review failed; keeping the reviewed PASS candidate: "
+                    "hospital=%s error=%s",
+                    hospital.id,
+                    type(exc).__name__,
+                )
+                _restore_soft_fallback()
+                break
             if last_ai_review.blocking_findings and last_ai_review.candidate_sha256:
                 session_blocking_hashes.append(last_ai_review.candidate_sha256)
             if soft_fallback is not None and last_ai_review.status != ContentAiReviewStatus.PASS:

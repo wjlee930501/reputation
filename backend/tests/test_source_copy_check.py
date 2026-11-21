@@ -267,3 +267,22 @@ async def test_soft_rewrite_that_loses_pass_falls_back(
     assert screening.summary["ai_review"]["status"] == "PASS"
     assert "blocking" not in screening.summary
     assert screening.summary[SOURCE_COPY_SUMMARY_KEY]
+
+
+async def test_soft_rewrite_review_exception_keeps_the_pass_candidate(hospital: Hospital) -> None:
+    effects, context = _session(hospital, [COPIED, REWRITTEN])
+    first_review = ContentAiReview(ContentAiReviewStatus.PASS, 0.95, (), "ok", "m")
+    effects.review.side_effect = [first_review, RuntimeError("review budget exhausted")]
+    candidate, screening = await generate_reviewed_content(
+        **context, dependencies=effects, limits=LIMITS
+    )
+    assert candidate["body"] == COPIED["body"]
+    assert screening.summary["ai_review"]["status"] == "PASS"
+    assert "blocking" not in screening.summary
+
+
+async def test_first_review_exception_still_propagates(hospital: Hospital) -> None:
+    effects, context = _session(hospital, [COPIED])
+    effects.review.side_effect = RuntimeError("review down")
+    with pytest.raises(RuntimeError):
+        await generate_reviewed_content(**context, dependencies=effects, limits=LIMITS)
