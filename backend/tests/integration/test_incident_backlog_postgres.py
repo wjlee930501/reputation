@@ -312,6 +312,28 @@ def test_generation_incidents_without_evidence_do_not_starve_the_batch(db):
     assert all(_state(db, incident) == "RETRYING" for incident in stuck)
 
 
+def test_a_malformed_source_id_does_not_break_the_batch(db):
+    """SQL과 Python이 같은 UUID 모양만 글 id로 읽는다 — 잘못된 source_id가 배치를 오류로 멈추지 않는다."""
+
+    hospital = _hospital(db)
+    broken = _incident(db, "CONTENT_GENERATION_FAILED", hospital=hospital, source_id="not-a-uuid")
+    broken.dedupe_key = f"incident:v1:content_generation:content_item:{uuid.uuid4().hex}"
+    broken.state = "RETRYING"
+    cancelled = _generation_item(db, hospital, status=ContentStatus.CANCELLED)
+    target = _incident(
+        db, "CONTENT_GENERATION_FAILED", hospital=hospital, source_id=str(cancelled.id).upper(),
+        seen=NOW - timedelta(days=1),
+    )
+    target.state = "RETRYING"
+    db.flush()
+
+    close_resolved_backlog_incidents(db, now=NOW)
+
+    # 글 id로 읽을 수 없는 글 단위 사고는 다시 볼 글이 없다(사라진 글과 같다). 대문자 UUID는 같은 글이다.
+    assert _state(db, broken) == "ACKNOWLEDGED"
+    assert _state(db, target) == "ACKNOWLEDGED"
+
+
 def test_a_hospital_scoped_generation_hold_is_not_closed_for_lack_of_a_post(db):
     """운영 기준 없음 같은 병원 단위 생성 사고는 source_id가 병원 id다 — 글이 없다고 닫지 않는다."""
 

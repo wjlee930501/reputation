@@ -16,6 +16,7 @@ Slack 짝 계약: 그 사고의 '조치 필요'(INCIDENT_OPEN)가 outbox에 들�
 
 from __future__ import annotations
 
+import re
 import uuid
 from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
@@ -201,7 +202,19 @@ def _v0_report_created(db: Session, incident: Incident, _now: datetime) -> str |
     return "v0_report_created" if report is not None else None
 
 
+# 글 단위 사고의 source_id는 `str(item_id)`(하이픈 있는 표준 UUID)다. SQL(`_generation_evidence`)과
+# Python(`_source_item_id`)이 같은 모양만 글 id로 읽는다 — 하나라도 다르면 한쪽은 근거가 있다 하고 다른
+# 쪽은 없다 해 후보 상한을 근거 없는 사고가 다시 차지한다.
 _UUID_TEXT = "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+_UUID_PATTERN = re.compile(_UUID_TEXT, re.IGNORECASE)
+
+
+def _source_item_id(source_id: str | None) -> uuid.UUID | None:
+    """표준 UUID 모양의 source_id만 글 id로 읽는다. 다른 모양은 None(글을 찾지 않는다, 오류도 내지 않는다)."""
+
+    if not source_id or not _UUID_PATTERN.match(source_id):
+        return None
+    return uuid.UUID(source_id)
 
 # 글 단위 생성 사고의 식별 키 조각(`incidents.build_incident_key`: pipeline:object_type:…).
 _CONTENT_ITEM_GENERATION_KEY = ":content_generation:content_item:"
@@ -219,7 +232,8 @@ def _content_published(db: Session, incident: Incident, _now: datetime) -> str |
     여기서 닫히지 않는다.
     """
 
-    item = db.get(ContentItem, incident.source_id) if incident.source_id else None
+    item_id = _source_item_id(incident.source_id)
+    item = db.get(ContentItem, item_id) if item_id is not None else None
     if item is not None and item.first_published_at and item.first_published_at > incident.first_seen_at:
         return "content_published"
     # 이미지 재인증 사고는 사람이 정하는 공개 이미지 결정이라 취소·삭제로 닫지 않는다(대상 종류가 content_item이다).
