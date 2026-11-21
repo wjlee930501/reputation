@@ -795,6 +795,8 @@ def test_b_keeps_the_info_strip_blocks_and_treatment_style() -> None:
         ("A", {"sections": [{"id": "hours", "background": "white"}]}),
         ("C", {"sections": [{"id": "care_principles", "background": "tint"}]}),
         ("C", {"sections": [{"id": "news", "background": "band"}]}),
+        ("A", {"hero": {"line_breaks": {"care_principles.lede": {"pc": "LEDE", "mobile": None}}}}),
+        ("C", {"hero": {"line_breaks": {"care_principles.lede": {"pc": None, "mobile": "LEDE"}}}}),
     ],
 )
 def test_fields_the_site_does_not_render_are_rejected(layout: str, config: dict) -> None:
@@ -829,3 +831,16 @@ def test_strip_unrendered_keeps_rendered_fields_and_drops_the_rest() -> None:
     assert b["sections"] == [{"id": "section_index"}, {"id": "faq", "align": "center", "background": "tint"}]
     assert validate_site_config("B", b, _ctx()).ok
     assert old["doctor"]["show_philosophy"] is True  # 원본은 그대로
+
+
+def test_lede_line_breaks_are_b_only_and_stripped_from_a_c_on_restore() -> None:
+    lede = {"care_principles.lede": {"pc": "LEDE", "mobile": None}, "hero.headline": {"pc": "H", "mobile": None}}
+    errors = validate_site_config("A", {"hero": {"line_breaks": lede}}, _ctx()).errors
+    assert [e["path"] for e in errors if e["code"] == "FIELD_NOT_RENDERED"] == ["hero.line_breaks.care_principles.lede"]
+    assert "FIELD_NOT_RENDERED" not in _codes(validate_site_config("B", {"hero": {"line_breaks": lede}}, _ctx()))
+    # 두 기기 모두 비운 지정은 그리는 것이 없으니 통과.
+    empty = {"hero": {"line_breaks": {"care_principles.lede": {"pc": None, "mobile": ""}}}}
+    assert "FIELD_NOT_RENDERED" not in _codes(validate_site_config("C", empty, _ctx()))
+    stripped = strip_unrendered("C", {"hero": {"line_breaks": dict(lede)}})
+    assert stripped["hero"]["line_breaks"] == {"hero.headline": {"pc": "H", "mobile": None}}
+    assert strip_unrendered("B", {"hero": {"line_breaks": dict(lede)}})["hero"]["line_breaks"] == lede

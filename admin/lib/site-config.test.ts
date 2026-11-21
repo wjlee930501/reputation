@@ -7,6 +7,8 @@ import {
   UNTITLED_SECTIONS,
   BACKGROUND_FIXED,
   B_ONLY_FIELDS,
+  B_ONLY_LINE_BREAK_PATHS,
+  lineBreakPathShown,
   UNRENDERED_FIELDS,
   sectionLookShown,
   buildOverrides,
@@ -373,4 +375,25 @@ test('hidden fields never reach the save, but a stored draft holding them counts
 test('the shortcut menu cannot be turned on from the section list (the site does not draw it)', () => {
   assert.equal(canDisable(section('section_index')), false)
   assert.equal(canDisable(section('gallery')), true)
+})
+
+test('the lede line break is B-only: hidden on A·C, never saved there, and matches the backend list', () => {
+  assert.equal(lineBreakPathShown('B', 'care_principles.lede'), true)
+  assert.equal(lineBreakPathShown('A', 'care_principles.lede'), false)
+  assert.equal(lineBreakPathShown('C', 'care_principles.title'), true)
+  const base = clone(defaultsC())
+  const edited = clone(base)
+  ;(edited as Record<string, any>).hero = {
+    ...(edited as Record<string, any>).hero,
+    line_breaks: { 'care_principles.lede': { pc: 'a\nb', mobile: null }, 'hero.headline': { pc: 'h\ni', mobile: null } },
+  }
+  assert.deepEqual((buildOverrides(edited, base, 'C').hero as Record<string, any>).line_breaks, {
+    'hero.headline': { pc: 'h\ni', mobile: null },
+  })
+  ;(edited as Record<string, any>).hero.line_breaks = { 'care_principles.lede': { pc: 'a\nb', mobile: null } }
+  assert.equal(buildOverrides(edited, base, 'C').hero, undefined)
+  assert.ok(((buildOverrides(edited, base, 'C', true).hero as Record<string, any>).line_breaks as object))
+  const source = readFileSync(new URL('../../backend/app/services/site_config_validation.py', import.meta.url), 'utf8')
+  const line = source.match(/_B_ONLY_LINE_BREAKS[^=]*= frozenset\(\{([^}]*)\}\)/)?.[1] ?? ''
+  assert.deepEqual([...line.matchAll(/"([a-z_.]+)"/g)].map((m) => m[1]).sort(), [...B_ONLY_LINE_BREAK_PATHS].sort())
 })

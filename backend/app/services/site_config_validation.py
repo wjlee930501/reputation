@@ -245,6 +245,15 @@ _BACKGROUND_FIXED: dict[str, frozenset[str]] = {
     "C": frozenset({"hero", "news", "hours", "care_principles", "care_flow"}),
 }
 
+# B에만 있는 글의 줄바꿈 — A·C는 진료 원칙 안내 문구(`care_principles.lede`)를 그리지 않는다(어드민 `B_ONLY_LINE_BREAK_PATHS`와 같다).
+_B_ONLY_LINE_BREAKS: frozenset[str] = frozenset({"care_principles.lede"})
+
+
+def _set_line_break(spec: Any) -> bool:
+    return isinstance(spec, dict) and any(
+        isinstance(spec.get(d), str) and spec.get(d).strip() for d in ("pc", "mobile")
+    )
+
 
 def strip_unrendered(layout: str, config: Any) -> Any:
     """옛 판 복원용 — 화면이 그리지 않는 칸(A·C의 B 전용 칸 포함)을 덮어쓰기에서 뺀다(그 칸은 기본값으로 돌아간다).
@@ -262,6 +271,11 @@ def strip_unrendered(layout: str, config: Any) -> Any:
             value.pop(key)
             if not value:
                 out.pop(group)
+    hero = out.get("hero")
+    breaks = hero.get("line_breaks") if isinstance(hero, dict) else None
+    if layout != "B" and isinstance(breaks, dict):
+        for path in _B_ONLY_LINE_BREAKS:
+            breaks.pop(path, None)
     sections = out.get("sections")
     if isinstance(sections, list):
         for section in sections:
@@ -287,6 +301,11 @@ def _check_unrendered(check: SiteConfigCheck, layout: str, stored: dict[str, Any
         value = (stored.get(group) or {}).get(key)
         if value is not None and value != base[group][key]:
             check.error(f"{group}.{key}", "FIELD_NOT_RENDERED", message)
+    breaks = (stored.get("hero") or {}).get("line_breaks") or {}
+    if layout != "B" and isinstance(breaks, dict):
+        for path in sorted(_B_ONLY_LINE_BREAKS):
+            if _set_line_break(breaks.get(path)):
+                check.error(f"hero.line_breaks.{path}", "FIELD_NOT_RENDERED", message)
     defaults_by_id = {section["id"]: section for section in base["sections"]}
     for index, section in enumerate(stored.get("sections") or []):
         section_id = section.get("id")

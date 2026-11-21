@@ -255,6 +255,14 @@ export const UNRENDERED_FIELDS: readonly (readonly [group: string, key: string])
   ['nav', 'section_index'],
 ]
 
+/** B에만 있는 글의 줄바꿈 — A·C는 진료 원칙 안내 문구를 그리지 않는다(서버 `_B_ONLY_LINE_BREAKS`와 같다). */
+export const B_ONLY_LINE_BREAK_PATHS: readonly string[] = ['care_principles.lede']
+
+/** 그 레이아웃 화면에 그려지는 글의 줄바꿈인지(편집기가 그 칸을 보이는지). */
+export function lineBreakPathShown(layout: SiteLayout | null | undefined, path: string): boolean {
+  return showsBOnlyFields(layout ?? null) || !B_ONLY_LINE_BREAK_PATHS.includes(path)
+}
+
 /** 정렬·영문 소제목·배경을 그릴 머리가 없는 섹션 — 그 섹션의 세 칸은 숨기고 싣지 않는다(바로가기는 켜기도). */
 export const HEADLESS_SECTIONS: ReadonlySet<SectionId> = new Set<SectionId>(['hero', 'section_index'])
 
@@ -311,6 +319,18 @@ export function buildOverrides(
     for (const [group, key] of B_ONLY_FIELDS) withoutKey(out, group, key)
   }
   for (const [group, key] of UNRENDERED_FIELDS) withoutKey(out, group, key)
+  const hero = out.hero
+  if (isRecord(hero) && isRecord(hero.line_breaks)) {
+    const kept = Object.fromEntries(Object.entries(hero.line_breaks).filter(([path]) => lineBreakPathShown(layout, path)))
+    if (Object.keys(kept).length === Object.keys(hero.line_breaks).length) return out
+    const defaultBreaks = isRecord(defaults.hero) && isRecord(defaults.hero.line_breaks) ? defaults.hero.line_breaks : {}
+    if (JSON.stringify(kept) !== JSON.stringify(defaultBreaks)) out.hero = { ...hero, line_breaks: kept }
+    else {
+      const rest = Object.fromEntries(Object.entries(hero).filter(([key]) => key !== 'line_breaks'))
+      if (Object.keys(rest).length) out.hero = rest
+      else delete out.hero
+    }
+  }
   return out
 }
 

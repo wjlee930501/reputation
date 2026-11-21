@@ -14,6 +14,7 @@ import {
   changeLabels,
   COPY_KEYS_BY_SECTION,
   LINE_BREAK_PATHS,
+  lineBreakPathShown,
   issuesFor,
   type SectionId,
   type SiteSection,
@@ -334,7 +335,7 @@ export default function SiteLayoutEditorPage() {
                 <Extra>
                   <CarePrinciplesSettings value={group('care_principles')} onChange={(next) => update({ care_principles: next })} disabled={locked} />
                   <LineBreaksSettings
-                    paths={LINE_BREAK_PATHS.filter((path) => path.startsWith('care_principles.'))}
+                    paths={LINE_BREAK_PATHS.filter((path) => path.startsWith('care_principles.') && lineBreakPathShown(working.layout, path))}
                     hospital={hospital}
                     lineBreaks={lineBreaks}
                     issues={[]}
