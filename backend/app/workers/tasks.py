@@ -87,6 +87,8 @@ from app.services import (
 from app.services import published_image_recertification as recertification
 from app.services.asset_extractor import evidence_text_is_acceptable
 from app.services.audit_log import write_audit_log_sync
+from app.services.brand_answer_accuracy import BrandFacts
+from app.services.brand_answer_accuracy import summarize as summarize_brand_answers
 from app.services.content_ai_review import (
     ContentAiReviewStatus,
     ContentAiReviewUnavailableReason,
@@ -10484,6 +10486,29 @@ def _frozen_manifest_identity(
     return _judgment_identity(hospital, hospital.name, None)
 
 
+def _brand_answer_accuracy(hospital: Hospital, loaded) -> dict[str, Any] | None:
+    """그 달 측정표의 병원명 질문(BRAND) 확정 답변으로 정확도 집계. 병원명 질문이 없으면 None."""
+
+    if loaded is None:
+        return None
+    answers = [
+        (str(record.report_query_text), str(getattr(record, "raw_response", "") or ""))
+        for record in loaded.scored_records
+        if str(record.report_query_intent).upper() == "BRAND"
+        and str(getattr(record, "raw_response", "") or "").strip()
+    ]
+    if not answers:
+        return None
+    facts = BrandFacts.from_hospital(
+        name=str(hospital.name or ""),
+        address=getattr(hospital, "address", None),
+        business_hours=getattr(hospital, "business_hours", None),
+        treatments=list(getattr(hospital, "treatments", None) or []),
+        keywords=list(getattr(hospital, "keywords", None) or []),
+    )
+    return summarize_brand_answers(facts, answers)
+
+
 def _frozen_protocol_kwargs(manifest: MonthlyMeasurementManifest | None) -> dict | None:
     """얼린 새벽 측정표의 추적 세트 기준. 이어 실행의 실행·슬롯 기준이 지금 질문 행으로 바뀌지 않게 한다.
 
@@ -13319,6 +13344,11 @@ def _build_monthly_report_for_hospital(
     judge_policy = month_judge_policy(db, manifest)
     if judge_policy is not None:
         monthly_sov_payload["judge_policy"] = dict(judge_policy)
+    # 병원명 질문(측정 키워드 그룹 A) 답변의 병원 정보 정확도 — 저장 답변을 지금 병원 정보와 결정적으로
+    # 맞춘다(모델 호출 없음, 설계 §5). 요약에 저장해 템플릿 갱신·AE 수정 판이 같은 값을 옮긴다.
+    brand_accuracy = _brand_answer_accuracy(h, current_loaded)
+    if brand_accuracy is not None:
+        monthly_sov_payload["brand_accuracy"] = brand_accuracy
     if manifest is None:
         # D38: 그 달 고정 측정이 없던 첫 달 — 측정 숫자 없이 '기준 설정' 보고서로 전달한다.
         # 측정한 AI 서비스가 없으므로 서비스별 집계 행도 없다(빈 목록은 합계 검증을 깨뜨린다).
