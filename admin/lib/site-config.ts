@@ -259,6 +259,18 @@ export const UNRENDERED_FIELDS: readonly (readonly [group: string, key: string])
   ['nav', 'section_index'],
 ]
 
+/**
+ * 병원 화면이 그리지 않는 안내 문구 칸(서버 `_UNRENDERED_COPY_KEYS`와 같다) — 편집기는 숨기고 저장에 싣지 않는다.
+ * 레이아웃에 없는 섹션의 문구도 싣지 않는다(서버 `_copy_section_in_layout`).
+ * 진료시간 '주말 진료 이름'은 A·C 진료시간 어디에도 그릴 자리가 정해지지 않았다.
+ */
+export const UNRENDERED_COPY_KEYS: readonly string[] = ['hours.weekend_label']
+
+/** 편집기가 보이는 섹션 안내 문구 칸. */
+export function shownCopyKeys(section: SectionId): readonly string[] {
+  return (COPY_KEYS_BY_SECTION[section] ?? []).filter((key) => !UNRENDERED_COPY_KEYS.includes(key))
+}
+
 /** B에만 있는 글의 줄바꿈 — A·C는 진료 원칙 안내 문구를 그리지 않는다(서버 `_B_ONLY_LINE_BREAKS`와 같다). */
 export const B_ONLY_LINE_BREAK_PATHS: readonly string[] = ['care_principles.lede']
 
@@ -300,6 +312,40 @@ function withoutKey(out: Record<string, unknown>, group: string, key: string): v
 }
 
 /**
+ * 첫 화면 사진 칸이 화면에 그려지는가 — '글자만' 배치는 사진을 그리지 않아 초점이 없고, 덮개는 '사진 위 글자'
+ * 배치에서만, 농도는 '사진 전체' 덮개에서만 그린다.
+ */
+export function veilShown(hero: unknown): { focus: boolean; extent: boolean; opacity: boolean } {
+  const group = isRecord(hero) ? hero : {}
+  const image = isRecord(group.image) ? group.image : {}
+  const veil = isRecord(image.veil) ? image.veil : {}
+  const overlay = group.arrangement === 'overlay'
+  return { focus: group.arrangement !== 'text', extent: overlay, opacity: overlay && veil.extent === 'full' }
+}
+
+/** 그려지지 않는 첫 화면 사진 칸(초점·덮개)을 기본값으로 되돌린 완성본(저장에 싣지 않게). */
+function withDrawnVeil(resolved: ResolvedSiteConfig, defaults: ResolvedSiteConfig): ResolvedSiteConfig {
+  const hero = isRecord(resolved.hero) ? resolved.hero : null
+  const image = hero && isRecord(hero.image) ? hero.image : null
+  const veil = image && isRecord(image.veil) ? image.veil : null
+  const baseHero = isRecord(defaults.hero) ? defaults.hero : {}
+  const baseImage = isRecord(baseHero.image) ? baseHero.image : {}
+  const baseVeil = isRecord(baseImage.veil) ? baseImage.veil : {}
+  if (!hero || !image) return resolved
+  const shown = veilShown(hero)
+  const next: Record<string, unknown> = { ...image }
+  if (veil) {
+    next.veil = {
+      ...veil,
+      ...(shown.extent ? {} : { extent: baseVeil.extent }),
+      ...(shown.opacity ? {} : { opacity: baseVeil.opacity }),
+    }
+  }
+  if (!shown.focus && 'focus' in baseImage) next.focus = baseImage.focus
+  return { ...resolved, hero: { ...hero, image: next } }
+}
+
+/**
  * 편집한 완성본을 레이아웃 기본값과 비교해 저장할 덮어쓰기만 만든다. 숨긴 칸(A·C의 B 전용 칸, 화면이 아직 그리지
  * 않는 칸, 머리 없는 섹션·배경 고정 섹션의 모양 칸)은 싣지 않는다 — 옛 초안에 값이 남아 있어도 저장이 거절되지
  * 않고, 다음 저장에서 기본값으로 돌아간다. `keepAll`이면 서버에 저장된 모양 그대로(숨긴 칸도) 만든다.
@@ -311,6 +357,7 @@ export function buildOverrides(
   keepAll = false,
 ): Record<string, unknown> {
   const out: Record<string, unknown> = {}
+  if (!keepAll) resolved = withDrawnVeil(resolved, defaults)
   const sections = sectionOverrides(resolved.sections, defaults.sections, keepAll ? null : layout)
   if (sections.length) out.sections = sections
   for (const [key, value] of Object.entries(resolved)) {
@@ -323,6 +370,13 @@ export function buildOverrides(
     for (const [group, key] of B_ONLY_FIELDS) withoutKey(out, group, key)
   }
   for (const [group, key] of UNRENDERED_FIELDS) withoutKey(out, group, key)
+  // 안내 문구 — 그리지 않는 칸과 이 레이아웃에 없는 섹션의 문구(레이아웃을 바꾼 옛 초안)는 싣지 않는다.
+  const sectionIds = new Set(defaults.sections.map((section) => section.id as string))
+  if (isRecord(out.copy)) {
+    for (const key of Object.keys(out.copy)) {
+      if (UNRENDERED_COPY_KEYS.includes(key) || !sectionIds.has(key.split('.')[0])) withoutKey(out, 'copy', key)
+    }
+  }
   const hero = out.hero
   if (isRecord(hero) && isRecord(hero.line_breaks)) {
     const kept = Object.fromEntries(Object.entries(hero.line_breaks).filter(([path]) => lineBreakPathShown(layout, path)))
@@ -558,11 +612,6 @@ export function previewUrl(siteHost: string, previewPath: unknown): string | nul
   return `https://${siteHost}${previewPath}`
 }
 
-/**
- * 공개 페이지(사이트)가 섹션 설정을 읽는가. 3b(사이트 렌더링·미리보기 경로)가 배포되기 전에는 공개 반영이
- * 레이아웃 칸만 바꾸고 나머지 설정은 화면에 나가지 않으므로 공개 반영을 막아 둔다. 3b 배포와 함께 켠다.
- */
-export const SITE_RENDERS_SITE_CONFIG = false
 
 /**
  * 이력의 「바뀐 곳」(서버 `changed_sections` 키)을 화면 이름으로. 섹션 키(`sections.faq`)는 섹션 이름,

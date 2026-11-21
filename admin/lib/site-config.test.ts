@@ -8,6 +8,9 @@ import {
   BACKGROUND_FIXED,
   B_ONLY_FIELDS,
   B_ONLY_LINE_BREAK_PATHS,
+  UNRENDERED_COPY_KEYS,
+  shownCopyKeys,
+  veilShown,
   lineBreakPathShown,
   UNRENDERED_FIELDS,
   sectionLookShown,
@@ -396,4 +399,49 @@ test('the lede line break is B-only: hidden on A·C, never saved there, and matc
   const source = readFileSync(new URL('../../backend/app/services/site_config_validation.py', import.meta.url), 'utf8')
   const line = source.match(/_B_ONLY_LINE_BREAKS[^=]*= frozenset\(\{([^}]*)\}\)/)?.[1] ?? ''
   assert.deepEqual([...line.matchAll(/"([a-z_.]+)"/g)].map((m) => m[1]).sort(), [...B_ONLY_LINE_BREAK_PATHS].sort())
+})
+
+test('the weekend label copy is hidden, never saved, and matches the backend list', () => {
+  assert.deepEqual([...shownCopyKeys('hours')], [])
+  assert.deepEqual([...shownCopyKeys('faq')], ['faq.note'])
+  const base = clone(defaultsC())
+  const edited = clone(base)
+  ;(edited as Record<string, any>).copy = { 'hours.weekend_label': '토요일 진료', 'faq.note': '안내' }
+  assert.deepEqual(buildOverrides(edited, base, 'C').copy, { 'faq.note': '안내' })
+  assert.deepEqual((buildOverrides(edited, base, 'C', true).copy as Record<string, string>)['hours.weekend_label'], '토요일 진료')
+  const source = readFileSync(new URL('../../backend/app/services/site_config_validation.py', import.meta.url), 'utf8')
+  const line = source.match(/_UNRENDERED_COPY_KEYS[^=]*= frozenset\(\{([^}]*)\}\)/)?.[1] ?? ''
+  assert.deepEqual([...line.matchAll(/"([a-z_.]+)"/g)].map((m) => m[1]).sort(), [...UNRENDERED_COPY_KEYS].sort())
+})
+
+test('notes for sections the layout does not have are never saved', () => {
+  const base = clone(defaultsC())
+  const edited = clone(base)
+  ;(edited as Record<string, any>).copy = { 'contents.note': '먼저 정리한 글', 'faq.note': '안내' }
+  assert.deepEqual(buildOverrides(edited, base, 'C').copy, { 'faq.note': '안내' })
+})
+
+test('the veil is shown and saved only where it is drawn (overlay; opacity on full)', () => {
+  assert.deepEqual(veilShown({ arrangement: 'split', image: { veil: { extent: 'full' } } }), { focus: true, extent: false, opacity: false })
+  assert.deepEqual(veilShown({ arrangement: 'overlay', image: { veil: { extent: 'text' } } }), { focus: true, extent: true, opacity: false })
+  assert.deepEqual(veilShown({ arrangement: 'overlay', image: { veil: { extent: 'full' } } }), { focus: true, extent: true, opacity: true })
+  assert.deepEqual(veilShown({ arrangement: 'text' }), { focus: false, extent: false, opacity: false })
+  const base = clone(defaultsC())
+  const edited = clone(base) as Record<string, any>
+  edited.hero = { ...edited.hero, arrangement: 'overlay', image: { ...edited.hero.image, veil: { extent: 'text', opacity: 0.2 } } }
+  const hero = buildOverrides(edited as ResolvedSiteConfig, base, 'C').hero as Record<string, any>
+  assert.equal(hero.arrangement, 'overlay')
+  assert.notEqual(hero.image?.veil?.opacity, 0.2)
+  edited.hero.arrangement = 'split'
+  const split = buildOverrides(edited as ResolvedSiteConfig, base, 'C').hero as Record<string, any> | undefined
+  assert.equal(split?.image?.veil?.extent, undefined)
+})
+
+test('a text-only hero never saves the photo focus', () => {
+  const base = clone(defaultsC())
+  const edited = clone(base) as Record<string, any>
+  edited.hero = { ...edited.hero, arrangement: 'text', image: { ...edited.hero.image, focus: { x: 0.1, y: 0.9 } } }
+  const hero = buildOverrides(edited as ResolvedSiteConfig, base, 'C').hero as Record<string, any>
+  assert.equal(hero.arrangement, 'text')
+  assert.equal(hero.image?.focus, undefined)
 })
