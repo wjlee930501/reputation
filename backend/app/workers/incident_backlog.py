@@ -22,8 +22,9 @@ from datetime import UTC, date, datetime, timedelta
 from functools import partial
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import String, and_, cast, func, or_, select
+from sqlalchemy import String, and_, case, cast, func, or_, select
 from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Session, aliased
 from sqlalchemy.sql.elements import ColumnElement
 
@@ -200,6 +201,8 @@ def _v0_report_created(db: Session, incident: Incident, _now: datetime) -> str |
     return "v0_report_created" if report is not None else None
 
 
+_UUID_TEXT = "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+
 # 글 단위 생성 사고의 식별 키 조각(`incidents.build_incident_key`: pipeline:object_type:…).
 _CONTENT_ITEM_GENERATION_KEY = ":content_generation:content_item:"
 
@@ -236,7 +239,13 @@ def _generation_evidence() -> ColumnElement[bool]:
     """`_content_published`의 SQL 짝 — 후보 조회가 닫을 근거가 있는 생성 사고만 집는다."""
 
     item = aliased(ContentItem)
-    same_item = cast(item.id, String) == Incident.source_id
+    # 글 id(UUID 기본키) 인덱스를 쓰게 source_id 쪽을 UUID로 바꾼다. UUID 모양이 아니면(병원 단위 사고의
+    # 다른 값 등) NULL이라 어떤 글과도 같지 않다 — CASE가 잘못된 형식의 형 변환 오류를 막는다.
+    source_uuid = case(
+        (Incident.source_id.op("~*")(_UUID_TEXT), cast(Incident.source_id, PG_UUID(as_uuid=True))),
+        else_=None,
+    )
+    same_item = item.id == source_uuid
     published_after = (
         select(item.id)
         .where(same_item, item.first_published_at > Incident.first_seen_at)
