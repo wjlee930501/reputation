@@ -301,6 +301,19 @@ def common_clinic_name(specialty: str) -> str:
     return canonical
 
 
+_CLINIC_SUFFIXES: Final[tuple[str, ...]] = ("과", "의원", "한의원", "치과")
+
+
+def clinic_name_for(specialties: Sequence[str]) -> str:
+    """질문에 쓸 기관 이름 — 진료과로 읽히는 첫 값. '건강검진'처럼 진료과가 아닌 값은 건너뛰고, 없으면 '병원'."""
+
+    for specialty in specialties:
+        name = common_clinic_name(specialty)
+        if name.endswith(_CLINIC_SUFFIXES):
+            return name
+    return "병원"
+
+
 def specialty_kind(specialties: Sequence[str]) -> str | None:
     for specialty in specialties:
         text = _clean(specialty)
@@ -360,6 +373,26 @@ _SERVICE_SUFFIXES: Final[tuple[str, ...]] = ("접종", "주사", "상담", "검�
 _SEARCH_RESIDUE_RE = re.compile(r"(^|\s)(곳|추천|잘하는|잘\s*하는|잘\s*보는|병원|의원|근처|가까운)(\s|$)")
 
 
+# 진료 항목 이름에 붙은 괄호 설명·나열('고혈압/당뇨/고지혈증', '질건조증 치료(질소프/호르몬 치료)',
+# '떨림, 파킨슨병 등 운동질환')은 첫 항목만 쓴다 — 통째로 넣으면 환자가 묻지 않는 긴 나열 문장이 된다.
+_PAREN_RE = re.compile(r"\([^()]*\)|\[[^\[\]]*\]")
+_LIST_SPLIT_RE = re.compile(r"\s*(?:[/,·・ㆍ+&]|\s및\s|\s등\s|\s등$)\s*")
+# 그것만으로는 항목이 아닌 말('소아청소년 진료' → '진료') — 질문 주제로 쓰지 않는다.
+_GENERIC_TOPIC_TERMS: Final[frozenset[str]] = frozenset(
+    {"진료", "치료", "상담", "검사", "시술", "수술", "관리", "클리닉", "외래", "일반"}
+)
+
+
+def _first_item(value: object) -> str:
+    raw = str(value or "")
+    text = _PAREN_RE.sub(" ", raw)
+    for piece in _LIST_SPLIT_RE.split(text):
+        piece = _clean(piece)
+        if len(piece.replace(" ", "")) >= 2:
+            return piece
+    return _clean(raw)
+
+
 @dataclass(frozen=True, slots=True)
 class _Topic:
     term: str
@@ -386,24 +419,48 @@ class _Topic:
 
 
 def _topics(treatments: Iterable[Any], keywords: Iterable[Any], region: Sequence[str]) -> list[_Topic]:
-    names: list[str] = []
-    for item in (*tuple(treatments or ()), *tuple(keywords or ())):
-        value = item.get("name") if isinstance(item, Mapping) else item
-        text = _clean(value)
-        if len(text.replace(" ", "")) >= 2 and text not in names:
-            names.append(text)
-    topics: list[_Topic] = []
-    for name in names:
+    names: list[tuple[str, bool]] = []  # (이름, 키워드에서 왔나)
+    for from_keyword, items in ((False, treatments), (True, keywords)):
+        for item in tuple(items or ()):
+            value = item.get("name") if isinstance(item, Mapping) else item
+            text = _first_item(value)
+            if len(text.replace(" ", "")) >= 2 and all(text != name for name, _ in names):
+                names.append((text, from_keyword))
+    topics: list[tuple[_Topic, bool]] = []
+    for name, from_keyword in names:
         analysis = analyze_keyword(name, list(region))
         if analysis.keyword_class is KeywordClass.SEARCH_PHRASE:
             continue
-        term = analysis.canonical_term or name
+        term = (analysis.canonical_term or name).strip()
+        if len(term.replace(" ", "")) < 2 or term in _GENERIC_TOPIC_TERMS:
+            continue
         if _SEARCH_RESIDUE_RE.search(term) or _SEARCH_RESIDUE_RE.search(name):
             continue
-        if any(topic.term == term for topic in topics):
+        if any(topic.term == term for topic, _ in topics):
             continue
-        topics.append(_Topic(term=term, kind=analysis.keyword_class, exam=is_exam_term(term)))
-    return topics
+        topics.append(
+            (_Topic(term=term, kind=analysis.keyword_class, exam=is_exam_term(term)), from_keyword)
+        )
+    # 키워드 순서와 무관하게 모든 항목과 견준다('수원치질'이 '치질'보다 먼저 와도 뺀다).
+    every = [topic for topic, _ in topics]
+    return [
+        topic
+        for topic, from_keyword in topics
+        if not (from_keyword and _region_prefixed(topic.term, every))
+    ]
+
+
+def _region_prefixed(term: str, topics: Sequence[_Topic]) -> bool:
+    """'수원치질'·'영통치질' — 띄어 쓰지 않은 키워드가 다른 항목 이름에 지명 같은 말을 붙인 꼴이면 검색어로 본다."""
+
+    if " " in term:
+        return False
+    return any(
+        term != topic.term
+        and term.endswith(topic.term)
+        and len(term) - len(topic.term) >= 2
+        for topic in topics
+    )
 
 
 def _explore_templates(topic: _Topic) -> tuple[str, ...]:
@@ -462,7 +519,7 @@ def draft_measurement_set(
     있고, 마케터가 어드민에서 채운다(세트 유효 조건은 고정 15개 이상).
     """
 
-    clinic = common_clinic_name(specialties[0] if specialties else "")
+    clinic = clinic_name_for(specialties)
     regions = _regions(region)
     dong = _dong(regions)
     topics = _topics(treatments, keywords, region)
