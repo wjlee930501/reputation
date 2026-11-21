@@ -214,3 +214,56 @@ def test_cost_set_questions_are_measured_but_never_content_topics():
     assert measurement_set.content_eligible(target("합정동 주차 되는 내과 있어?", "D"))
     # 옛 질문(그룹 없음)의 진료비 질문은 종전 규칙을 따른다.
     assert measurement_set.content_eligible(target("강남 정형외과 진료비 어느 정도야?", None))
+
+
+def test_operating_show_defects_2026_11_21():
+    """운영 show(16곳)에서 본 결함 — 진료과 아닌 첫 진료과·나열 항목·일반어 항목·지명 붙은 키워드."""
+
+    # 첫 진료과가 '건강검진'이면 기관 이름으로 쓰지 않는다('…상담받을 수 있는 건강검진 알려줘').
+    rows = draft_measurement_set(
+        hospital_name="다올연합의원",
+        region=["대구 수성구 범물동"],
+        specialties=["건강검진", "신경과"],
+        treatments=[{"name": "건강검진"}, {"name": "어지럼증/이명"}, {"name": "인지장애·치매 상담"}],
+    )
+    texts = [row.text for row in rows]
+    assert not any(text.endswith(("건강검진 알려줘", "건강검진 찾고 있어요", "건강검진 어디가 좋아?")) for text in texts)
+    assert any("신경과" in text for text in texts)
+    only_checkup = draft_measurement_set(
+        hospital_name="다올연합의원",
+        region=["대구"],
+        specialties=["건강검진"],
+        treatments=[{"name": "건강검진"}],
+    )
+    assert any(row.text == "대구 병원 추천해줘" for row in only_checkup)
+
+    # 괄호 설명·나열은 첫 항목만, '진료' 같은 일반어는 주제로 쓰지 않는다.
+    rows = draft_measurement_set(
+        hospital_name="뉴플랜여성의원",
+        region=["부산 남구"],
+        specialties=["산부인과"],
+        treatments=[
+            {"name": "질건조증 치료(질소프/소노케어/호르몬 치료)"},
+            {"name": "질염·성매개감염(STD) 검사 및 치료"},
+            {"name": "고혈압/당뇨/고지혈증"},
+            {"name": "떨림, 파킨슨병 등 운동질환"},
+            {"name": "진료"},
+        ],
+    )
+    texts = " ".join(row.text for row in rows)
+    for residue in ("소노케어", "STD", "당뇨", "파킨슨병", "운동질환", "진료 때문에"):
+        assert residue not in texts
+    assert "질건조증 치료" in texts and "고혈압" in texts
+
+    # 지명을 붙인 검색어 키워드('수원치질')는 순서와 무관하게 주제로 쓰지 않는다.
+    rows = draft_measurement_set(
+        hospital_name="장편한외과의원",
+        region=["수원시 팔달구"],
+        specialties=["외과"],
+        treatments=[{"name": "치핵/치질"}, {"name": "치루"}],
+        keywords=["수원치질", "영통치질", "팔달구치질", "치질"],
+    )
+    texts = " ".join(row.text for row in rows)
+    for residue in ("수원치질", "영통치질", "팔달구치질"):
+        assert residue not in texts
+    assert "치질" in texts
