@@ -657,3 +657,39 @@ def test_frozen_dawn_protocol_is_reused_for_continuations():
         "tracking_set_size": 20,
     }
     assert tasks._frozen_protocol_kwargs(None) is None
+
+
+def test_prefetch_db_error_rolls_back_at_once_and_leaves_no_task_behind(monkeypatch):
+    """한 칸의 저장 오류는 곧바로 되돌리고 올린다 — 재사용 루프에 남은 호출이 없어야 한다."""
+
+    import asyncio
+
+    tasks, events, _ = _prefetch_shell(monkeypatch)
+    db = _PrefetchDB()
+    calls = SimpleNamespace(n=0)
+
+    def checkpoint(_db, slot_id, result, *, lease_token, deadline):
+        calls.n += 1
+        if calls.n == 1:
+            raise RuntimeError("db down")
+        return SimpleNamespace(answer_status="RECEIVED")
+
+    monkeypatch.setattr(tasks, "checkpoint_answer", checkpoint)
+    cells = {uuid.uuid4(): [_slot(), _slot(), _slot()]}
+
+    with pytest.raises(RuntimeError, match="db down"):
+        tasks._prefetch_monthly_answers(
+            db,
+            slots_by_cell=cells,
+            query_text_by_cell={cell_id: "질문" for cell_id in cells},
+            hospital=SimpleNamespace(id=uuid.uuid4()),
+            protocol={},
+            deadline=None,
+            concurrency=1 + 1,
+        )
+
+    assert db.rollbacks >= 1
+    loop = tasks._thread_event_loop()
+    assert [task for task in asyncio.all_tasks(loop) if not task.done()] == []
+    # 끝내지 못한 칸은 claim을 돌려받는다.
+    assert events.released

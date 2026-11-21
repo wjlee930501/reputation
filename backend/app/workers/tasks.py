@@ -3124,18 +3124,22 @@ SOV_TOTAL_SPEC_CAP = settings.SOV_TOTAL_SPEC_CAP
 _tls = threading.local()
 
 
+def _thread_event_loop() -> asyncio.AbstractEventLoop:
+    loop = getattr(_tls, "loop", None)
+    if loop is None or loop.is_closed():
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        _tls.loop = loop
+    return loop
+
+
 def _run_async(coro):
     """Run an async coroutine safely in a sync Celery task.
 
     Reuses a single event loop per thread to avoid connection pool corruption
     in async clients (OpenAI, httpx) that are bound to a specific loop.
     """
-    loop = getattr(_tls, "loop", None)
-    if loop is None or loop.is_closed():
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        _tls.loop = loop
-    return loop.run_until_complete(coro)
+    return _thread_event_loop().run_until_complete(coro)
 
 
 def _auto_publish_block_alert_key(
@@ -10552,7 +10556,8 @@ def _prefetch_monthly_answers(
     if not pending:
         return 0
     claims: list[_PrefetchClaim] = []
-    tasks_in_flight: list[asyncio.Task] = []
+    tasks_in_flight: list[asyncio.Future] = []
+    parents: list[asyncio.Task] = []
 
     def _release(item: _PrefetchClaim, *, refund: bool) -> None:
         release_interrupted_stage(
@@ -10568,8 +10573,13 @@ def _prefetch_monthly_answers(
         async with gate:
             if _deadline_reached(deadline, arrow.now().datetime):
                 # 마감 뒤 새 유료 단계는 사지 않는다 — 예약은 정상 정산하고 시도는 되돌린다.
+                item.state = "SETTLING_ZERO"
                 await cost_guard.settle_reservation(item.receipt, consumed_units=0)
-                _release(item, refund=True)
+                try:
+                    _release(item, refund=True)
+                except BaseException:
+                    db.rollback()
+                    raise
                 item.state = "DONE"
                 return False
             try:
@@ -10600,29 +10610,36 @@ def _prefetch_monthly_answers(
             await cost_guard.settle_reservation(
                 item.receipt, consumed_units=min(answer_calls, 1)
             )
-            checkpointed = checkpoint_answer(
-                db, item.slot_id, result, lease_token=item.lease_token, deadline=deadline
-            )
-            if checkpointed is None:
+            # 여기부터 커밋까지 await가 없다 — 다른 코루틴이 같은 세션을 끼어 쓰지 않는다. 실패하면
+            # 다른 코루틴이 실행되기 전에 되돌려, 깨진 세션으로 다른 답을 버리지 않게 한다.
+            try:
+                checkpointed = checkpoint_answer(
+                    db, item.slot_id, result, lease_token=item.lease_token, deadline=deadline
+                )
+                if checkpointed is None:
+                    db.rollback()
+                    item.state = "DONE"
+                    return False
+                db.commit()
+            except BaseException:
                 db.rollback()
-                item.state = "DONE"
-                return False
-            db.commit()
+                raise
             item.state = "DONE"
             return checkpointed.answer_status == "RECEIVED"
 
-    async def _fetch_all() -> list[Any]:
+    async def _fetch_all() -> list[bool]:
         gate = asyncio.Semaphore(concurrency)
         tasks_in_flight.extend(asyncio.ensure_future(_one(item, gate)) for item in claims)
-        return await asyncio.gather(*tasks_in_flight, return_exceptions=True)
+        # 첫 예외(DB 오류·soft limit)는 곧바로 올린다 — 남은 호출은 호출부가 취소한다.
+        return list(await asyncio.gather(*tasks_in_flight))
 
     def _hand_back_unfinished() -> None:
-        for task in tasks_in_flight:
-            if not task.done():
-                task.cancel()
-        if tasks_in_flight:
+        pending_tasks = [task for task in (*tasks_in_flight, *parents) if not task.done()]
+        for task in pending_tasks:
+            task.cancel()
+        if pending_tasks:
             try:
-                _run_async(asyncio.gather(*tasks_in_flight, return_exceptions=True))
+                _run_async(asyncio.gather(*pending_tasks, return_exceptions=True))
             except BaseException:
                 logger.warning("Prefetched answer calls were not drained", exc_info=True)
         try:
@@ -10679,15 +10696,15 @@ def _prefetch_monthly_answers(
             )
         if not claims:
             return 0
-        results = _run_async(_fetch_all())
-    except SoftTimeLimitExceeded:
+        # 부모 태스크를 먼저 만들어 둔다 — 자식이 생기기 전에 soft limit이 와도 취소할 수 있게
+        # (스레드의 이벤트 루프는 재사용되므로 남은 태스크가 다음 `_run_async`에서 다시 돈다).
+        loop = _thread_event_loop()
+        parents.append(loop.create_task(_fetch_all()))
+        results = loop.run_until_complete(parents[0])
+    except BaseException:
+        # soft limit·DB 오류 — 남은 호출을 취소하고 끝내지 못한 claim을 돌려준 뒤 같은 실패 경로로 올린다.
         _hand_back_unfinished()
         raise
-    failures = [result for result in results if isinstance(result, BaseException)]
-    if failures:
-        # DB 오류 등 — 끝내지 못한 claim을 돌려주고 차례 실행과 같은 실패 경로로 올린다.
-        _hand_back_unfinished()
-        raise failures[0]
     return sum(bool(result) for result in results)
 
 
