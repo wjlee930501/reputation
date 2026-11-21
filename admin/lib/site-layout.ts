@@ -69,6 +69,20 @@ export function layoutDistributionLine(
     .replace('{total}', String(distribution.total))} — ${parts.join(' · ')}`
 }
 
+/**
+ * 계약 등록에서 미리 골라 둘 레이아웃 — 같은 시·도 공개 병원이 가장 적게 쓰는 것(개편 결정 대기 9번 B).
+ * 같은 지역 병원 사이트가 한 틀로 보이지 않게 하려는 것이 레이아웃 선택의 이유다(2026-11-13).
+ * 수가 같으면 A·B·C 순서로 앞의 것. 시·도를 모르면 추천하지 않는다(null) — 사람이 고른다.
+ */
+export function suggestedLayout(distribution: SiteLayoutDistribution | null): SiteLayout | null {
+  if (!distribution?.province) return null
+  let best: SiteLayout = SITE_LAYOUTS[0]
+  for (const layout of SITE_LAYOUTS) {
+    if (distribution.counts[layout] < distribution.counts[best]) best = layout
+  }
+  return best
+}
+
 /** 카드 하나의 '같은 지역 N곳 사용 중'. 0곳이거나 시·도를 모르면 null — 아무것도 붙이지 않는다. */
 export function sameRegionBadge(
   distribution: SiteLayoutDistribution | null,

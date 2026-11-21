@@ -7,6 +7,7 @@ import {
   layoutDistributionPath,
   readLayoutDistribution,
   sameRegionBadge,
+  suggestedLayout,
 } from './site-layout.ts'
 
 test('only A, B and C are layouts', () => {
@@ -66,4 +67,20 @@ test('the hospital info screen says the count excludes this hospital', () => {
     '경북 다른 공개 병원 3곳(이 병원 제외) — A 1 · B 0 · C 0 · 고르기 전 2',
   )
   assert.equal(sameRegionBadge(distribution, 'A', { excludesCurrent: true }), '경북 다른 병원 1곳 사용 중')
+})
+
+test('계약 등록 추천은 같은 시·도에서 가장 적게 쓰는 레이아웃, 같으면 A·B·C 순서', () => {
+  const at = (A: number, B: number, C: number, province: string | null = '대구') => ({
+    province,
+    counts: { A, B, C, unset: 0 },
+    total: A + B + C,
+  })
+  assert.equal(suggestedLayout(at(2, 0, 1)), 'B')
+  assert.equal(suggestedLayout(at(1, 1, 0)), 'C')
+  assert.equal(suggestedLayout(at(1, 1, 1)), 'A')
+  // 같은 시·도에 공개 병원이 없으면 모두 0 — 첫 안을 추천한다.
+  assert.equal(suggestedLayout(at(0, 0, 0)), 'A')
+  // 시·도를 모르거나 분포가 없으면 추천하지 않는다 — 사람이 고른다.
+  assert.equal(suggestedLayout(at(0, 3, 3, null)), null)
+  assert.equal(suggestedLayout(null), null)
 })
