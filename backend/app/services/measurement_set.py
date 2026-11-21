@@ -116,6 +116,26 @@ def _question_texts(target: object) -> list[str]:
     return sorted(texts)
 
 
+def measured_members(targets: Iterable[object]) -> list[object]:
+    """이번 달 실제로 잴 세트 질문 — 고정 먼저, 그룹·문구 순으로 최대 30개.
+
+    모양이 맞지 않는 세트(고정이 15개보다 적은 등)도 측정은 한다 — 질문 하나를 보관했다고 그 달
+    측정 전체를 건너뛰면 보고서가 '측정 없음'이 된다. 사유는 등록 결과·로그로 남긴다. 30개를 넘는
+    세트만 비용 상한 때문에 잘라 낸다(어드민 저장은 30개를 넘게 받지 않는다).
+    """
+
+    members = [target for target in targets if is_set_member(target)]
+    members.sort(
+        key=lambda target: (
+            target_set_role(target) != ROLE_FIXED,
+            target_question_group(target) or "",
+            _text(getattr(target, "name", "")),
+            str(getattr(target, "id", "")),
+        )
+    )
+    return members[:SET_TOTAL_MAX]
+
+
 def fixed_members(targets: Iterable[object]) -> list[object]:
     return [
         target

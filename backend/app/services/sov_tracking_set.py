@@ -60,7 +60,7 @@ def tracking_set_members(targets: Iterable[AIQueryTarget]) -> list[AIQueryTarget
 
     rows = list(targets)
     if measurement_set.uses_curated_set(rows):
-        return [target for target in rows if measurement_set.is_set_member(target)]
+        return measurement_set.measured_members(rows)
     return [
         target
         for target in rows
@@ -188,7 +188,7 @@ def _register_curated_set(
     덮어쓰면 안 된다(측정 키워드 30개 설계 §2-2).
     """
 
-    members = [target for target in targets if measurement_set.is_set_member(target)]
+    members = measurement_set.measured_members(targets)
     problems = measurement_set.set_problems(targets)
     member_ids = {target.id for target in members}
     changed = 0

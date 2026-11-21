@@ -20,10 +20,10 @@ from billiard.exceptions import SoftTimeLimitExceeded
 from app.services import measurement_set, sov_engine, sov_tracking_set
 from app.services.measurement_selection import build_measurement_specs
 from app.services.monthly_manifest import (
+    ManifestCellSpec,
     _query_sets,
     freeze_monthly_manifest,
     frozen_manifest_specs,
-    ManifestCellSpec,
 )
 from app.services.monthly_sov import _comparable_cell, build_monthly_sov
 from app.services.monthly_sov_repository import _intent_snapshot, _query_set_snapshot
@@ -149,7 +149,9 @@ def test_curated_set_registration_never_reselects_roles(monkeypatch):
     assert result["registered_size"] == 30
     assert all(target.in_tracking_set for target in (*brand, *fixed, *rotating))
     assert outsider.in_tracking_set is False
-    assert sov_tracking_set.tracking_set_members(targets) == [*brand, *fixed, *rotating]
+    assert {t.id for t in sov_tracking_set.tracking_set_members(targets)} == {
+        t.id for t in (*brand, *fixed, *rotating)
+    }
     assert sov_tracking_set.tracking_set_basis_size(targets) == 20
     assert sov_tracking_set.tracking_set_fingerprint(targets) == (
         measurement_set.set_fingerprint(targets)[0]
@@ -456,14 +458,14 @@ def _prefetch_shell(monkeypatch, *, allowed=lambda _rid: True, answer=None):
     return tasks, events, in_flight
 
 
-def _run_prefetch(tasks, slots_by_cell, *, concurrency=3):
+def _run_prefetch(tasks, slots_by_cell, *, concurrency=3, deadline=None):
     return tasks._prefetch_monthly_answers(
         _PrefetchDB(),
         slots_by_cell=slots_by_cell,
         query_text_by_cell={cell_id: f"질문 {cell_id}" for cell_id in slots_by_cell},
         hospital=SimpleNamespace(id=uuid.uuid4()),
         protocol={"openai_model_query": "gpt-luna", "gemini_model": "gemini"},
-        deadline=None,
+        deadline=deadline,
         concurrency=concurrency,
     )
 
@@ -532,3 +534,126 @@ def test_prefetch_is_off_when_concurrency_is_one(monkeypatch):
 
     assert _run_prefetch(tasks, {uuid.uuid4(): [_slot()]}, concurrency=1) == 0
     assert events.claims == []
+
+
+def test_prefetch_rechecks_the_dawn_deadline_right_before_each_call(monkeypatch):
+    """대기열에서 차례가 왔을 때 07:00이 지났으면 호출하지 않는다 — 예약 0 정산·시도 환급."""
+
+    from app.workers import tasks as tasks_module
+
+    calls = SimpleNamespace(deadline_checks=0)
+    real = tasks_module._deadline_reached
+
+    def deadline_reached(deadline, moment):
+        if deadline is None:
+            return False
+        calls.deadline_checks += 1
+        # claim 단계(슬롯 2개)까지는 열려 있고, 호출 직전 확인부터는 지났다.
+        return calls.deadline_checks > 2
+
+    tasks, events, _ = _prefetch_shell(monkeypatch)
+    monkeypatch.setattr(tasks, "_deadline_reached", deadline_reached)
+    cells = {uuid.uuid4(): [_slot(), _slot()]}
+
+    received = _run_prefetch(
+        tasks, cells, deadline=datetime(2026, 12, 1, 7, 0, tzinfo=timezone.utc)
+    )
+
+    assert received == 0
+    assert events.checkpoints == []
+    assert sorted(units for _receipt, units in events.settled) == [0, 0]
+    assert len(events.released) == 2
+    assert all(refund for _slot_id, refund in events.released)
+    assert real is not None
+
+
+def test_prefetch_checkpoints_each_answer_as_it_lands(monkeypatch):
+    """느린 답 하나가 먼저 받은 답의 체크포인트를 붙잡지 않는다."""
+
+    import asyncio
+
+    order = []
+
+    async def fetch(query_text, platform, **_kw):
+        slow = query_text.endswith("slow")
+        await asyncio.sleep(0.05 if slow else 0.0)
+        return {"measurement_status": "SUCCESS", "raw_response": "답", "provider_calls": 1}
+
+    tasks, events, _ = _prefetch_shell(monkeypatch)
+    monkeypatch.setattr(tasks, "fetch_answer", fetch)
+    original = tasks.checkpoint_answer
+
+    def checkpoint(db, slot_id, result, **kwargs):
+        order.append(slot_id)
+        return original(db, slot_id, result, **kwargs)
+
+    monkeypatch.setattr(tasks, "checkpoint_answer", checkpoint)
+    slow_cell, fast_cell = uuid.uuid4(), uuid.uuid4()
+    slots = {slow_cell: [_slot()], fast_cell: [_slot()]}
+
+    received = tasks._prefetch_monthly_answers(
+        _PrefetchDB(),
+        slots_by_cell=slots,
+        query_text_by_cell={slow_cell: "질문 slow", fast_cell: "질문 fast"},
+        hospital=SimpleNamespace(id=uuid.uuid4()),
+        protocol={},
+        deadline=None,
+        concurrency=2,
+    )
+
+    assert received == 2
+    # 빠른 답(두 번째 claim)이 먼저 저장된다.
+    assert order == [events.claims[1], events.claims[0]]
+
+
+def test_prefetch_never_refunds_a_settling_claim(monkeypatch):
+    """정산을 시작한 칸은 soft limit에도 시도 번호를 돌려주지 않는다(같은 예약 번호 재사용 방지)."""
+
+    tasks, events, _ = _prefetch_shell(monkeypatch)
+
+    async def settle(receipt, *, consumed_units):
+        raise SoftTimeLimitExceeded()
+
+    monkeypatch.setattr(tasks.cost_guard, "settle_reservation", settle)
+    cells = {uuid.uuid4(): [_slot()]}
+
+    with pytest.raises(SoftTimeLimitExceeded):
+        _run_prefetch(tasks, cells)
+
+    assert events.released == [(events.claims[0], False)]
+
+
+def test_measured_members_cap_the_set_at_thirty_fixed_first():
+    brand, fixed, rotating = _set30()
+    extra = _target("강남 주차 되는 내과 추가", group="D", role="ROTATING")
+    members = measurement_set.measured_members([*rotating, extra, *fixed, *brand])
+
+    assert len(members) == 30
+    assert members[:20] == sorted(
+        [*brand, *fixed], key=lambda t: (t.question_group, t.name, str(t.id))
+    )
+    assert sum(member.set_role == "ROTATING" for member in members) == 10
+    # 교체 11개 중 그룹·문구 순으로 뒤에 오는 하나가 빠진다.
+    assert members[-1].set_role == "ROTATING"
+
+
+def test_frozen_dawn_protocol_is_reused_for_continuations():
+    from app.workers import tasks
+
+    manifest = SimpleNamespace(
+        platform_provenance={
+            "measurement_protocol": {
+                "measurement_window": "month_start_dawn",
+                "tracking_set_fingerprint": "abcd",
+                "tracking_set_size": 20,
+                "policy_version": "x",
+            }
+        }
+    )
+
+    assert tasks._frozen_protocol_kwargs(manifest) == {
+        "measurement_window": "month_start_dawn",
+        "tracking_set_fingerprint": "abcd",
+        "tracking_set_size": 20,
+    }
+    assert tasks._frozen_protocol_kwargs(None) is None
