@@ -1,10 +1,11 @@
-# 2026-11-21 네 번 배포 — 어드민 개편 1단계·레이아웃 편집기 3a·3b·3c·③-1·미리보기 비밀값
+# 2026-11-21 다섯 번 배포 — 어드민 개편 1단계·레이아웃 편집기 3a·3b·3c·③-1·미리보기 비밀값·③-2a·③-2b
 
-상태: **2026-11-21 KST에 네 번 배포했다.**
+상태: **2026-11-21 KST에 다섯 번 배포했다.**
 - 1차: 02:01~02:07, main `2241f431`, Backend·Admin.
 - 2차: 04:46~04:51, main `85754f20`, Backend·Admin. 2차에는 마이그레이션 `0100`이 있다.
 - 3차: 08:46~08:52, main `0f93551b`, **Backend·Site·Admin**. 마이그레이션은 없다.
 - 4차: 10:13~10:17, 같은 main `0f93551b`, Backend만. 코드 변경 없이 새로 만든 미리보기 비밀값 `SITE_PREVIEW_TOKEN_SECRET`을 주입했다(사용자 지시 "만들고 배포").
+- 5차: 15:36~15:43, main `84b8f70c`, **Backend·Site·Admin**. 레이아웃 편집기 ③-2a·③-2b(#357~#360). 마이그레이션은 없다. 14:20 첫 시도는 gcloud 로그인 만료로 사전 검증에서 멈췄다(운영 변경 없음).
 - 사용자 지시: "완료 되면 병합, 배포까지 하고 바로 다음 단계로", "1단계에서 할 수 있는 것들 바로 진행 먼저 싹하고, 다음으로 레이아웃 편집기 3a 진행", "배포 2차 끝나고 문서 쓰고, 다음도 이어서 알아서 진행해".
 - 1·2차는 Site를 바꾸지 않았다. 3차에서 Site가 `00157-q7b` → `00158-qt2`가 됐다.
 
@@ -141,6 +142,23 @@ DEPLOY_ROLLBACK_STATE_FILE=.deploy-rollback-admin bash scripts/deploy.sh admin
 - 확인하지 않은 것: 편집 화면에서 실제 미리보기 링크를 발급해 열어 보는 것(로그인한 사람 계정 서명이 필요하다).
 - **공개 반영은 여전히 막혀 있다**(`SITE_RENDERS_SITE_CONFIG = false`, Admin 배포가 따로 필요). 이 비밀값을 바꾸면 그때까지 발급된 미리보기 링크(10분짜리)만 무효가 된다.
 
+### 5차 — ③-2a·③-2b(15:36~15:43)
+범위(main `712dae5d`·`880dd185`·`135819de`·`84b8f70c`):
+
+| PR | 내용 |
+|---|---|
+| [#357](https://github.com/wjlee930501/reputation/pull/357) | ③-2a — B안 첫 화면 정보 띠 칸·순서(오늘 진료·전화·위치·진료시간·예약), 예약 칸은 네이버 플레이스(없으면 빠지고 저장 때 경고만), 진료 항목 목록 모양·설명 끄기 |
+| [#358](https://github.com/wjlee930501/reputation/pull/358) | A·C에서 정보 띠 칸·진료 항목 모양을 기본값과 다르게 저장하면 거절(`B_LAYOUT_ONLY`) |
+| [#359](https://github.com/wjlee930501/reputation/pull/359) | 어드민 A·C 편집 화면에서 두 칸 숨김·저장 내용에서 뺌(#358 짝) |
+| [#360](https://github.com/wjlee930501/reputation/pull/360) | ③-2b — 의료진 사진 비율·초점·직함 위치(A·B·C) |
+
+- 배포 전 확인: 네 PR을 합친 main에서 백엔드 사이트 설정 테스트 200 passed(`test_site_config*`·`test_public_site`·로고), Site 607/607·Admin 753/753, 두 쪽 `tsc` 통과. 각 PR CI 10/10.
+- 배포 전 리비전: api `00301-pjs`, worker `00294-zv7`, beat `00289-m8j`, site `00158-qt2`, admin `00132-ssx` → `.omo/rollback-5th1121/rollback.state`.
+- 결과: worker `00295-5tm`, beat `00290-8mg`, readiness `nj74b` 통과, api `00302-ksn`, site `00159-jzr`, admin `00133-lp7`. 공개 표면 확인 통과.
+- 확인: release `84b8f70c`, 공개 병원 16곳 200·hospital ID 일치, 16곳 `site_config` null 그대로, 홈 4곳(B·C·기본·C) 보이는 글자·링크·이미지와 class 구성이 아침 기준과 같다. Admin 로그인 200.
+- **공개 반영은 여전히 막혀 있다.** ③-2c~f와 나머지 칸 정리(#361·#362·#365·#366·#367·#368)가 아직 병합 전이다.
+- 사고: #360을 `--delete-branch`로 병합하자 그 브랜치를 base로 쌓인 #361이 GitHub에서 자동으로 닫혔다(재지정되지 않았다). 브랜치를 같은 커밋으로 되살리고 #361을 다시 열어 base를 main으로 바꿨다. 쌓인 PR의 아래 PR은 브랜치를 지우지 않고 병합한다.
+
 ## 알게 된 것·주의
 - **3차 뒤 공개 반영을 풀 수 있는가:** ③-1로 '틀린 기본값이 공개 판에 굳는' 위험은 막혔다. 옛 판도 그 칸만 지금 기본값으로 낸다. 그래도 이번에는 풀지 않았다. 남은 두 가지가 사용자 결정이기 때문이다.
   - 미리보기 비밀 `SITE_PREVIEW_TOKEN_SECRET`이 운영에 없어 편집 화면의 미리보기가 503이다. 미리보기 없이 공개 반영만 여는 것은 위험하다.
@@ -160,7 +178,7 @@ DEPLOY_ROLLBACK_STATE_FILE=.deploy-rollback-admin bash scripts/deploy.sh admin
 - **CI 리허설은 DB head를 하드코딩한다.** 위치는 `scripts/integrity_rehearsal/check.py`다. 마이그레이션을 더하는 PR은 이 값도 함께 올려야 한다(#349가 0100으로 올렸다).
 
 ## 지금 운영 리비전
-- api `00301-pjs`, worker `00294-zv7`, beat `00289-m8j`, site `00158-qt2`, admin `00132-ssx`.
+- api `00302-ksn`, worker `00295-5tm`, beat `00290-8mg`, site `00159-jzr`, admin `00133-lp7`.
 - DB head는 `0100_add_hospital_site_configs`다.
 
 ## 롤백
@@ -172,6 +190,7 @@ DEPLOY_ROLLBACK_STATE_FILE=$PWD/.omo/rollback-admin1121/rollback.state bash scri
 ```bash
 DEPLOY_ROLLBACK_STATE_FILE=$PWD/.omo/rollback-3rd1121/rollback.state bash scripts/deploy.sh rollback   # 3차만(Site 포함 다섯 서비스)
 ```
+- 5차만 되돌릴 때: `DEPLOY_ROLLBACK_STATE_FILE=$PWD/.omo/rollback-5th1121/rollback.state` — api `00301-pjs`, worker `00294-zv7`, beat `00289-m8j`, site `00158-qt2`, admin `00132-ssx`(공개된 설정이 없으니 화면은 같다).
 - 4차만 되돌릴 때: `DEPLOY_ROLLBACK_STATE_FILE=$PWD/.omo/rollback-4th1121/rollback.state` — api `00300-gpw`, worker `00293-89h`, beat `00288-wn7`(코드는 같고 비밀값만 빠진다 → 미리보기 발급 503).
 - 3차만 되돌릴 때: api `00299-5cz`, worker `00292-dng`, beat `00287-nlk`, site `00157-q7b`, admin `00131-szn`.
   - 아직 공개 반영된 설정이 없으므로(16곳 모두 null) Site를 되돌려도 화면은 같다.

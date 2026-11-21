@@ -1,6 +1,13 @@
 # Re:putation — 현재 프로젝트 개발 안내
 
-## 최신 운영 배포 — 2026-11-21 오전 레이아웃 편집기 3b·3c·③-1 (그날 세 번째)
+## 최신 운영 배포 — 2026-11-21 오후 레이아웃 편집기 ③-2a·③-2b (그날 다섯 번째)
+
+main `84b8f70c`(#357 B안 정보 띠 칸·예약(네이버 플레이스)·진료 항목 목록 모양, #358 A·C에서 그 두 칸 거절 `B_LAYOUT_ONLY`, #359 어드민 A·C 숨김, #360 의료진 사진 비율·초점·직함 위치)을
+15:36~15:43 KST에 Backend·Site·Admin에 배포했다(`--override-reason`, 마이그레이션 없음). **현재 리비전은 api `00302-ksn`, worker `00295-5tm`, beat `00290-8mg`, site `00159-jzr`, admin `00133-lp7`**, DB head `0100`.
+readiness·공개 표면 확인 통과, 16곳 200·hospital ID 일치·`site_config` null 그대로, 홈 4곳 화면이 배포 전과 같다. **공개 반영은 여전히 막혀 있다** — ③-2c~f·나머지 칸 숨김+거절(#361·#362·#365·#366·#367·#368)이 들어가야 연다.
+쌓인 PR의 아래 PR을 `--delete-branch`로 병합하면 위 PR이 닫힌다(재지정되지 않는다). 롤백 `.omo/rollback-5th1121/rollback.state`. 상세는 [배포 기록](docs/releases/2026-11-21-admin-revamp-production.md)의 '5차'.
+
+## 이전 운영 배포 — 2026-11-21 오전 레이아웃 편집기 3b·3c·③-1 (그날 세 번째)
 
 main `0f93551b`(3b ① #351 사이트가 공개 `site_config`로 홈을 그림, 3b ② #352 초안 미리보기 `/preview/{token}`, 3c #350·#353 Admin 편집 화면, ③-1 #355 아직 읽지 않는 칸 기본값 `DEFAULTS_VERSION 2026-11-21.3`·옛 판 보호)를
 08:46~08:52 KST에 Backend·Site·Admin에 배포했다(같은 날 세 번째 릴리스라 `--override-reason`, 마이그레이션 없음, 사용자 지시 "다음도 이어서 알아서 진행해").
@@ -378,7 +385,7 @@ BaseEssence의 일반 자료 추가 drift는 재합성하지 않는다. 명시�
 Site/Admin IAM 분리는 단계적으로 적용한다. 구 revision 종료 전 legacy grants를 회수하지 않는다.
 
 
-문서 버전: **2.38** · 갱신일: **2026-11-21 (Asia/Seoul)**
+문서 버전: **2.39** · 갱신일: **2026-11-21 (Asia/Seoul)**
 소스 기준선: **`4db1b69` 이후 커밋 이력 정합성 보완**
 구현 상태: **체크포인트 2(`a774851`) 운영 배포 완료. 그 뒤 main의 stable-base Essence(`8c59141`) 등 31개 커밋과 콘텐츠 수율 버전업 v2.7(`claude/system-performance-review-x6vtn4`, [계획](docs/plans/2026-09-12-content-yield-versionup-plan.md))은 미배포**
 
