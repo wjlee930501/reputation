@@ -18,6 +18,7 @@ import {
   FIXED_SECTIONS,
   DEFAULT_HERO_BLOCKS,
   limitCarePrincipleCards,
+  lineBreaksFor,
   DEFAULT_PHOTO_RATIO,
   BACKGROUND_FIXED,
   DEFAULT_SECTION_BACKGROUND,
@@ -589,4 +590,25 @@ test('the visit look reads the order and the transit switch; the current order i
   assert.deepEqual(visit((v) => (v.order = ['transit', 'parking'])), { order: ['transit', 'parking'], showTransit: true })
   assert.deepEqual(visit((v) => (v.show_transit = false)), { order: ['parking', 'transit'], showTransit: false })
   assert.equal(visit((v) => (v.order = ['parking'])), null)
+})
+
+test('line breaks are read per path and apply only while the shown text matches the source', () => {
+  const config = normalizeSiteConfig(
+    published('B', (c) => {
+      c.hero.line_breaks = {
+        'hero.headline': { pc: '앞 줄\n뒤 줄입니다', mobile: null },
+        'care_principles.cards[1].body': { pc: '', mobile: '카드\n본문' },
+        'hero.description': 'x',
+      }
+    }),
+    'B',
+  )
+  assert.ok(config)
+  assert.deepEqual(Object.keys(config.lineBreaks).sort(), ['care_principles.cards[1].body', 'hero.headline'])
+  assert.deepEqual([...lineBreaksFor(config, 'hero.headline', '앞 줄 뒤 줄입니다').entries()], [['앞 줄 '.length, 'pc']])
+  assert.deepEqual([...lineBreaksFor(config, 'care_principles.cards[1].body', '카드 본문').entries()], [['카드 '.length, 'mobile']])
+  // 병원 정보·섹션 제목이 바뀌어 지금 글이 원문과 다르면 지금 마크업 그대로다.
+  assert.equal(lineBreaksFor(config, 'hero.headline', '다른 제목입니다').size, 0)
+  assert.equal(lineBreaksFor(config, 'hero.description', '설명').size, 0)
+  assert.equal(lineBreaksFor(null, 'hero.headline', '앞 줄 뒤 줄입니다').size, 0)
 })
