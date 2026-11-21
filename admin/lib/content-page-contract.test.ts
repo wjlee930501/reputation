@@ -45,13 +45,15 @@ test('운영 복구 버튼과 그 요청 경로는 콘텐츠 화면에 없다', 
   )
 })
 
-test('공개 전 글은 ⋯ 메뉴에서 발행일을 바꾸고 발행 제외한다(개편 결정 대기 6번 A·C)', () => {
-  // 발행일 바꾸기는 기존 reschedule API, 발행 제외는 종료 + 같은 달 새 칸(편수 유지) API다.
+test('공개 전 글은 ⋯ 메뉴에서 발행일을 바꾼다(개편 결정 대기 6번 C)', () => {
+  // 기존 reschedule API(내일 이후, 다른 달이면 원래 달 편수)를 그대로 쓴다.
   assert.match(page, /\/content\/\$\{itemId\}\/reschedule`/)
-  assert.match(page, /\/content\/\$\{itemId\}\/exclude`/)
-  assert.match(page, /발행 제외 · 같은 달 다른 날 새 글/)
+  assert.match(page, /'발행일 바꾸기…'/)
+  // 다른 달로 옮긴 글·그 사이 연 다른 글은 refreshItem이 맞춘다.
+  assert.match(page, /if \(!\(await refreshItem\(itemId\)\)\) retryRefreshItem\(itemId\)/)
   // 공개된 글에는 붙이지 않는다 — 공개 글은 비공개 후 재생성만이다.
   assert.match(page, /selected\.status === 'DRAFT' \|\| selected\.status === 'READY' \|\| selected\.status === 'REJECTED'\)\s*&& !selected\.published_at/)
+  assert.doesNotMatch(page, /\/exclude`/)
 })
 
 test('행 상태는 서버 판정을 그대로 쓰고, 표본만 사람이 확인한다', () => {
