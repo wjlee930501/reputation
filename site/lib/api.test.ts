@@ -216,7 +216,7 @@ test('fetchContent throws ContentNotFoundError on a 404 (so the page can call no
   globalThis.fetch = (async () => new Response('not found', { status: 404 })) as typeof fetch
   try {
     await assert.rejects(
-      () => fetchContent('demo-clinic', 'missing-content-id'),
+      () => fetchContent('demo-clinic', '00000000-0000-4000-8000-00000000dead'),
       (err) => err instanceof ContentNotFoundError,
     )
   } finally {
@@ -229,7 +229,7 @@ test('fetchContent throws a generic error on other non-ok statuses (surfaces as 
   globalThis.fetch = (async () => new Response('boom', { status: 503 })) as typeof fetch
   try {
     await assert.rejects(
-      () => fetchContent('demo-clinic', 'some-id'),
+      () => fetchContent('demo-clinic', '00000000-0000-4000-8000-000000000abc'),
       (err) => err instanceof Error && !(err instanceof ContentNotFoundError),
     )
   } finally {
@@ -248,7 +248,7 @@ test('fetchContent returns parsed JSON on a 200', async () => {
       },
     )) as typeof fetch
   try {
-    const content = await fetchContent('demo-clinic', 'abc')
+    const content = await fetchContent('demo-clinic', '00000000-0000-4000-8000-000000000abc')
     assert.equal(content.id, 'abc')
     assert.equal(content.title, '제목')
     assert.equal(content.revision_hash, 'a'.repeat(64))
@@ -332,7 +332,7 @@ test('fetchContent rejects malformed backend payloads at runtime', async () => {
       headers: { 'content-type': 'application/json' },
     })) as typeof fetch
   try {
-    await assert.rejects(() => fetchContent('demo-clinic', 'abc'), /Invalid content payload/)
+    await assert.rejects(() => fetchContent('demo-clinic', '00000000-0000-4000-8000-000000000abc'), /Invalid content payload/)
   } finally {
     globalThis.fetch = originalFetch
   }
@@ -346,7 +346,7 @@ test('fetchContent rejects a malformed active revision cache identity', async ()
       headers: { 'content-type': 'application/json' },
     })) as typeof fetch
   try {
-    await assert.rejects(() => fetchContent('demo-clinic', 'abc'), /Invalid content payload/)
+    await assert.rejects(() => fetchContent('demo-clinic', '00000000-0000-4000-8000-000000000abc'), /Invalid content payload/)
   } finally {
     globalThis.fetch = originalFetch
   }
@@ -405,3 +405,40 @@ function hospitalPayload(overrides: Record<string, unknown> = {}) {
     ...overrides,
   }
 }
+
+test('slugs a hospital can never have are 404 without asking the backend (no no-store fetch on the static page)', async () => {
+  const originalFetch = globalThis.fetch
+  let calls = 0
+  globalThis.fetch = (async () => {
+    calls += 1
+    return new Response('{}', { status: 200 })
+  }) as typeof fetch
+  try {
+    // 보안 스캐너의 `/%2F.env`·`/abc%2Fdef`·`/a%00b`·`/a%20b`가 디코드되어 오는 slug.
+    for (const slug of ['/.env', '../.env', 'abc/def', 'a\u0000b', 'a b', '/', 'x'.repeat(201)]) {
+      await assert.rejects(() => fetchHospital(slug), HospitalNotFoundError, slug)
+      await assert.rejects(() => fetchContents(slug), HospitalNotFoundError, slug)
+      await assert.rejects(() => fetchContent(slug, 'c1'), ContentNotFoundError, slug)
+    }
+    assert.equal(calls, 0)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('a content id that is not a UUID is a missing content without asking the backend (backend would 422)', async () => {
+  const originalFetch = globalThis.fetch
+  let calls = 0
+  globalThis.fetch = (async () => {
+    calls += 1
+    return new Response('{}', { status: 422 })
+  }) as typeof fetch
+  try {
+    for (const id of ['preload', 'x', '../etc', '123']) {
+      await assert.rejects(() => fetchContent('demo-clinic', id), ContentNotFoundError, id)
+    }
+    assert.equal(calls, 0)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
