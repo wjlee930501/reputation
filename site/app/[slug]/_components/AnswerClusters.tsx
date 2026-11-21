@@ -1,4 +1,5 @@
 import Link from 'next/link'
+import { SectionLabel } from './SectionLabel'
 
 import { TYPE_LABELS, type ContentSummary } from '@/lib/api'
 import { selectAnswerQuestions } from '@/lib/clinic-layout'
@@ -9,6 +10,8 @@ import { QUESTIONS_SECTION_TITLE } from '@/lib/clinic-template-copy'
 import { regionSentenceLabel } from '@/lib/clinic-region'
 
 interface Props {
+  /** 영문 소제목(섹션 설정·레이아웃 기본, `plan.label`). 없으면 그리지 않는다 — 지금 마크업 그대로. */
+  sectionLabel?: string | null
   contents: ContentSummary[]
   hospitalRootUrl: string
   treatments: Array<{ name: string; description: string }>
@@ -19,7 +22,7 @@ interface Props {
   note?: string | null
 }
 
-export function AnswerClusters({ contents, hospitalRootUrl, treatments, region, specialties, title, note }: Props) {
+export function AnswerClusters({ contents, hospitalRootUrl, treatments, region, specialties, title, note, sectionLabel = null }: Props) {
   const questions = selectAnswerQuestions(contents, 6)
   if (questions.length === 0) return null
 
@@ -36,6 +39,7 @@ export function AnswerClusters({ contents, hospitalRootUrl, treatments, region, 
         <div className="clinic-answers-layout">
           <aside className="clinic-answers-rail">
             <span className="clinic-answers-eyebrow">진료 전 확인</span>
+            {sectionLabel ? <SectionLabel text={sectionLabel} /> : null}
             <h2 className="clinic-section-title">{title ?? QUESTIONS_SECTION_TITLE}</h2>
             <p className="clinic-section-note">
               {note ?? (

@@ -19,6 +19,8 @@ import {
   DEFAULT_HERO_BLOCKS,
   limitCarePrincipleCards,
   DEFAULT_PHOTO_RATIO,
+  DEFAULT_SECTION_LOOK,
+  SECTION_LABEL_WORDS,
   naverBookingUrl,
   normalizeSiteConfig,
   physicianPhotoLook,
@@ -109,6 +111,11 @@ for (const layout of LAYOUTS) {
     assert.deepEqual(config.treatments, { style: 'cards', showDescription: true })
     // ③-2b 의료진 칸도 기본값이면 지금 마크업이다.
     assert.deepEqual(config.doctor, { photoRatio: null, photoFocus: null, titleBelow: false })
+    // ③-2c 섹션 머리도 기본값이면 지금 마크업이다 — 정렬 틀 없음, 소제목은 레이아웃 기본(C만 보임).
+    for (const id of DEFAULT_SECTION_ORDER[layout]) {
+      assert.equal(withConfig.align(id), null, `${layout} ${id}`)
+      assert.equal(withConfig.label(id), without.label(id), `${layout} ${id}`)
+    }
     assert.equal(physicianPhotoLook(config), null)
   })
 }
@@ -430,4 +437,56 @@ test('the title goes below the name only when the config says so', () => {
     const above = normalizeSiteConfig(published(layout, (c) => (c.doctor.title_position = 'side')), layout)
     assert.equal(above?.doctor.titleBelow, false, layout)
   }
+})
+
+// ── ③-2c 섹션 머리: 제목 정렬·영문 소제목 ─────────────────────────────
+
+test('the section head defaults equal the backend defaults (align, label)', () => {
+  for (const layout of LAYOUTS) {
+    for (const section of DEFAULTS.layouts[layout].sections as Array<{ id: string; align: string; label: boolean }>) {
+      const look = DEFAULT_SECTION_LOOK[layout][section.id as never] as { align: string; label: boolean } | undefined
+      if (section.id === 'hero' || section.id === 'section_index') {
+        assert.equal(look, undefined, `${layout} ${section.id} has no head`)
+        continue
+      }
+      assert.deepEqual(look, { align: section.align, label: section.label }, `${layout} ${section.id}`)
+    }
+  }
+})
+
+test('C keeps its current English labels; A and B show none by default', () => {
+  const c = buildHomeSectionPlan('C', null)
+  const expected = {
+    news: 'NEWS', hours: 'INFORMATION', treatments: 'MEDICAL', doctor: 'DOCTOR', care_principles: 'POLICY',
+    care_flow: 'FLOW', questions: 'Q&A', faq: 'FAQ', gallery: 'CLINIC', facts: 'ACCESS',
+  } as const
+  for (const [id, word] of Object.entries(expected)) assert.equal(c.label(id as never), word, id)
+  for (const layout of ['A', 'B'] as const) {
+    const plan = buildHomeSectionPlan(layout, null)
+    for (const id of DEFAULT_SECTION_ORDER[layout]) assert.equal(plan.label(id), null, `${layout} ${id}`)
+  }
+  for (const layout of LAYOUTS) {
+    for (const id of Object.keys(DEFAULT_SECTION_LOOK[layout])) {
+      assert.ok(SECTION_LABEL_WORDS[layout][id as never], `${layout} ${id} needs a label word`)
+    }
+  }
+})
+
+test('a changed align or label shows; the same as the default does not; heads-less sections ignore them', () => {
+  const plan = (layout: 'A' | 'B' | 'C', patch: (sections: Array<Record<string, any>>) => void) => {
+    const config = normalizeSiteConfig(published(layout, (c) => patch(c.sections)), layout)
+    return buildHomeSectionPlan(layout, config)
+  }
+  const set = (id: string, values: Record<string, unknown>) => (sections: Array<Record<string, any>>) =>
+    Object.assign(sections.find((section) => section.id === id) ?? {}, values)
+  const b = plan('B', set('treatments', { align: 'left', label: true }))
+  assert.equal(b.align('treatments'), 'left')
+  assert.equal(b.label('treatments'), 'MEDICAL')
+  assert.equal(plan('B', set('treatments', { align: 'center', label: false })).align('treatments'), null)
+  const c = plan('C', set('faq', { label: false, align: 'center' }))
+  assert.equal(c.label('faq'), null)
+  assert.equal(c.align('faq'), 'center')
+  const hero = plan('B', set('hero', { align: 'center', label: true }))
+  assert.equal(hero.align('hero'), null)
+  assert.equal(hero.label('hero'), null)
 })

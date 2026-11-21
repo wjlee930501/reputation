@@ -1,6 +1,7 @@
 import { closedDaysPhrase, holidayHours } from '@/lib/business-hours'
 import { seoulToday } from '@/lib/clinic-layout'
 import { fullClinicAddress } from '@/lib/clinic-schema'
+import { SectionLabel } from './SectionLabel'
 
 import { WeekHours } from './WeekHours'
 import { MapPinIcon, NavigationIcon, PhoneIcon, StethoscopeIcon } from './icons'
@@ -25,6 +26,8 @@ interface OfficialLink {
 }
 
 interface Props {
+  /** 영문 소제목(섹션 설정·레이아웃 기본, `plan.label`). 없으면 그리지 않는다 — 지금 마크업 그대로. */
+  sectionLabel?: string | null
   hospitalName: string
   address: string
   /** 도로명 주소 뒤 상세 주소(건물명·층·호). 없으면 null. */
@@ -55,6 +58,7 @@ export function HospitalFacts({
   hiraOrgId,
   links,
   googleMapsUrl,
+  sectionLabel = null,
 }: Props) {
   // 서버(UTC)가 아닌 한국 시간 기준 오늘. 캐시된 HTML의 날짜는 WeekHours가 브라우저에서 바로잡는다.
   const { key: todayKey, month, day } = seoulToday()
@@ -77,6 +81,7 @@ export function HospitalFacts({
     <section id="hospital-facts" className="clinic-section clinic-section--facts">
       <div className="clinic-section-inner">
         <header className="clinic-section-head">
+          {sectionLabel ? <SectionLabel text={sectionLabel} /> : null}
           <h2 className="clinic-section-title">{factsSectionTitle(hospitalName)}</h2>
           <p className="clinic-section-note">{FACTS_SECTION_NOTE}</p>
         </header>

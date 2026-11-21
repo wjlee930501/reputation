@@ -1,4 +1,5 @@
 import Link from 'next/link'
+import { SectionLabel } from './SectionLabel'
 
 import { fullClinicAddress } from '@/lib/clinic-schema'
 
@@ -12,6 +13,8 @@ interface ChannelLink {
 }
 
 interface Props {
+  /** 영문 소제목(섹션 설정·레이아웃 기본, `plan.label`). 없으면 그리지 않는다 — 지금 마크업 그대로. */
+  sectionLabel?: string | null
   address: string
   /** 도로명 주소 뒤 상세 주소(건물명·층·호). 없으면 null. */
   addressDetail?: string | null
@@ -71,6 +74,7 @@ export function ContactCard({
   transitNote = null,
   title,
   note,
+  sectionLabel = null,
 }: Props) {
   const visibleLinks = links.filter((link) => Boolean(link.url))
   const regionText = regionSentenceLabel(region)
@@ -80,6 +84,7 @@ export function ContactCard({
     <section id="contact" className="clinic-section clinic-section--alt">
       <div className="clinic-section-inner">
         <header className="clinic-section-head">
+          {sectionLabel ? <SectionLabel text={sectionLabel} /> : null}
           <h2 className="clinic-section-title">{title ?? '오시는 길·방문 안내'}</h2>
           <p className="clinic-section-note">
             {note ?? (

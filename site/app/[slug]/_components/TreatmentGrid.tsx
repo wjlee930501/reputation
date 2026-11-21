@@ -1,5 +1,6 @@
 import Link from 'next/link'
 import type { CSSProperties } from 'react'
+import { SectionLabel } from './SectionLabel'
 
 import { countLabel } from '@/lib/clinic-counters'
 import { buildTreatmentSlug } from '@/lib/treatment-slug'
@@ -13,6 +14,8 @@ interface Treatment {
 }
 
 interface Props {
+  /** 영문 소제목(섹션 설정·레이아웃 기본, `plan.label`). 없으면 그리지 않는다 — 지금 마크업 그대로. */
+  sectionLabel?: string | null
   treatments: Treatment[]
   hospitalRootUrl: string
   /** 섹션 설정이 바꾼 제목·안내 문장(레이아웃 편집기). 없으면 지금 문구. */
@@ -38,6 +41,7 @@ export function TreatmentGrid({
   note,
   variant = 'cards',
   showDescription = true,
+  sectionLabel = null,
 }: Props) {
   if (!treatments || treatments.length === 0) {
     return null
@@ -58,6 +62,7 @@ export function TreatmentGrid({
         {/* P-A-3 — 이 제목은 sr-only였다. 다른 섹션은 모두 제목이 보이는데 첫
             섹션만 보이지 않아, 화면에서는 카드 네 장이 맥락 없이 시작됐다. */}
         <header className="clinic-section-head clinic-treatment-directory-head">
+          {sectionLabel ? <SectionLabel text={sectionLabel} /> : null}
           <h2 className="clinic-section-title">{title ?? TREATMENT_SECTION_TITLE}</h2>
           <p className="clinic-section-note">{note ?? TREATMENT_SECTION_NOTE}</p>
         </header>

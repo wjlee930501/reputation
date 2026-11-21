@@ -9,11 +9,14 @@ import {
   physicianRoleLabel,
   type ClinicPhysician,
 } from '@/lib/clinic-physicians'
+import { SectionLabel } from './SectionLabel'
 
 import { ClinicAvatar } from './ClinicAvatar'
 import { DOCTOR_SECTION_TITLE } from '@/lib/clinic-template-copy'
 
 interface Props {
+  /** 영문 소제목(섹션 설정·레이아웃 기본, `plan.label`). 없으면 그리지 않는다 — 지금 마크업 그대로. */
+  sectionLabel?: string | null
   /** display_order 순서로 정규화된 의료진. 비어 있으면 섹션을 그리지 않는다. */
   physicians: ClinicPhysician[]
   specialties: string[]
@@ -41,6 +44,7 @@ export function DoctorIntro({
   note,
   photoLook = null,
   titleBelow = false,
+  sectionLabel = null,
 }: Props) {
   if (physicians.length === 0) return null
   const layout = clinicPhysicianLayout(physicians.length)
@@ -49,6 +53,7 @@ export function DoctorIntro({
     <section id="curator" className="clinic-section clinic-section--alt">
       <div className="clinic-section-inner">
         <header className="clinic-section-head">
+          {sectionLabel ? <SectionLabel text={sectionLabel} /> : null}
           <h2 className="clinic-section-title">{title ?? DOCTOR_SECTION_TITLE}</h2>
           {note ? <p className="clinic-section-note">{note}</p> : null}
         </header>

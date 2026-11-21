@@ -1,4 +1,5 @@
 import Link from 'next/link'
+import { SectionLabel } from './SectionLabel'
 
 import type { FaqEntry } from '@/lib/schema'
 
@@ -6,6 +7,8 @@ import { ChevronRightIcon } from './icons'
 import { FAQ_SECTION_NOTE, FAQ_SECTION_TITLE } from '@/lib/clinic-template-copy'
 
 interface Props {
+  /** 영문 소제목(섹션 설정·레이아웃 기본, `plan.label`). 없으면 그리지 않는다 — 지금 마크업 그대로. */
+  sectionLabel?: string | null
   entries: FaqEntry[]
   hospitalRootUrl: string
   /** 섹션 설정이 바꾼 제목·안내 문장(레이아웃 편집기). 없으면 지금 문구. */
@@ -21,13 +24,14 @@ interface Props {
  * 없는 Q&A만 마크업으로 주장하는 상태였다. 여기서 그리는 항목과 JSON-LD의
  * mainEntity는 같은 `selectFaqEntries()` 결과다.
  */
-export function ClinicFaq({ entries, hospitalRootUrl, title, note }: Props) {
+export function ClinicFaq({ entries, hospitalRootUrl, title, note, sectionLabel = null }: Props) {
   if (entries.length === 0) return null
 
   return (
     <section id="faq" className="clinic-section">
       <div className="clinic-section-inner">
         <header className="clinic-section-head">
+          {sectionLabel ? <SectionLabel text={sectionLabel} /> : null}
           <h2 className="clinic-section-title">{title ?? FAQ_SECTION_TITLE}</h2>
           <p className="clinic-section-note">{note ?? FAQ_SECTION_NOTE}</p>
         </header>
