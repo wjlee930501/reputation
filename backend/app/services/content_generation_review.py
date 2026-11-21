@@ -145,6 +145,20 @@ async def generate_reviewed_content(
     last_generation_error: Exception | None = None
     # 세션 안 모든 작가 회차의 결정적 거절 횟수(E5, 사유별).
     rejection_counts: dict[str, dict[str, int]] = {}
+    # 문체 보완 재작성(선택)을 쓰기 직전의 PASS 후보. 보완은 글을 낫게 하려는 선택이라, 그 회차가
+    # 공급자 오류로 끝나거나 PASS를 받지 못하면 이 후보로 돌아간다 — 이미 발행할 수 있던 글을
+    # 선택적 재작성이 막거나 버리게 하지 않는다.
+    soft_fallback: tuple[dict[str, Any], EssenceScreeningResult, Any, list[str]] | None = None
+
+    def _restore_soft_fallback() -> None:
+        nonlocal accepted_content, accepted_screening, last_ai_review, accepted_reference_findings
+        assert soft_fallback is not None
+        (
+            accepted_content,
+            accepted_screening,
+            last_ai_review,
+            accepted_reference_findings,
+        ) = soft_fallback
 
     def _generation_budget_left() -> bool:
         return generations < limits.max_generations
@@ -195,6 +209,15 @@ async def generate_reviewed_content(
                 # 공급자 오류(시간 초과 등) — 이 회차 작가 호출이 실어 보낸 거절 횟수를 합친다. 세션 누적치는
                 # 아래 루프 경계가 싣는다.
                 _merge_rejection_counts(rejection_counts, getattr(exc, GENERATION_REJECTIONS_KEY, None))
+                if soft_fallback is not None:
+                    logger.info(
+                        "Optional soft rewrite failed; keeping the reviewed PASS candidate: "
+                        "hospital=%s error=%s",
+                        hospital.id,
+                        type(exc).__name__,
+                    )
+                    _restore_soft_fallback()
+                    break
                 raise
             generations += 1
             last_generation_error = None
@@ -212,6 +235,10 @@ async def generate_reviewed_content(
             accepted_content, accepted_screening, last_ai_review = candidate, screening, None
             accepted_reference_findings = []
             if screening.status != ESSENCE_STATUS_ALIGNED:
+                if soft_fallback is not None:
+                    # 선택적 보완이 Essence 스크린을 깨뜨렸다 — 보완 전 PASS 후보로 돌아간다.
+                    _restore_soft_fallback()
+                    break
                 screen_findings = review_findings(screening.summary)
                 if screen_findings and _remediation_budget_left():
                     remediation_rewrites += 1
@@ -227,6 +254,10 @@ async def generate_reviewed_content(
             )
             if last_ai_review.blocking_findings and last_ai_review.candidate_sha256:
                 session_blocking_hashes.append(last_ai_review.candidate_sha256)
+            if soft_fallback is not None and last_ai_review.status != ContentAiReviewStatus.PASS:
+                # 선택적 보완이 PASS를 받지 못했다(차단 지적·검수 장애 등) — 보완 전 PASS 후보로 돌아간다.
+                _restore_soft_fallback()
+                break
             if last_ai_review.status == ContentAiReviewStatus.UNAVAILABLE:
                 # UNAVAILABLE never grants approval: it merely leaves the candidate to
                 # the deterministic generation and publication gates below.
@@ -258,6 +289,12 @@ async def generate_reviewed_content(
                 if soft_findings and soft_rewrites < limits.soft_rewrites and _generation_budget_left():
                     soft_rewrites += 1
                     findings = soft_findings
+                    soft_fallback = (
+                        candidate,
+                        screening,
+                        last_ai_review,
+                        list(accepted_reference_findings),
+                    )
                     continue
                 break
             # Only stylistic/soft feedback may spend the shared remediation rewrite.

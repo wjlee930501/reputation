@@ -11,7 +11,13 @@ from app.models.content import ContentItem, ContentType
 from app.models.essence import HospitalContentPhilosophy, PhilosophyStatus
 from app.models.hospital import Hospital
 from app.services import content_engine
-from app.services.content_ai_review import ContentAiReview, ContentAiReviewStatus
+from app.services.content_ai_review import (
+    ContentAiFinding,
+    ContentAiFindingKind,
+    ContentAiFindingSeverity,
+    ContentAiReview,
+    ContentAiReviewStatus,
+)
 from app.services.content_generation_review import (
     ContentReviewDependencies,
     GenerationReviewLimits,
@@ -83,15 +89,50 @@ def test_rewritten_meaning_and_short_shared_phrases_are_not_flagged(hospital: Ho
     assert copied_source_sentences(body, hospital, philosophy, []) == []
 
 
-def test_safety_and_tone_fields_are_not_sources(hospital: Hospital) -> None:
+def test_safety_fields_are_not_sources(hospital: Hospital) -> None:
     caution = "약을 임의로 중단하거나 용량을 바꾸지 말고 반드시 담당 의사와 먼저 상의하시기 바랍니다."
     philosophy = _philosophy(
         hospital.id,
-        tone_guidelines=[caution],
         avoid_messages=[caution],
+        medical_ad_risk_rules=[caution],
         treatment_narratives=[{"treatment": "고혈압", "cautions": [caution]}],
     )
     assert copied_source_sentences(caution, hospital, philosophy, []) == []
+
+
+def test_fallback_angle_and_tone_guideline_carry_note_text(hospital: Hospital) -> None:
+    """결정적 폴백 판은 근거 노트 원문을 angle·tone_guidelines에 싣는다 — 둘 다 원문 집합이다."""
+
+    for philosophy in (
+        _philosophy(
+            hospital.id,
+            treatment_narratives=[{"treatment": "위내시경", "angle": SURVEY_SENTENCE}],
+        ),
+        _philosophy(hospital.id, tone_guidelines=[f"원문 톤을 유지합니다: {SURVEY_SENTENCE}"]),
+    ):
+        copies = copied_source_sentences(SURVEY_SENTENCE, hospital, philosophy, [])
+        assert len(copies) == 1
+
+
+def test_only_the_must_use_part_of_a_source_sentence_is_exempt(hospital: Hospital) -> None:
+    must = "치료 방향은 환자와 함께 결정합니다."
+    source = "검사 결과와 일상생활에서 불편한 점을 차근차근 확인한 뒤 치료 방향은 환자와 함께 결정합니다."
+    philosophy = _philosophy(hospital.id, doctor_voice=source, must_use_messages=[must])
+    # 필수 문구만 따로 넣으면 걸리지 않는다.
+    assert copied_source_sentences(f"## 안내\n{must}", hospital, philosophy, [must]) == []
+    # 같은 원문 문장의 앞부분을 옮기면 걸린다 — 필수 문구가 든 문장이라도.
+    body = "검사 결과와 일상생활에서 불편한 점을 차근차근 확인한 뒤 설명을 이어 갑니다. " + must
+    assert len(copied_source_sentences(body, hospital, philosophy, [must])) == 1
+    assert len(copied_source_sentences(source, hospital, philosophy, [must])) == 1
+
+
+def test_one_sentence_of_a_multi_sentence_must_use_is_exempt(hospital: Hospital) -> None:
+    first = "처음 오신 분께는 검사 결과를 화면으로 함께 보면서 차근차근 설명합니다."
+    second = "생활에서 바꿀 점은 한 번에 하나씩 정해 드리고 다음 진료 때 다시 확인합니다."
+    must = f"{first} {second}"
+    philosophy = _philosophy(hospital.id, patient_promise=must, must_use_messages=[must])
+    body = f"## 진료\n{first}\n중간 설명 문장입니다.\n{second}"
+    assert copied_source_sentences(body, hospital, philosophy, [must]) == []
 
 
 def test_treatment_patient_language_is_a_source(hospital: Hospital) -> None:
@@ -178,3 +219,51 @@ async def test_copy_left_after_the_rewrite_is_recorded_not_blocked(hospital: Hos
         {"sentence": SURVEY_SENTENCE[:40] + "…", "field": "doctor_voice"}
     ]
     assert "blocking" not in screening.summary
+
+
+async def test_soft_rewrite_provider_failure_keeps_the_pass_candidate(hospital: Hospital) -> None:
+    effects, context = _session(hospital, [COPIED])
+    effects.generate.side_effect = [deepcopy(COPIED), TimeoutError("provider timeout")]
+    candidate, screening = await generate_reviewed_content(
+        **context, dependencies=effects, limits=LIMITS
+    )
+    assert candidate["body"] == COPIED["body"]
+    assert screening.status == ESSENCE_STATUS_ALIGNED
+    assert screening.summary["ai_review"]["status"] == "PASS"
+    assert "blocking" not in screening.summary
+
+
+@pytest.mark.parametrize(
+    "second_review",
+    [
+        ContentAiReview(ContentAiReviewStatus.UNAVAILABLE, 0.0, (), "down", "m"),
+        ContentAiReview(
+            ContentAiReviewStatus.REVISE,
+            0.9,
+            (
+                ContentAiFinding(
+                    ContentAiFindingSeverity.HARD,
+                    ContentAiFindingKind.MEDICAL_SAFETY,
+                    "위험한 권고",
+                ),
+            ),
+            "hard",
+            "m",
+        ),
+    ],
+)
+async def test_soft_rewrite_that_loses_pass_falls_back(
+    hospital: Hospital, second_review: ContentAiReview
+) -> None:
+    effects, context = _session(hospital, [COPIED, REWRITTEN])
+    first_review = ContentAiReview(ContentAiReviewStatus.PASS, 0.95, (), "ok", "m")
+    effects.review.side_effect = [first_review, second_review]
+    candidate, screening = await generate_reviewed_content(
+        **context, dependencies=effects, limits=LIMITS
+    )
+    assert candidate["body"] == COPIED["body"]
+    assert effects.generate.await_count == 2
+    assert screening.status == ESSENCE_STATUS_ALIGNED
+    assert screening.summary["ai_review"]["status"] == "PASS"
+    assert "blocking" not in screening.summary
+    assert screening.summary[SOURCE_COPY_SUMMARY_KEY]
