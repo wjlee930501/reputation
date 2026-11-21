@@ -98,6 +98,14 @@
   color: var(--clinic-on-brand-strong);
 }
 
+/* 당일·야간 진료형의 '오늘 진료' 강조(globals.css `.clinic-hero--access-urgent … > div:first-child`, 브랜드 강조색)는
+   진한 대표색 띠에서 배경과 같은 색이라 글자가 묻힌다(기본 대표색에서 둘 다 #17365D). 위 규칙과 우선순위가 같아
+   지금은 CSS 파일 순서로만 이기므로, 순서에 기대지 않게 더 구체적인 규칙으로 띠 글자색을 고정한다. */
+.shell.shell :global(.clinic-hero--access-urgent .clinic-hero-fact-rail > div:first-child dt),
+.shell.shell :global(.clinic-hero--access-urgent .clinic-hero-fact-rail > div:first-child dd) {
+  color: var(--clinic-on-brand-strong);
+}
+
 /* 버튼 — 알약 */
 .shell.shell :global(.clinic-btn) {
   border-radius: var(--clinic-control-radius-pill);
