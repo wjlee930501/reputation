@@ -131,3 +131,24 @@ def test_monthly_report_summarizes_only_brand_answers():
     assert summary["fields"]["address"]["match"] == 1
     assert _brand_answer_accuracy(hospital, None) is None
     assert _brand_answer_accuracy(hospital, SimpleNamespace(scored_records=())) is None
+
+
+def test_codex_review_edge_cases():
+    facts = _facts()
+
+    # 전화번호는 주소가 아니다.
+    assert check_answer(facts, "행복드림의원 예약은 전화로 02-1234-5678")["address"] == "ABSENT"
+    # '…로 123번길 4'는 다른 도로다.
+    assert check_answer(facts, "행복드림의원은 월드컵북로 123번길 4에 있어요")["address"] == "MISMATCH"
+    # 주소 뒤 마침표.
+    assert check_answer(facts, "행복드림의원은 월드컵북로 123. 2층입니다.")["address"] == "MATCH"
+    # 콜론 시각의 오전·오후.
+    assert check_answer(facts, "행복드림의원은 오전 9:00~오후 6:00 진료합니다.")["hours"] == "MATCH"
+    # '시'를 같이 쓰는 범위의 앞쪽 시각.
+    assert check_answer(facts, "행복드림의원은 평일 8~18시 진료합니다.")["hours"] == "MISMATCH"
+    assert check_answer(facts, "행복드림의원은 평일 9~18시 진료합니다.")["hours"] == "MATCH"
+    # 1:1 시술·날짜 12.1 시행은 시각이 아니다.
+    assert check_answer(facts, "행복드림의원은 1:1 시술 상담을 제공합니다.")["hours"] == "ABSENT"
+    assert check_answer(facts, "행복드림의원은 12.1 시행되는 검진을 안내합니다.")["hours"] == "ABSENT"
+    # '24시간 진료' 주장은 진료 시간표와 다르다.
+    assert check_answer(facts, "행복드림의원은 24시간 진료합니다.")["hours"] == "MISMATCH"

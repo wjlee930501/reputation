@@ -33,11 +33,26 @@ _WINDOW_CHARS: Final = 400
 _EXCERPT_CHARS: Final = 160
 _MAX_EXCERPTS: Final = 3
 
-_ROAD_RE = re.compile(r"([가-힣A-Za-z0-9]+(?:대로|로|길))\s*(\d+(?:-\d+)?)(?![\d.])")
-_CLOCK_RE = re.compile(r"(?<!\d)([01]?\d|2[0-4])\s*[:：]\s*([0-5]\d)(?!\d)")
-_KOREAN_TIME_RE = re.compile(
-    r"(오전|오후|낮|저녁|밤)?\s*(?<!\d)(2[0-4]|1\d|[1-9])\s*시(?!간)(?:\s*([0-5]?\d)\s*분|\s*(반))?"
+# 도로명 + 건물번호. 번호 뒤에 '번길'이 이어지면 다른 도로("월드컵북로 123번길 4")이고, 뒤 숫자가 이어지는
+# 소수점이 아니어야 한다. 앞이 숫자·하이픈이면(전화번호 "02-1234") 주소가 아니다.
+_ROAD_RE = re.compile(
+    r"(?<![\d-])([가-힣A-Za-z0-9]*[가-힣A-Za-z](?:대로|로|길))\s*(\d+(?:-\d+)?)(?!\d|\.\d|-\d|\s*번길)"
 )
+_PHONE_RE = re.compile(r"(?<!\d)0\d{1,2}[-.\s]?\d{3,4}[-.\s]?\d{4}(?!\d)")
+_MERIDIEM = r"(오전|오후|낮|저녁|밤)?\s*"
+# "9:00", "오후 6:30". 앞이 숫자·점이면(날짜 12.1, 비율 1:1의 뒤쪽) 시각이 아니다. 비율("1:1")은 분이 두 자리가
+# 아니라 걸리지 않는다.
+_CLOCK_RE = re.compile(_MERIDIEM + r"(?<![\d.])([01]?\d|2[0-4])\s*[:：]\s*([0-5]\d)(?!\d)")
+# "9시", "오후 6시 반", "18시 30분". '시간'·'시술'·'시행'·'시작' 같은 낱말의 '시'는 아니다.
+_KOREAN_TIME_RE = re.compile(
+    _MERIDIEM
+    + r"(?<![\d.])(2[0-4]|1\d|[1-9])\s*시(?![간술행작험력청설])(?:\s*([0-5]?\d)\s*분|\s*(반))?"
+)
+# "8~18시", "9-18시": 앞쪽 시각이 '시'를 뒤와 같이 쓴다.
+_SHARED_HOUR_RANGE_RE = re.compile(
+    _MERIDIEM + r"(?<![\d.:])(2[0-4]|1\d|[1-9])\s*[~∼\-–]\s*" + _MERIDIEM + r"(2[0-4]|1\d|[1-9])\s*시(?![간술행작험력청설])"
+)
+_ROUND_THE_CLOCK_RE = re.compile(r"24\s*시간\s*(진료|운영|영업|문을\s*연|열)")
 _SPACE_RE = re.compile(r"\s+")
 
 
@@ -85,18 +100,36 @@ class BrandFacts:
         )
 
 
-def _times(text: str) -> set[int]:
-    """글 안의 시각을 하루 중 분으로. 오후·저녁·밤 표지가 있으면 12시간을 더한다."""
+def _hour(meridiem: str, hour: str) -> int:
+    value = int(hour)
+    if meridiem in ("오후", "저녁", "밤") and value < 12:
+        return value + 12
+    if meridiem == "오전" and value == 12:
+        return 0
+    return value
 
+
+ROUND_THE_CLOCK = -1  # '24시간 진료' 주장 — 시각 집합과 따로 비교한다.
+
+
+def _times(text: str) -> set[int]:
+    """글 안의 시각을 하루 중 분으로. 오후·저녁·밤 표지가 있으면 12시간을 더한다.
+
+    '24시간 진료'는 `ROUND_THE_CLOCK` 하나로 센다. 전화번호 안의 숫자는 시각으로 읽지 않는다.
+    """
+
+    text = _PHONE_RE.sub(" ", text)
     found: set[int] = set()
-    for hour, minute in _CLOCK_RE.findall(text):
-        found.add(int(hour) * 60 + int(minute))
+    if _ROUND_THE_CLOCK_RE.search(text):
+        found.add(ROUND_THE_CLOCK)
+    for meridiem, hour, minute in _CLOCK_RE.findall(text):
+        found.add(_hour(meridiem, hour) * 60 + int(minute))
+    for start_meridiem, start, end_meridiem, end in _SHARED_HOUR_RANGE_RE.findall(text):
+        found.add(_hour(start_meridiem, start) * 60)
+        found.add(_hour(end_meridiem or start_meridiem, end) * 60)
     for meridiem, hour, minute, half in _KOREAN_TIME_RE.findall(text):
-        value = int(hour)
-        if meridiem in ("오후", "저녁", "밤") and value < 12:
-            value += 12
         minutes = 30 if half else int(minute or 0)
-        found.add(value * 60 + minutes)
+        found.add(_hour(meridiem, hour) * 60 + minutes)
     return found
 
 
@@ -117,7 +150,7 @@ def _windows(facts: BrandFacts, text: str) -> list[str]:
 def _address(facts: BrandFacts, scope: str) -> FieldVerdict | None:
     if facts.road is None:
         return None
-    roads = {(road, number) for road, number in _ROAD_RE.findall(scope)}
+    roads = {(road, number) for road, number in _ROAD_RE.findall(_PHONE_RE.sub(" ", scope))}
     if not roads:
         return "ABSENT"
     own_road, own_number = facts.road
