@@ -250,6 +250,68 @@ def test_a_published_image_recertification_incident_is_not_closed_for_a_missing_
     assert _state(db, incident) == "RETRYING"
 
 
+def test_a_generation_failure_closes_when_a_once_published_post_is_cancelled(db):
+    """공개 → 반려 → 재생성 실패 → 취소: 처음 공개가 사고보다 앞서도 취소된 글의 사고는 닫는다."""
+
+    hospital = _hospital(db)
+    item = _generation_item(
+        db, hospital, status=ContentStatus.CANCELLED, first_published_at=NOW - timedelta(days=40)
+    )
+    incident = _incident(db, "CONTENT_GENERATION_FAILED", hospital=hospital, source_id=str(item.id))
+    incident.state = "RETRYING"
+    db.flush()
+
+    close_resolved_backlog_incidents(db, now=NOW)
+
+    assert _state(db, incident) == "ACKNOWLEDGED"
+
+
+def test_a_cancelled_posts_image_recertification_incident_stays_open(db):
+    from app.services import published_image_recertification as recertification
+
+    hospital = _hospital(db)
+    item = _generation_item(
+        db, hospital, status=ContentStatus.CANCELLED, first_published_at=NOW - timedelta(days=40)
+    )
+    incident = _incident(db, "CONTENT_GENERATION_FAILED", hospital=hospital, source_id=str(item.id))
+    incident.dedupe_key = recertification.incident_dedupe_key(item.id, "b" * 64)
+    incident.safe_error_code = sorted(recertification.OPERATOR_REQUIRED_CODES)[0]
+    incident.state = "RETRYING"
+    db.flush()
+
+    close_resolved_backlog_incidents(db, now=NOW)
+
+    assert _state(db, incident) == "RETRYING"
+
+
+def test_generation_incidents_without_evidence_do_not_starve_the_batch(db):
+    """근거 없는 오래된 생성 사고(진행 중인 글)가 배치 앞자리를 다 차지해도 뒤의 취소된 글 사고는 닫힌다."""
+
+    hospital = _hospital(db)
+    stuck = []
+    for days in range(10, 15):
+        live = _generation_item(db, hospital, status=ContentStatus.DRAFT)
+        incident = _incident(
+            db, "CONTENT_GENERATION_FAILED", hospital=hospital, source_id=str(live.id),
+            seen=NOW - timedelta(days=days),
+        )
+        incident.state = "RETRYING"
+        stuck.append(incident)
+    cancelled = _generation_item(db, hospital, status=ContentStatus.CANCELLED)
+    target = _incident(
+        db, "CONTENT_GENERATION_FAILED", hospital=hospital, source_id=str(cancelled.id),
+        seen=NOW - timedelta(days=1),
+    )
+    target.state = "RETRYING"
+    db.flush()
+
+    # 배치 하나 = limit 1 → 후보 4건. 근거 없는 5건이 더 오래됐다.
+    close_resolved_backlog_incidents(db, limit=1, now=NOW)
+
+    assert _state(db, target) == "ACKNOWLEDGED"
+    assert all(_state(db, incident) == "RETRYING" for incident in stuck)
+
+
 def test_a_hospital_scoped_generation_hold_is_not_closed_for_lack_of_a_post(db):
     """운영 기준 없음 같은 병원 단위 생성 사고는 source_id가 병원 id다 — 글이 없다고 닫지 않는다."""
 
