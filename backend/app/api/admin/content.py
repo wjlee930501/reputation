@@ -6,6 +6,7 @@ GET    /admin/hospitals/{id}/content/{cid}          — 상세 조회
 PATCH  /admin/hospitals/{id}/content/{cid}          — 제목/본문/meta 수정
 PATCH  /admin/hospitals/{id}/content/{cid}/brief    — 타깃 질의/액션/brief 수정
 POST   /admin/hospitals/{id}/content/{cid}/reschedule — 미발행 콘텐츠 발행일 재배치
+POST   /admin/hospitals/{id}/content/{cid}/exclude — 발행 제외(취소 + 같은 달 다른 날 새 칸, 편수 유지)
 POST   /admin/hospitals/{id}/content/{cid}/cancel    — 중복·노후 슬롯 종료
 POST   /admin/hospitals/{id}/content/{cid}/candidate/cancel — 검수 중 편집 후보 폐기
 POST   /admin/hospitals/{id}/content/{cid}/publish  — 발행
@@ -1222,6 +1223,137 @@ async def reschedule_content(
     await db.commit()
     await db.refresh(item)
     return await _serialize_single(db, hospital_id, item)
+
+
+class ExcludeBody(BaseModel):
+    """발행 제외 사유(선택). 감사 기록에 남는다."""
+
+    reason: str | None = Field(default=None, max_length=500)
+
+
+_EXCLUDABLE_STATUSES = (ContentStatus.DRAFT, ContentStatus.READY, ContentStatus.REJECTED)
+
+
+@router.post(
+    "/{hospital_id}/content/{content_id}/exclude",
+    response_model=ContentItemDetail,
+)
+async def exclude_content(
+    hospital_id: uuid.UUID,
+    content_id: uuid.UUID,
+    body: ExcludeBody | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """발행 제외 — 이 글은 종료하고 같은 계약 달의 다른 날에 새 칸을 만든다(2026-11 개편 결정 대기 6번 A).
+
+    그냥 종료하면 그 달 약속 편수가 모자라 계약 이행·일일 요약이 미달로 본다. 새 칸은 주제를 비워 두어
+    다음 생성이 새로 고른다. 날짜는 내일 이후 그 달 발행 요일 중 하루 최대 편수에 자리가 남은 가장 이른
+    날이다. 공개된 적 있는 글·생성 중인 글·지난 달 계약 글은 대상이 아니다.
+    """
+
+    await acquire_hospital_advisory_lock(db, hospital_id)
+    item = await _get_content(db, content_id, hospital_id)
+    if item.status not in _EXCLUDABLE_STATUSES or item.first_published_at or item.published_at:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "EXCLUDE_NOT_ALLOWED", "message": "공개된 적 없는 예정 글만 발행 제외할 수 있습니다."},
+        )
+    if item.generation_claim_token is not None:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "EXCLUDE_GENERATING", "message": "글을 만드는 중입니다. 잠시 뒤 다시 시도해 주세요."},
+        )
+    contract_date = item.carried_over_from or item.scheduled_date
+    if contract_date is None:
+        raise HTTPException(status_code=409, detail={"code": "EXCLUDE_NOT_ALLOWED", "message": "예정일이 없는 글입니다."})
+    month = arrow.get(contract_date).floor("month")
+    tomorrow = arrow.now("Asia/Seoul").shift(days=1).date()
+    schedule = (
+        await db.execute(
+            select(ContentSchedule)
+            .where(
+                ContentSchedule.hospital_id == hospital_id,
+                ContentSchedule.active_from <= month.ceil("month").date(),
+                ContentSchedule.superseded_at.is_(None),
+            )
+            .order_by(ContentSchedule.active_from.desc(), ContentSchedule.created_at.desc())
+            .limit(1)
+        )
+    ).scalars().first()
+    if schedule is None:
+        raise HTTPException(status_code=409, detail={"code": "EXCLUDE_NO_SCHEDULE", "message": "발행 일정이 없습니다."})
+    daily_max = int(getattr(schedule, "daily_max", None) or 1)
+    candidates = preferred_publish_dates(list(schedule.publish_days or []), month, tomorrow)
+    live_dates = (
+        await db.execute(
+            select(ContentItem.scheduled_date).where(
+                ContentItem.hospital_id == hospital_id,
+                ContentItem.id != item.id,
+                ContentItem.status != ContentStatus.CANCELLED,
+                ContentItem.scheduled_date >= tomorrow,
+                ContentItem.scheduled_date <= month.ceil("month").date(),
+            )
+        )
+    ).scalars().all()
+    load: dict[date, int] = {}
+    for day in live_dates:
+        load[day] = load.get(day, 0) + 1
+    # 같은 날에는 다시 놓지 않는다 — 그 날 글을 빼려는 것이고, 같은 일정·날짜·순번은 종료한 글과 겹친다
+    # (`uq_content_items_schedule_slot`).
+    replacement_date = next(
+        (day for day in candidates if day != item.scheduled_date and load.get(day, 0) < daily_max),
+        None,
+    )
+    if replacement_date is None:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "EXCLUDE_MONTH_FULL",
+                "message": (
+                    f"{month.format('YYYY년 M월')}에 내일 이후 자리가 남은 발행 요일이 없습니다. "
+                    "발행 요일이나 하루 최대 편수를 늘린 뒤 다시 시도하거나, 주제 바꾸기를 써 주세요."
+                ),
+            },
+        )
+
+    previous_status = _enum_value(item.status)
+    item.status = ContentStatus.CANCELLED
+    item.generation_claimed_at = None
+    item.generation_claim_token = None
+    item.content_revision = int(getattr(item, "content_revision", 1) or 1) + 1
+    replacement = ContentItem(
+        hospital_id=hospital_id,
+        schedule_id=schedule.id,
+        content_type=item.content_type,
+        sequence_no=item.sequence_no,
+        total_count=item.total_count,
+        scheduled_date=replacement_date,
+        # 지난 달에서 넘어온 글이면 원래 계약 달을 잇는다 — 편수는 그 달 몫이다.
+        carried_over_from=item.carried_over_from,
+        status=ContentStatus.DRAFT,
+        essence_check_summary={"generation_attempt": fresh_generation_attempt(topic_id=None)},
+    )
+    db.add(replacement)
+    await db.flush()
+    await write_audit_log(
+        db,
+        action="exclude_content",
+        hospital_id=hospital_id,
+        actor=default_actor(),
+        target_type="content_item",
+        target_id=content_id,
+        detail={
+            "previous_status": previous_status,
+            "scheduled_date": str(item.scheduled_date) if item.scheduled_date else None,
+            "title": item.title,
+            "reason": (body.reason or "").strip() or None if body else None,
+            "replacement_id": str(replacement.id),
+            "replacement_date": str(replacement_date),
+        },
+    )
+    await db.commit()
+    await db.refresh(replacement)
+    return await _serialize_single(db, hospital_id, replacement)
 
 
 @router.post(

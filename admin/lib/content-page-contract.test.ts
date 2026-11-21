@@ -21,7 +21,6 @@ const REMOVED = [
   'enterBriefEditMode',
   "'/publish'",
   "'/regenerate'",
-  "'/reschedule'",
   "'/cancel'",
   "'/brief'",
   'regenerationRuns',
@@ -42,8 +41,17 @@ test('운영 복구 버튼과 그 요청 경로는 콘텐츠 화면에 없다', 
   // 템플릿 리터럴로 조립한 요청 경로까지 잡는다 (경로 끝이 따옴표·역따옴표).
   assert.doesNotMatch(
     page.replaceAll('/candidate/cancel', ''),
-    /\/(publish|regenerate|regenerate-image|reschedule|cancel|brief)['"`]/,
+    /\/(publish|regenerate|regenerate-image|cancel|brief)['"`]/,
   )
+})
+
+test('공개 전 글은 ⋯ 메뉴에서 발행일을 바꾸고 발행 제외한다(개편 결정 대기 6번 A·C)', () => {
+  // 발행일 바꾸기는 기존 reschedule API, 발행 제외는 종료 + 같은 달 새 칸(편수 유지) API다.
+  assert.match(page, /\/content\/\$\{itemId\}\/reschedule`/)
+  assert.match(page, /\/content\/\$\{itemId\}\/exclude`/)
+  assert.match(page, /발행 제외 · 같은 달 다른 날 새 글/)
+  // 공개된 글에는 붙이지 않는다 — 공개 글은 비공개 후 재생성만이다.
+  assert.match(page, /selected\.status === 'DRAFT' \|\| selected\.status === 'READY' \|\| selected\.status === 'REJECTED'\)\s*&& !selected\.published_at/)
 })
 
 test('행 상태는 서버 판정을 그대로 쓰고, 표본만 사람이 확인한다', () => {

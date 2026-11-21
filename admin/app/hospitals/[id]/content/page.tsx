@@ -185,6 +185,15 @@ export default function ContentPage() {
   const [actionLoading, setActionLoading] = useState(false)
   // 사람이 되돌릴 수 없게 만드는 유일한 조작 — 표본에서 문제를 찾았을 때의 비공개.
   const [confirmAction, setConfirmAction] = useState<'reject' | null>(null)
+  // 공개 전 글의 발행 제외·발행일 바꾸기(개편 결정 대기 6번 A·C). 비공개(reject) 확인과 따로 둔다.
+  const [slotAction, setSlotAction] = useState<'exclude' | 'date' | null>(null)
+  const [slotDate, setSlotDate] = useState('')
+  const [slotReason, setSlotReason] = useState('')
+  // 다른 글을 열면 열려 있던 발행 제외·날짜 확인창을 닫는다.
+  const selectedSlotId = selected?.id ?? null
+  useEffect(() => {
+    setSlotAction(null)
+  }, [selectedSlotId])
   const confirmActionRef = useRef<'reject' | null>(null)
   // 비공개 사유. 서버가 3자 이상을 요구하고, 감사 기록의 근거가 된다.
   const [rejectReason, setRejectReason] = useState('')
@@ -445,6 +454,49 @@ export default function ContentPage() {
       const message = safeOperatorError('content', '최신 상태를 다시 확인한 뒤 ‘문제 발견’을 다시 누르세요.')
       if (selected && selected.id === itemId) setEditError(message)
       else setActionError(message)
+    } finally {
+      setActionLoading(false)
+    }
+  }
+
+  /** 발행 제외 — 이 글은 종료하고 같은 달 다른 날에 새 칸을 만든다(편수 유지, 서버가 날짜를 고른다). */
+  async function handleSlotExclude(itemId: string) {
+    setActionLoading(true)
+    clearActionFeedback()
+    try {
+      const replacement = await fetchAPI<ContentItem>(`/admin/hospitals/${id}/content/${itemId}/exclude`, {
+        method: 'POST',
+        body: JSON.stringify({ reason: slotReason.trim() || null }),
+      })
+      setSlotAction(null)
+      setSlotReason('')
+      setSelected(null)
+      setActionSuccess(`발행에서 뺐습니다. 같은 달 ${replacement.scheduled_date ?? ''}에 새 글을 만듭니다.`)
+      load()
+    } catch (e: unknown) {
+      if (!isExpectedOperatorRequestFailure(e)) throw e
+      setEditError(e instanceof ApiError && e.message ? e.message : '발행 제외를 하지 못했습니다. 다시 시도해 주세요.')
+    } finally {
+      setActionLoading(false)
+    }
+  }
+
+  /** 발행일 바꾸기 — 내일 이후 날짜로 옮긴다(공개 전 글만). */
+  async function handleSlotDate(itemId: string) {
+    setActionLoading(true)
+    clearActionFeedback()
+    try {
+      const moved = await fetchAPI<ContentItem>(`/admin/hospitals/${id}/content/${itemId}/reschedule`, {
+        method: 'POST',
+        body: JSON.stringify({ scheduled_date: slotDate }),
+      })
+      setSlotAction(null)
+      setSelected(moved)
+      setItems((prev) => prev.map((it) => (it.id === moved.id ? moved : it)))
+      setActionSuccess(`발행일을 ${moved.scheduled_date ?? slotDate}로 바꿨습니다.`)
+    } catch (e: unknown) {
+      if (!isExpectedOperatorRequestFailure(e)) throw e
+      setEditError(e instanceof ApiError && e.message ? e.message : '발행일을 바꾸지 못했습니다. 날짜를 확인해 주세요.')
     } finally {
       setActionLoading(false)
     }
@@ -1373,6 +1425,83 @@ export default function ContentPage() {
                       }]}
                     />
                   </div>
+                ) : (selected.status === 'DRAFT' || selected.status === 'READY' || selected.status === 'REJECTED')
+                  && !selected.published_at ? (
+                  slotAction ? (
+                    <div role="alertdialog" aria-labelledby="slot-action-title" className="rounded-lg border border-amber-200 bg-amber-50 p-3">
+                      <p id="slot-action-title" className="text-sm font-bold text-amber-900">
+                        {slotAction === 'exclude' ? '이 글을 발행에서 뺄까요?' : '발행일을 바꿀까요?'}
+                      </p>
+                      <p className="mt-1 text-xs leading-relaxed text-amber-800">
+                        {slotAction === 'exclude'
+                          ? '이 글은 종료하고, 같은 달 내일 이후 발행 요일 중 자리가 남은 날에 새 글을 만듭니다(주제는 새로 고릅니다). 그 달 발행 편수는 그대로입니다.'
+                          : '내일 이후 날짜로만 옮길 수 있습니다. 다른 달로 옮기면 원래 달의 편수로 셉니다.'}
+                      </p>
+                      {slotAction === 'exclude' ? (
+                        <label className="mt-3 block text-xs font-medium text-amber-900">
+                          사유(선택)
+                          <textarea
+                            value={slotReason}
+                            onChange={(e) => setSlotReason(e.target.value)}
+                            rows={2}
+                            maxLength={500}
+                            className="mt-1 block w-full resize-none rounded-lg border border-amber-200 bg-white px-2 py-1.5 text-sm text-slate-800"
+                          />
+                        </label>
+                      ) : (
+                        <label className="mt-3 block text-xs font-medium text-amber-900">
+                          새 발행일
+                          <input
+                            type="date"
+                            value={slotDate}
+                            onChange={(e) => setSlotDate(e.target.value)}
+                            className="mt-1 block min-h-11 w-full rounded-lg border border-amber-200 bg-white px-2 text-sm text-slate-800"
+                          />
+                        </label>
+                      )}
+                      <div className="mt-3 flex justify-end gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setSlotAction(null)}
+                          className="min-h-11 rounded-lg border border-slate-300 bg-white px-4 text-sm font-medium text-slate-700 hover:bg-slate-50"
+                        >
+                          취소
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void (slotAction === 'exclude' ? handleSlotExclude(selected.id) : handleSlotDate(selected.id))}
+                          disabled={actionLoading || (slotAction === 'date' && !slotDate)}
+                          className="min-h-11 rounded-lg bg-amber-700 px-4 text-sm font-semibold text-white hover:bg-amber-800 disabled:opacity-50"
+                        >
+                          {actionLoading ? '처리 중...' : slotAction === 'exclude' ? '발행에서 빼기' : '발행일 바꾸기'}
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex justify-end">
+                      <DangerMenu
+                        items={[
+                          {
+                            label: '발행일 바꾸기…',
+                            disabled: actionLoading,
+                            onSelect: () => {
+                              setSlotDate(selected.scheduled_date ?? '')
+                              setSlotAction('date')
+                            },
+                          },
+                          {
+                            label: '발행 제외 · 같은 달 다른 날 새 글…',
+                            danger: true,
+                            disabled: actionLoading,
+                            onSelect: () => {
+                              setSlotReason('')
+                              setSlotAction('exclude')
+                            },
+                          },
+                        ]}
+                      />
+                    </div>
+                  )
                 ) : selected.status === 'CANCELLED' ? (
                   <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
                     이 콘텐츠 항목은 중복되었거나 발행 시점이 지나 종료됐으며, 자동 생성과 발행에서 제외됩니다.
