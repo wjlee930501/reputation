@@ -1,8 +1,8 @@
 import { Metadata } from 'next'
 import { notFound } from 'next/navigation'
 
-import { fetchHospital, fetchContents, HospitalNotFoundError, resolveAssetUrl } from '@/lib/api'
-import { selectClinicDirectorImage } from '@/lib/clinic-theme'
+import { fetchHospital, fetchContents, HospitalNotFoundError } from '@/lib/api'
+import { selectShareImage } from '@/lib/clinic-share-image'
 import { getApiBase } from '@/lib/config'
 import { REVALIDATE_SECONDS } from '@/lib/fetch-policy'
 import { regionSentenceLabel } from '@/lib/clinic-region'
@@ -64,11 +64,7 @@ export async function generateMetadata({ params: paramsPromise }: Props): Promis
     // 절대 URL로 변환해야 OG/구조화 데이터 이미지가 깨지지 않는다.
     // 섹션 설정의 공유 이미지·설명은 OG/트위터 메타만 바꾼다(검색 설명·JSON-LD `image`는 그대로, I1).
     const share = hospital.site_config?.share
-    const shareImage = share?.imageAssetId
-      ? resolveAssetUrl(hospital.photos.find((photo) => photo.id === share.imageAssetId)?.url ?? null)
-      : null
-    const ogImage =
-      shareImage ?? selectClinicDirectorImage(hospital) ?? '/landing/reputation-clinic-trust-interior.png'
+    const ogImage = selectShareImage(hospital)
     const shareDescription = share?.description ?? description
     // 커스텀 도메인이 연결된 병원은 해당 도메인이 canonical origin이 된다 (site-url.ts 정책).
     const canonicalUrl = canonicalHospitalUrl(hospital, params.slug)
@@ -81,20 +77,13 @@ export async function generateMetadata({ params: paramsPromise }: Props): Promis
         description: shareDescription,
         url: canonicalUrl,
         type: 'website',
-        images: ogImage
-          ? [
-              {
-                url: ogImage,
-                alt: hospital.director_name ? `${hospital.director_name} 원장` : hospital.name,
-              },
-            ]
-          : undefined,
+        images: [{ url: ogImage.url, alt: ogImage.alt }],
       },
       twitter: {
         card: 'summary_large_image',
         title,
         description: shareDescription,
-        images: ogImage ? [ogImage] : undefined,
+        images: [ogImage.url],
       },
     }
   } catch {

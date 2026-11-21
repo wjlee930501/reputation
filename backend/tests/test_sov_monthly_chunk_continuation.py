@@ -349,12 +349,9 @@ def test_real_slot_failures_still_open_partial_incident(monkeypatch):
     assert calls.finished[0][0][2] == tasks.OperationRunState.PARTIAL
 
 
-def test_partial_budget_actual_worker_entrypoint_executes_at_most_one_page_of_pending_stages(
-    monkeypatch,
-):
-    task, hospital, cells, _default_slots, calls = _shell(monkeypatch)
-    page = tasks.MONTHLY_SOV_PAGE_SIZE
-    pending = [_slot(terminal=False) for _index in range(page + 4)]
+def _paged_shell(monkeypatch, pending_count: int, *, retries: int = 0):
+    task, hospital, cells, _default_slots, calls = _shell(monkeypatch, retries=retries)
+    pending = [_slot(terminal=False) for _index in range(pending_count)]
     half = len(pending) // 2
     slots = {cells[0].id: pending[:half], cells[1].id: pending[half:]}
     for cell in cells:
@@ -366,18 +363,111 @@ def test_partial_budget_actual_worker_entrypoint_executes_at_most_one_page_of_pe
     )
     monkeypatch.setattr(tasks, "_sov_chunk_deadline_reached", lambda *_args: False)
     monkeypatch.setattr(tasks, "_weekly_manifest_is_resolved", lambda *_args: False)
+    completed: list[int] = []
     monkeypatch.setattr(
         tasks,
         "_complete_monthly_measurement_and_dispatch_report",
-        lambda *_args, **_kwargs: False,
+        lambda *_args, **_kwargs: completed.append(1) or False,
+    )
+    return task, hospital, pending, calls, completed
+
+
+def test_actual_worker_entrypoint_executes_at_most_one_page_then_continues(monkeypatch):
+    """페이지 하나만 사고, 남은 칸이 있으면 다음 틱(30분)이 아니라 120초 뒤 같은 실행으로 잇는다."""
+
+    page = tasks.MONTHLY_SOV_PAGE_SIZE
+    task, hospital, pending, calls, completed = _paged_shell(monkeypatch, page + 4)
+
+    with pytest.raises(_Retried):
+        _run(task, hospital)
+
+    assert len(calls.executed) == page
+    assert len(set(calls.executed)) == page
+    assert len({slot.id for slot in pending} - set(calls.executed)) == 4
+    assert [retry["countdown"] for retry in calls.retries] == [
+        tasks.SOV_CONTINUATION_COUNTDOWN_SECONDS
+    ]
+    # 이어가기는 실패가 아니다 — 완료 판정·사고·실행 종결을 거치지 않는다.
+    assert completed == []
+    assert calls.incidents == []
+    assert calls.finished == []
+    assert calls.recovered == []
+
+
+def test_page_that_holds_every_pending_stage_goes_to_completion(monkeypatch):
+    task, hospital, _pending, calls, completed = _paged_shell(
+        monkeypatch, tasks.MONTHLY_SOV_PAGE_SIZE
     )
 
     _run(task, hospital)
 
     assert len(calls.executed) == tasks.MONTHLY_SOV_PAGE_SIZE
-    assert len(set(calls.executed)) == tasks.MONTHLY_SOV_PAGE_SIZE
-    assert len({slot.id for slot in pending} - set(calls.executed)) == 4
-    assert calls.recovered == []
+    assert calls.retries == []
+    assert completed == [1]
+
+
+def test_page_with_failures_waits_for_the_next_tick(monkeypatch):
+    """실패 칸이 있는 페이지는 지금처럼 PARTIAL로 끝나 다음 틱이 다시 연다(헛돌지 않는다)."""
+
+    task, hospital, _pending, calls, completed = _paged_shell(
+        monkeypatch, tasks.MONTHLY_SOV_PAGE_SIZE + 4
+    )
+
+    def failed(_db, *, slot, **_kwargs):
+        calls.executed.append(slot.id)
+        slot.answer_status = "FAILED"
+        slot.judgment_status = "FAILED"
+        slot.answer_attempt_count += 1
+        return {"measurement_status": "FAILED", "failure_reason": "provider_error"}
+
+    monkeypatch.setattr(tasks, "_execute_paid_observation_slot", failed)
+
+    _run(task, hospital)
+
+    assert calls.retries == []
+    assert completed == []
+    assert calls.incidents[0][0][2] == "MONTHLY_SOV_MEASUREMENT_PARTIAL"
+    assert calls.finished[0][0][2] == tasks.OperationRunState.PARTIAL
+
+
+def test_page_end_without_continuation_budget_waits_for_the_next_tick(monkeypatch):
+    task, hospital, _pending, calls, completed = _paged_shell(
+        monkeypatch,
+        tasks.MONTHLY_SOV_PAGE_SIZE + 4,
+        retries=tasks.SOV_CONTINUATION_MAX_RETRIES,
+    )
+
+    _run(task, hospital)
+
+    assert calls.retries == []
+    assert completed == [1]
+
+
+def test_page_end_after_the_deadline_goes_to_completion(monkeypatch):
+    task, hospital, _pending, calls, completed = _paged_shell(
+        monkeypatch, tasks.MONTHLY_SOV_PAGE_SIZE + 4
+    )
+    real_deadline = tasks._deadline_reached
+    state = {"after_page": False}
+
+    def deadline(deadline_at, now):
+        return state["after_page"] or real_deadline(deadline_at, now)
+
+    def execute(_db, *, slot, **_kwargs):
+        calls.executed.append(slot.id)
+        slot.answer_status = "RECEIVED"
+        slot.judgment_status = "CONFIRMED"
+        if len(calls.executed) == tasks.MONTHLY_SOV_PAGE_SIZE:
+            state["after_page"] = True
+        return {"measurement_status": "SUCCESS"}
+
+    monkeypatch.setattr(tasks, "_execute_paid_observation_slot", execute)
+    monkeypatch.setattr(tasks, "_deadline_reached", deadline)
+
+    _run(task, hospital)
+
+    assert calls.retries == []
+    assert completed == [1]
 
 
 def test_weekly_chunk_stop_keeps_partial_incident(monkeypatch):
