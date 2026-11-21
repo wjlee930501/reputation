@@ -23,10 +23,11 @@ import uuid
 from collections.abc import Sequence
 from typing import Any, TextIO
 
-from sqlalchemy import select
+from sqlalchemy import exists, or_, select
 
 from app.core.database import get_async_sessionmaker
 from app.models.hospital import Hospital, HospitalStatus
+from app.models.sov import SovRecord
 from app.services import measurement_set
 from app.services.audit_log import write_audit_log
 from app.services.measurement_set_apply import (
@@ -46,13 +47,21 @@ def _emit(out: TextIO, payload: dict[str, Any]) -> None:
 
 
 async def _hospitals(db, ids: list[uuid.UUID] | None) -> list[Hospital]:
+    """기본 대상: 코호트 병원 + 아직 코호트는 아니지만 측정 기록이 있어 다음 등록(월·1일)에 자동 편입될 ACTIVE 병원.
+
+    편입 예정 병원을 빼면 다음 등록이 그 병원을 옛 15개 방식으로 편입한다(30개 세트가 있으면 그대로 편입된다).
+    """
+
     stmt = select(Hospital).order_by(Hospital.created_at, Hospital.id)
     if ids:
         stmt = stmt.where(Hospital.id.in_(ids))
     else:
         stmt = stmt.where(
             Hospital.status == HospitalStatus.ACTIVE,
-            Hospital.monthly_sov_cohort.is_(True),
+            or_(
+                Hospital.monthly_sov_cohort.is_(True),
+                exists().where(SovRecord.hospital_id == Hospital.id),
+            ),
         )
     return list((await db.execute(stmt)).scalars().all())
 
@@ -102,6 +111,7 @@ async def run(
                 "hospital_id": str(hospital.id),
                 "name": hospital.name,
                 "curated_now": curated,
+                "cohort": bool(hospital.monthly_sov_cohort),
                 "legacy_tracked": sum(bool(t.in_tracking_set) for t in targets if t.set_role is None),
                 "draft": _counts(rows),
                 "reused_texts": sum(row.text in existing_names for row in rows),

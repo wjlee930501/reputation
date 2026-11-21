@@ -106,6 +106,10 @@ def prepare_automatic_content_brief_sync(
 
     _lock_target_planning(db, hospital.id)
     target = _load_target(db, getattr(item, "query_target_id", None), hospital.id)
+    if target is not None and not measurement_set.content_eligible(target):
+        # 미리 배정된 질문이 뒤에 병원명 질문(A)·과장 문형·비용 측정 질문이 됐다(측정 키워드 30개 적용 등) —
+        # 글 주제로 쓰지 않고 다시 고른다.
+        target = None
     if target is not None and target_conflicts_with_hospital(target, hospital):
         # 달력이 미리 배정한 질문이 병원 대표 진료과와 어울리지 않는다(내과 병원의
         # 영상의학과 질문 등). 이 슬롯은 어울리는 질문으로 다시 고른다.
