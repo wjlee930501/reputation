@@ -244,8 +244,9 @@ async def apply_rows(
             # 측정만을 위해 만든 질문 — 보관한다(그룹은 남겨 둔다).
             target.status = "ARCHIVED"
         elif was_brand:
-            # 병원명 질문은 측정에서 빠져도 글 주제가 아니다 — 그룹 A를 남기고 쉬게 한다.
-            target.status = "PAUSED"
+            # 병원명 질문은 측정에서 빠져도 글 주제가 아니다 — 그룹 A를 남기고 보관한다(후보 목록에 다시
+            # 나타나지 않게, 글 주제 후보도 아니게).
+            target.status = "ARCHIVED"
         else:
             # 옛 질문(V0 시드 등)은 측정에서만 빠지고 글 주제로 남는다.
             target.question_group = None
