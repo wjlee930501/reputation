@@ -18,19 +18,34 @@ interface Props {
   /** 섹션 설정이 바꾼 제목·안내 문장(레이아웃 편집기). 없으면 지금 문구. */
   title?: string | null
   note?: string | null
+  /**
+   * B안 섹션 설정의 진료 항목 모양(`treatments.style`·`show_description`). 기본(카드·설명 보임)이면
+   * 지금 마크업 그대로다 — 레이아웃 도입 전 병원과 설정이 없는 병원은 언제나 기본이다.
+   */
+  variant?: 'cards' | 'list'
+  showDescription?: boolean
 }
 
 /** 홈에서 먼저 보여줄 대표 진료 영역 수. 열 수도 이 값 안에서 결정된다. */
 const LEAD_LIMIT = 4
+/** 목록 모양은 한 줄씩이라 카드보다 많이(두 열 네 줄) 보인다. 나머지는 '전체 N개 보기'로 간다. */
+const LIST_LIMIT = 8
 
-export function TreatmentGrid({ treatments, hospitalRootUrl, title, note }: Props) {
+export function TreatmentGrid({
+  treatments,
+  hospitalRootUrl,
+  title,
+  note,
+  variant = 'cards',
+  showDescription = true,
+}: Props) {
   if (!treatments || treatments.length === 0) {
     return null
   }
 
-  // 홈페이지는 환자가 가장 먼저 확인할 대표 4개만 보여준다. 전체 항목은 아래
+  // 홈페이지는 환자가 가장 먼저 확인할 대표 4개만 보여준다(목록 모양은 8개). 전체 항목은 아래
   // '전체 N개 보기' 링크로 이어진다.
-  const lead = treatments.slice(0, LEAD_LIMIT)
+  const lead = treatments.slice(0, variant === 'list' ? LIST_LIMIT : LEAD_LIMIT)
 
   const hrefFor = (name: string): string | null => {
     const slug = buildTreatmentSlug(name)
@@ -47,8 +62,39 @@ export function TreatmentGrid({ treatments, hospitalRootUrl, title, note }: Prop
           <p className="clinic-section-note">{note ?? TREATMENT_SECTION_NOTE}</p>
         </header>
 
-        {/* 열 수를 항목 수에 맞춘다 — 4열로 고정하면 진료 항목이 1~3개인 병원에서
-            테두리만 남은 빈 칸이 그려진다(P-C-1). */}
+        {variant === 'list' ? (
+          <ul className="clinic-tx-list" aria-label="대표 진료 영역">
+            {lead.map((treatment) => {
+              const href = hrefFor(treatment.name)
+              const inner = (
+                <>
+                  <span className="clinic-tx-list-name">{treatment.name}</span>
+                  {showDescription && treatment.description ? (
+                    <span className="clinic-tx-list-desc">{treatment.description}</span>
+                  ) : null}
+                  {href && (
+                    <span className="clinic-tx-list-more" aria-hidden="true">
+                      <ChevronRightIcon className="clinic-icon clinic-icon--sm" style={{ color: 'currentColor' }} />
+                    </span>
+                  )}
+                </>
+              )
+              return (
+                <li key={treatment.name}>
+                  {href ? (
+                    <Link href={href} className="clinic-tx-list-row">
+                      {inner}
+                    </Link>
+                  ) : (
+                    <div className="clinic-tx-list-row clinic-tx-list-row--static">{inner}</div>
+                  )}
+                </li>
+              )
+            })}
+          </ul>
+        ) : (
+        /* 열 수를 항목 수에 맞춘다 — 4열로 고정하면 진료 항목이 1~3개인 병원에서
+           테두리만 남은 빈 칸이 그려진다(P-C-1). */
         <div
           className="clinic-tx-cards clinic-tx-directory"
           style={{
@@ -65,9 +111,11 @@ export function TreatmentGrid({ treatments, hospitalRootUrl, title, note }: Prop
                   {String(idx + 1).padStart(2, '0')}
                 </span>
                 <span className="clinic-tx-card-name">{treatment.name}</span>
-                <span className="clinic-tx-card-desc clinic-tx-card-desc--supporting">
-                  {treatment.description || '진료 상담에서 자세한 내용을 확인해 주세요.'}
-                </span>
+                {showDescription ? (
+                  <span className="clinic-tx-card-desc clinic-tx-card-desc--supporting">
+                    {treatment.description || '진료 상담에서 자세한 내용을 확인해 주세요.'}
+                  </span>
+                ) : null}
                 {href && (
                   <span className="clinic-tx-card-more">
                     <ChevronRightIcon className="clinic-icon clinic-icon--sm" style={{ color: 'currentColor' }} />
@@ -87,6 +135,7 @@ export function TreatmentGrid({ treatments, hospitalRootUrl, title, note }: Prop
             )
           })}
         </div>
+        )}
 
         {treatments.length > lead.length ? (
           <Link href={`${hospitalRootUrl}/treatments`} className="clinic-tx-directory-more">

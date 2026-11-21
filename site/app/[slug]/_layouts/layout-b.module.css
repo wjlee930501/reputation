@@ -211,3 +211,8 @@
     padding: 20px;
   }
 }
+
+/* ③-2a 진료 항목 목록 — 이름은 카드 이름과 같은 명조. */
+.shell.shell :global(.clinic-tx-list-name) {
+  font-family: var(--layout-serif);
+}

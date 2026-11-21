@@ -1,7 +1,10 @@
 import { CLINIC_IMAGE_SIZES, CLINIC_IMAGE_QUALITY } from '@/lib/clinic-image-delivery'
 import Image from 'next/image'
 import Link from 'next/link'
+import type { CSSProperties, ReactNode } from 'react'
 import { KeepTogether } from './KeepTogether'
+
+import type { SiteHeroBlock } from '@/lib/clinic-site-config'
 
 import { seoulToday } from '@/lib/clinic-layout'
 import { displayClinicLabels } from '@/lib/clinic-design'
@@ -10,7 +13,7 @@ import { buildClinicHeroHeadline } from '@/lib/clinic-hero-headline'
 import { fullClinicAddress } from '@/lib/clinic-schema'
 
 import { HeroCallLabel, HeroScheduleCell, HeroTodayHours } from './HeroToday'
-import { CalendarIcon, ClockIcon, MapPinIcon, PhoneIcon } from './icons'
+import { CalendarIcon, CheckIcon, ClockIcon, MapPinIcon, PhoneIcon } from './icons'
 import { regionSentenceLabel } from '@/lib/clinic-region'
 import { isPreviewAssetUrl } from '@/lib/site-preview-assets'
 
@@ -29,10 +32,26 @@ interface Props {
   mediaMode: ClinicMediaMode
   heroHeadline?: string | null
   heroDescription?: string | null
+  /**
+   * B안 섹션 설정이 고른 정보 띠 칸(`resolveHeroBlocks`). null이면 지금 띠(오늘 진료·전화·위치·진료시간)를
+   * 지금 마크업 그대로 그린다 — 레이아웃 도입 전 병원과 설정이 없는 병원은 언제나 null이다.
+   */
+  blocks?: SiteHeroBlock[] | null
+  /** '예약' 칸이 여는 네이버 플레이스 주소(`naverBookingUrl`). */
+  bookingUrl?: string | null
 }
 
 function compactAddress(address: string): string {
   return address.replace(/\s+/g, ' ').trim()
+}
+
+/** 칸 너비 비율 — 지금 띠(`1.2fr 1fr 1.55fr 1.1fr`)와 같은 값을 칸마다 둔다. */
+const BLOCK_WIDTH: Record<SiteHeroBlock, string> = {
+  today: '1.2fr',
+  phone: '1fr',
+  location: '1.55fr',
+  hours: '1.1fr',
+  booking: '1fr',
 }
 
 export function ClinicHero({
@@ -50,6 +69,8 @@ export function ClinicHero({
   mediaMode,
   heroHeadline = null,
   heroDescription = null,
+  blocks = null,
+  bookingUrl = null,
 }: Props) {
   // 오늘에 따라 바뀌는 칸(오늘 진료·전화 버튼·다음 진료)은 HeroToday가 브라우저에서 한국 시간으로
   // 다시 잰다 — 캐시된 HTML이 지난 요일 값을 보이지 않게. 연중무휴·다음 진료·주말 규칙은 그 파일에 있다.
@@ -141,6 +162,17 @@ export function ClinicHero({
         </div>
       </div>
 
+      {blocks ? (
+        blocks.length === 0 ? null : <CustomFactRail
+          blocks={blocks}
+          phone={phone}
+          address={address}
+          addressDetail={addressDetail}
+          businessHours={businessHours}
+          renderedTodayKey={renderedTodayKey}
+          bookingUrl={bookingUrl}
+        />
+      ) : (
       <dl className="clinic-hero-fact-rail" aria-label="병원 빠른 안내">
         <div>
           <ClockIcon className="clinic-icon" />
@@ -162,7 +194,82 @@ export function ClinicHero({
           <HeroScheduleCell businessHours={businessHours} renderedTodayKey={renderedTodayKey} />
         </div>
       </dl>
+      )}
 
     </section>
+  )
+}
+
+/**
+ * 섹션 설정이 고른 칸으로 그리는 정보 띠(B안). 칸의 내용·마크업은 지금 띠의 같은 칸과 같고, 순서·개수와
+ * '예약' 칸만 다르다. 당일·야간 진료형의 맨 앞 칸 강조색은 쓰지 않는다(globals.css — B 띠 배경과 같은 색).
+ */
+function CustomFactRail({
+  blocks,
+  phone,
+  address,
+  addressDetail,
+  businessHours,
+  renderedTodayKey,
+  bookingUrl,
+}: {
+  blocks: SiteHeroBlock[]
+  phone: string
+  address: string
+  addressDetail: string | null
+  businessHours: Record<string, string> | null | undefined
+  renderedTodayKey: ReturnType<typeof seoulToday>['key']
+  bookingUrl: string | null
+}) {
+  const cells: Record<SiteHeroBlock, ReactNode> = {
+    today: (
+      <div key="today">
+        <ClockIcon className="clinic-icon" />
+        <dt>오늘 진료</dt>
+        <dd><HeroTodayHours businessHours={businessHours} renderedTodayKey={renderedTodayKey} /></dd>
+      </div>
+    ),
+    phone: (
+      <div key="phone">
+        <PhoneIcon className="clinic-icon" />
+        <dt>전화</dt>
+        <dd><a href={`tel:${phone}`}>{phone}</a></dd>
+      </div>
+    ),
+    location: (
+      <div key="location" className="clinic-hero-fact-rail-address">
+        <MapPinIcon className="clinic-icon" />
+        <dt>위치</dt>
+        <dd>{compactAddress(fullClinicAddress(address, addressDetail))}</dd>
+      </div>
+    ),
+    hours: (
+      <div key="hours">
+        <CalendarIcon className="clinic-icon" />
+        <HeroScheduleCell businessHours={businessHours} renderedTodayKey={renderedTodayKey} />
+      </div>
+    ),
+    booking: bookingUrl ? (
+      <div key="booking" className="clinic-hero-fact-rail-booking">
+        <CheckIcon className="clinic-icon" />
+        <dt>예약</dt>
+        <dd>
+          <a href={bookingUrl} target="_blank" rel="noopener noreferrer">
+            네이버에서 예약·문의
+            <span className="sr-only"> (새 창)</span>
+          </a>
+        </dd>
+      </div>
+    ) : null,
+  }
+  const shown = blocks.filter((block) => cells[block] !== null)
+  return (
+    <dl
+      className={`clinic-hero-fact-rail clinic-hero-fact-rail--custom${shown.length % 2 ? ' clinic-hero-fact-rail--odd' : ''}`}
+      style={{ '--clinic-rail-columns': shown.map((block) => BLOCK_WIDTH[block]).join(' ') } as CSSProperties}
+      aria-label="병원 빠른 안내"
+    >
+      {shown.map((block) => cells[block])}
+    </dl>
   )
 }

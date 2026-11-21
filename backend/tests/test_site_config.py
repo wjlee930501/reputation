@@ -539,6 +539,30 @@ def test_menu_item_pointing_to_a_disabled_section_is_a_warning() -> None:
     assert [w["code"] for w in check.warnings] == ["NAV_TARGET_DISABLED"]
 
 
+def test_booking_block_without_a_naver_place_is_a_warning_on_b_only() -> None:
+    config = {"hero": {"blocks": ["phone", "booking", "location"]}}
+    check = validate_site_config("B", config, _ctx(has_naver_place=False))
+    assert check.ok
+    assert [w["code"] for w in check.warnings] == ["BOOKING_NO_PLACE"]
+    assert validate_site_config("B", config, _ctx(has_naver_place=True)).warnings == []
+    # 기본 칸에는 '예약'이 없다 — 플레이스가 없어도 경고하지 않는다.
+    assert validate_site_config("B", {}, _ctx(has_naver_place=False)).warnings == []
+
+
+def test_text_context_knows_whether_the_hospital_has_a_naver_place() -> None:
+    from types import SimpleNamespace
+
+    from app.services.site_config_refs import text_context
+
+    def ctx_for(**fields):
+        return text_context(SimpleNamespace(**{"naver_place_url": None, "naver_place_id": None, **fields}))
+
+    assert ctx_for().has_naver_place is False
+    assert ctx_for(naver_place_url=" ").has_naver_place is False
+    assert ctx_for(naver_place_url="https://m.place.naver.com/place/1").has_naver_place is True
+    assert ctx_for(naver_place_id="1595672233").has_naver_place is True
+
+
 def test_changed_sections_lists_blocks_sections_and_order() -> None:
     before = site_defaults.resolve("B", {})
     after = site_defaults.resolve(
@@ -733,3 +757,22 @@ def test_preview_assets_use_signed_urls_no_longer_than_the_token(monkeypatch) ->
     )
     assert response.status_code == 302
     assert seen["hours"] * 60 <= 10
+
+
+@pytest.mark.parametrize("layout", ["A", "C"])
+def test_info_strip_blocks_and_treatment_style_are_b_only(layout: str) -> None:
+    blocks = {"hero": {"blocks": ["phone", "location"]}}
+    style = {"treatments": {"style": "list"}}
+    assert _codes(validate_site_config(layout, blocks, _ctx())) == ["B_LAYOUT_ONLY"]
+    assert _codes(validate_site_config(layout, style, _ctx())) == ["B_LAYOUT_ONLY"]
+    # 기본값과 같은 값(완성본을 그대로 저장한 초안)은 통과한다.
+    defaults = site_defaults.defaults(layout)
+    same = {"hero": {"blocks": defaults["hero"]["blocks"]}, "treatments": {"style": defaults["treatments"]["style"]}}
+    assert validate_site_config(layout, same, _ctx()).ok
+    # 다른 칸(첫 화면 배치·설명 보이기)은 A·C에서도 그대로 저장된다.
+    assert validate_site_config(layout, {"hero": {"title_size": "l"}, "treatments": {"show_description": True}}, _ctx()).ok
+
+
+def test_b_keeps_the_info_strip_blocks_and_treatment_style() -> None:
+    config = {"hero": {"blocks": ["phone", "location", "booking"]}, "treatments": {"style": "list"}}
+    assert validate_site_config("B", config, _ctx()).ok

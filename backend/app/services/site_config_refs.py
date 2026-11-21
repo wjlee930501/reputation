@@ -138,6 +138,10 @@ def text_context(
         care_principles=getattr(hospital, "care_principles", None),
         share_image_ids=share_ids,
         faq_content_ids=faq_ids,
+        has_naver_place=bool(
+            (getattr(hospital, "naver_place_url", None) or "").strip()
+            or (getattr(hospital, "naver_place_id", None) or "").strip()
+        ),
     )
 
 

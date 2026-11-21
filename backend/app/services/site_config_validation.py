@@ -13,6 +13,9 @@
 4. 참조 — 공유 이미지는 그 병원의 공개 사진(원장 사진이면 실인물·신원 승인)이어야 하고, 고른 FAQ
    글은 그 병원의 공개 FAQ 글 중 승인 질문·답이 있는 것이어야 한다.
 5. 메뉴 — 꺼진 섹션을 가리키는 항목은 경고(저장은 된다). 공개 응답이 그 항목을 뺀다.
+6. 정보 띠 — B안의 '예약' 칸은 네이버 플레이스가 없으면 경고(저장은 된다). 공개 화면이 그 칸을 뺀다.
+7. B안 전용 칸 — 첫 화면 정보 띠 칸(`hero.blocks`)과 진료 항목 모양(`treatments.style`)은 B안에서만 그린다.
+   A·C에서 기본값과 다른 값은 거절한다(기본값과 같은 값·비운 칸은 그대로 통과 — 옛 초안·완성본이 막히지 않게).
 """
 
 from __future__ import annotations
@@ -37,6 +40,8 @@ class SiteConfigContext:
     care_principles: dict[str, Any] | None = None
     share_image_ids: frozenset[uuid.UUID] = frozenset()
     faq_content_ids: frozenset[uuid.UUID] = frozenset()
+    # '예약' 칸이 여는 네이버 플레이스가 있는가(주소나 플레이스 번호). 모르면 경고하지 않는다.
+    has_naver_place: bool = True
 
 
 @dataclass
@@ -162,6 +167,7 @@ def validate_site_config(
 
     stored = storage_form(model)
     _check_sections(check, layout, stored)
+    _check_b_only(check, layout, stored)
     if not check.ok:
         return check
     resolved = site_defaults.resolve(layout, stored)
@@ -170,6 +176,7 @@ def validate_site_config(
     _check_line_breaks(check, stored, ctx)
     _check_references(check, stored, ctx)
     _check_nav(check, layout, resolved)
+    _check_hero_blocks(check, layout, resolved, ctx)
     check.config = stored
     check.resolved = resolved
     return check
@@ -192,6 +199,25 @@ def _check_sections(check: SiteConfigCheck, layout: str, stored: dict[str, Any])
             check.error(f"{path}.enabled", "FIXED_SECTION", "이 섹션은 끌 수 없습니다(위치만 바꿀 수 있습니다).")
         if section_id in site_defaults.UNTITLED_SECTIONS and section.get("title") is not None:
             check.error(f"{path}.title", "SECTION_TITLE_FIXED", "이 섹션은 제목을 바꿀 수 없습니다.")
+
+
+# B안에서만 그리는 칸 — A 첫 화면에는 정보 띠가 없고 C는 오늘 진료 위젯 하나다. A 알약·C 번호 타일은
+# 카드도 목록도 아니다(설계 14절 '결정됨 — ③-2에서 B에만 열기').
+_B_ONLY_FIELDS: tuple[tuple[str, str], ...] = (("hero", "blocks"), ("treatments", "style"))
+
+
+def _check_b_only(check: SiteConfigCheck, layout: str, stored: dict[str, Any]) -> None:
+    if layout == "B":
+        return
+    base = site_defaults.defaults(layout)
+    for group, key in _B_ONLY_FIELDS:
+        value = (stored.get(group) or {}).get(key)
+        if value is not None and value != base[group][key]:
+            check.error(
+                f"{group}.{key}",
+                "B_LAYOUT_ONLY",
+                "이 칸은 B 레이아웃에서만 바꿀 수 있습니다.",
+            )
 
 
 def _check_order(check: SiteConfigCheck, layout: str, resolved: dict[str, Any]) -> None:
@@ -360,6 +386,18 @@ def _check_nav(check: SiteConfigCheck, layout: str, resolved: dict[str, Any]) ->
                 "NAV_TARGET_DISABLED",
                 "이 메뉴가 가리키는 섹션이 꺼져 있어 공개 화면에서는 메뉴에서 빠집니다.",
             )
+
+
+def _check_hero_blocks(
+    check: SiteConfigCheck, layout: str, resolved: dict[str, Any], ctx: SiteConfigContext
+) -> None:
+    blocks = (resolved.get("hero") or {}).get("blocks") or []
+    if layout == "B" and "booking" in blocks and not ctx.has_naver_place:
+        check.warn(
+            "hero.blocks",
+            "BOOKING_NO_PLACE",
+            "네이버 플레이스가 없어 공개 화면에서는 '예약' 칸이 빠집니다.",
+        )
 
 
 def changed_sections(before: dict[str, Any] | None, after: dict[str, Any]) -> list[str]:

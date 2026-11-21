@@ -25,7 +25,9 @@ import {
 } from '@/lib/schema'
 import {
   buildHomeSectionPlan,
+  naverBookingUrl,
   resolveCareFlow,
+  resolveHeroBlocks,
   resolveHomeFaqEntries,
   type SiteSectionId,
 } from '@/lib/clinic-site-config'
@@ -189,6 +191,9 @@ export function HospitalHome({
   // 않는다. 데이터·구조화 데이터는 위에서 한 번만 만들고, 레이아웃은 같은 값을 섹션 계획의 순서대로
   // 그리기만 한다(FAQ 항목 = FAQPage, 질문 목록 = FAQ를 뺀 글).
   const careFlow = resolveCareFlow(siteConfig)
+  // B안 모양 칸(정보 띠 칸·진료 항목 모양). 설정이 없거나 기본값이면 null·기본 — 지금 마크업 그대로다.
+  const bookingUrl = naverBookingUrl(hospital)
+  const heroBlocks = resolveHeroBlocks(siteConfig, bookingUrl)
   const homeModel: ClinicHomeModel = {
     hospital,
     hospitalRootUrl,
@@ -228,6 +233,8 @@ export function HospitalHome({
         mediaMode={mediaMode}
         heroHeadline={hospital.hero_headline}
         heroDescription={hospital.hero_description}
+        blocks={heroBlocks}
+        bookingUrl={bookingUrl}
       />
     ),
     // 첫 화면 아래 바로가기 메뉴(.clinic-section-index)는 2026-11-20 결정 12a로 뺐다 — 상단 메뉴와
@@ -240,6 +247,8 @@ export function HospitalHome({
           hospitalRootUrl={hospitalRootUrl}
           title={plan.customTitle('treatments')}
           note={plan.customNote('treatments')}
+          variant={siteConfig?.treatments.style}
+          showDescription={siteConfig?.treatments.showDescription}
         />
       </div>
     ),
