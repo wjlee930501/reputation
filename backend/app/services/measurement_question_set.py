@@ -400,10 +400,27 @@ def _share_list_head(pieces: list[str]) -> list[str]:
         return pieces
     shared = []
     for piece in pieces[:-1]:
-        if " " in piece or piece.endswith(tail.replace(" ", "")):
+        if " " in piece or piece.endswith(tail.replace(" ", "")) or not _bare_subject(piece):
             return pieces
         shared.append(f"{piece} {tail}")
     return [*shared, pieces[-1]]
+
+
+# 그 자체로 완결된 진료·검사 이름의 끝말 — 이런 앞 조각('예방접종')에는 공통 꼬리를 붙이지 않는다.
+_COMPLETE_SERVICE_SUFFIXES: Final[tuple[str, ...]] = (
+    *_SERVICE_SUFFIXES, *_SHARED_HEAD_WORDS, "치료", "요법", "술", "클리닉", "센터",
+)
+
+
+def _bare_subject(piece: str) -> bool:
+    """공통 꼬리를 받을 앞 조각 — 부위·장기·질환명처럼 꼬리 없이는 진료 이름이 안 되는 말('경동맥'·'위'·'대상포진').
+
+    사전이 시술·진료 서비스·검사로 읽거나 진료 끝말을 단 조각('예방접종'·'건강검진'·'골밀도')은 이미 완결된 이름이다.
+    """
+
+    if piece.endswith(_COMPLETE_SERVICE_SUFFIXES) or is_exam_term(piece):
+        return False
+    return analyze_keyword(piece, []).keyword_class in (KeywordClass.BODY_PART, KeywordClass.UNKNOWN)
 
 
 def _items(value: object) -> list[str]:

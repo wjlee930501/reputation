@@ -321,3 +321,23 @@ def test_list_shares_trailing_head_with_earlier_pieces():
     assert {"경동맥 초음파", "갑상선 초음파 검사", "위내시경"} <= topics
     # 꼬리가 검사·시술 머리말이 아니면 나누기만 한다('무릎/허리 통증' → '무릎').
     assert "무릎" in _topics_of(treatments=[{"name": "무릎/허리 통증"}])
+
+
+def test_shared_head_only_joins_bare_body_part_pieces():
+    # Codex(#407): '예방접종/갑상선 초음파'가 '예방접종 초음파'가 되면 "수원시 예방접종 초음파 검사 되는 곳"이 나온다.
+    # 앞 조각이 이미 완결된 진료·검사 이름이면 꼬리를 붙이지 않는다.
+    texts = [
+        row.text
+        for row in draft_measurement_set(
+            hospital_name="가나내과의원",
+            region=["수원시"],
+            specialties=["내과"],
+            treatments=[{"name": "예방접종/갑상선 초음파"}, {"name": "건강검진/복부 초음파"}],
+        )
+    ]
+    assert not any("예방접종 초음파" in text or "건강검진 초음파" in text for text in texts)
+    topics = _topics_of(
+        specialties=["내과"],
+        treatments=[{"name": "예방접종/갑상선 초음파"}, {"name": "골밀도/갑상선 초음파"}, {"name": "어깨/무릎 관절 주사"}],
+    )
+    assert {"예방접종", "골밀도 검사", "어깨 관절 주사"} <= topics
