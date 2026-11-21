@@ -77,15 +77,20 @@ export function describePhotoPublicGate(source: PhotoGateSourceLike): PhotoGate 
  * 사진 공개 토글만으로는 부족하다. 공개 API(`public/physicians.doctor_identity_asset_ids`)는
  * 원장 사진(`PHOTO_DOCTOR`) 중 공개·미제외·파일 있음에 더해 **실제 인물로 분류**
  * (`asset_kind=VERIFIED_REAL_PERSON`, 용도 `DOCTOR_IDENTITY`)된 사진만 의료진 얼굴로 쓰고,
- * 나머지는 이름 첫 글자를 보인다. 분류가 없는 옛 사진은 서버가 일러스트로 읽는다
- * (`photo_assets.legacy_photo_asset_kind`). 어드민이 「사진으로 사용 중」만 말하면 AE는
+ * 나머지는 쓰지 않는다(사이트는 대표 한 명이면 다른 확인된 원장 사진으로, 없으면 이름 첫
+ * 글자로 대신한다 — `site/lib/clinic-physicians.ts`). 분류가 없는 옛 사진은 서버가 일러스트로
+ * 읽는다(`photo_assets.legacy_photo_asset_kind`). 어드민이 「사진으로 사용 중」만 말하면 AE는
  * 공개 페이지의 첫 글자가 오류인 줄 안다(2026-11-20 행복드림 — 원장 캐릭터 일러스트).
+ *
+ * 관리 API는 저장소 파일 주소(`gs://`·`local://`)를 `file_url`에서 숨기고 `file_access_url`로
+ * 준다(`essence._serialize_source`) — 파일이 있는지는 둘 중 하나로 본다.
  */
 export interface DoctorPhotoSourceLike {
   source_type: string
   status?: string
   is_public: boolean
   file_url?: string | null
+  file_access_url?: string | null
   source_metadata?: { asset_kind?: unknown; approved_usage?: unknown } | null
   photo_provenance?: { is_complete: boolean } | null
 }
@@ -94,6 +99,7 @@ export type DoctorPhotoBlocker =
   | 'EXCLUDED'
   | 'NOT_CLASSIFIED'
   | 'NOT_REAL_PERSON'
+  | 'NO_DOCTOR_USAGE'
   | 'NO_FILE'
   | 'NO_RIGHTS'
   | 'NOT_PUBLIC'
@@ -104,11 +110,10 @@ export function doctorPhotoPublicBlocker(source: DoctorPhotoSourceLike): DoctorP
   if (source.source_type !== 'PHOTO_DOCTOR') return 'NOT_REAL_PERSON'
   const kind = source.source_metadata?.asset_kind
   if (typeof kind !== 'string') return 'NOT_CLASSIFIED'
+  if (kind !== 'VERIFIED_REAL_PERSON') return 'NOT_REAL_PERSON'
   const usage = source.source_metadata?.approved_usage
-  if (kind !== 'VERIFIED_REAL_PERSON' || !Array.isArray(usage) || !usage.includes('DOCTOR_IDENTITY')) {
-    return 'NOT_REAL_PERSON'
-  }
-  if (!source.file_url) return 'NO_FILE'
+  if (!Array.isArray(usage) || !usage.includes('DOCTOR_IDENTITY')) return 'NO_DOCTOR_USAGE'
+  if (!source.file_url && !source.file_access_url) return 'NO_FILE'
   if (!source.is_public) return source.photo_provenance?.is_complete ? 'NOT_PUBLIC' : 'NO_RIGHTS'
   return null
 }
@@ -117,12 +122,13 @@ const DOCTOR_PHOTO_BLOCKER_REASON: Record<DoctorPhotoBlocker, string> = {
   EXCLUDED: '제외한 사진입니다. 사진을 다시 고르세요',
   NOT_CLASSIFIED: '실제 원장 사진인지 확인되지 않은 예전 사진입니다. 실제 원장 사진을 새로 올려 연결하세요',
   NOT_REAL_PERSON: '캐릭터·일러스트로 분류된 사진입니다. 실제 원장 사진을 올려 연결하세요',
+  NO_DOCTOR_USAGE: '실제 원장 사진이지만 의료진 사진 용도가 승인되지 않았습니다. 실제 원장 사진으로 다시 올려 연결하세요',
   NO_FILE: '사진 파일이 없습니다. 사진을 다시 올리세요',
   NO_RIGHTS: '사용 권리 기록이 없어 공개되지 않는 사진입니다. 「사진과 사용 권리」에서 사용 권리를 입력하세요',
   NOT_PUBLIC: '공개를 중지한 사진입니다. 「사진과 사용 권리」에서 다시 표시하세요',
 }
 
-/** 연결은 되어 있지만 공개 페이지에는 사진 대신 이름 첫 글자가 나간다는 안내. */
+/** 연결은 되어 있지만 공개 페이지에는 이 사진이 의료진 얼굴로 나가지 않는다는 안내. */
 export function doctorPhotoBlockerMessage(blocker: DoctorPhotoBlocker): string {
-  return `공개 페이지에는 이 사진 대신 이름 첫 글자가 나갑니다 — ${DOCTOR_PHOTO_BLOCKER_REASON[blocker]}.`
+  return `공개 페이지에는 이 사진이 의료진 사진으로 나가지 않습니다 — ${DOCTOR_PHOTO_BLOCKER_REASON[blocker]}.`
 }

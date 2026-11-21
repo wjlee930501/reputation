@@ -84,7 +84,9 @@ test('사진 선택지는 이 병원의 제외되지 않은 원장 사진뿐이�
         title: '원장 프로필',
         status: 'PROCESSED',
         is_public: true,
-        file_url: 'gs://b/p1.jpg',
+        // 관리 API는 저장소 주소를 숨기고 열람 주소만 준다.
+        file_url: null,
+        file_access_url: '/api/admin/hospitals/h/essence/sources/p1/file',
         source_metadata: { asset_kind: 'VERIFIED_REAL_PERSON', approved_usage: ['DOCTOR_IDENTITY'] },
       },
       {
@@ -93,7 +95,7 @@ test('사진 선택지는 이 병원의 제외되지 않은 원장 사진뿐이�
         title: '원장 캐릭터',
         status: 'PENDING',
         is_public: true,
-        file_url: 'gs://b/p5.png',
+        file_access_url: '/api/admin/hospitals/h/essence/sources/p5/file',
         source_metadata: { asset_kind: 'EDITORIAL_GRAPHIC', approved_usage: ['CONTENT_EDITORIAL'] },
       },
       { id: 'p2', source_type: 'PHOTO_DOCTOR', title: '옛 사진', status: 'EXCLUDED', is_public: false },
@@ -101,8 +103,10 @@ test('사진 선택지는 이 병원의 제외되지 않은 원장 사진뿐이�
       { id: 'p4', source_type: 'HOMEPAGE', title: '홈페이지', status: 'PROCESSED', is_public: false },
     ]),
     [
-      { id: 'p1', title: '원장 프로필', blocker: null },
-      { id: 'p5', title: '원장 캐릭터', blocker: 'NOT_REAL_PERSON' },
+      { id: 'p1', title: '원장 프로필', blocker: null, excluded: false },
+      { id: 'p5', title: '원장 캐릭터', blocker: 'NOT_REAL_PERSON', excluded: false },
+      // 제외한 사진도 남긴다 — 이미 연결된 의료진이 이유를 봐야 한다(새로 고를 수는 없다).
+      { id: 'p2', title: '옛 사진', blocker: 'EXCLUDED', excluded: true },
     ],
   )
 })

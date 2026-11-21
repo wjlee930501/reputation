@@ -176,11 +176,17 @@ export function PhysiciansSection({
                   className={FIELD_CLASS}
                 >
                   <option value="">사진 없음</option>
-                  {photoOptions.map((option) => (
-                    <option key={option.id} value={option.id}>
-                      {option.blocker ? `${option.title} (공개 페이지에 안 나감)` : option.title}
-                    </option>
-                  ))}
+                  {photoOptions
+                    .filter((option) => !option.excluded || option.id === row.photo_source_id)
+                    .map((option) => (
+                      <option key={option.id} value={option.id} disabled={option.excluded}>
+                        {option.excluded
+                          ? `${option.title} (제외한 사진)`
+                          : option.blocker
+                            ? `${option.title} (공개 페이지에 안 나감)`
+                            : option.title}
+                      </option>
+                    ))}
                 </select>
                 <p className="mt-1 text-xs text-slate-500">
                   {photoOptionsError

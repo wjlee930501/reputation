@@ -80,7 +80,8 @@ function doctorPhoto(overrides: Partial<DoctorPhotoSourceLike> = {}): DoctorPhot
     source_type: 'PHOTO_DOCTOR',
     status: 'PROCESSED',
     is_public: true,
-    file_url: 'gs://bucket/doctor.jpg',
+    file_url: null,
+    file_access_url: '/api/admin/hospitals/h/essence/sources/s/file',
     source_metadata: REAL,
     photo_provenance: { is_complete: true },
     ...overrides,
@@ -88,7 +89,12 @@ function doctorPhoto(overrides: Partial<DoctorPhotoSourceLike> = {}): DoctorPhot
 }
 
 test('공개·실제 인물·파일이 있는 원장 사진만 의료진 사진으로 나간다', () => {
+  // 관리 API는 gs:// 주소를 file_url에서 숨기고 file_access_url만 준다 — 파일 있음으로 읽는다.
   assert.equal(doctorPhotoPublicBlocker(doctorPhoto()), null)
+  assert.equal(
+    doctorPhotoPublicBlocker(doctorPhoto({ file_url: 'https://cdn.example/doctor.jpg', file_access_url: null })),
+    null,
+  )
 })
 
 test('캐릭터·일러스트로 분류된 원장 사진은 공개 중이어도 나가지 않는다', () => {
@@ -96,7 +102,9 @@ test('캐릭터·일러스트로 분류된 원장 사진은 공개 중이어도 
     doctorPhoto({ source_metadata: { asset_kind: 'EDITORIAL_GRAPHIC', approved_usage: ['CONTENT_EDITORIAL'] } }),
   )
   assert.equal(blocker, 'NOT_REAL_PERSON')
-  assert.match(doctorPhotoBlockerMessage(blocker!), /이름 첫 글자/)
+  // 사이트는 다른 확인된 원장 사진으로 대신할 수 있다 — 첫 글자가 나간다고 단정하지 않는다.
+  assert.match(doctorPhotoBlockerMessage(blocker!), /의료진 사진으로 나가지 않습니다/)
+  assert.doesNotMatch(doctorPhotoBlockerMessage(blocker!), /첫 글자/)
   assert.match(doctorPhotoBlockerMessage(blocker!), /실제 원장 사진을 올려/)
 })
 
@@ -108,13 +116,14 @@ test('분류가 없는 옛 원장 사진은 서버처럼 일러스트로 읽는�
 test('실제 인물 분류여도 용도에 의료진 신원이 없으면 나가지 않는다', () => {
   assert.equal(
     doctorPhotoPublicBlocker(doctorPhoto({ source_metadata: { asset_kind: 'VERIFIED_REAL_PERSON', approved_usage: [] } })),
-    'NOT_REAL_PERSON',
+    'NO_DOCTOR_USAGE',
   )
+  assert.doesNotMatch(doctorPhotoBlockerMessage('NO_DOCTOR_USAGE'), /일러스트/)
 })
 
 test('제외·파일 없음·권리 미기록·공개 중지는 각각의 이유로 막힌다', () => {
   assert.equal(doctorPhotoPublicBlocker(doctorPhoto({ status: 'EXCLUDED' })), 'EXCLUDED')
-  assert.equal(doctorPhotoPublicBlocker(doctorPhoto({ file_url: null })), 'NO_FILE')
+  assert.equal(doctorPhotoPublicBlocker(doctorPhoto({ file_url: null, file_access_url: null })), 'NO_FILE')
   assert.equal(
     doctorPhotoPublicBlocker(doctorPhoto({ is_public: false, photo_provenance: { is_complete: false } })),
     'NO_RIGHTS',
