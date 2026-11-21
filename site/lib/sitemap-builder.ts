@@ -11,6 +11,7 @@
 
 import type { MetadataRoute } from 'next'
 
+import { contentModifiedAt } from './clinic-dates.ts'
 import type { SitemapScope } from './sitemap-host.ts'
 import { platformSiteUrl } from './site-url.ts'
 import { buildTreatmentSlug } from './treatment-slug.ts'
@@ -224,9 +225,9 @@ export async function appendHospitalEntries(
   for (const content of contents) {
     completeEntries.push({
       url: `${base}/contents/${content.id}`,
-      lastModified:
-        validDate(content.body_updated_at) ||
-        validDate(content.published_at),
+      lastModified: validDate(
+        contentModifiedAt({ published_at: content.published_at, body_updated_at: content.body_updated_at ?? null }),
+      ),
       changeFrequency: 'monthly',
       priority: 0.6,
     })
