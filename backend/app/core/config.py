@@ -632,13 +632,14 @@ class Settings(BaseSettings):
     # 월간 상한 (병원50 × 리더 20편 × 재시도 여유 ≈ 3000)
     COST_GUARD_MONTHLY_CONTENT_CALLS: int = 3000
     COST_GUARD_MONTHLY_IMAGE_CALLS: int = 3000
-    # Monthly measurements run on one dawn. The daily envelope can use the
-    # existing monthly budget; this does not raise the monthly spending ceiling.
-    COST_GUARD_MONTHLY_SOV_QUERIES: int = 4260
+    # 월간 측정은 1일 새벽 하루에 다 산다 — 실제로 묶이는 것은 일 상한이다. 측정 키워드 30개(병원당
+    # 30문항×2플랫폼×5반복 = 300칸, 칸당 약 1.1~1.25단위)로 월 13,500(2026-11-21 사용자 승인),
+    # 일 9,000(운영값 그대로 — 약 24곳까지). docs/plans/2026-11-21-measurement-30-design.md §4.
+    COST_GUARD_MONTHLY_SOV_QUERIES: int = 13500
     # 일일 상한 = 월간의 1/10 수준(피크 하루 폭주 차단용)
     COST_GUARD_DAILY_CONTENT_CALLS: int = 250
     COST_GUARD_DAILY_IMAGE_CALLS: int = 250
-    COST_GUARD_DAILY_SOV_QUERIES: int = 4260
+    COST_GUARD_DAILY_SOV_QUERIES: int = 9000
     # 운영 기준(Essence) 합성·독립 검수 호출 상한. 야간 생성과 예산을 나눠 온보딩 폭주가
     # 계약 병원의 콘텐츠 생성을 굶기지 않게 한다(병원 1곳 = 합성·1차·2차 ≈ 3~6회).
     COST_GUARD_DAILY_ESSENCE_CALLS: int = 60
@@ -699,6 +700,10 @@ class Settings(BaseSettings):
     # (removed) 월간 측정은 다음 달 1일 00:15~07:00 KST 새벽 창에만 돈다 — 시작일 설정은 없다.
     # 아직 전환되지 않은 병원의 주간 측정 반복 횟수.
     SOV_REPEAT_COUNT_WEEKLY: int = 5
+    # 월간 새벽 창 측정에서 한 페이지 안의 답변 호출을 동시에 보내는 수(프로세스당). 칸 하나가 약
+    # 22초(2026-10 실측)라 차례로 사면 16곳 × 30문항이 1일 00:15~07:00 창에 다 들어가지 않는다
+    # (docs/plans/2026-11-21-measurement-30-design.md §3). 1이면 동시 호출을 끈다(종전 동작).
+    SOV_MONTHLY_ANSWER_CONCURRENCY: int = 6
     # 아래 priority/cap 설정은 공존 기간의 주간 legacy 경로에만 적용한다. 월간 고정 세트는
     # 세트 크기 자체가 봉투이며 이 값들로 절단하거나 회전하지 않는다.
     SOV_HIGH_PRIORITY_CAP: int = 30

@@ -8,14 +8,14 @@ import { ConfirmDialog } from '@/app/_components/ConfirmDialog'
 import { ADMIN_COPY } from '@/lib/admin-copy'
 import { isPubliclyServing } from '@/lib/public-service-state'
 import {
-  SITE_RENDERS_SITE_CONFIG,
   buildOverrides,
   showsBOnlyFields,
   changeLabels,
-  COPY_KEYS_BY_SECTION,
+  shownCopyKeys,
   LINE_BREAK_PATHS,
   lineBreakPathShown,
   issuesFor,
+  shownSectionTitle,
   type SectionId,
   type SiteSection,
 } from '@/lib/site-config'
@@ -81,17 +81,16 @@ export default function SiteLayoutEditorPage() {
   const [dialog, setDialog] = useState<'publish' | 'discard' | 'reset' | null>(null)
   const [resetLayout, setResetLayout] = useState<SiteLayout | null>(null)
   // 같은 화면 미리보기(iframe). 토큰은 저장할 때마다 무효가 되므로 열려 있으면 새 판마다 한 번 다시 받는다.
-  const framed = SITE_RENDERS_SITE_CONFIG
   const [previewOpen, setPreviewOpen] = useState(false)
   const autoRequested = useRef<string | null>(null)
   const savedDraft = editor.state?.draft ?? null
   const draftKey = savedDraft ? `${savedDraft.id}:${savedDraft.revision}` : null
   useEffect(() => {
-    if (!framed || !previewOpen || !draftKey || editor.dirty || editor.preview || editor.busy || editor.previewDisabled) return
+    if (!previewOpen || !draftKey || editor.dirty || editor.preview || editor.busy || editor.previewDisabled) return
     if (autoRequested.current === draftKey) return
     autoRequested.current = draftKey
     void editor.requestPreview()
-  }, [framed, previewOpen, draftKey, editor])
+  }, [previewOpen, draftKey, editor])
 
   const back = (
     <Link href={`/hospitals/${hospitalId}/info#info-brand`} className="text-sm font-semibold text-blue-700 hover:underline">
@@ -121,6 +120,8 @@ export default function SiteLayoutEditorPage() {
   }
 
   const defaults = state.defaults[working.layout]
+  const defaultTitleOf = (id: SectionId) => defaults.sections.find((section) => section.id === id)?.title ?? null
+  const hospitalTitles = state.hospital_section_titles
   const overrides = buildOverrides(working.resolved, defaults, working.layout)
   const bOnly = showsBOnlyFields(working.layout)
   const live = isPubliclyServing(hospital)
@@ -146,8 +147,7 @@ export default function SiteLayoutEditorPage() {
     editor.setWorking((prev) => (prev ? { ...prev, resolved: { ...prev.resolved, ...patch } } : prev))
   const setSections = (next: SiteSection[]) => update({ sections: next })
 
-  const publishBlocked = !SITE_RENDERS_SITE_CONFIG
-  const canPublish = Boolean(draft) && !editor.dirty && !locked && !publishBlocked
+  const canPublish = Boolean(draft) && !editor.dirty && !locked
 
   return (
     <div className="space-y-4 p-4 sm:p-6 lg:p-8">
@@ -190,14 +190,6 @@ export default function SiteLayoutEditorPage() {
           >
             {editor.dirty ? COPY.previewNeedsSave : COPY.preview}
           </button>
-          {editor.preview && !framed && (
-            <a href={editor.preview.url} target="_blank" rel="noopener noreferrer" className="text-sm font-semibold text-blue-700 underline">
-              {COPY.previewOpen}
-              <span className="ml-1 text-xs font-normal text-slate-500">
-                {COPY.previewExpires.replace('{time}', when(editor.preview.expiresAt))}
-              </span>
-            </a>
-          )}
           <span className="flex-1" />
           {draft && (
             <button type="button" className={button} disabled={locked} onClick={() => setDialog('discard')}>
@@ -209,11 +201,7 @@ export default function SiteLayoutEditorPage() {
           </button>
         </div>
         {editor.previewDisabled && <p className="text-xs text-slate-500">{COPY.previewNotReady}</p>}
-        {publishBlocked ? (
-          <p className="text-xs text-slate-500">{COPY.publishWaitsForSite}</p>
-        ) : (
-          draft && editor.dirty && <p className="text-xs text-slate-500">{COPY.publishNeedsSave}</p>
-        )}
+        {draft && editor.dirty && <p className="text-xs text-slate-500">{COPY.publishNeedsSave}</p>}
         {editor.notice && (
           <p
             role="status"
@@ -226,7 +214,7 @@ export default function SiteLayoutEditorPage() {
         )}
       </div>
 
-      {framed && previewOpen && (
+      {previewOpen && (
         <Card
           title={COPY.previewTitle}
           right={
@@ -287,6 +275,7 @@ export default function SiteLayoutEditorPage() {
             onSelect={setSelected}
             onChange={setSections}
             issueCount={(id) => issuesFor(issues, overrides, id).length}
+            titleOf={(section) => shownSectionTitle(section, defaultTitleOf(section.id), hospitalTitles)}
             disabled={locked}
           />
         </Card>
@@ -296,7 +285,8 @@ export default function SiteLayoutEditorPage() {
             <div className="space-y-6">
               <SectionSettings
                 section={current}
-                defaultTitle={defaults.sections.find((section) => section.id === current.id)?.title ?? null}
+                defaultTitle={defaultTitleOf(current.id)}
+                placeholderTitle={shownSectionTitle({ id: current.id, title: null }, defaultTitleOf(current.id), hospitalTitles)}
                 issues={issuesFor(issues, overrides, current.id)}
                 onChange={(next) => setSections(sections.map((section) => (section.id === next.id ? next : section)))}
                 disabled={locked}
@@ -361,10 +351,10 @@ export default function SiteLayoutEditorPage() {
                   <VisitSettings value={group('visit')} onChange={(next) => update({ visit: next })} disabled={locked} />
                 </Extra>
               )}
-              {COPY_KEYS_BY_SECTION[current.id] && (
+              {shownCopyKeys(current.id).length > 0 && (
                 <Extra>
                   <CopyNotes
-                    keys={COPY_KEYS_BY_SECTION[current.id] ?? []}
+                    keys={shownCopyKeys(current.id)}
                     copy={copyValues}
                     issues={[]}
                     onChange={(next) => update({ copy: next })}

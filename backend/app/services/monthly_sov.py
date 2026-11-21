@@ -232,6 +232,8 @@ def _query_summary(cells: tuple[ManifestCellInput, ...], query_key: str) -> Quer
         mentioned_count=sum(cell.mentioned_attempts > 0 for cell in scored),
         attempts_used=sum(cell.attempts_used for cell in scored),
         mentioned_attempts=sum(cell.mentioned_attempts for cell in scored),
+        question_group=first.question_group,
+        set_role=first.set_role,
     )
 
 
@@ -287,6 +289,20 @@ def _non_comparable(
     )
 
 
+def _comparable_cell(cell: ManifestCellInput) -> bool:
+    """지난달 비교의 맞춘 칸 후보 — 대표 노출률(LOCAL)이고, 30개 세트면 고정 질문만.
+
+    교체 질문은 달마다 바꾸는 질문이라 우연히 두 달 같은 문구여도 비교에 넣지 않는다(측정 키워드
+    30개 지침 3-4: 월별 비교는 고정 질문으로만). 역할이 없는 옛 세트는 지금처럼 모두 후보다.
+    """
+
+    return (
+        cell.query_intent == "LOCAL"
+        and cell.state != "EXCLUDED"
+        and cell.set_role != "ROTATING"
+    )
+
+
 def _comparison(
     current: tuple[ManifestCellInput, ...],
     current_platforms: tuple[str, ...],
@@ -296,19 +312,13 @@ def _comparison(
     prior_protocol: dict | None = None,
 ) -> ComparisonResult:
     current_keys = {
-        (cell.query_key, cell.platform)
-        for cell in current
-        if cell.query_intent == "LOCAL" and cell.state != "EXCLUDED"
+        (cell.query_key, cell.platform) for cell in current if _comparable_cell(cell)
     }
     if prior is None or prior_platforms is None:
         return _non_comparable(
             "NO_PRIOR_MANIFEST", current_unmatched=len(current_keys), prior_unmatched=0
         )
-    prior_keys = {
-        (cell.query_key, cell.platform)
-        for cell in prior
-        if cell.query_intent == "LOCAL" and cell.state != "EXCLUDED"
-    }
+    prior_keys = {(cell.query_key, cell.platform) for cell in prior if _comparable_cell(cell)}
     if set(current_platforms) != set(prior_platforms):
         return _non_comparable(
             "PLATFORM_COHORT_MISSING",
@@ -330,17 +340,13 @@ def _comparison(
         return _non_comparable(
             "MEASUREMENT_POLICY_CHANGED",
             current_unmatched=len(current_keys),
-            prior_unmatched=sum(
-                cell.query_intent == "LOCAL" and cell.state != "EXCLUDED" for cell in prior
-            ),
+            prior_unmatched=sum(_comparable_cell(cell) for cell in prior),
         )
     if any(cell.query_intent_source == "LEGACY_LIVE" for cell in (*current, *prior)):
         return _non_comparable(
             "INTENT_SNAPSHOT_MISSING",
             current_unmatched=len(current_keys),
-            prior_unmatched=sum(
-                cell.query_intent == "LOCAL" and cell.state != "EXCLUDED" for cell in prior
-            ),
+            prior_unmatched=sum(_comparable_cell(cell) for cell in prior),
         )
 
     current_by_key = {(cell.query_key, cell.platform): cell for cell in current}

@@ -12,13 +12,16 @@ test('contract registration submits once to the single-transaction endpoint', ()
   assert.doesNotMatch(PAGE, /handoffs\/|\/convert|onboarding_request_id|sessionStorage/)
 })
 
-test('the screen asks only for the hospital name, plan, AE and site layout', () => {
+test('the screen asks only for the hospital name, plan, AE, site layout and contract start', () => {
   assert.ok(PAGE.includes('병원명'))
   // 저장만 되고 아무 동작도 바꾸지 않는 값은 운영자에게 묻지 않는다 — 서버가 채운다.
   for (const label of ['계약 번호', '계약 효력일', '영업 담당']) {
     assert.ok(!PAGE.includes(label), `field should be gone: ${label}`)
   }
-  assert.doesNotMatch(PAGE, /type="date"|setContractReference|setSalesOwnerId/)
+  assert.doesNotMatch(PAGE, /setContractReference|setSalesOwnerId/)
+  // 계약 시작일은 묻는다(결정 대기 17번 A) — 첫 발행 일정 시작일과 시작 달 편수를 정한다.
+  assert.match(PAGE, /CONTRACT_START_COPY\.label/)
+  assert.equal((PAGE.match(/type="date"/g) ?? []).length, 1)
   // 요금제·담당 AE는 통일 용어 상수를 그대로 읽는다.
   assert.match(PAGE, /\{ADMIN_COPY\.plan\}/)
   assert.match(PAGE, /\{ADMIN_COPY\.aeOwner\}/)
@@ -56,7 +59,7 @@ test('the lead list starts contract registration on the one-screen route', () =>
 
 test('contract registration requires a site layout and shows the same-region distribution', () => {
   assert.match(PAGE, /<SiteLayoutPicker[\s\S]*?value=\{siteLayout\}[\s\S]*?distribution=\{distribution\}/)
-  assert.match(PAGE, /const form = \{ name, leadId, plan, aeOwnerId, siteLayout \}/)
+  assert.match(PAGE, /const form = \{ name, leadId, plan, aeOwnerId, siteLayout, contractStartOn \}/)
   // 상담 요청의 지역으로만 분포를 찾는다 — 지역을 모르면 분포 없이 고른다.
   assert.match(PAGE, /layoutDistributionPath\(\{ region: \[leadRegion\] \}\)/)
   assert.match(PAGE, /\{ADMIN_COPY\.siteLayout\.title\} <span className="text-red-500">\*<\/span>/)

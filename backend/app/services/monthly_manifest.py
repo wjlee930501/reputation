@@ -50,6 +50,8 @@ class ManifestCellSpec:
     query_target_id: uuid.UUID | None
     query_variant_id: uuid.UUID | None
     query_intent: str
+    # 측정 키워드 30개 세트의 그룹·역할({"group": "B", "role": "FIXED"}). 옛 세트는 None.
+    query_set: dict[str, str] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,6 +90,14 @@ def _frozen_cells(specs: list[ManifestCellSpec]) -> list[MonthlyMeasurementCell]
         )
         for spec in frozen_queries.values()
     ]
+
+
+def _query_sets(specs: list[ManifestCellSpec]) -> dict[str, dict[str, str]]:
+    return {
+        spec.query_key: dict(spec.query_set)
+        for spec in specs
+        if isinstance(spec.query_set, dict) and spec.query_set
+    }
 
 
 def _protocol_snapshot(measurement_protocol_kwargs: dict | None) -> dict:
@@ -199,6 +209,9 @@ def _replace_manifest_freeze(
         "measurement_protocol": protocol,
         "observation_slots": _observation_slot_contract(),
     }
+    query_sets = _query_sets(specs)
+    if query_sets:
+        manifest.platform_provenance["query_sets"] = query_sets
     if judgment_identity is not None:
         manifest.platform_provenance["judgment_identity"] = judgment_identity
     manifest.frozen_at = datetime.now(timezone.utc)
@@ -263,6 +276,11 @@ def freeze_monthly_manifest(
     # (`measurement_protocol`)과는 따로 둔다.
     if judgment_identity is not None:
         platform_provenance["judgment_identity"] = judgment_identity
+    # 30개 세트의 그룹·역할. 셀 표는 고칠 수 없으므로(DB 트리거) 만들 때 함께 남긴다 — 보고서가
+    # 지금 질문 행과 문구를 맞추지 않고 저장값만으로 그룹 노출률·고정 질문 비교를 다시 만든다.
+    query_sets = _query_sets(specs)
+    if query_sets:
+        platform_provenance["query_sets"] = query_sets
     # Observation slots belong to the authoritative month-end measurement freeze.
     # Weekly manifests remain on their historical lineage so a weekly result cannot
     # accidentally become the terminal repeat for the monthly contract.
@@ -313,6 +331,7 @@ def freeze_dispatch_manifest(
             query_target_id=spec.get("target_id"),
             query_variant_id=spec.get("variant_id"),
             query_intent=str(spec.get("query_intent") or "LOCAL").upper(),
+            query_set=spec.get("query_set") or None,
         )
         for spec in measurement_specs
     ]
@@ -327,6 +346,55 @@ def freeze_dispatch_manifest(
         measurement_protocol_kwargs=measurement_protocol_kwargs,
         judgment_identity=judgment_identity,
     )
+
+
+def frozen_dawn_manifest(
+    session, hospital_id: uuid.UUID, year: int, month: int
+) -> MonthlyMeasurementManifest | None:
+    """그 달 1일 새벽 창 기준으로 이미 얼린 측정표. 없으면 None.
+
+    새벽 창 안에서 측정 키워드를 고쳐도(30개 세트는 마케터가 언제든 고친다) 이미 얼린 측정표를
+    그대로 잰다 — 고친 세트는 다음 달부터다. 지금 질문 행으로 다시 얼리면 이미 산 답변이 있는
+    셀을 지우거나(`_replace_manifest_freeze`) 측정을 막는다(`ManifestPolicyDrift`).
+    """
+
+    manifest = session.execute(
+        select(MonthlyMeasurementManifest).where(
+            MonthlyMeasurementManifest.hospital_id == hospital_id,
+            MonthlyMeasurementManifest.period_year == year,
+            MonthlyMeasurementManifest.period_month == month,
+        )
+    ).scalar_one_or_none()
+    if manifest is None or manifest.closed_at is not None:
+        return None
+    provenance = manifest.platform_provenance
+    stored = provenance.get("measurement_protocol") if isinstance(provenance, dict) else None
+    if not isinstance(stored, dict) or not _is_month_end_tracking_protocol(stored):
+        return None
+    if stored.get("measurement_window") != "month_start_dawn":
+        return None
+    return manifest
+
+
+def frozen_manifest_specs(manifest: MonthlyMeasurementManifest) -> list[dict]:
+    """얼린 측정표 셀을 측정 spec 모양으로. 지금 질문 행 대신 이것으로 미완료 셀을 고른다."""
+
+    provenance = manifest.platform_provenance if isinstance(manifest.platform_provenance, dict) else {}
+    intents = provenance.get("query_intents") or {}
+    query_sets = provenance.get("query_sets") or {}
+    return [
+        {
+            "query_id": cell.query_matrix_id,
+            "query_text": cell.query_text,
+            "platform": cell.platform,
+            "target_id": cell.query_target_id,
+            "variant_id": cell.query_variant_id,
+            "priority": "NORMAL",
+            "query_intent": str(intents.get(cell.query_key) or "LOCAL").upper(),
+            "query_set": query_sets.get(cell.query_key),
+        }
+        for cell in (getattr(manifest, "cells", ()) or ())
+    ]
 
 
 def link_attempt(cell: MonthlyMeasurementCell, sov_record) -> MonthlyMeasurementAttempt:
