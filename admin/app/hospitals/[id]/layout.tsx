@@ -188,10 +188,12 @@ export default function HospitalLayout({
     setContractEndSaving(true)
     setContractEndError(null)
     try {
-      await fetchAPI<Hospital>(`/admin/hospitals/${hospitalId}/contract-end`, {
+      const saved = await fetchAPI<Hospital>(`/admin/hospitals/${hospitalId}/contract-end`, {
         method: 'PUT',
         body: JSON.stringify({ ended_on: contractEndValue || null }),
       })
+      // 응답으로 바로 바꾼다 — 재조회가 늦을 때 다시 열면 옛 날짜가 입력돼 방금 저장한 값을 되돌린다.
+      setHospital((prev) => (prev ? { ...prev, contract_ended_on: saved.contract_ended_on ?? null, contract_ended: saved.contract_ended ?? false } : prev))
       setContractEndOpen(false)
       await refetch()
     } catch (e: unknown) {
@@ -200,6 +202,11 @@ export default function HospitalLayout({
       setContractEndSaving(false)
     }
   }
+
+  const contractEndBadge = hospital?.contract_ended_on
+    ? (hospital.contract_ended ? ADMIN_COPY.contractEnd.endedBadge : ADMIN_COPY.contractEnd.scheduledBadge)
+      .replace('{date}', hospital.contract_ended_on)
+    : null
 
   const headerMenuItems = [
     ...(lifecycleAction === 'pause'
@@ -294,8 +301,13 @@ export default function HospitalLayout({
                     <OverviewFailureChip onRetry={() => void refetch()} />
                   )}
                   {planLabel && <p className="mt-3 border-t border-slate-100 pt-3 text-xs text-slate-500">{ADMIN_COPY.plan} {planLabel}</p>}
+                  {contractEndBadge && <p className="mt-1 text-xs text-slate-500">{contractEndBadge}</p>}
                 </div>
               </details>
+            )}
+            {/* 모바일에서도 계약 종료일을 기록·수정한다(일시 정지 같은 위험 동작은 넓은 화면에서만). */}
+            {hospital && (
+              <DangerMenu items={[{ label: ADMIN_COPY.contractEnd.menuItem, onSelect: openContractEnd }]} />
             )}
           </div>
           <label className="mt-2 block">
@@ -347,10 +359,9 @@ export default function HospitalLayout({
                   {lifecycleLoading ? '처리 중...' : '재개'}
                 </button>
               )}
-              {hospital?.contract_ended_on && (
+              {contractEndBadge && (
                 <span className="details2 inline-flex rounded-full bg-slate-100 px-2.5 py-0.5 text-slate-600">
-                  {(hospital.contract_ended ? ADMIN_COPY.contractEnd.endedBadge : ADMIN_COPY.contractEnd.scheduledBadge)
-                    .replace('{date}', hospital.contract_ended_on)}
+                  {contractEndBadge}
                 </span>
               )}
               {headerMenuItems.length > 0 && <DangerMenu items={headerMenuItems} />}
