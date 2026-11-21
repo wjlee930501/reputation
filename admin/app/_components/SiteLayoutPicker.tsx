@@ -28,6 +28,7 @@ export function SiteLayoutPicker({
   brandColor,
   disabled = false,
   excludesCurrent = false,
+  suggested = null,
 }: {
   name: string
   value: SiteLayout | null
@@ -38,6 +39,8 @@ export function SiteLayoutPicker({
   disabled?: boolean
   /** 분포가 이 병원을 빼고 센 것인지(병원 정보) — 문구에 범위를 밝힌다. */
   excludesCurrent?: boolean
+  /** 미리 골라 둔 추천 레이아웃(계약 등록). 카드에 「추천」 표시를 붙인다. */
+  suggested?: SiteLayout | null
 }) {
   const brand = brandColor && HEX.test(brandColor) ? brandColor : '#334155'
   return (
@@ -66,6 +69,11 @@ export function SiteLayoutPicker({
               <LayoutThumbnail layout={layout} brand={brand} />
               <span className="text-sm font-semibold text-slate-900">{option.name}</span>
               <span className="break-keep text-xs leading-5 text-slate-600">{option.summary}</span>
+              {suggested === layout && distribution?.province && (
+                <span className="self-start rounded-full bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-800">
+                  {COPY.suggested.replace('{province}', distribution.province)}
+                </span>
+              )}
               {badge && (
                 <span className="self-start rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-900">
                   {badge}

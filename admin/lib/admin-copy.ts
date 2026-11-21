@@ -443,6 +443,9 @@ export const ADMIN_COPY = {
     distributionOthers: '{province} 다른 공개 병원 {total}곳(이 병원 제외)',
     distributionUnset: '고르기 전',
     distributionUnknown: '지역을 읽지 못해 같은 지역 분포를 보여 줄 수 없습니다.',
+    // 계약 등록에서 미리 골라 두는 레이아웃(개편 결정 대기 9번 B) — {province}는 suggestedLayout이 쓴 시·도.
+    suggested: '추천 · {province}에서 가장 적게 쓰는 틀',
+    suggestedPicked: '같은 지역 병원과 겹치지 않게 {layout}안을 미리 골라 두었습니다. 다른 안을 골라도 됩니다.',
     distributionNone: '{province}에 공개 중인 다른 병원이 아직 없습니다.',
     sameRegionCount: '{province} {count}곳 사용 중',
     sameRegionCountOthers: '{province} 다른 병원 {count}곳 사용 중',
