@@ -300,3 +300,24 @@ def test_codex_second_review_of_show_fixes():
     # 영문 조각이 섞인 나열도 뒤 조각까지 견준다('초음파/MRI'의 '초음파').
     topics = _topics_of(region=["수원시"], specialties=["외과"], treatments=[{"name": "초음파/MRI"}], keywords=["수원초음파"])
     assert "수원초음파" not in topics
+
+
+def test_list_shares_trailing_head_with_earlier_pieces():
+    # 운영 show v2(유내과): '경동맥/갑상선 초음파'가 '경동맥'만 남아 "경동맥 때문에 … 내과 찾고 있어요"가 됐다.
+    texts = [
+        row.text
+        for row in draft_measurement_set(
+            hospital_name="가나내과의원",
+            region=["경남 양산시 물금읍"],
+            specialties=["내과"],
+            treatments=[{"name": "경동맥/갑상선 초음파"}, {"name": "위/대장 내시경"}],
+        )
+    ]
+    assert not any("경동맥 때문에" in text for text in texts)
+    topics = _topics_of(
+        specialties=["내과"],
+        treatments=[{"name": "경동맥/갑상선 초음파"}, {"name": "갑상선/유방 초음파 검사"}, {"name": "위/대장 내시경"}],
+    )
+    assert {"경동맥 초음파", "갑상선 초음파 검사", "위내시경"} <= topics
+    # 꼬리가 검사·시술 머리말이 아니면 나누기만 한다('무릎/허리 통증' → '무릎').
+    assert "무릎" in _topics_of(treatments=[{"name": "무릎/허리 통증"}])
