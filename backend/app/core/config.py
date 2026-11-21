@@ -699,6 +699,10 @@ class Settings(BaseSettings):
     # (removed) 월간 측정은 다음 달 1일 00:15~07:00 KST 새벽 창에만 돈다 — 시작일 설정은 없다.
     # 아직 전환되지 않은 병원의 주간 측정 반복 횟수.
     SOV_REPEAT_COUNT_WEEKLY: int = 5
+    # 월간 새벽 창 측정에서 한 페이지 안의 답변 호출을 동시에 보내는 수(프로세스당). 칸 하나가 약
+    # 22초(2026-10 실측)라 차례로 사면 16곳 × 30문항이 1일 00:15~07:00 창에 다 들어가지 않는다
+    # (docs/plans/2026-11-21-measurement-30-design.md §3). 1이면 동시 호출을 끈다(종전 동작).
+    SOV_MONTHLY_ANSWER_CONCURRENCY: int = 6
     # 아래 priority/cap 설정은 공존 기간의 주간 legacy 경로에만 적용한다. 월간 고정 세트는
     # 세트 크기 자체가 봉투이며 이 값들로 절단하거나 회전하지 않는다.
     SOV_HIGH_PRIORITY_CAP: int = 30

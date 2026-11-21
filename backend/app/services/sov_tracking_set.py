@@ -12,6 +12,7 @@ from sqlalchemy.orm import selectinload
 from app.core.config import settings
 from app.models.hospital import Hospital, HospitalStatus
 from app.models.sov import AIQueryTarget, AIQueryVariant, SovRecord
+from app.services import measurement_set
 from app.services.sov_engine import QUERY_INTENT_LOCAL, classify_query_intent
 
 TRACKING_SET_N_MIN = 10
@@ -55,9 +56,14 @@ def _target_intent(target: AIQueryTarget) -> str:
 
 
 def tracking_set_members(targets: Iterable[AIQueryTarget]) -> list[AIQueryTarget]:
+    """이번 달 측정할 질문. 30개 방식 병원은 역할 있는 질문(A~D) 전부, 옛 방식은 LOCAL 플래그 질문."""
+
+    rows = list(targets)
+    if measurement_set.uses_curated_set(rows):
+        return [target for target in rows if measurement_set.is_set_member(target)]
     return [
         target
-        for target in targets
+        for target in rows
         if str(getattr(target, "status", "") or "").upper() == "ACTIVE"
         and bool(getattr(target, "in_tracking_set", False))
         and _target_intent(target) == QUERY_INTENT_LOCAL
@@ -68,10 +74,22 @@ def tracking_set_size(members: Iterable[AIQueryTarget]) -> int:
     return len(list(members))
 
 
+def tracking_set_basis_size(members: Iterable[AIQueryTarget]) -> int:
+    """측정 기준(`tracking_set_size`)에 넣는 크기 — 30개 방식은 고정 질문 수, 옛 방식은 세트 크기."""
+
+    rows = list(members)
+    if measurement_set.uses_curated_set(rows):
+        return measurement_set.set_fingerprint(rows)[1]
+    return len(rows)
+
+
 def tracking_set_fingerprint(
     members: Iterable[AIQueryTarget], *, n: int | None = None
 ) -> str:
     rows = list(members)
+    if measurement_set.uses_curated_set(rows):
+        # 고정 질문만 — 교체 질문을 바꿔도 다음 달 비교가 이어진다.
+        return measurement_set.set_fingerprint(rows)[0]
     size = len(rows) if n is None else n
     texts = sorted(
         {
@@ -85,7 +103,10 @@ def tracking_set_fingerprint(
 
 
 def tracking_set_is_valid(members: Iterable[AIQueryTarget]) -> bool:
-    size = tracking_set_size(members)
+    rows = list(members)
+    if measurement_set.uses_curated_set(rows):
+        return not measurement_set.set_problems(rows)
+    size = tracking_set_size(rows)
     return TRACKING_SET_N_MIN <= size <= TRACKING_SET_N_MAX
 
 
@@ -158,9 +179,45 @@ def propose_tracking_set(
     )[:n]
 
 
+def _register_curated_set(
+    db, hospital_id: uuid.UUID, targets: list[AIQueryTarget], n: int
+) -> dict[str, object]:
+    """30개 방식 병원: 역할을 다시 고르지 않고 검사만 한다. `in_tracking_set`은 역할에 맞춘다.
+
+    월간·주간 배치가 매번 이 함수를 부른다 — 측정 이력 기준 자동 제안이 마케터가 정한 세트를
+    덮어쓰면 안 된다(측정 키워드 30개 설계 §2-2).
+    """
+
+    members = [target for target in targets if measurement_set.is_set_member(target)]
+    problems = measurement_set.set_problems(targets)
+    member_ids = {target.id for target in members}
+    changed = 0
+    for target in targets:
+        selected = target.id in member_ids
+        if bool(target.in_tracking_set) != selected:
+            target.in_tracking_set = selected
+            changed += 1
+    db.flush()
+    valid = not problems
+    return {
+        "hospital_id": str(hospital_id),
+        "requested_size": n,
+        "proposed_size": len(members),
+        "registered_size": len(members) if valid else 0,
+        "valid": valid,
+        "changed": changed,
+        "fingerprint": measurement_set.set_fingerprint(members)[0] if valid else None,
+        "reason": None if valid else "measurement set invalid: " + "; ".join(problems),
+        "curated": True,
+    }
+
+
 def register_tracking_set(
     db, hospital_id: uuid.UUID, n: int = TRACKING_SET_N_DEFAULT
 ) -> dict[str, object]:
+    current = _load_targets(db, hospital_id)
+    if measurement_set.uses_curated_set(current):
+        return _register_curated_set(db, hospital_id, current, n)
     proposed = propose_tracking_set(db, hospital_id, n=n)
     valid = tracking_set_is_valid(proposed) and all(
         str(getattr(target, "status", "") or "").upper() == "ACTIVE"
@@ -384,12 +441,22 @@ def monthly_sov_guard_units(
     )
 
 
-def monthly_sov_cohort_cost_threshold(n: int = TRACKING_SET_N_DEFAULT) -> int:
-    """Conservative one-dawn capacity before retries; actual spending stays guarded."""
+# 관측 칸 하나의 비용 단위: 답변 1회 + 자사 보조 판정(규칙 대조가 '아니다'라고 했는데 이름 조각이
+# 있을 때만 Haiku 1회). 경쟁 병원은 규칙 대조만 쓴다(2026-11-09). 보조 판정 비율 실측이 없어
+# 4칸 중 1칸으로 보수적으로 잡는다 — 예전의 ×3(답변 + 자사 판정 + 경쟁 판정 묶음)은 규칙 판정
+# 이전 값이라, 30문항이면 일 9,000으로 10곳만 잡혀 12/1에 거짓 '한도 초과' 사고가 열린다.
+MONTHLY_SLOT_COST_UNITS = 1.25
+
+
+def monthly_sov_cohort_cost_threshold(n: int = measurement_set.SET_TOTAL_MAX) -> int:
+    """Conservative one-dawn capacity before retries; actual spending stays guarded.
+
+    `n`은 병원 한 곳의 질문 수다. 기본은 30개 세트의 최대치 — 옛 15개 병원이 섞여 있으면 실제
+    여유는 더 크다(경고선은 자르는 상한이 아니라 경고 기준일 뿐이다).
+    """
     platforms = 2 if settings.OPENROUTER_API_KEY else 1
     repeats = min(settings.SOV_REPEAT_COUNT_WEEKLY, 20)
-    # One answer, one self judgment, and one competitor judgment batch per repeat.
-    units = max(1, n * platforms * repeats * 3)
+    units = max(1, int(n * platforms * repeats * MONTHLY_SLOT_COST_UNITS))
     budget = min(
         settings.COST_GUARD_DAILY_SOV_QUERIES,
         settings.COST_GUARD_MONTHLY_SOV_QUERIES,

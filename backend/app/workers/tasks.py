@@ -369,6 +369,8 @@ from app.services.monthly_manifest import (
     apply_manifest_to_report,
     close_manifest,
     freeze_dispatch_manifest,
+    frozen_dawn_manifest,
+    frozen_manifest_specs,
     link_attempt,
     reopen_incomplete_manifest_for_recovery,
     summarize_manifest,
@@ -529,6 +531,7 @@ from app.services.sov_tracking_set import (
     iter_monthly_sov_cohort,
     monthly_sov_cohort_cost_threshold,
     register_convertible_tracking_sets,
+    tracking_set_basis_size,
     tracking_set_fingerprint,
     tracking_set_members,
 )
@@ -9129,6 +9132,13 @@ def run_sov_for_hospital(
             )
             query_targets = target_result.scalars().all()
 
+            # 이 달 새벽 창 기준으로 이미 얼린 측정표가 있으면 그것을 그대로 잰다 — 새벽 창 안에서
+            # 측정 키워드를 고쳐도 이번 달 측정을 지우거나 막지 않는다(고친 세트는 다음 달부터).
+            dawn_manifest = (
+                frozen_dawn_manifest(db, hospital.id, period_year, period_month)
+                if monthly
+                else None
+            )
             if monthly:
                 query_targets = tracking_set_members(query_targets)
 
@@ -9144,17 +9154,20 @@ def run_sov_for_hospital(
                 ]
             )
 
-            measurement_specs, trimmed_high = _build_measurement_specs(
-                db=db,
-                hospital=hospital,
-                query_targets=query_targets,
-                fallback_queries=queries,
-                is_even_week=is_even_week,
-                is_month_start=is_month_start,
-                high_priority_cap=-1 if monthly else SOV_HIGH_PRIORITY_CAP,
-                total_spec_cap=-1 if monthly else SOV_TOTAL_SPEC_CAP,
-                measurement_mode=measurement_mode,
-            )
+            if dawn_manifest is not None:
+                measurement_specs, trimmed_high = frozen_manifest_specs(dawn_manifest), 0
+            else:
+                measurement_specs, trimmed_high = _build_measurement_specs(
+                    db=db,
+                    hospital=hospital,
+                    query_targets=query_targets,
+                    fallback_queries=queries,
+                    is_even_week=is_even_week,
+                    is_month_start=is_month_start,
+                    high_priority_cap=-1 if monthly else SOV_HIGH_PRIORITY_CAP,
+                    total_spec_cap=-1 if monthly else SOV_TOTAL_SPEC_CAP,
+                    measurement_mode=measurement_mode,
+                )
 
             if trimmed_high and not monthly:
                 # HIGH 상한 절단은 조용히 쿼리를 버리는 것과 같다 — 로그 + ops 알림 (P?-7).
@@ -9194,8 +9207,9 @@ def run_sov_for_hospital(
                 frozen_specs = measurement_specs
                 protocol_kwargs = {
                     "measurement_window": MEASUREMENT_WINDOW_MONTH_START_DAWN,
+                    # 30개 세트는 고정 질문만으로 지문·크기를 만든다(교체 질문은 비교 기준이 아니다).
                     "tracking_set_fingerprint": tracking_set_fingerprint(query_targets),
-                    "tracking_set_size": len(query_targets),
+                    "tracking_set_size": tracking_set_basis_size(query_targets),
                 }
             else:
                 frozen_specs, _ = _build_measurement_specs(
@@ -9210,7 +9224,7 @@ def run_sov_for_hospital(
                 )
                 protocol_kwargs = None
             try:
-                manifest = freeze_dispatch_manifest(
+                manifest = dawn_manifest if dawn_manifest is not None else freeze_dispatch_manifest(
                     db,
                     hospital.id,
                     period_year,
@@ -9363,6 +9377,20 @@ def run_sov_for_hospital(
                 db.commit()
                 if monthly:
                     slots_by_cell = _bounded_monthly_slot_page(slots_by_cell)
+            if monthly and slotted_execution:
+                # 답변 단계만 먼저 동시에 산다 — 아래 차례 실행은 판정과 남은 칸을 맡는다(설계 §3).
+                _prefetch_monthly_answers(
+                    db,
+                    slots_by_cell=slots_by_cell,
+                    query_text_by_cell={
+                        spec["manifest_cell"].id: spec["query_text"]
+                        for spec in measurement_specs
+                    },
+                    hospital=hospital,
+                    protocol=run_protocol,
+                    deadline=measurement_deadline,
+                    concurrency=settings.SOV_MONTHLY_ANSWER_CONCURRENCY,
+                )
             success_count = 0
             failure_count = 0
             for spec_index, spec in enumerate(measurement_specs):
@@ -10452,6 +10480,177 @@ def _frozen_manifest_identity(
     return _judgment_identity(hospital, hospital.name, None)
 
 
+@dataclass
+class _PrefetchClaim:
+    slot_id: uuid.UUID
+    platform: str
+    query_text: str
+    scope: str
+    measurement_run_id: uuid.UUID | None
+    lease_token: uuid.UUID
+    attempt: int
+    receipt: Any
+    settled: bool = False
+
+
+def _prefetch_monthly_answers(
+    db,
+    *,
+    slots_by_cell: Mapping[uuid.UUID, Sequence[MeasurementObservationSlot]],
+    query_text_by_cell: Mapping[uuid.UUID, str],
+    hospital: Hospital,
+    protocol: Mapping[str, Any],
+    deadline: datetime | None,
+    concurrency: int,
+) -> int:
+    """이번 페이지에서 답변이 필요한 칸의 공급자 호출을 동시에 보낸다. 받은 답변 수를 돌려준다.
+
+    새벽 창(1일 00:15~07:00)은 칸 하나에 약 22초(2026-10 실측)라 칸을 차례로 사면 병원 16곳 ×
+    30문항을 다 재지 못한다(측정 키워드 30개 설계 §3). 그래서 답변 단계만 동시에 보낸다.
+    칸마다의 계약은 `_execute_paid_observation_slot`의 답변 단계와 같다 — 커밋한 claim → 같은 예약
+    번호로 비용 예약 → 호출 → 정산 → lease를 가진 동안만 체크포인트. 판정 단계는 뒤의 차례 실행이
+    맡는다(이미 답을 받은 칸은 답변을 다시 사지 않는다). 예약이 막히면 거기서 멈추고 남은 칸은 차례
+    실행이 비용 보류로 처리한다. soft time limit이면 체크포인트 전 claim을 모두 되돌린다.
+    """
+
+    if concurrency <= 1:
+        return 0
+    pending = [
+        (cell_id, slot)
+        for cell_id, slots in slots_by_cell.items()
+        for slot in slots
+        if slot_needs_answer(slot)
+    ]
+    if not pending:
+        return 0
+    claims: list[_PrefetchClaim] = []
+    try:
+        for cell_id, slot in pending:
+            if _deadline_reached(deadline, arrow.now().datetime):
+                break
+            claim = claim_slot_stage(db, slot.id, stage="ANSWER", deadline=deadline)
+            if claim is None:
+                db.rollback()
+                continue
+            claimed, lease_token = claim
+            attempt = claimed.answer_attempt_count
+            decision = _run_async(
+                cost_guard.reserve(
+                    "sov",
+                    count=1,
+                    reservation_id=f"measurement:{claimed.id}:answer:{attempt}",
+                )
+            )
+            if not decision.allowed:
+                db.rollback()
+                break
+            db.commit()
+            claims.append(
+                _PrefetchClaim(
+                    slot_id=claimed.id,
+                    platform=claimed.platform,
+                    query_text=query_text_by_cell[cell_id],
+                    scope=str(claimed.scope),
+                    measurement_run_id=claimed.measurement_run_id,
+                    lease_token=lease_token,
+                    attempt=attempt,
+                    receipt=decision.receipt,
+                )
+            )
+        if not claims:
+            return 0
+
+        async def _fetch_all() -> list[Any]:
+            gate = asyncio.Semaphore(concurrency)
+
+            async def _one(item: _PrefetchClaim) -> Any:
+                async with gate:
+                    return await fetch_answer(
+                        item.query_text,
+                        item.platform,
+                        requested_model=(
+                            protocol.get("openai_model_query")
+                            if item.platform == "chatgpt"
+                            else protocol.get("gemini_model")
+                        ),
+                        hospital_id=hospital.id,
+                        workflow=f"{item.scope.lower()}_sov_answer",
+                        run_id=str(item.measurement_run_id),
+                        item_id=str(item.slot_id),
+                        attempt_id=str(item.attempt),
+                    )
+
+            return await asyncio.gather(
+                *(_one(item) for item in claims), return_exceptions=True
+            )
+
+        if _deadline_reached(deadline, arrow.now().datetime):
+            results: list[Any] = [None] * len(claims)
+        else:
+            results = _run_async(_fetch_all())
+        received = 0
+        for item, result in zip(claims, results):
+            if result is None:
+                # 마감 뒤 새 유료 단계는 사지 않는다 — 예약은 정상 정산하고 시도는 되돌린다.
+                _run_async(cost_guard.settle_reservation(item.receipt, consumed_units=0))
+                item.settled = True
+                release_interrupted_stage(
+                    db,
+                    item.slot_id,
+                    stage="ANSWER",
+                    lease_token=item.lease_token,
+                    refund_attempt=True,
+                )
+                db.commit()
+                continue
+            if isinstance(result, SoftTimeLimitExceeded):
+                raise result
+            if isinstance(result, BaseException):
+                # 공급자가 요청을 받았을 수 있다 — 예약은 소비로 정산한다(차례 실행과 같다).
+                answer: dict[str, Any] = {
+                    "measurement_status": "FAILED",
+                    "failure_reason": f"answer_exception:{type(result).__name__}",
+                    "provider_calls": 1,
+                }
+            else:
+                answer = dict(result)
+            answer_calls = max(0, int(answer.get("provider_calls") or 0))
+            _run_async(
+                cost_guard.settle_reservation(
+                    item.receipt, consumed_units=min(answer_calls, 1)
+                )
+            )
+            item.settled = True
+            checkpointed = checkpoint_answer(
+                db, item.slot_id, answer, lease_token=item.lease_token, deadline=deadline
+            )
+            if checkpointed is None:
+                db.rollback()
+                continue
+            db.commit()
+            received += int(checkpointed.answer_status == "RECEIVED")
+        return received
+    except SoftTimeLimitExceeded:
+        try:
+            db.rollback()
+            for item in claims:
+                release_interrupted_stage(
+                    db,
+                    item.slot_id,
+                    stage="ANSWER",
+                    lease_token=item.lease_token,
+                    refund_attempt=not item.settled,
+                )
+            db.commit()
+        except Exception:
+            logger.warning("Prefetched answer stages were not released", exc_info=True)
+            try:
+                db.rollback()
+            except Exception:
+                pass
+        raise
+
+
 def _execute_paid_observation_slot(
     db,
     *,
@@ -11199,7 +11398,9 @@ def run_weekly_monitoring():
 
 
 MONTHLY_SOV_PERIOD_OPERATION = "MONTHLY_SOV_PERIOD"
-MONTHLY_SOV_PAGE_SIZE = 10
+# 한 실행이 사는 미완료 칸 수. 답변을 동시에 사므로(`_prefetch_monthly_answers`) 페이지를 키워 이어가기
+# 사이의 쉬는 시간(SOV_CONTINUATION_COUNTDOWN_SECONDS) 비중을 줄인다(측정 키워드 30개 설계 §3).
+MONTHLY_SOV_PAGE_SIZE = 30
 MONTHLY_SOV_PERIOD_LEASE = timedelta(minutes=20)
 
 

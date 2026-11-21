@@ -90,6 +90,12 @@ class AIQueryTarget(Base):
     in_tracking_set: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default="false", nullable=False
     )
+    # 측정 키워드 30개 세트(2026-11-21, 마이그레이션 0101). 그룹 A~D(A=병원명 질문 · B=진료·검사 탐색 ·
+    # C=증상·고민 · D=상황·조건)와 역할 FIXED(매달 같은 질문, 지난달 비교의 기준)/ROTATING(달마다
+    # 바꾸는 질문). NULL이면 30개 세트가 아니다 — 옛 10~15개 자동 선택 병원·후보 질문.
+    # 한 병원에 역할 있는 ACTIVE 질문이 하나라도 있으면 그 병원은 30개 방식이다(`sov_tracking_set`).
+    question_group: Mapped[str | None] = mapped_column(String(1))
+    set_role: Mapped[str | None] = mapped_column(String(10))
     target_month: Mapped[str | None] = mapped_column(String(7))
     created_by: Mapped[str | None] = mapped_column(String(100))
     updated_by: Mapped[str | None] = mapped_column(String(100))

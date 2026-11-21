@@ -17,7 +17,7 @@ from sqlalchemy.orm import selectinload
 
 from app.models.monthly_control import MonthlyMeasurementAttempt, MonthlyMeasurementCell
 from app.models.sov import AIQueryTarget, ExposureAction, ExposureGap, SovRecord
-from app.services import sov_engine
+from app.services import measurement_set, sov_engine
 from app.services.content_citations import hospital_surface_roots, normalize_cited_url
 from app.utils.db_locks import acquire_hospital_advisory_lock
 
@@ -224,6 +224,8 @@ async def _load_targets(db: AsyncSession, hospital_id: uuid.UUID) -> list[AIQuer
         .where(
             AIQueryTarget.hospital_id == hospital_id,
             AIQueryTarget.status.in_(ACTIVE_TARGET_STATUSES),
+            # 병원명 질문(측정 키워드 그룹 A)은 노출 보완 제안·글 주제의 근거가 아니다.
+            measurement_set.content_eligible_clause(AIQueryTarget.question_group),
         )
     )
     return list(result.scalars().all())

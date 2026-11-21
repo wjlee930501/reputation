@@ -22,6 +22,7 @@ from app.core.database import get_db
 from app.models.content import ContentItem, ContentStatus
 from app.models.hospital import Hospital
 from app.models.sov import AIQueryTarget
+from app.services import measurement_set
 from app.services.audit_log import default_actor, write_audit_log
 from app.services.content_focus import (
     MAX_TOPICS,
@@ -78,7 +79,9 @@ async def _candidate_targets(db: AsyncSession, hospital: Hospital) -> list[AIQue
     return [
         target
         for target in rows
-        if target_fits_hospital(target, hospital) and not target_subject_is_region(target, hospital)
+        if target_fits_hospital(target, hospital)
+        and not target_subject_is_region(target, hospital)
+        and measurement_set.content_eligible(target)
     ]
 
 

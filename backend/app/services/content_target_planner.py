@@ -15,6 +15,7 @@ from app.models.content import ContentItem, ContentStatus, ContentType
 from app.models.essence import HospitalContentPhilosophy
 from app.models.hospital import Hospital
 from app.models.sov import AIQueryTarget, ExposureAction, ExposureGap
+from app.services import measurement_set
 from app.services.content_brief import (
     BRIEF_STATUS_APPROVED,
     PLANNING_REASON_KEY,
@@ -226,7 +227,10 @@ def _choose_target(
         )
         .scalars()
         .all()
-        if str(target.id) not in excluded and target_fits_hospital(target, hospital)
+        if str(target.id) not in excluded
+        and target_fits_hospital(target, hospital)
+        # 병원명 질문(측정 키워드 그룹 A)은 글 주제가 아니다 — 정보 정확도 점검이다.
+        and measurement_set.content_eligible(target)
     ]
     if not targets:
         return None
