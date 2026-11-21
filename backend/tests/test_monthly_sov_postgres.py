@@ -230,8 +230,9 @@ def test_concurrent_resume_uses_one_null_scoped_period_identity_and_one_live_lea
     engine.dispose()
 
 
-def test_partial_budget_page_selects_at_most_ten_pending_stages() -> None:
+def test_partial_budget_page_selects_at_most_one_page_of_pending_stages() -> None:
     cell_a, cell_b = uuid.uuid4(), uuid.uuid4()
+    page_size = tasks.MONTHLY_SOV_PAGE_SIZE
     terminal = SimpleNamespace(
         id=uuid.uuid4(),
         answer_status="RECEIVED",
@@ -247,17 +248,18 @@ def test_partial_budget_page_selects_at_most_ten_pending_stages() -> None:
             answer_attempt_count=0,
             judgment_attempt_count=0,
         )
-        for index in range(14)
+        for index in range(page_size + 4)
     ]
+    half = len(pending) // 2
 
     page = tasks._bounded_monthly_slot_page(
-        {cell_a: [terminal, *pending[:7]], cell_b: pending[7:]}
+        {cell_a: [terminal, *pending[:half]], cell_b: pending[half:]}
     )
 
     selected_pending = [
         slot for slots in page.values() for slot in slots if not tasks.slot_is_terminal(slot)
     ]
-    assert len(selected_pending) == 10
+    assert len(selected_pending) == page_size
     assert terminal in page[cell_a]
 
 

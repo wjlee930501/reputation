@@ -68,9 +68,10 @@ DOCTOR_SURVEYS = "0097_add_doctor_surveys"
 DOCTOR_SURVEY_FILES = "0098_add_doctor_survey_files"
 SCHEDULE_DAILY_MAX = "0099_add_content_schedule_daily_max_superseded"
 HOSPITAL_SITE_CONFIGS = "0100_add_hospital_site_configs"
+QUERY_TARGET_SET_ROLES = "0101_add_query_target_set_roles"
 
 PRODUCTION_STAMP = CONTENT_CUSTOMIZATION
-HEAD = HOSPITAL_SITE_CONFIGS
+HEAD = QUERY_TARGET_SET_ROLES
 
 
 def _script_directory() -> ScriptDirectory:
@@ -161,6 +162,7 @@ def test_hardening_revisions_keep_their_recovered_parents() -> None:
         DOCTOR_SURVEY_FILES,
         SCHEDULE_DAILY_MAX,
         HOSPITAL_SITE_CONFIGS,
+        QUERY_TARGET_SET_ROLES,
     )
     parents = {
         revision: script.get_revision(revision).down_revision for revision in recovered
@@ -215,6 +217,7 @@ def test_hardening_revisions_keep_their_recovered_parents() -> None:
         DOCTOR_SURVEY_FILES: DOCTOR_SURVEYS,
         SCHEDULE_DAILY_MAX: DOCTOR_SURVEY_FILES,
         HOSPITAL_SITE_CONFIGS: SCHEDULE_DAILY_MAX,
+        QUERY_TARGET_SET_ROLES: HOSPITAL_SITE_CONFIGS,
     }
 
 
@@ -226,6 +229,7 @@ def test_upgrade_from_the_production_stamp_runs_the_linear_tail() -> None:
     ]
 
     assert pending == [
+        QUERY_TARGET_SET_ROLES,
         HOSPITAL_SITE_CONFIGS,
         SCHEDULE_DAILY_MAX,
         DOCTOR_SURVEY_FILES,
@@ -283,7 +287,7 @@ def test_fresh_database_applies_the_whole_chain_in_order() -> None:
     ]
 
     assert len(applied) == len(set(applied))
-    assert applied[-49:] == [
+    assert applied[-50:] == [
         PHOTO_PROVENANCE,
         IMAGE_POLICY,
         CONTENT_CUSTOMIZATION,
@@ -333,4 +337,5 @@ def test_fresh_database_applies_the_whole_chain_in_order() -> None:
         DOCTOR_SURVEY_FILES,
         SCHEDULE_DAILY_MAX,
         HOSPITAL_SITE_CONFIGS,
+        QUERY_TARGET_SET_ROLES,
     ]
