@@ -11,9 +11,10 @@
  *   의료진은 공개 조건을 통과한 전원을 보인다, I4).
  * - 형식이 틀리거나 모르는 판의 설정은 통째로 버린다(null) — 화면을 깨지 않고 지금 화면으로 떨어진다.
  *
- * 이 PR(3b ①)이 쓰는 칸: 섹션 순서·켜기·제목, 섹션 안내 문장(`copy.*.note`), 진료 원칙 카드 수,
- * 진료 과정 안내·단계, FAQ 자동·직접, 상단 메뉴·모바일 하단 바, 공유 이미지·설명. 첫 화면·배경·정렬·
- * 영문 소제목·줄바꿈 같은 모양 칸은 다음 PR이다(받아 두기만 한다).
+ * 3b ①이 쓰는 칸: 섹션 순서·켜기·제목, 섹션 안내 문장(`copy.*.note`), 진료 원칙 카드 수,
+ * 진료 과정 안내·단계, FAQ 자동·직접, 상단 메뉴·모바일 하단 바, 공유 이미지·설명.
+ * ③-2a가 더한 칸(B안만): 첫 화면 정보 띠 칸(`hero.blocks`), 진료 항목 모양·설명(`treatments`).
+ * 첫 화면 배치·배경·정렬·영문 소제목·줄바꿈·의료진 사진 같은 나머지 모양 칸은 다음 PR이다(받아 두기만 한다).
  */
 
 import type { ContentSummary } from './api.ts'
@@ -68,6 +69,13 @@ const NAV_ITEMS: ReadonlySet<string> = new Set<SiteNavItem>([
   'call',
 ])
 const MOBILE_BAR_ITEMS: ReadonlySet<string> = new Set<SiteMobileBarItem>(['call', 'hours', 'guide', 'map'])
+
+/** B안 첫 화면 아래 정보 띠의 칸. `hours`는 지금 띠의 네 번째 칸(토요일·다음 진료 등 그날 문장)이다. */
+export type SiteHeroBlock = 'today' | 'phone' | 'location' | 'booking' | 'hours'
+const HERO_BLOCKS: ReadonlySet<string> = new Set<SiteHeroBlock>(['today', 'phone', 'location', 'booking', 'hours'])
+/** 지금 B안 띠의 칸과 순서(백엔드 `site_defaults`의 `hero.blocks`와 같다). */
+export const DEFAULT_HERO_BLOCKS: readonly SiteHeroBlock[] = ['today', 'phone', 'location', 'hours']
+export type SiteTreatmentStyle = 'cards' | 'list'
 
 /** 레이아웃별 홈 섹션 기본 순서 = 지금 마크업 순서. 레이아웃을 고르지 않은 병원(null)은 B와 같다. */
 export const DEFAULT_SECTION_ORDER: Readonly<Record<ClinicLayout, readonly SiteSectionId[]>> = {
@@ -149,6 +157,12 @@ export interface ClinicSiteConfig {
   faq: { mode: 'auto' | 'manual'; limit: number; entries: SiteFaqEntry[] | null }
   nav: { items: SiteNavItem[]; mobileBar: SiteMobileBarItem[] }
   share: { imageAssetId: string | null; description: string | null }
+  /**
+   * B안만. 기본값(지금 띠)과 같거나 B안이 아니면 null — 컴포넌트는 null이면 지금 마크업을 그대로 그린다.
+   */
+  hero: { blocks: SiteHeroBlock[] | null }
+  /** B안만. A·C는 언제나 지금 모양(카드·설명 보임)이다 — A 알약·C 타일은 이 칸을 읽지 않는다. */
+  treatments: { style: SiteTreatmentStyle; showDescription: boolean }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -275,7 +289,61 @@ export function normalizeSiteConfig(value: unknown, siteLayout: ClinicLayout | n
       mobileBar: itemsOf<SiteMobileBarItem>(nav.mobile_bar, MOBILE_BAR_ITEMS, DEFAULT_MOBILE_BAR),
     },
     share: { imageAssetId: text(share.image_asset_id), description: text(share.description) },
+    hero: { blocks: layout === 'B' ? customHeroBlocks(value.hero) : null },
+    treatments: layout === 'B' ? treatmentLook(value.treatments) : { ...DEFAULT_TREATMENT_LOOK },
   }
+}
+
+const DEFAULT_TREATMENT_LOOK = { style: 'cards', showDescription: true } as const
+
+/** 정보 띠 칸 — 모르는·겹친 칸은 버린다. 남은 칸이 없거나 지금 띠와 같으면 null(지금 마크업). */
+function customHeroBlocks(raw: unknown): SiteHeroBlock[] | null {
+  const hero = isRecord(raw) ? raw : {}
+  if (!Array.isArray(hero.blocks)) return null
+  const blocks = itemsOf<SiteHeroBlock>(hero.blocks, HERO_BLOCKS, DEFAULT_HERO_BLOCKS)
+  if (blocks.length === 0) return null
+  const same =
+    blocks.length === DEFAULT_HERO_BLOCKS.length && blocks.every((block, index) => block === DEFAULT_HERO_BLOCKS[index])
+  return same ? null : blocks
+}
+
+function treatmentLook(raw: unknown): { style: SiteTreatmentStyle; showDescription: boolean } {
+  const treatments = isRecord(raw) ? raw : {}
+  return {
+    style: treatments.style === 'list' ? 'list' : 'cards',
+    showDescription: treatments.show_description !== false,
+  }
+}
+
+/**
+ * 정보 띠에 실제로 그릴 칸. 설정이 없으면 null(지금 마크업). '예약'은 네이버 플레이스 주소가 있을 때만 —
+ * 없으면 그 칸을 뺀다. 빼고 나니 지금 띠와 같으면 null(지금 띠), 남은 칸이 없으면 빈 배열(띠 없음 —
+ * 고르지 않은 기본 칸을 대신 보이지 않는다).
+ */
+export function resolveHeroBlocks(
+  config: ClinicSiteConfig | null,
+  bookingUrl: string | null,
+): SiteHeroBlock[] | null {
+  const blocks = config?.hero.blocks
+  if (!blocks) return null
+  const shown = bookingUrl ? blocks : blocks.filter((block) => block !== 'booking')
+  const same =
+    shown.length === DEFAULT_HERO_BLOCKS.length && shown.every((block, index) => block === DEFAULT_HERO_BLOCKS[index])
+  return same ? null : shown
+}
+
+/**
+ * '예약' 칸이 여는 곳 — 네이버 플레이스(병원 정보의 주소, 없으면 플레이스 번호로 만든 주소). 예약 화면으로
+ * 바로 가는 주소는 병원마다 달라 만들지 않는다: 플레이스 화면의 예약·문의 버튼으로 이어진다.
+ */
+export function naverBookingUrl(hospital: {
+  naver_place_url?: string | null
+  naver_place_id?: string | null
+}): string | null {
+  const url = hospital.naver_place_url?.trim()
+  if (url && /^https?:\/\//.test(url)) return url
+  const id = hospital.naver_place_id?.trim()
+  return id && /^\d+$/.test(id) ? `https://map.naver.com/p/entry/place/${id}` : null
 }
 
 /** 홈 화면 계획 — 레이아웃 컴포넌트는 이 순서대로 그리고, 제목·안내만 여기서 묻는다. */

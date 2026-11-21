@@ -539,6 +539,30 @@ def test_menu_item_pointing_to_a_disabled_section_is_a_warning() -> None:
     assert [w["code"] for w in check.warnings] == ["NAV_TARGET_DISABLED"]
 
 
+def test_booking_block_without_a_naver_place_is_a_warning_on_b_only() -> None:
+    config = {"hero": {"blocks": ["phone", "booking", "location"]}}
+    check = validate_site_config("B", config, _ctx(has_naver_place=False))
+    assert check.ok
+    assert [w["code"] for w in check.warnings] == ["BOOKING_NO_PLACE"]
+    assert validate_site_config("B", config, _ctx(has_naver_place=True)).warnings == []
+    # 기본 칸에는 '예약'이 없다 — 플레이스가 없어도 경고하지 않는다.
+    assert validate_site_config("B", {}, _ctx(has_naver_place=False)).warnings == []
+
+
+def test_text_context_knows_whether_the_hospital_has_a_naver_place() -> None:
+    from types import SimpleNamespace
+
+    from app.services.site_config_refs import text_context
+
+    def ctx_for(**fields):
+        return text_context(SimpleNamespace(**{"naver_place_url": None, "naver_place_id": None, **fields}))
+
+    assert ctx_for().has_naver_place is False
+    assert ctx_for(naver_place_url=" ").has_naver_place is False
+    assert ctx_for(naver_place_url="https://m.place.naver.com/place/1").has_naver_place is True
+    assert ctx_for(naver_place_id="1595672233").has_naver_place is True
+
+
 def test_changed_sections_lists_blocks_sections_and_order() -> None:
     before = site_defaults.resolve("B", {})
     after = site_defaults.resolve(
