@@ -13,6 +13,8 @@
 4. 참조 — 공유 이미지는 그 병원의 공개 사진(원장 사진이면 실인물·신원 승인)이어야 하고, 고른 FAQ
    글은 그 병원의 공개 FAQ 글 중 승인 질문·답이 있는 것이어야 한다.
 5. 메뉴 — 꺼진 섹션을 가리키는 항목은 경고(저장은 된다). 공개 응답이 그 항목을 뺀다.
+6. B안 전용 칸 — 첫 화면 정보 띠 칸(`hero.blocks`)과 진료 항목 모양(`treatments.style`)은 B안에서만 그린다.
+   A·C에서 기본값과 다른 값은 거절한다(기본값과 같은 값·비운 칸은 그대로 통과 — 옛 초안·완성본이 막히지 않게).
 """
 
 from __future__ import annotations
@@ -162,6 +164,7 @@ def validate_site_config(
 
     stored = storage_form(model)
     _check_sections(check, layout, stored)
+    _check_b_only(check, layout, stored)
     if not check.ok:
         return check
     resolved = site_defaults.resolve(layout, stored)
@@ -192,6 +195,25 @@ def _check_sections(check: SiteConfigCheck, layout: str, stored: dict[str, Any])
             check.error(f"{path}.enabled", "FIXED_SECTION", "이 섹션은 끌 수 없습니다(위치만 바꿀 수 있습니다).")
         if section_id in site_defaults.UNTITLED_SECTIONS and section.get("title") is not None:
             check.error(f"{path}.title", "SECTION_TITLE_FIXED", "이 섹션은 제목을 바꿀 수 없습니다.")
+
+
+# B안에서만 그리는 칸 — A 첫 화면에는 정보 띠가 없고 C는 오늘 진료 위젯 하나다. A 알약·C 번호 타일은
+# 카드도 목록도 아니다(설계 14절 '결정됨 — ③-2에서 B에만 열기').
+_B_ONLY_FIELDS: tuple[tuple[str, str], ...] = (("hero", "blocks"), ("treatments", "style"))
+
+
+def _check_b_only(check: SiteConfigCheck, layout: str, stored: dict[str, Any]) -> None:
+    if layout == "B":
+        return
+    base = site_defaults.defaults(layout)
+    for group, key in _B_ONLY_FIELDS:
+        value = (stored.get(group) or {}).get(key)
+        if value is not None and value != base[group][key]:
+            check.error(
+                f"{group}.{key}",
+                "B_LAYOUT_ONLY",
+                "이 칸은 B 레이아웃에서만 바꿀 수 있습니다.",
+            )
 
 
 def _check_order(check: SiteConfigCheck, layout: str, resolved: dict[str, Any]) -> None:
