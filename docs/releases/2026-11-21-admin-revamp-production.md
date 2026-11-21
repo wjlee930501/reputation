@@ -1,11 +1,12 @@
-# 2026-11-21 다섯 번 배포 — 어드민 개편 1단계·레이아웃 편집기 3a·3b·3c·③-1·미리보기 비밀값·③-2a·③-2b
+# 2026-11-21 여섯 번 배포 — 어드민 개편 1단계·레이아웃 편집기 3a·3b·3c·③-1·미리보기 비밀값·③-2a~e
 
-상태: **2026-11-21 KST에 다섯 번 배포했다.**
+상태: **2026-11-21 KST에 여섯 번 배포했다.**
 - 1차: 02:01~02:07, main `2241f431`, Backend·Admin.
 - 2차: 04:46~04:51, main `85754f20`, Backend·Admin. 2차에는 마이그레이션 `0100`이 있다.
 - 3차: 08:46~08:52, main `0f93551b`, **Backend·Site·Admin**. 마이그레이션은 없다.
 - 4차: 10:13~10:17, 같은 main `0f93551b`, Backend만. 코드 변경 없이 새로 만든 미리보기 비밀값 `SITE_PREVIEW_TOKEN_SECRET`을 주입했다(사용자 지시 "만들고 배포").
 - 5차: 15:36~15:43, main `84b8f70c`, **Backend·Site·Admin**. 레이아웃 편집기 ③-2a·③-2b(#357~#360). 마이그레이션은 없다. 14:20 첫 시도는 gcloud 로그인 만료로 사전 검증에서 멈췄다(운영 변경 없음).
+- 6차: 15:47~15:49, main `f98c433b`, **Site·Admin만**(백엔드 변경 없음). ③-2c-1·③-2c-2·③-2d·③-2e(#361·#362·#365·#366)와 어드민 의료진 사진 안내(#363), 결정 대기 문서(#364).
 - 사용자 지시: "완료 되면 병합, 배포까지 하고 바로 다음 단계로", "1단계에서 할 수 있는 것들 바로 진행 먼저 싹하고, 다음으로 레이아웃 편집기 3a 진행", "배포 2차 끝나고 문서 쓰고, 다음도 이어서 알아서 진행해".
 - 1·2차는 Site를 바꾸지 않았다. 3차에서 Site가 `00157-q7b` → `00158-qt2`가 됐다.
 
@@ -159,6 +160,24 @@ DEPLOY_ROLLBACK_STATE_FILE=.deploy-rollback-admin bash scripts/deploy.sh admin
 - **공개 반영은 여전히 막혀 있다.** ③-2c~f와 나머지 칸 정리(#361·#362·#365·#366·#367·#368)가 아직 병합 전이다.
 - 사고: #360을 `--delete-branch`로 병합하자 그 브랜치를 base로 쌓인 #361이 GitHub에서 자동으로 닫혔다(재지정되지 않았다). 브랜치를 같은 커밋으로 되살리고 #361을 다시 열어 base를 main으로 바꿨다. 쌓인 PR의 아래 PR은 브랜치를 지우지 않고 병합한다.
 
+### 6차 — ③-2c~e·의료진 사진 안내(15:47~15:49, Site·Admin)
+범위(main `dfdb50b1`·`d0feb2d8`·`ef69766e`·`fd58ea60`·`c3eab97d`·`f98c433b`):
+
+| PR | 내용 |
+|---|---|
+| [#361](https://github.com/wjlee930501/reputation/pull/361) | ③-2c-1 — 섹션 제목 정렬·영문 소제목(A·B·C) |
+| [#362](https://github.com/wjlee930501/reputation/pull/362) | ③-2c-2 — 섹션 배경(기본·흰색·연한 대표색·진한 띠) |
+| [#365](https://github.com/wjlee930501/reputation/pull/365) | ③-2d — 첫 화면 배치·덮개·제목 크기·사진 초점 |
+| [#366](https://github.com/wjlee930501/reputation/pull/366) | ③-2e — 진료 원칙 기본 카드 끄기, 오시는 길 순서·대중교통(B) |
+| [#363](https://github.com/wjlee930501/reputation/pull/363) | 어드민 — 의료진 사진이 공개 페이지에 나가지 않을 때 이유를 알림 |
+| [#364](https://github.com/wjlee930501/reputation/pull/364) | 문서 — 결정 대기 8번(담당 AE에 소유자만 보이는 원인) |
+
+- 바뀐 파일은 site 23·admin 8·docs 2개뿐이라 Site·Admin만 배포했다(배치 시간대 규칙 대상 아님).
+- 배포 전 확인: 합친 main에서 Site 616/616·Admin 759/759·두 쪽 `tsc`, 백엔드 사이트 설정 테스트 200 passed. 쌓인 PR(#362·#365·#366)은 아래 PR이 병합된 뒤 base를 main으로 옮겨 병합했다(브랜치는 지우지 않았다).
+- 결과: site `00160-txz`, admin `00133-lp7` → `00134-4fv`. 배포 전 좌표 `.omo/rollback-6th1121/rollback.state`.
+- 확인: 공개 병원 16곳 200·hospital ID 일치. 홈 4곳의 보이는 글자·링크·이미지는 아침 기준과 같다. C안 두 곳(행복드림·다대으뜸)은 섹션 머리에 새 표지 class(`clinic-look-head`·`-title`·`-note`·`-eng`·`-row`)가 붙었지만, 그 CSS는 설정이 있을 때만 붙는 `data-look-*` 속성과 `.clinic-look` 틀 아래에서만 작동하고 지금 HTML에는 둘 다 없다 — 화면은 그대로다. Admin 로그인 200.
+- 아직 병합 전: #367(나머지 칸 어드민 숨김+서버 거절, main과 충돌), #368(③-2f 줄바꿈, 기존 flaky 테스트로 CI 실패 1). 공개 반영은 이 둘 뒤에 연다.
+
 ## 알게 된 것·주의
 - **3차 뒤 공개 반영을 풀 수 있는가:** ③-1로 '틀린 기본값이 공개 판에 굳는' 위험은 막혔다. 옛 판도 그 칸만 지금 기본값으로 낸다. 그래도 이번에는 풀지 않았다. 남은 두 가지가 사용자 결정이기 때문이다.
   - 미리보기 비밀 `SITE_PREVIEW_TOKEN_SECRET`이 운영에 없어 편집 화면의 미리보기가 503이다. 미리보기 없이 공개 반영만 여는 것은 위험하다.
@@ -178,7 +197,7 @@ DEPLOY_ROLLBACK_STATE_FILE=.deploy-rollback-admin bash scripts/deploy.sh admin
 - **CI 리허설은 DB head를 하드코딩한다.** 위치는 `scripts/integrity_rehearsal/check.py`다. 마이그레이션을 더하는 PR은 이 값도 함께 올려야 한다(#349가 0100으로 올렸다).
 
 ## 지금 운영 리비전
-- api `00302-ksn`, worker `00295-5tm`, beat `00290-8mg`, site `00159-jzr`, admin `00133-lp7`.
+- api `00302-ksn`, worker `00295-5tm`, beat `00290-8mg`, site `00160-txz`, admin `00134-4fv`.
 - DB head는 `0100_add_hospital_site_configs`다.
 
 ## 롤백
@@ -190,6 +209,7 @@ DEPLOY_ROLLBACK_STATE_FILE=$PWD/.omo/rollback-admin1121/rollback.state bash scri
 ```bash
 DEPLOY_ROLLBACK_STATE_FILE=$PWD/.omo/rollback-3rd1121/rollback.state bash scripts/deploy.sh rollback   # 3차만(Site 포함 다섯 서비스)
 ```
+- 6차만 되돌릴 때: `DEPLOY_ROLLBACK_STATE_FILE=$PWD/.omo/rollback-6th1121/rollback.state` — site `00159-jzr`, admin `00133-lp7`.
 - 5차만 되돌릴 때: `DEPLOY_ROLLBACK_STATE_FILE=$PWD/.omo/rollback-5th1121/rollback.state` — api `00301-pjs`, worker `00294-zv7`, beat `00289-m8j`, site `00158-qt2`, admin `00132-ssx`(공개된 설정이 없으니 화면은 같다).
 - 4차만 되돌릴 때: `DEPLOY_ROLLBACK_STATE_FILE=$PWD/.omo/rollback-4th1121/rollback.state` — api `00300-gpw`, worker `00293-89h`, beat `00288-wn7`(코드는 같고 비밀값만 빠진다 → 미리보기 발급 503).
 - 3차만 되돌릴 때: api `00299-5cz`, worker `00292-dng`, beat `00287-nlk`, site `00157-q7b`, admin `00131-szn`.

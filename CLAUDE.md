@@ -1,10 +1,10 @@
 # Re:putation — 현재 프로젝트 개발 안내
 
-## 최신 운영 배포 — 2026-11-21 오후 레이아웃 편집기 ③-2a·③-2b (그날 다섯 번째)
+## 최신 운영 배포 — 2026-11-21 오후 레이아웃 편집기 ③-2a~e (그날 다섯·여섯 번째)
 
 main `84b8f70c`(#357 B안 정보 띠 칸·예약(네이버 플레이스)·진료 항목 목록 모양, #358 A·C에서 그 두 칸 거절 `B_LAYOUT_ONLY`, #359 어드민 A·C 숨김, #360 의료진 사진 비율·초점·직함 위치)을
-15:36~15:43 KST에 Backend·Site·Admin에 배포했다(`--override-reason`, 마이그레이션 없음). **현재 리비전은 api `00302-ksn`, worker `00295-5tm`, beat `00290-8mg`, site `00159-jzr`, admin `00133-lp7`**, DB head `0100`.
-readiness·공개 표면 확인 통과, 16곳 200·hospital ID 일치·`site_config` null 그대로, 홈 4곳 화면이 배포 전과 같다. **공개 반영은 여전히 막혀 있다** — ③-2c~f·나머지 칸 숨김+거절(#361·#362·#365·#366·#367·#368)이 들어가야 연다.
+15:36~15:43 KST에 Backend·Site·Admin에 배포했다(`--override-reason`, 마이그레이션 없음). 이어 15:47~15:49에 ③-2c~e(#361·#362·#365·#366)와 #363·#364를 Site·Admin에만 배포했다(6차, 백엔드 변경 없음). **현재 리비전은 api `00302-ksn`, worker `00295-5tm`, beat `00290-8mg`, site `00160-txz`, admin `00134-4fv`**, DB head `0100`.
+readiness·공개 표면 확인 통과, 16곳 200·hospital ID 일치·`site_config` null 그대로, 홈 4곳 화면이 배포 전과 같다. **공개 반영은 여전히 막혀 있다** — ③-2f(#368)·나머지 칸 숨김+거절(#367)이 들어가야 연다.
 쌓인 PR의 아래 PR을 `--delete-branch`로 병합하면 위 PR이 닫힌다(재지정되지 않는다). 롤백 `.omo/rollback-5th1121/rollback.state`. 상세는 [배포 기록](docs/releases/2026-11-21-admin-revamp-production.md)의 '5차'.
 
 ## 이전 운영 배포 — 2026-11-21 오전 레이아웃 편집기 3b·3c·③-1 (그날 세 번째)
