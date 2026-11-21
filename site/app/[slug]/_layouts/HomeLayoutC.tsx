@@ -21,7 +21,7 @@ import {
   WEEK_DAY_KEYS,
 } from '@/lib/clinic-layout'
 import { fullClinicAddress } from '@/lib/clinic-schema'
-import { physicianPhotoLook, limitCarePrincipleCards, type SiteSectionId } from '@/lib/clinic-site-config'
+import { heroLookAttributes, physicianPhotoLook, limitCarePrincipleCards, type SiteSectionId } from '@/lib/clinic-site-config'
 import {
   CARE_FLOW_TITLE,
   resolveCarePrinciples,
@@ -98,7 +98,7 @@ export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
   const sections: Partial<Record<SiteSectionId, ReactNode>> = {
     hero: (
       <>
-        <section className={`${s.hero}${model.heroPhotoUrl ? ` ${s.heroSplit}` : ` ${s.heroPlain}`}`} aria-label="첫 화면">
+        <section className={`${s.hero}${model.heroPhotoUrl ? ` ${s.heroSplit}` : ` ${s.heroPlain}`}`} aria-label="첫 화면" {...heroLookAttributes(model.siteConfig?.hero.look)}>
           {model.heroPhotoUrl ? (
             // 좌우 분할(2026-11-20 결정 N2): 사진은 오른쪽 절반(휴대폰은 위 4:3)에 덮개 없이 두고,
             // 글은 대표색 바탕의 왼쪽(휴대폰은 아래)에 놓는다 — 사진이 가려지지 않고 흰 글자 대비가

@@ -39,6 +39,8 @@ interface Props {
   blocks?: SiteHeroBlock[] | null
   /** '예약' 칸이 여는 네이버 플레이스 주소(`naverBookingUrl`). */
   bookingUrl?: string | null
+  /** 섹션 설정의 첫 화면 모양 표지(`heroLookAttributes`) — 비어 있으면 지금 마크업 그대로. */
+  lookAttributes?: Record<string, unknown>
 }
 
 function compactAddress(address: string): string {
@@ -71,6 +73,7 @@ export function ClinicHero({
   heroDescription = null,
   blocks = null,
   bookingUrl = null,
+  lookAttributes = {},
 }: Props) {
   // 오늘에 따라 바뀌는 칸(오늘 진료·전화 버튼·다음 진료)은 HeroToday가 브라우저에서 한국 시간으로
   // 다시 잰다 — 캐시된 HTML이 지난 요일 값을 보이지 않게. 연중무휴·다음 진료·주말 규칙은 그 파일에 있다.
@@ -88,6 +91,7 @@ export function ClinicHero({
     <section
       className={`clinic-hero clinic-hero--editorial clinic-hero--access-${accessMode} clinic-hero--media-${mediaMode}`}
       id="top"
+      {...lookAttributes}
     >
       <div className="clinic-hero-editorial-grid">
         <div className="clinic-hero-editorial-copy">

@@ -216,3 +216,8 @@
 .shell.shell :global(.clinic-tx-list-name) {
   font-family: var(--layout-serif);
 }
+
+/* ③-2d 제목 크기 — 강조 줄도 같은 비율(설정이 바꿨을 때만, 표지 data-hero-title). */
+.shell.shell :global(.clinic-hero[data-hero-title] .clinic-hero-editorial-title span + strong) {
+  font-size: calc(clamp(22px, 2.2vw, 30px) * var(--hero-title-scale, 1));
+}

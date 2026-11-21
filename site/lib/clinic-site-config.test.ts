@@ -22,6 +22,7 @@ import {
   BACKGROUND_FIXED,
   DEFAULT_SECTION_BACKGROUND,
   DEFAULT_SECTION_LOOK,
+  heroLookAttributes,
   SECTION_LABEL_WORDS,
   naverBookingUrl,
   normalizeSiteConfig,
@@ -109,6 +110,8 @@ for (const layout of LAYOUTS) {
     assert.deepEqual(limitCarePrincipleCards([1, 2, 3], config), [1, 2, 3])
     // 모양 칸(③-2a)도 기본값이면 지금 마크업이다 — 정보 띠 칸 null, 진료 항목 카드·설명 보임.
     assert.equal(config.hero.blocks, null)
+    assert.equal(config.hero.look, null)
+    assert.deepEqual(heroLookAttributes(config.hero.look), {})
     assert.equal(resolveHeroBlocks(config, 'https://map.naver.com/p/entry/place/1'), null)
     assert.deepEqual(config.treatments, { style: 'cards', showDescription: true })
     // ③-2b 의료진 칸도 기본값이면 지금 마크업이다.
@@ -522,4 +525,38 @@ test('a changed background shows; dark-band, attached and head-less sections kee
   assert.equal(plan('C', 'news', 'band'), null)
   assert.equal(plan('C', 'treatments', 'default'), 'default')
   for (const layout of LAYOUTS) assert.ok(BACKGROUND_FIXED[layout].has('hero'), layout)
+})
+
+// ── ③-2d 첫 화면 배치·덮개·제목 크기·사진 초점 ─────────────────────────
+
+test('the hero look carries only changed values and a safe veil for text over the photo', () => {
+  const look = (layout: 'A' | 'B' | 'C', patch: (hero: Record<string, any>) => void) =>
+    normalizeSiteConfig(published(layout, (c) => patch(c.hero)), layout)?.hero.look ?? null
+  assert.equal(look('B', (h) => (h.image.focus = { x: 0.5, y: 0.48 })), null)
+  assert.deepEqual(look('A', (h) => (h.image.focus = { x: 0.5, y: 0.48 }))?.focus, { x: 0.5, y: 0.48 })
+  // 사진 위에 글 + 덮개 '없음'(편집기 기본) → 글 쪽 덮개를 기본 농도로.
+  assert.deepEqual(look('B', (h) => (h.arrangement = 'overlay'))?.veil, { extent: 'text', opacity: 0.6 })
+  assert.deepEqual(
+    look('C', (h) => {
+      h.arrangement = 'overlay'
+      h.image.veil = { extent: 'full', opacity: 0.8 }
+    })?.veil,
+    { extent: 'full', opacity: 0.8 },
+  )
+  // 덮개는 사진 위에 글일 때만.
+  assert.equal(look('B', (h) => {
+    h.arrangement = 'text'
+    h.image.veil = { extent: 'full', opacity: 0.8 }
+  })?.veil, null)
+  assert.equal(look('B', (h) => (h.title_size = 'm')), null)
+  assert.equal(look('B', (h) => (h.arrangement = 'split')), null)
+})
+
+test('the hero look becomes data attributes and CSS variables', () => {
+  const attrs = heroLookAttributes({ arrangement: 'overlay', titleSize: 'l', veil: { extent: 'text', opacity: 0.7 }, focus: { x: 0.5, y: 0.2 } })
+  assert.equal(attrs['data-hero-arrangement'], 'overlay')
+  assert.equal(attrs['data-hero-title'], 'l')
+  assert.equal(attrs['data-hero-veil'], 'text')
+  assert.equal(attrs['data-hero-focus'], '')
+  assert.deepEqual(attrs.style, { '--hero-title-scale': '1.15', '--hero-focus': '50% 20%', '--hero-veil-opacity': '0.7' })
 })

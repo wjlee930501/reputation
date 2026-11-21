@@ -709,3 +709,59 @@
 .band :global(.clinic-look-label) {
   color: var(--clinic-on-brand-strong);
 }
+
+/* ③-2d 첫 화면 — 배치·덮개·제목 크기·사진 초점. 표지(data-hero-*)는 설정이 기본과 다를 때만 붙는다.
+   사진 위에 글은 넓은 화면(901px~)만, 덮개 색은 A 글 바탕(연한 대표색). */
+.hero[data-hero-title] .heroLead {
+  font-size: calc(clamp(40px, 5vw, 64px) * var(--hero-title-scale, 1));
+}
+
+.hero[data-hero-title] .heroEmphasis {
+  font-size: calc(clamp(17px, 1.5vw, 20px) * var(--hero-title-scale, 1));
+}
+
+.hero[data-hero-focus] .heroPhoto img {
+  object-position: var(--hero-focus);
+}
+
+.hero[data-hero-arrangement='text'] .heroPhoto {
+  display: none;
+}
+
+@media (min-width: 901px) {
+  .hero[data-hero-arrangement='overlay'] {
+    position: relative;
+    overflow: hidden;
+  }
+
+  .hero[data-hero-arrangement='overlay'] .heroPhoto {
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    max-width: none;
+    aspect-ratio: auto;
+    border-radius: 0;
+  }
+
+  .hero[data-hero-arrangement='overlay'] .heroPhoto::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(90deg, var(--clinic-brand-tint) 0%, var(--clinic-brand-tint) max(50%, calc((100% - 1280px) / 2 + 640px), 640px), transparent calc(max(50%, calc((100% - 1280px) / 2 + 640px), 640px) + 22%));
+  }
+
+  .hero[data-hero-veil='full'] .heroPhoto::after {
+    background: linear-gradient(90deg, var(--clinic-brand-tint) 0%, var(--clinic-brand-tint) max(50%, calc((100% - 1280px) / 2 + 640px), 640px), transparent calc(max(50%, calc((100% - 1280px) / 2 + 640px), 640px) + 22%)), color-mix(in srgb, var(--clinic-brand-tint) calc(var(--hero-veil-opacity, 0.6) * 100%), transparent);
+  }
+
+  /* 사진은 첫 화면(.hero) 전체를 덮고(글 칸 상자는 위치를 잡지 않는다), 글은 사진 위에 올린다. */
+  .hero[data-hero-arrangement='overlay'] .heroInner {
+    min-height: 520px;
+  }
+
+  .hero[data-hero-arrangement='overlay'] .heroCopy {
+    position: relative;
+    z-index: 1;
+    flex: 0 1 560px;
+  }
+}
