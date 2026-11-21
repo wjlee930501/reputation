@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server'
+import { articleDateLabels, contentModifiedAt, seoulDateKey } from '@/lib/clinic-dates'
 import { fetchAllContents, fetchHospital, HospitalNotFoundError, TYPE_LABELS } from '@/lib/api'
 import { resolveClinicPhysicians } from '@/lib/clinic-physicians'
 import { llmsBusinessHoursLines, llmsTextValue, llmsUrlValue } from '@/lib/llms-text'
@@ -37,7 +38,7 @@ export async function GET(_req: Request, { params: paramsPromise }: Props) {
 
     const lastUpdatedSource = [
       hospital.updated_at,
-      ...contents.map((c) => c.body_updated_at || c.published_at),
+      ...contents.map((c) => contentModifiedAt(c)),
     ]
       .filter((v): v is string => Boolean(v))
       .sort()
@@ -148,18 +149,17 @@ export async function GET(_req: Request, { params: paramsPromise }: Props) {
       lines.push('## 의료 콘텐츠 (AI 인용용 요약)')
       for (const c of contents) {
         const typeLabel = TYPE_LABELS[c.content_type] || c.content_type
-        const dateRaw = c.published_at || c.scheduled_date
-        const date = dateRaw ? new Date(dateRaw).toISOString().split('T')[0] : ''
+        // 날짜는 한국 시간 기준이다 — UTC로 자르면 08:00 KST 발행 글이 하루 전 날짜가 된다(화면 `clinic-dates`와 같다).
+        const date = seoulDateKey(c.published_at) ?? seoulDateKey(c.scheduled_date) ?? ''
         const url = llmsUrlValue(`${hospitalRootUrl}/contents/${c.id}`)
 
         lines.push(`### ${llmsTextValue(c.title)}`)
         if (url) lines.push(`- url: ${url}`)
         lines.push(`- type: ${llmsTextValue(c.content_type.toLowerCase())} (${llmsTextValue(typeLabel)})`)
         if (date) lines.push(`- published: ${llmsTextValue(date)}`)
-        if (c.body_updated_at) {
-          const modified = new Date(c.body_updated_at).toISOString().split('T')[0]
-          lines.push(`- modified: ${llmsTextValue(modified)}`)
-        }
+        // 수정일은 발행 날짜보다 뒤일 때만(발행 전 편집은 수정이 아니다 — 화면 `articleDateLabels`와 같다).
+        const modified = seoulDateKey(articleDateLabels(c).updated?.value)
+        if (modified) lines.push(`- modified: ${llmsTextValue(modified)}`)
         if (c.faq_question && c.faq_answer_summary) {
           lines.push(lineValue('question', c.faq_question))
           lines.push(lineValue('answer', c.faq_answer_summary))
