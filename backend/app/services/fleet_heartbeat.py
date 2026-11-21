@@ -21,6 +21,7 @@ from app.services.contract_delivery_coverage import (
 )
 from app.services.incident_cause_group import cause_group_key
 from app.services.incident_types import incident_is_quiet
+from app.services.monthly_delivery_projection import delivery_is_effective
 from app.services.monthly_period import (
     MonthlyPeriodError,
     eligible_hospital_ids,
@@ -500,12 +501,19 @@ def count_undelivered_ready_reports(db, *, now) -> int:
         state = load_period_report_state(db, hospital_id, period.year, period.month)
         if state.report is None or not state.gate.ready:
             continue
-        delivered = db.scalar(
-            select(MonthlyDeliveryEvent.id)
+        # 마지막 기록이 철회(RESCINDED)면 전달되지 않은 것이다 — 보고서 화면·전달 게이트와 같은 판정
+        # (`delivery_is_effective`). 기록이 하나라도 있으면 전달로 세던 옛 판정은 철회 뒤 미전달을 놓쳤다.
+        latest_type = db.scalar(
+            select(MonthlyDeliveryEvent.event_type)
             .where(MonthlyDeliveryEvent.report_id == state.report.id)
+            .order_by(MonthlyDeliveryEvent.created_at.desc(), MonthlyDeliveryEvent.id.desc())
             .limit(1)
         )
-        count += int(delivered is None)
+        delivered = delivery_is_effective(
+            latest_event_type=latest_type,
+            legacy_sent_at_present=getattr(state.report, "sent_at", None) is not None,
+        )
+        count += int(not delivered)
     return count
 
 
