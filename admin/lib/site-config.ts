@@ -215,8 +215,29 @@ function sectionOverrides(sections: readonly SiteSection[], base: readonly SiteS
   return out
 }
 
-/** 편집한 완성본을 레이아웃 기본값과 비교해 저장할 덮어쓰기만 만든다. */
-export function buildOverrides(resolved: ResolvedSiteConfig, defaults: ResolvedSiteConfig): Record<string, unknown> {
+/**
+ * B 레이아웃에서만 그리는 칸(묶음, 칸) — 첫 화면 정보 띠 칸과 진료 항목 모양. A 첫 화면에는 정보 띠가 없고
+ * C는 오늘 진료 위젯 하나이며, A 알약·C 번호 타일은 카드도 목록도 아니다(설계 14절). 편집기는 A·C에서
+ * 이 칸을 숨기고, 서버는 A·C의 기본값 아닌 값을 거절한다(`B_LAYOUT_ONLY`).
+ */
+export const B_ONLY_FIELDS: readonly (readonly [group: string, key: string])[] = [
+  ['hero', 'blocks'],
+  ['treatments', 'style'],
+]
+
+export function showsBOnlyFields(layout: SiteLayout | null | undefined): boolean {
+  return layout === 'B'
+}
+
+/**
+ * 편집한 완성본을 레이아웃 기본값과 비교해 저장할 덮어쓰기만 만든다. A·C에서는 B 전용 칸을 싣지 않는다 —
+ * 숨긴 칸에 옛 초안의 값이 남아 있어도 저장이 거절되지 않고, 다음 저장에서 기본값으로 돌아간다.
+ */
+export function buildOverrides(
+  resolved: ResolvedSiteConfig,
+  defaults: ResolvedSiteConfig,
+  layout: SiteLayout | null = resolved.layout ?? defaults.layout ?? null,
+): Record<string, unknown> {
   const out: Record<string, unknown> = {}
   const sections = sectionOverrides(resolved.sections, defaults.sections)
   if (sections.length) out.sections = sections
@@ -225,7 +246,29 @@ export function buildOverrides(resolved: ResolvedSiteConfig, defaults: ResolvedS
     const diff = groupOverride(key, value, defaults[key])
     if (diff !== undefined) out[key] = diff
   }
+  if (!showsBOnlyFields(layout)) {
+    for (const [group, key] of B_ONLY_FIELDS) {
+      const value = out[group]
+      if (!isRecord(value) || !(key in value)) continue
+      const rest = Object.fromEntries(Object.entries(value).filter(([child]) => child !== key))
+      if (Object.keys(rest).length) out[group] = rest
+      else delete out[group]
+    }
+  }
   return out
+}
+
+/**
+ * 편집기의 '바뀜' 판정 키. `asStored`면 서버에 지금 저장된 모양 그대로(A·C에서 숨긴 B 전용 칸도 싣는다) 만든다 —
+ * 저장 기준을 이 모양으로 두면, 옛 A·C 초안에 B 전용 값이 남아 있을 때 '바뀜'으로 잡혀 저장(정리)할 수 있다.
+ */
+export function overridesCompareKey(
+  layout: SiteLayout,
+  resolved: ResolvedSiteConfig,
+  defaults: ResolvedSiteConfig,
+  asStored = false,
+): string {
+  return JSON.stringify([layout, buildOverrides(resolved, defaults, asStored ? 'B' : layout)])
 }
 
 // --- 요청 ---

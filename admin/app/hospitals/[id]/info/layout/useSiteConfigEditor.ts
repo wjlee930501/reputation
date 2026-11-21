@@ -8,6 +8,7 @@ import { isExpectedOperatorRequestFailure } from '@/lib/operations-journey'
 import { platformSiteHost } from '@/lib/platform-domain'
 import {
   buildOverrides,
+  overridesCompareKey,
   discardDraftPath,
   draftExpectation,
   previewUrl,
@@ -51,9 +52,9 @@ function startingPoint(state: SiteConfigState): EditorWorking | null {
   return { layout: state.site_layout, resolved: clone(state.defaults[state.site_layout]) }
 }
 
-function overridesKey(working: EditorWorking | null, state: SiteConfigState | null): string {
+function overridesKey(working: EditorWorking | null, state: SiteConfigState | null, asStored = false): string {
   if (!working || !state) return ''
-  return JSON.stringify([working.layout, buildOverrides(working.resolved, state.defaults[working.layout])])
+  return overridesCompareKey(working.layout, working.resolved, state.defaults[working.layout], asStored)
 }
 
 /**
@@ -106,7 +107,7 @@ export function useSiteConfigEditor(hospitalId: string) {
     void load()
   }, [load])
 
-  const savedKey = useMemo(() => (state ? overridesKey(state ? startingPoint(state) : null, state) : ''), [state])
+  const savedKey = useMemo(() => (state ? overridesKey(state ? startingPoint(state) : null, state, true) : ''), [state])
   const dirty = Boolean(working && state && overridesKey(working, state) !== savedKey)
   const draft = state?.draft ?? null
 
@@ -183,7 +184,7 @@ export function useSiteConfigEditor(hospitalId: string) {
     if (!state || !working) return
     const body = {
       layout: working.layout,
-      config: buildOverrides(working.resolved, state.defaults[working.layout]),
+      config: buildOverrides(working.resolved, state.defaults[working.layout], working.layout),
       ...draftExpectation(state.draft),
     }
     const response = await run('save', () =>

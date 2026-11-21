@@ -5,6 +5,7 @@ import test from 'node:test'
 import {
   FIXED_SECTIONS,
   UNTITLED_SECTIONS,
+  B_ONLY_FIELDS,
   buildOverrides,
   canDisable,
   canMoveDown,
@@ -14,10 +15,12 @@ import {
   draftExpectation,
   issuesForSection,
   moveSection,
+  overridesCompareKey,
   readSiteConfigFailure,
   readSiteConfigState,
   type ResolvedSiteConfig,
   type SiteSection,
+  showsBOnlyFields,
 } from './site-config.ts'
 
 function section(id: string, extra: Partial<SiteSection> = {}): SiteSection {
@@ -281,4 +284,48 @@ test('admin CSP lets the editor frame the site preview origin, nothing else', as
     if (previous === undefined) delete process.env.NEXT_PUBLIC_SITE_URL
     else process.env.NEXT_PUBLIC_SITE_URL = previous
   }
+})
+
+test('the B-only fields match the backend B_LAYOUT_ONLY rule; only B shows them', () => {
+  const source = readFileSync(new URL('../../backend/app/services/site_config_validation.py', import.meta.url), 'utf8')
+  const pairs = [...(source.match(/_B_ONLY_FIELDS[^=]*= \(([^\n]*)\)/)?.[1] ?? '').matchAll(/\("([a-z_]+)", "([a-z_]+)"\)/g)].map(
+    (m) => `${m[1]}.${m[2]}`,
+  )
+  // 서버 규칙이 아직 없는 main에서는 비교하지 않는다(#358이 함께 나간다).
+  if (pairs.length) assert.deepEqual(pairs.sort(), B_ONLY_FIELDS.map(([group, key]) => `${group}.${key}`).sort())
+  assert.equal(showsBOnlyFields('B'), true)
+  assert.equal(showsBOnlyFields('A'), false)
+  assert.equal(showsBOnlyFields('C'), false)
+})
+
+test('A and C never save the B-only fields, even when an old draft holds them', () => {
+  const edited = clone(defaultsC())
+  ;(edited.hero as { blocks: string[]; title_size: string }).blocks = ['phone', 'location']
+  edited.treatments = { show_description: false, style: 'list' }
+  const base = clone(defaultsC())
+  base.treatments = { show_description: true, style: 'cards' }
+  // 정보 블록만 바뀐 첫 화면은 통째로 빠지고, 진료 항목은 모양만 빠진다.
+  assert.deepEqual(buildOverrides(edited, base, 'C'), { treatments: { show_description: false } })
+  ;(edited.hero as { title_size: string }).title_size = 'l'
+  assert.deepEqual(buildOverrides(edited, base, 'C'), { hero: { title_size: 'l' }, treatments: { show_description: false } })
+  // 레이아웃을 넘기지 않으면 완성본의 레이아웃(C)을 쓴다.
+  assert.deepEqual(buildOverrides(edited, base), { hero: { title_size: 'l' }, treatments: { show_description: false } })
+  // B는 그대로 싣는다.
+  assert.deepEqual(buildOverrides(edited, base, 'B'), {
+    hero: { title_size: 'l', blocks: ['phone', 'location'] },
+    treatments: { show_description: false, style: 'list' },
+  })
+})
+
+test('an old A/C draft holding B-only values counts as changed, so it can be saved clean', () => {
+  const base = clone(defaultsC())
+  base.treatments = { show_description: true, style: 'cards' }
+  const stored = clone(base)
+  ;(stored.hero as { blocks: string[] }).blocks = ['phone', 'location']
+  // 서버에 저장된 모양(기준)과 편집기가 저장할 모양이 다르다 → '바뀜'.
+  assert.notEqual(overridesCompareKey('C', stored, base, true), overridesCompareKey('C', stored, base))
+  // B 전용 값이 없으면 둘이 같다 → '바뀜' 아님.
+  assert.equal(overridesCompareKey('C', base, base, true), overridesCompareKey('C', base, base))
+  // B는 두 모양이 언제나 같다.
+  assert.equal(overridesCompareKey('B', stored, base, true), overridesCompareKey('B', stored, base))
 })
