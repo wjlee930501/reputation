@@ -293,7 +293,7 @@ test('admin CSP lets the editor frame the site preview origin, nothing else', as
 
 test('the B-only fields match the backend B_LAYOUT_ONLY rule; only B shows them', () => {
   const source = readFileSync(new URL('../../backend/app/services/site_config_validation.py', import.meta.url), 'utf8')
-  const pairs = [...(source.match(/_B_ONLY_FIELDS[^=]*= \(([^\n]*)\)/)?.[1] ?? '').matchAll(/\("([a-z_]+)", "([a-z_]+)"\)/g)].map(
+  const pairs = [...(source.match(/_B_ONLY_FIELDS[^=]*= \(([\s\S]*?)\n\)/)?.[1] ?? '').matchAll(/\("([a-z_]+)", "([a-z_]+)"\)/g)].map(
     (m) => `${m[1]}.${m[2]}`,
   )
   // 서버 규칙이 아직 없는 main에서는 비교하지 않는다(#358이 함께 나간다).
@@ -309,12 +309,12 @@ test('A and C never save the B-only fields, even when an old draft holds them', 
   edited.treatments = { show_description: false, style: 'list' }
   const base = clone(defaultsC())
   base.treatments = { show_description: true, style: 'cards' }
-  // 정보 블록만 바뀐 첫 화면은 통째로 빠지고, 진료 항목은 모양만 빠진다.
-  assert.deepEqual(buildOverrides(edited, base, 'C'), { treatments: { show_description: false } })
+  // 정보 블록만 바뀐 첫 화면·모양과 설명만 바뀐 진료 항목은 통째로 빠진다.
+  assert.deepEqual(buildOverrides(edited, base, 'C'), {})
   ;(edited.hero as { title_size: string }).title_size = 'l'
-  assert.deepEqual(buildOverrides(edited, base, 'C'), { hero: { title_size: 'l' }, treatments: { show_description: false } })
+  assert.deepEqual(buildOverrides(edited, base, 'C'), { hero: { title_size: 'l' } })
   // 레이아웃을 넘기지 않으면 완성본의 레이아웃(C)을 쓴다.
-  assert.deepEqual(buildOverrides(edited, base), { hero: { title_size: 'l' }, treatments: { show_description: false } })
+  assert.deepEqual(buildOverrides(edited, base), { hero: { title_size: 'l' } })
   // B는 그대로 싣는다.
   assert.deepEqual(buildOverrides(edited, base, 'B'), {
     hero: { title_size: 'l', blocks: ['phone', 'location'] },

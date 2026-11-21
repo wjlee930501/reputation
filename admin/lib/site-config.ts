@@ -227,13 +227,17 @@ function sectionOverrides(
 }
 
 /**
- * B 레이아웃에서만 그리는 칸(묶음, 칸) — 첫 화면 정보 띠 칸과 진료 항목 모양. A 첫 화면에는 정보 띠가 없고
- * C는 오늘 진료 위젯 하나이며, A 알약·C 번호 타일은 카드도 목록도 아니다(설계 14절). 편집기는 A·C에서
+ * B 레이아웃에서만 그리는 칸(묶음, 칸) — 첫 화면 정보 띠 칸, 진료 항목 모양·설명 보이기, 오시는 길 항목. A 첫 화면에는
+ * 정보 띠가 없고 C는 오늘 진료 위젯 하나이며, A 알약·C 번호 타일은 카드도 목록도 아니고 설명을 싣지 않는다(설계 14절).
+ * 오시는 길 섹션은 B에만 있다. 편집기는 A·C에서
  * 이 칸을 숨기고, 서버는 A·C의 기본값 아닌 값을 거절한다(`B_LAYOUT_ONLY`).
  */
 export const B_ONLY_FIELDS: readonly (readonly [group: string, key: string])[] = [
   ['hero', 'blocks'],
   ['treatments', 'style'],
+  ['treatments', 'show_description'],
+  ['visit', 'order'],
+  ['visit', 'show_transit'],
 ]
 
 export function showsBOnlyFields(layout: SiteLayout | null | undefined): boolean {

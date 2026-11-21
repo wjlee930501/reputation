@@ -770,8 +770,17 @@ def test_info_strip_blocks_and_treatment_style_are_b_only(layout: str) -> None:
     defaults = site_defaults.defaults(layout)
     same = {"hero": {"blocks": defaults["hero"]["blocks"]}, "treatments": {"style": defaults["treatments"]["style"]}}
     assert validate_site_config(layout, same, _ctx()).ok
-    # 다른 칸(첫 화면 배치·설명 보이기)은 A·C에서도 그대로 저장된다.
-    assert validate_site_config(layout, {"hero": {"title_size": "l"}, "treatments": {"show_description": True}}, _ctx()).ok
+    # 다른 칸(첫 화면 배치)은 A·C에서도 그대로 저장된다.
+    assert validate_site_config(layout, {"hero": {"title_size": "l"}}, _ctx()).ok
+    # 진료 항목 설명 보이기·오시는 길(B에만 있는 섹션)도 B 전용이다.
+    for config in (
+        {"treatments": {"show_description": True}},
+        {"visit": {"order": ["transit", "parking"]}},
+        {"visit": {"show_transit": False}},
+    ):
+        assert _codes(validate_site_config(layout, config, _ctx())) == ["B_LAYOUT_ONLY"], config
+    same_visit = {"visit": defaults["visit"], "treatments": {"show_description": defaults["treatments"]["show_description"]}}
+    assert validate_site_config(layout, same_visit, _ctx()).ok
 
 
 def test_b_keeps_the_info_strip_blocks_and_treatment_style() -> None:

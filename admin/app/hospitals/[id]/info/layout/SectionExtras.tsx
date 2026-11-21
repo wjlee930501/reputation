@@ -269,29 +269,17 @@ export function HeroImageSettings({ hero, onChange, disabled }: { hero: Group; o
 }
 
 /** 진료 항목 — 설명 보이기, 모양(카드·목록). 모양은 B 레이아웃에만 있다(A 알약·C 번호 타일). */
-export function TreatmentsSettings({
-  value,
-  onChange,
-  disabled,
-  showStyle = true,
-}: {
-  value: Group
-  onChange: (value: Group) => void
-  disabled: boolean
-  showStyle?: boolean
-}) {
+export function TreatmentsSettings({ value, onChange, disabled }: { value: Group; onChange: (value: Group) => void; disabled: boolean }) {
   return (
     <div className="space-y-3">
       <Toggle label={COPY.treatmentsShowDescription} checked={value.show_description !== false} onChange={(show_description) => onChange({ ...value, show_description })} disabled={disabled} />
-      {showStyle && (
-        <Choice
-          label={COPY.treatmentsStyle}
-          value={(value.style === 'list' ? 'list' : 'cards') as 'cards' | 'list'}
-          options={COPY.treatmentsStyles}
-          onChange={(style) => onChange({ ...value, style })}
-          disabled={disabled}
-        />
-      )}
+      <Choice
+        label={COPY.treatmentsStyle}
+        value={(value.style === 'list' ? 'list' : 'cards') as 'cards' | 'list'}
+        options={COPY.treatmentsStyles}
+        onChange={(style) => onChange({ ...value, style })}
+        disabled={disabled}
+      />
     </div>
   )
 }

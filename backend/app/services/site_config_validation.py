@@ -208,8 +208,14 @@ def _check_sections(check: SiteConfigCheck, layout: str, stored: dict[str, Any])
 
 
 # B안에서만 그리는 칸 — A 첫 화면에는 정보 띠가 없고 C는 오늘 진료 위젯 하나다. A 알약·C 번호 타일은
-# 카드도 목록도 아니다(설계 14절 '결정됨 — ③-2에서 B에만 열기').
-_B_ONLY_FIELDS: tuple[tuple[str, str], ...] = (("hero", "blocks"), ("treatments", "style"))
+# 카드도 목록도 아니고 설명을 싣지 않는다(설계 14절 '결정됨 — ③-2에서 B에만 열기'). 오시는 길 섹션은 B에만 있다.
+_B_ONLY_FIELDS: tuple[tuple[str, str], ...] = (
+    ("hero", "blocks"),
+    ("treatments", "style"),
+    ("treatments", "show_description"),
+    ("visit", "order"),
+    ("visit", "show_transit"),
+)
 
 
 def _check_b_only(check: SiteConfigCheck, layout: str, stored: dict[str, Any]) -> None:
