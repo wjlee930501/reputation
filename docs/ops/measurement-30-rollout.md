@@ -16,6 +16,7 @@ PR ① #378 측정 계약 → ② #379 A그룹 정확도 → ③ #380 30개 초�
 | 4 | 3 직후 | `measurement_set_rollout apply --confirm` | 병원마다 `action=applied`, `summary.fixed=20` |
 | 5 | 4 직후 | `measurement_set_rollout precheck` 다시 | 전부 `skip_curated`, `curated_now=true`, `legacy_tracked=0` |
 | 6 | 5 직후 | `ops_sql_report --only=q17` | 코호트 병원 모두 `curated=true`, 그룹 A5·B10·C8·D7 |
+| 6b | 11/23(월) 아침(주간 등록 02:00 뒤) | `ops_sql_report --only=q17` | 코호트 밖이던 세 곳(유내과 `d6f6e0b0`·다올연합 `2438bb4f`·다대으뜸 `dfb24909`)이 `monthly_sov_cohort=true`이고 여전히 `curated=true`·고정 20·교체 10(등록은 30개 방식 병원의 역할을 다시 고르지 않는다). 아직 false면 q1의 `MONTHLY_SOV_COHORT_GAP` 사유를 본다 — 12/1 첫 틱(00:15)의 등록이 한 번 더 편입을 시도하지만, 그때 편입되면 11월 서비스 구간이 있는 병원만 11월분을 잰다 |
 | 7 | 배포 다음 날~11/30 | 마케터: 콘텐츠 > 측정 키워드에서 문구 고치기·교체 10개 고르기(시즌 강조 키워드) | **운영 약속: 11/30 23:00 편집 마감.** 실제 동결은 1일 00:15 뒤 병원마다 첫 측정 실행이 측정표를 얼리는 그때다 — 그 전 저장은 이번 측정에, 그 뒤 저장은 다음 달에 쓰인다(병원마다 몇 분~수십 분 차이). 마감을 지켜야 어느 쪽인지 헷갈리지 않는다 |
 | 8 | 11/30 18:45~21:30 | 워커 최소 인스턴스 1 → 2(`gcloud run services update reputation-worker --min-instances=2 …`) | 인스턴스 2대 |
 | 9 | 11/30 저녁 | §4 확인 목록, 코호트 20곳 넘으면 일 한도 상향을 대표에게 묻기(올린다면 env는 11/30 22:15 전 배포, 아니면 12/1 00:00~00:15 운영센터 '오늘 일일 상한') | q17 마지막 확인 |
