@@ -165,6 +165,10 @@ export interface Hospital {
   domain_last_checked_at?: string | null
   domain_last_check_ok?: boolean | null
   domain_last_check_reason?: string | null
+  /** 계약 종료일(YYYY-MM-DD). 화면 분류에만 쓴다(개편 결정 대기 1번 B). */
+  contract_ended_on?: string | null
+  /** 서버 판정 — 일시정지이고 계약 종료일(KST)이 지났다. 목록·헤더·대시보드가 「운영 종료」로 묶는다. */
+  contract_ended?: boolean
   region?: string[]
   specialties?: string[]
   keywords?: string[]

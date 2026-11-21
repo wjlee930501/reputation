@@ -19,6 +19,8 @@ from app.services.monthly_sov_types import (
     ManifestCellInput,
     QueryIntent,
     QueryIntentSource,
+    QuestionGroup,
+    SetRole,
 )
 
 
@@ -128,7 +130,12 @@ def _state(value: str) -> CellState:
 
 
 def _intent(value: str) -> QueryIntent:
-    return "INFO" if value.upper() == "INFO" else "LOCAL"
+    normalized = value.upper()
+    if normalized == "INFO":
+        return "INFO"
+    if normalized == "BRAND":
+        return "BRAND"
+    return "LOCAL"
 
 
 def _intent_snapshot(
@@ -138,9 +145,28 @@ def _intent_snapshot(
         frozen_value = manifest.platform_provenance["query_intents"][query_key]
     except (KeyError, TypeError):
         frozen_value = None
-    if frozen_value in ("LOCAL", "INFO"):
+    if frozen_value in ("LOCAL", "INFO", "BRAND"):
         return _intent(str(frozen_value)), "FROZEN"
     return _intent(live_intent), "LEGACY_LIVE"
+
+
+def _query_set_snapshot(
+    manifest: MonthlyMeasurementManifest, query_key: str
+) -> tuple[QuestionGroup | None, SetRole | None]:
+    """측정표를 얼릴 때 남긴 30개 세트의 그룹·역할. 옛 측정표나 모르는 값은 (None, None)."""
+
+    try:
+        frozen = manifest.platform_provenance["query_sets"][query_key]
+    except (KeyError, TypeError):
+        return None, None
+    if not isinstance(frozen, dict):
+        return None, None
+    group = frozen.get("group")
+    role = frozen.get("role")
+    return (
+        group if group in ("A", "B", "C", "D") else None,
+        role if role in ("FIXED", "ROTATING") else None,
+    )
 
 
 def load_monthly_sov_manifest(
@@ -201,6 +227,7 @@ def load_monthly_sov_manifest(
         query_intent, intent_source = _intent_snapshot(
             manifest, cell.query_key, str(live_intent or "LOCAL")
         )
+        question_group, set_role = _query_set_snapshot(manifest, cell.query_key)
         legacy_counts = None
         if legacy_final and not observation_slots and planned_repeats == 0:
             # 셀 하나 = 표본 하나. 언급 여부와 무관한 규칙(가장 이른 확정 답)으로 한 건만 남긴다 —
@@ -218,6 +245,8 @@ def load_monthly_sov_manifest(
             query_target_id=cell.query_target_id,
             query_variant_id=cell.query_variant_id,
             query_intent_source=intent_source,
+            question_group=question_group,
+            set_role=set_role,
             attempts=attempts,
             planned_repeat_count=planned_repeats,
             received_answer_count=sum(

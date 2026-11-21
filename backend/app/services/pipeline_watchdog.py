@@ -577,8 +577,10 @@ def evaluate(db: Session, *, now: datetime) -> WatchdogReport:
 # ─── 운영자 문구 ───────────────────────────────────────────────────
 
 
-def _operations_link() -> str:
-    return f"{settings.ADMIN_BASE_URL.rstrip('/')}/operations"
+def _operations_link(queue: str | None = None) -> str:
+    # 처리 목록의 기본 탭은 문제·복구다(2026-11 개편 13번 B). 오늘 발행 예정 글은 `?queue=today`로만 연다.
+    suffix = f"?queue={queue}" if queue else ""
+    return f"{settings.ADMIN_BASE_URL.rstrip('/')}/operations{suffix}"
 
 
 _QUEUE_LABELS: Final = {
@@ -645,9 +647,9 @@ def _operator_alert_text(report: WatchdogReport) -> str:
         "계약 분량이 밀립니다.",
         "",
         "지금 할 일",
-        "처리 목록에서 오늘 발행 큐를 확인해 주세요. 자동 복구가 진행 중인 항목은 그대로 두고, "
+        "처리 목록에서 오늘 발행 예정 글을 확인해 주세요. 자동 복구가 진행 중인 항목은 그대로 두고, "
         "조치가 필요한 항목만 처리하면 됩니다. 개발팀에도 같은 시각의 실행기 점검 결과가 갑니다.",
-        _operations_link(),
+        _operations_link("today"),
     ]
     return "\n".join(body)
 

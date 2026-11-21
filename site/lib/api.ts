@@ -1,6 +1,6 @@
 import { getApiBase } from './config.ts'
 import { publicFetchInit } from './fetch-policy.ts'
-import { withHospitalCache } from './hospital-cache.ts'
+import { hospitalCacheTag, withHospitalCache } from './hospital-cache.ts'
 import { parseHospitalPayload, type Hospital } from './hospital-payload.ts'
 export { resolveAssetUrl } from './hospital-payload.ts'
 export type {
@@ -80,10 +80,20 @@ export class ContentNotFoundError extends Error {
   }
 }
 
+/**
+ * 병원 slug가 될 수 없는 값(공백·`/`·`\`·`?`·`#`·제어 문자, 200자 넘음 — 캐시 태그를 만들 수 없는 값)인가.
+ * 보안 스캐너의 `/%2F.env` 같은 요청이 디코드되어 이런 slug로 온다. 백엔드에 묻지 않고 404로 끝낸다 — 묻으면 태그 없는
+ * `no-store` 조회가 정적 `[slug]` 페이지를 런타임에 동적으로 바꿔 500("Page changed from static to dynamic")이 난다.
+ */
+function impossibleSlug(slug: string): boolean {
+  return hospitalCacheTag(slug) === null
+}
+
 export async function fetchHospital(
   slug: string,
   init: RequestInit = publicFetchInit(),
 ): Promise<Hospital> {
+  if (impossibleSlug(slug)) throw new HospitalNotFoundError(slug)
   // 경로 세그먼트는 항상 인코딩 — 라우트 파라미터는 URL 디코드된 값이라 ?/#/%2F 류가
   // 백엔드 요청의 쿼리·경로로 주입될 수 있다 (admin BFF buildSafeAdminProxyPath와 동일 정책).
   const res = await fetch(`${getApiBase()}/hospitals/${encodeURIComponent(slug)}`, withHospitalCache(slug, init))
@@ -144,6 +154,7 @@ async function fetchContentsPage(
   offset: number,
   init: RequestInit = publicFetchInit(),
 ): Promise<ContentSummary[]> {
+  if (impossibleSlug(slug)) throw new HospitalNotFoundError(slug)
   const offsetQuery = offset > 0 ? `&offset=${offset}` : ''
   const url = `${getApiBase()}/hospitals/${encodeURIComponent(slug)}/contents?limit=${CONTENTS_FETCH_LIMIT}${offsetQuery}`
   const res = await fetch(url, withHospitalCache(slug, init))
@@ -205,7 +216,11 @@ export async function fetchAllContents(
   }
 }
 
+const CONTENT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
 export async function fetchContent(slug: string, contentId: string): Promise<ContentDetail> {
+  // 글 번호는 UUID다 — 아니면 백엔드가 422를 돌려줘 500이 났다(`/{slug}/contents/preload` 같은 스캐너 요청). 묻지 않고 없는 글.
+  if (impossibleSlug(slug) || !CONTENT_ID.test(contentId)) throw new ContentNotFoundError(contentId)
   const res = await fetch(
     `${getApiBase()}/hospitals/${encodeURIComponent(slug)}/contents/${encodeURIComponent(contentId)}`,
     withHospitalCache(slug, publicFetchInit()),

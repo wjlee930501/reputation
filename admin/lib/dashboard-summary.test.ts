@@ -64,3 +64,18 @@ test('a hospital waiting only for automatic publication is not a to-do', () => {
   assert.deepEqual(lines.map((l) => l.key), ['h:preparing'])
   assert.equal(lines[0].title, '준비 중 · 사람이 채울 조건 1개')
 })
+
+test('운영 종료 병원은 일시 정지 수 안에 따로 세고 오늘 할 일에 올리지 않는다', () => {
+  const ended = {
+    id: 'd', name: '라', status: 'PAUSED', open_exception_count: 0, visual_approval_missing: [],
+    public_service_state: { kind: 'paused', remaining: [] }, contract_ended: true,
+  }
+  const rows = [...hospitals, ended]
+  const summary = summarizeDashboard(rows, null, null, null)
+  assert.equal(summary.paused, 2)
+  assert.equal(summary.ended, 1)
+  assert.equal(summary.live + summary.preparing + summary.paused, summary.total)
+  const keys = todoLines(rows, null).map((line) => line.key)
+  assert.ok(keys.includes('c:paused'))
+  assert.ok(!keys.some((key) => key.startsWith('d:')))
+})

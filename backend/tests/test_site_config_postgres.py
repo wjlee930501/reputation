@@ -519,6 +519,27 @@ async def test_share_candidates_follow_the_share_image_rule(db, client, monkeypa
     ]
 
 
+async def test_editor_gets_the_hospital_care_principles_title_the_site_draws(db, client):
+    hospital_id = await _hospital(db, layout="B")
+    empty = (await client.get(_base(hospital_id), headers=ADMIN)).json()
+    assert empty["hospital_section_titles"] == {"care_principles": None}
+    await db.execute(
+        text("UPDATE hospitals SET care_principles = CAST(:value AS jsonb) WHERE id = :id"),
+        {"id": hospital_id, "value": '{"title": "아픈 원인부터 확인합니다", "lede": null, "cards": []}'},
+    )
+    await db.commit()
+    body = (await client.get(_base(hospital_id), headers=ADMIN)).json()
+    assert body["hospital_section_titles"] == {"care_principles": "아픈 원인부터 확인합니다"}
+    # 공개 화면처럼 금지 표현이 든 제목은 비운다(화면은 기본 제목을 그린다).
+    await db.execute(
+        text("UPDATE hospitals SET care_principles = CAST(:value AS jsonb) WHERE id = :id"),
+        {"id": hospital_id, "value": '{"title": "완치를 보장합니다", "lede": "설명", "cards": []}'},
+    )
+    await db.commit()
+    body = (await client.get(_base(hospital_id), headers=ADMIN)).json()
+    assert body["hospital_section_titles"] == {"care_principles": None}
+
+
 async def test_restoring_an_old_version_drops_fields_the_site_does_not_render(db, client, monkeypatch):
     """옛 공개 판에 지금은 거절하는 칸(FIELD_NOT_RENDERED)이 있어도 복원된다 — 그 칸은 기본값으로 돌아간다."""
 
@@ -572,3 +593,34 @@ async def test_readiness_counts_site_configs_and_layout_divergence(db, client, m
     assert after.published - before.published == 1
     assert after.drafts - before.drafts == 1
     assert after.layout_diverged - before.layout_diverged == 1
+
+
+async def test_precheck_lists_drafts_that_would_be_rejected_and_diverged_published_versions(db, client, monkeypatch):
+    from app.utils.site_config_precheck import precheck, summarize
+
+    hospital_id = await _hospital(db, layout="B")
+    monkeypatch.setattr(
+        admin_site_config,
+        "profile_publication_verdict",
+        lambda hospital: SimpleNamespace(allowed=False, blockers=()),
+    )
+    published = (await _save(client, hospital_id, config={"faq": {"limit": 5}})).json()["draft"]
+    assert (await _publish(client, hospital_id, published)).status_code == 200
+    draft = (await _save(client, hospital_id, config={"faq": {"limit": 4}})).json()["draft"]
+    # 옛 초안에 이제 거절되는 칸이 남은 경우(규칙이 생기기 전에 저장된 값)와 병원 레이아웃이 공개 판과 갈라진 경우.
+    await db.execute(
+        text(
+            "UPDATE hospital_site_configs SET config = CAST(:config AS jsonb) WHERE id = :id"
+        ),
+        {"id": uuid.UUID(draft["id"]), "config": '{"copy": {"hours.weekend_label": "토요일 진료"}}'},
+    )
+    await db.execute(text("UPDATE hospitals SET site_layout = 'C' WHERE id = :id"), {"id": hospital_id})
+    await db.commit()
+
+    rows = [row for row in await precheck(db, read_only=False) if row["slug"] == f"site-config-{hospital_id.hex[:12]}"]
+    by_state = {row["state"]: row for row in rows}
+    assert by_state["DRAFT"]["ok"] is False
+    assert {"path": "copy.hours.weekend_label", "code": "FIELD_NOT_RENDERED"} in by_state["DRAFT"]["errors"]
+    assert by_state["PUBLISHED"]["ok"] is True and by_state["PUBLISHED"]["diverged"] is True
+    summary = summarize(rows)
+    assert summary["drafts_rejected_now"] == 1 and summary["published_diverged"] == 1

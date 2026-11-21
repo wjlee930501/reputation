@@ -731,3 +731,72 @@ async def test_resume_without_custom_domain_skips_dns_check(monkeypatch):
     assert hospital.domain_last_checked_at is None
     assert hospital.domain_last_check_ok is None
     assert hospital.domain_last_check_reason is None
+
+
+# ── 계약 종료일(0102, 개편 결정 대기 1번 B) ─────────────────────────
+async def test_contract_end_is_recorded_with_audit_and_cleared_by_null():
+    from datetime import date
+
+    hospital = _full_hospital(status=HospitalStatus.PAUSED, contract_ended_on=None)
+    db = _LifecycleDB(hospital)
+
+    response = await hospitals_api.set_contract_end(
+        hospital.id, hospitals_api.ContractEndUpdate(ended_on=date(2026, 10, 31)), db=db
+    )
+
+    assert hospital.contract_ended_on == date(2026, 10, 31)
+    assert response["contract_ended_on"] == "2026-10-31"
+    assert response["contract_ended"] is True
+    # 상태·공개는 그대로다 — 날짜는 화면 분류에만 쓴다.
+    assert hospital.status == HospitalStatus.PAUSED
+    assert db.committed is True
+    assert db.locks == [hospital.id]
+    [audit] = db.added
+    assert audit.action == "set_contract_end"
+    assert audit.detail == {"before": None, "after": "2026-10-31"}
+
+    clear_db = _LifecycleDB(hospital)
+    cleared = await hospitals_api.set_contract_end(
+        hospital.id, hospitals_api.ContractEndUpdate(ended_on=None), db=clear_db
+    )
+    assert hospital.contract_ended_on is None
+    assert cleared["contract_ended"] is False
+    assert clear_db.added[0].detail == {"before": "2026-10-31", "after": None}
+
+
+async def test_contract_end_same_value_writes_nothing():
+    from datetime import date
+
+    hospital = _full_hospital(status=HospitalStatus.PAUSED, contract_ended_on=date(2026, 10, 31))
+    db = _LifecycleDB(hospital)
+
+    await hospitals_api.set_contract_end(
+        hospital.id, hospitals_api.ContractEndUpdate(ended_on=date(2026, 10, 31)), db=db
+    )
+
+    assert db.added == []
+    assert db.committed is False
+
+
+async def test_contract_end_does_not_touch_status_or_service_interval():
+    from datetime import date
+
+    hospital = _full_hospital(status=HospitalStatus.ACTIVE, contract_ended_on=None)
+    db = _LifecycleDB(hospital)
+
+    response = await hospitals_api.set_contract_end(
+        hospital.id, hospitals_api.ContractEndUpdate(ended_on=date(2026, 1, 1)), db=db
+    )
+
+    # 운영 중인 병원에 지난 날짜를 적어도 운영 종료가 아니고, 일시정지되지도 않는다.
+    assert hospital.status == HospitalStatus.ACTIVE
+    assert response["contract_ended"] is False
+    assert [a.action for a in db.added] == ["set_contract_end"]
+    assert not any(isinstance(item, HospitalServiceInterval) for item in db.added)
+
+
+def test_contract_end_body_rejects_unknown_fields():
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        hospitals_api.ContractEndUpdate(ended_on=None, status="ENDED")

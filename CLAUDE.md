@@ -1,6 +1,13 @@
 # Re:putation — 현재 프로젝트 개발 안내
 
-## 최신 운영 배포 — 2026-11-21 오전 레이아웃 편집기 3b·3c·③-1 (그날 세 번째)
+## 최신 운영 배포 — 2026-11-21 오후 레이아웃 편집기 ③-2a~e (그날 다섯·여섯 번째)
+
+main `84b8f70c`(#357 B안 정보 띠 칸·예약(네이버 플레이스)·진료 항목 목록 모양, #358 A·C에서 그 두 칸 거절 `B_LAYOUT_ONLY`, #359 어드민 A·C 숨김, #360 의료진 사진 비율·초점·직함 위치)을
+15:36~15:43 KST에 Backend·Site·Admin에 배포했다(`--override-reason`, 마이그레이션 없음). 이어 15:47~15:49에 ③-2c~e(#361·#362·#365·#366)와 #363·#364를 Site·Admin에만 배포했다(6차, 백엔드 변경 없음). **현재 리비전은 api `00302-ksn`, worker `00295-5tm`, beat `00290-8mg`, site `00160-txz`, admin `00134-4fv`**, DB head `0100`.
+readiness·공개 표면 확인 통과, 16곳 200·hospital ID 일치·`site_config` null 그대로, 홈 4곳 화면이 배포 전과 같다. **공개 반영은 여전히 막혀 있다** — ③-2f(#368)·나머지 칸 숨김+거절(#367)이 들어가야 연다.
+쌓인 PR의 아래 PR을 `--delete-branch`로 병합하면 위 PR이 닫힌다(재지정되지 않는다). 롤백 `.omo/rollback-5th1121/rollback.state`. 상세는 [배포 기록](docs/releases/2026-11-21-admin-revamp-production.md)의 '5차'.
+
+## 이전 운영 배포 — 2026-11-21 오전 레이아웃 편집기 3b·3c·③-1 (그날 세 번째)
 
 main `0f93551b`(3b ① #351 사이트가 공개 `site_config`로 홈을 그림, 3b ② #352 초안 미리보기 `/preview/{token}`, 3c #350·#353 Admin 편집 화면, ③-1 #355 아직 읽지 않는 칸 기본값 `DEFAULTS_VERSION 2026-11-21.3`·옛 판 보호)를
 08:46~08:52 KST에 Backend·Site·Admin에 배포했다(같은 날 세 번째 릴리스라 `--override-reason`, 마이그레이션 없음, 사용자 지시 "다음도 이어서 알아서 진행해").
@@ -378,7 +385,7 @@ BaseEssence의 일반 자료 추가 drift는 재합성하지 않는다. 명시�
 Site/Admin IAM 분리는 단계적으로 적용한다. 구 revision 종료 전 legacy grants를 회수하지 않는다.
 
 
-문서 버전: **2.38** · 갱신일: **2026-11-21 (Asia/Seoul)**
+문서 버전: **2.39** · 갱신일: **2026-11-21 (Asia/Seoul)**
 소스 기준선: **`4db1b69` 이후 커밋 이력 정합성 보완**
 구현 상태: **체크포인트 2(`a774851`) 운영 배포 완료. 그 뒤 main의 stable-base Essence(`8c59141`) 등 31개 커밋과 콘텐츠 수율 버전업 v2.7(`claude/system-performance-review-x6vtn4`, [계획](docs/plans/2026-09-12-content-yield-versionup-plan.md))은 미배포**
 
@@ -453,6 +460,7 @@ Essence가 **자동 적용**되면(또는 15분 조정이 일정이 한 번도 �
 
 ### 측정·리포트
 
+- **측정 키워드 30개**(2026-11-21, [설계](docs/plans/2026-11-21-measurement-30-design.md)·[운영 반영](docs/ops/measurement-30-rollout.md)): 질문(`AIQueryTarget`)에 그룹 `question_group`(A 병원명·B 진료·검사 탐색·C 증상·D 상황·조건)과 역할 `set_role`(FIXED 매달 같은 질문 / ROTATING 달마다 바꾸는 질문)을 둔다(0101). 역할 있는 ACTIVE 질문이 하나라도 있으면 그 병원은 30개 방식이고, 월간·주간의 `register_tracking_set`은 역할을 다시 고르지 않는다(`services/measurement_set.py`). A는 측정표에 의도 `BRAND`로 얼려 대표 노출률(LOCAL)·지난달 비교·추이에서 빠지고, 원장 보고서는 P3 그룹 표 A행과 병원 정보 정확도 한 줄(`brand_answer_accuracy`, 보고서 시점 결정적 계산)로만 보인다. 측정 기준 지문·크기는 고정 질문만(교체 10개를 바꿔도 비교가 이어진다)이고 지난달 맞춘 칸도 두 달 모두 고정인 칸만이다. 그룹·역할은 `platform_provenance.query_sets`와 `sov_summary` payload에 얼린다. 새벽 창에 이미 얼린 측정표는 그대로 재고(고친 세트는 다음 달부터), 한 페이지(30칸)의 답변은 동시에 산다(`SOV_MONTHLY_ANSWER_CONCURRENCY`). 초안은 `measurement_question_set`(결정적, 지침 3-1 문형 검사는 이 경로·어드민 저장에만 — 기존 유료 매트릭스·시드 검사는 그대로)이 만들고, 적용은 CLI `app.utils.measurement_set_rollout`·어드민 콘텐츠 > 측정 키워드. A그룹 질문은 글 주제·노출 보완 제안에 쓰지 않는다. 고정/교체·측정 방법은 원장 보고서에 설명하지 않는다(2026-11-05 삭제 요청).
 - API 답변 측정은 소비자 ChatGPT/Gemini 화면의 노출과 동일하지 않다. 실패·미확정과 미언급을 분리한다.
 - **언급 판정은 규칙 대조다**(2026-11-09, `services/mention_identity.py`). 옛 판정(이름 사전 필터 + gpt-4o-mini)은 실제 언급의 40~47%를 놓쳤다(정답표 406건·검증 표본 286건 — 마포성모탑은 공식 등록명 '성모탑정형외과의원'으로 쓰여 9월 이후 129건이 0). 이름을 단어 경계까지 통째로 비교하고(접미사·앞 지역명·'연합' 삽입/삭제·W↔더블유(W)·지점명 위치 변형, 진료과를 뗀 브랜드명은 위치 증거 필요), 같은 항목의 전화(지역번호까지)·도로명·지역어로 확정하며, 다른 지점명·같은 시의 다른 구·다른 시군구·더 긴 다른 이름은 뺀다. 규칙이 '아니다'라고 했는데 이름 조각이 있는 답변만 `MENTION_SECOND_LOOK_MODEL`(Haiku 5.5)에 한 번 더 묻고, 보조 판정이 미언급이 아니라고 하면 보류(AMBIGUOUS, 분모 제외)로 두고 경고 로그를 남긴다(쌓이면 규칙에 표기를 더한다). 경쟁 병원도 같은 규칙(우리 병원 생활권 기준, 모델 호출 없음)으로 판정한다. 판정 신원(주소·전화·지역어)은 월간 측정표 `platform_provenance.judgment_identity`·V0 문맥에 처음 쓸 때 고정한다. 측정 기준 지문의 판정 정책이 바뀌었으므로 이전 달과는 같은 판정 기준이 아니며(원장 보고서는 증감만 조용히 숨긴다 — 고객에게 측정 조건 변경을 설명하지 않는다), 이전 방식으로 잰 달의 경쟁 병원 반영은 막는다(`JUDGE_POLICY_CHANGED`). 판정을 바꿀 때는 정답표·검증 표본 비교를 다시 한다. **마감된 달 재판정**: `python -m app.utils.monthly_mention_rejudge precheck|execute --year --month [--hospital-id] [--confirm]`(`services/month_mention_rejudge.py`)가 그 달 측정표에 묶인 저장 답변을 지금 규칙으로 다시 판정한다(답변·모델 호출 없음). 확정 여부는 바꾸지 않는다 — 확정 기록만 미언급 → 언급으로 올리고(옛 판정이 언급이라 한 기록은 규칙도 모두 언급이었다), 보류·실패 기록은 그대로, 경쟁 병원은 등록 이름 전부를 같은 규칙으로 덮는다. 끝나면 `REJUDGE_MONTH_MENTIONS` 실행 기록(SUCCEEDED)에 판정 정책을 남기고, 측정표는 고칠 수 없으므로 지난달 비교·경쟁 병원 반영 차단은 `effective_measurement_protocol`로 그 달의 실제 판정 기준을 읽는다. 보고서 숫자는 일반 재생성(`rebuild=true`) 새 버전으로 반영되며 다시 전달해야 한다.
 - 월간/V0 고정 관측 슬롯의 질문·플랫폼·반복·protocol과 답변·판정 체크포인트를 보존한다. V0는 짧은 실행 구간마다 같은 작업·측정 lineage로 자동 이어가고, 이미 성공한 공급자 단계는 다시 구매하지 않는다. 정상 이어가기 횟수와 실제 실패 재시도 예산을 섞지 않는다. COMPLETE/LIMITED/UNAVAILABLE와 legacy lineage를 구분하며 비교 불가한 기간을 상승/하락으로 표현하지 않는다.

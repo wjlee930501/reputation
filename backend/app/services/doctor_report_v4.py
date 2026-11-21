@@ -263,6 +263,8 @@ class ExposurePage:
     citation_lines: tuple[str, ...]
     # 비교한 달에 헤드라인(같은 질문만)과 AI 서비스별 수치(이번 달 전체)의 분모가 다를 때 한 줄.
     platform_note: str = ""
+    # 병원명 질문(그룹 A) 답변이 병원 정보(주소·진료 시간·진료 항목)를 맞게 말한 수 — 그룹 표 아래 한 줄.
+    group_note: str = ""
     trend_heading: str = TREND_HEADING
     platform_heading: str = PLATFORM_HEADING
     treatment_heading: str = TREATMENT_HEADING
@@ -462,6 +464,7 @@ class DoctorReportV4:
             p3.extend(_band_texts(e.keyword_figure))
         p3.extend(e.citation_lines)
         p3.append(e.platform_note)
+        p3.append(e.group_note)
         k = self.competition
         p4: list[str] = [k.headline]
         if k.rows:
@@ -568,6 +571,7 @@ class DoctorReportV4:
             if row.rate is not None and row.group:
                 facts[f"group.{row.group}"] = row.detail
                 facts[f"group.{row.group}.rate"] = _pct(row.rate)
+        facts.update(_accuracy_facts(self.exposure.group_note))
         if len(self.exposure.trend) >= 2:
             for point in self.exposure.trend:
                 if point.label:
@@ -859,6 +863,8 @@ def _keyword_index(
                 str(getattr(target, "name", "") or ""), regions or list(hospital_regions)
             ) or UNKNOWN_TREATMENT
         intent = str(getattr(target, "target_intent", "") or "")
+        # 30개 세트의 그룹은 측정표에 얼린 payload에서만 읽는다(`_keywords`) — 지금 질문 행의 그룹을 쓰면 그룹이
+        # 없던 옛 달(10월)을 다시 만들 때 지금 그룹이 소급된다.
         info = KeywordInfo(treatment=treatment, group=_INTENT_TO_GROUP.get(intent, "B"), region=region)
         by_id[str(getattr(target, "id", ""))] = info
         for text in _target_texts(target):
@@ -884,6 +890,9 @@ class _Keyword:
     prior_mentioned: int | None
     # 플랫폼별 (상태, 언급, 시도) — 같은 문장의 셀은 플랫폼 안에서 합친다(검토 8).
     cells: dict[str, tuple[str, int, int]] = field(default_factory=dict)
+    # 병원명 질문(측정 키워드 그룹 A, 저장 의도 BRAND). 이름이 질문에 있어 대표 노출률·노출 키워드 수·
+    # 진료 항목·다음 달 계획에 넣지 않는다 — P3 그룹 표 A행·히트맵·부록 A에만 싣는다.
+    brand: bool = False
 
     @property
     def rate(self) -> float | None:
@@ -922,9 +931,17 @@ def _keywords(
     rows: dict[str, dict[str, Any]] = {}
     for query in (coverage or {}).get("queries") or []:
         text = str(query.get("query_text") or "").strip()
-        if not text or str(query.get("query_intent") or "LOCAL") != "LOCAL":
+        intent = str(query.get("query_intent") or "LOCAL")
+        if not text or intent not in ("LOCAL", "BRAND"):
             continue
-        row = rows.setdefault(text, {"attempts": 0, "mentioned": 0, "cells": {}})
+        row = rows.setdefault(
+            text, {"attempts": 0, "mentioned": 0, "cells": {}, "brand": False, "group": None}
+        )
+        row["brand"] = row["brand"] or intent == "BRAND"
+        # 측정표에 얼린 그룹(30개 세트)이 정본이다 — 저장값만으로 같은 그룹을 다시 만든다.
+        stored_group = str(query.get("question_group") or "").upper()
+        if stored_group in GROUP_LABELS:
+            row["group"] = stored_group
         row["attempts"] += int(query.get("attempts_used") or 0)
         row["mentioned"] += int(query.get("mentioned_attempts") or 0)
     for cell in (coverage or {}).get("cells") or []:
@@ -957,18 +974,89 @@ def _keywords(
     keywords = []
     for text, row in rows.items():
         prior_pair = None if text in prior_broken else prior.get(text)
+        info = _info_for(text, by_text, hospital_regions)
+        if row["group"] is not None and info.group != row["group"]:
+            info = replace(info, group=row["group"])
         keywords.append(
             _Keyword(
                 text=text,
-                info=_info_for(text, by_text, hospital_regions),
+                info=info,
                 attempts=row["attempts"],
                 mentioned=row["mentioned"],
                 prior_attempts=prior_pair[0] if prior_pair else None,
                 prior_mentioned=prior_pair[1] if prior_pair else None,
                 cells=row["cells"],
+                brand=row["brand"],
             )
         )
     return keywords
+
+
+def _headline_keywords(keywords: Sequence[_Keyword]) -> list[_Keyword]:
+    """대표 노출률과 같은 기준의 측정 키워드 — 측정됐고 병원명 질문(A)이 아니다."""
+
+    return [keyword for keyword in keywords if keyword.attempts > 0 and not keyword.brand]
+
+
+def _curated_set(coverage: Mapping[str, Any]) -> bool:
+    return any(
+        isinstance(query, Mapping) and query.get("set_role")
+        for query in (coverage.get("queries") or [])
+    )
+
+
+def _brand_accuracy_note(coverage: Mapping[str, Any]) -> str:
+    """병원명 질문 답변의 병원 정보 정확도 한 줄. 말한 답변이 없는 항목은 싣지 않는다(0건을 찍지 않는다)."""
+
+    accuracy = coverage.get("brand_accuracy")
+    fields = accuracy.get("fields") if isinstance(accuracy, Mapping) else None
+    if not isinstance(fields, Mapping):
+        return ""
+    parts = []
+    for name in ("address", "hours", "treatments"):
+        field_row = fields.get(name)
+        if not isinstance(field_row, Mapping):
+            continue
+        checked = int(field_row.get("checked") or 0)
+        if checked <= 0:
+            continue
+        label = str(field_row.get("label") or name)
+        parts.append(f"{label} {checked}건 중 {int(field_row.get('match') or 0)}건")
+    if not parts:
+        return ""
+    return "AI가 병원 정보를 맞게 안내한 답변: " + ", ".join(parts)
+
+
+_ACCURACY_PART = re.compile(r"(주소|진료 시간|진료 항목) (\d+)건 중 (\d+)건")
+
+
+def _accuracy_facts(note: str) -> dict[str, str]:
+    """찍힌 정확도 줄의 숫자 사실(`group.A.accuracy.{항목}`). AE가 줄을 고치면 사실도 따라간다."""
+
+    return {
+        f"group.A.accuracy.{label}": f"{checked}건 중 {matched}건"
+        for label, checked, matched in _ACCURACY_PART.findall(note or "")
+    }
+
+
+def _group_tallies(
+    measured: Sequence[_Keyword], brand: Sequence[_Keyword]
+) -> dict[str, tuple[int, int, int]]:
+    """그룹별 (키워드 수, 언급, 답변). B~D는 대표 노출률과 같은 키워드, A는 병원명 질문."""
+
+    tallies: dict[str, list[int]] = {}
+    for keyword in measured:
+        bucket = tallies.setdefault(keyword.info.group or "B", [0, 0, 0])
+        bucket[0] += 1
+        bucket[1] += keyword.mentioned
+        bucket[2] += keyword.attempts
+    if brand:
+        tallies["A"] = [
+            len(brand),
+            sum(keyword.mentioned for keyword in brand),
+            sum(keyword.attempts for keyword in brand),
+        ]
+    return {group: (values[0], values[1], values[2]) for group, values in tallies.items()}
 
 
 def _appendix_order(keyword: _Keyword) -> tuple:
@@ -1050,7 +1138,11 @@ def build_doctor_report_v4(
         mentioned_attempts = int(coverage.get("mentioned_attempts") or 0)
     platform_note = (
         "AI 서비스별 수치는 이번 달 측정 키워드 전체 기준이고, 첫 장의 AI 노출률은 지난달과 같은 키워드 기준입니다."
-        if comparable and int(comparison.get("current_unmatched_cell_count") or 0) > 0
+        # 30개 세트는 교체 질문 때문에 매달 맞추지 않는 칸이 있다 — 측정 방식 설명을 원장 보고서에 싣지
+        # 않는다(2026-11-05 마케팅팀 삭제 요청: 고정 키워드로만 비교한다는 설명).
+        if comparable
+        and int(comparison.get("current_unmatched_cell_count") or 0) > 0
+        and not _curated_set(coverage)
         else ""
     )
     significance = str(coverage.get("significance") or "")
@@ -1058,11 +1150,16 @@ def build_doctor_report_v4(
     by_text, by_id = _keyword_index(query_targets, regions)
     keywords = [] if setup else _keywords(coverage, attribution, by_text, regions)
     registered_names = registered_competitor_names(hospital)
-    measured = [k for k in keywords if k.attempts > 0]
+    measured = _headline_keywords(keywords)
     exposed = [k for k in measured if k.exposed]
     unexposed = [k for k in measured if not k.exposed]
     # 경쟁 현황은 **지금 등록된** 경쟁 병원만 등록 표기로 센다 — 등록에서 뺀 이름의 판정은 기록에 남아 있어도 보고서에
     # 싣지 않는다(경쟁 병원 반영이 기록을 지우지 않는 대신 여기서 거른다). 등록 목록이 비어 있으면 종전처럼 기록 그대로다.
+    # 병원명 질문(A)의 답변은 경쟁 현황·대표 사례에 쓰지 않는다 — 이름이 질문에 있어 노출이 당연하고, 경쟁률을
+    # 끌어내리며 "{병원명} 어때?"가 대표 성공 사례로 뽑힌다.
+    brand_texts = {keyword.text for keyword in keywords if keyword.brand}
+    if brand_texts:
+        records = [record for record in records if _record_query_text(record).strip() not in brand_texts]
     competitor_records = scope_competitor_records(records, registered_names)
     competitors_by_keyword = _competitors_by_keyword(competitor_records)
     registered = len(
@@ -1357,23 +1454,17 @@ def _exposure_page(
             platform_bars.append(BarItem(platform_name(platform), None, MEASUREMENT_INCOMPLETE))
         else:
             platform_bars.append(BarItem(platform_name(platform), rate, f"AI 답변 {attempts}건 중 {mentioned}건"))
-    groups: dict[str, list[int]] = {}
-    group_keywords: dict[str, int] = {}
-    for keyword in measured:
-        group = keyword.info.group or "B"
-        bucket = groups.setdefault(group, [0, 0])
-        bucket[0] += keyword.mentioned
-        bucket[1] += keyword.attempts
-        group_keywords[group] = group_keywords.get(group, 0) + 1
+    brand_keywords = [keyword for keyword in keywords if keyword.brand and keyword.attempts > 0]
+    tallies = _group_tallies(measured, brand_keywords)
     group_rows = []
     for group, label in GROUP_LABELS.items():
-        if group == "A":
-            group_rows.append(GroupRow(group, label, 0, None, NOT_MEASURED_YET))
-        elif group in groups:
-            mentioned, attempts = groups[group]
+        if group in tallies:
+            count, mentioned, attempts = tallies[group]
             group_rows.append(
-                GroupRow(group, label, group_keywords[group], _rate(mentioned, attempts), f"AI 답변 {attempts}건 중 {mentioned}건")
+                GroupRow(group, label, count, _rate(mentioned, attempts), f"AI 답변 {attempts}건 중 {mentioned}건")
             )
+        elif group == "A":
+            group_rows.append(GroupRow(group, label, 0, None, NOT_MEASURED_YET))
     # 히트맵은 측정을 못 한 키워드도 보인다 — 전부 실패한 키워드가 사라지지 않게(검토 11).
     heatmap = tuple(
         HeatRow(
@@ -1398,6 +1489,7 @@ def _exposure_page(
         heatmap=heatmap,
         citation_lines=citation_lines,
         platform_note=platform_note,
+        group_note="" if setup or not brand_keywords else _brand_accuracy_note(coverage),
     )
 
 
@@ -1889,6 +1981,7 @@ def restore_v4(payload: Mapping[str, Any]) -> DoctorReportV4:
     e["heatmap"] = tuple(HeatRow(r["keyword"], tuple(HeatCell(**h) for h in r["cells"])) for r in e["heatmap"])
     e["citation_lines"] = tuple(e["citation_lines"])
     e["platform_note"] = str(e.get("platform_note") or "")
+    e["group_note"] = str(e.get("group_note") or "")
     e["group_headers"] = _strings_tuple(e.get("group_headers"), GROUP_HEADERS)
     e["keyword_figure"] = _band(e.get("keyword_figure"), None)
     k = dict(data["competition"])
@@ -1985,7 +2078,18 @@ def stored_facts_v4(sov_summary: Mapping[str, Any], content_summary: Mapping[str
         if measured_cells and cited_cells:  # 인용 0건은 원장 보고서에 찍지 않는다(2026-11-06)
             facts["citation"] = f"{measured_cells}건 중 {cited_cells}건"
         keywords = _keywords(sov_summary, content_summary.get("attribution") or {}, {}, [])
-        measured = [k for k in keywords if k.attempts > 0]
+        measured = _headline_keywords(keywords)
+        brand = [keyword for keyword in keywords if keyword.brand and keyword.attempts > 0]
+        # 30개 세트 달은 그룹이 payload에 얼려 있어 그룹 사실도 저장값만으로 다시 만든다(옛 달은 지금 질문 행에서
+        # 읽어 여기 없다).
+        if _curated_set(sov_summary) and all(keyword.info.group for keyword in measured):
+            for group, (_count, mentioned, attempts) in _group_tallies(measured, brand).items():
+                rate = _rate(mentioned, attempts)
+                if rate is not None:
+                    facts[f"group.{group}"] = f"AI 답변 {attempts}건 중 {mentioned}건"
+                    facts[f"group.{group}.rate"] = _pct(rate)
+            if brand:
+                facts.update(_accuracy_facts(_brand_accuracy_note(sov_summary)))
         if current is not None:
             facts["card.keywords"] = f"{len(measured)}개 중 {sum(1 for k in measured if k.exposed)}개"
         for keyword in keywords:
@@ -2273,6 +2377,7 @@ AE_SCALARS: dict[str, tuple[str, str, str, str]] = {
     "exposure.heatmap_aside": ("exposure", "heatmap_aside", T_LABEL, CLASS_STATIC),
     "exposure.heatmap_keyword_head": ("exposure", "heatmap_keyword_head", T_LABEL, CLASS_STATIC),
     "exposure.platform_note": ("exposure", "platform_note", T_TEXT, CLASS_SENTENCE),
+    "exposure.group_note": ("exposure", "group_note", T_TEXT, CLASS_SENTENCE),
     "exposure.treatment_empty_text": ("exposure", "treatment_empty_text", T_TEXT, CLASS_SENTENCE),
     "exposure.heatmap_empty_text": ("exposure", "heatmap_empty_text", T_TEXT, CLASS_SENTENCE),
     "competition.headline": ("competition", "headline", T_TEXT, CLASS_STATIC),
@@ -2567,8 +2672,11 @@ def treatment_card_from_appendix(
     이름 순서: 빌더는 측정 질문 순서로 이름을 세고 부록은 (묶음·노출 수·문장)으로 정렬돼 뷰만으로는 그 순서를 되살릴 수
     없다. 그래서 `pristine_rows`·`pristine_card`를 주면 **옛 라벨이 카드에 섰던 자리**를 지킨다.
     """
-    rows = tuple(rows)
-    old_rows = tuple(pristine_rows) if pristine_rows is not None else rows
+    # 병원명 질문(그룹 A)은 진료 항목 카드에 넣지 않는다(빌더와 같다).
+    rows = tuple(row for row in rows if row.group != "A")
+    old_rows = (
+        tuple(row for row in pristine_rows if row.group != "A") if pristine_rows is not None else rows
+    )
     if [row.keyword for row in old_rows] != [row.keyword for row in rows]:
         old_rows = rows
     shown_names, _tail = split_card_names(pristine_card.names) if pristine_card is not None else ([], None)
@@ -2601,7 +2709,7 @@ def treatment_bars_from_appendix(rows: Iterable[AppendixKeywordRow]) -> tuple[Ba
     """부록 A 행(키워드별 `m/a`)에서 진료 항목별 노출률 막대를 다시 만든다 — 빌더(`_exposure_page`)와 같은 합산·정렬."""
     by_treatment: dict[str, list[int]] = {}
     for row in rows:
-        if not re.match(r"^\d+/\d+$", row.total or ""):
+        if row.group == "A" or not re.match(r"^\d+/\d+$", row.total or ""):
             continue
         mentioned, attempts = (int(part) for part in row.total.split("/", 1))
         bucket = by_treatment.setdefault(row.treatment, [0, 0])
@@ -3127,6 +3235,7 @@ def walk_ae_paths(view: DoctorReportV4) -> list[AePathItem]:
     rows("exposure.treatment_bars", "p3")
     scalar("exposure.treatment_empty_text", "p3")
     scalar("exposure.group_heading", "p3")
+    scalar("exposure.group_note", "p3")
     indexed("exposure.group_headers", "p3")
     rows("exposure.group_rows", "p3")
     scalar("exposure.heatmap_heading", "p3")
@@ -3206,6 +3315,9 @@ def case_candidates_for_view(
     urls_to_title = urls_to_titles(view.content.rows)
     is_registered = bool(view.competition.rows or view.competition.basis) if registered is None else registered
     candidates: list[CaseCandidate] = []
+    brand_texts = {row.keyword for row in view.appendix.keyword_rows if row.group == "A"}
+    if brand_texts:
+        records = [record for record in records if _record_query_text(record).strip() not in brand_texts]
     for record in usable_case_records(scope_competitor_records(records, registered_names)):
         record_id = str(getattr(record, "id", "") or "")
         if not record_id:

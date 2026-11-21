@@ -166,3 +166,15 @@ def test_monthly_report_guarantee_queries_are_registered_reads() -> None:
     assert "customer_ready" not in statements[0]  # 생성 시점 스냅샷은 읽지 않는다.
     assert "MONTHLY_REPORT_SAFETY_NET_FAILED" in statements[1]
     assert "report-repair:" in statements[2]
+
+
+def test_measurement_set_readiness_queries_are_registered_reads() -> None:
+    """측정 키워드 30개(2026-11-21): 병원별 세트 준비(q17)와 가장 최근 달 새벽 창 진행(q17b)."""
+
+    statements = ops_sql_report.QUERIES["q17"]
+    assert len(statements) == 2
+    assert statements[0].strip().upper().startswith("SELECT")
+    assert statements[1].strip().upper().startswith("SELECT")
+    assert "set_role" in statements[0] and "legacy_tracked" in statements[0]
+    assert "measurement_observation_slots" in statements[1]
+    assert ops_sql_report.parse_args(["--only=q17"]).only == ["q17"]
