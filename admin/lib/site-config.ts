@@ -114,7 +114,8 @@ const REPLACED_DICTS = new Set(['copy', 'line_breaks'])
 const RESOLVED_ONLY = new Set(['layout', 'sections', 'defaults_version', 'schema_version'])
 
 export function canDisable(section: SiteSection): boolean {
-  return !FIXED_SECTIONS.has(section.id)
+  // 바로가기(section_index)는 병원 화면이 아직 그리지 않아 켜기를 열지 않는다(설계 20절, 서버 FIELD_NOT_RENDERED).
+  return !FIXED_SECTIONS.has(section.id) && section.id !== 'section_index'
 }
 
 export function canRetitle(section: SiteSection): boolean {
@@ -193,7 +194,15 @@ function groupOverride(key: string, value: unknown, base: unknown): unknown {
   return Object.keys(out).length ? out : undefined
 }
 
-function sectionOverrides(sections: readonly SiteSection[], base: readonly SiteSection[]): Record<string, unknown>[] {
+/**
+ * 섹션 덮어쓰기. `layout`을 주면 그 레이아웃에서 숨긴 섹션 모양 칸(`sectionLookShown`)을 싣지 않는다 — null이면
+ * 모두 싣는다(저장된 모양 그대로 비교할 때).
+ */
+function sectionOverrides(
+  sections: readonly SiteSection[],
+  base: readonly SiteSection[],
+  layout: SiteLayout | null = null,
+): Record<string, unknown>[] {
   const byId = new Map(base.map((section) => [section.id, section]))
   const reordered = !equal(
     sections.map((section) => section.id),
@@ -203,9 +212,11 @@ function sectionOverrides(sections: readonly SiteSection[], base: readonly SiteS
   for (const section of sections) {
     const original = byId.get(section.id)
     const entry: Record<string, unknown> = { id: section.id }
+    const shown = layout ? sectionLookShown(layout, section.id) : null
     for (const key of SECTION_KEYS) {
       const value = section[key]
       if (value === null || value === undefined) continue
+      if (shown && key in shown && !shown[key as keyof typeof shown]) continue
       if (original && equal(value, original[key])) continue
       entry[key] = value
     }
@@ -230,31 +241,76 @@ export function showsBOnlyFields(layout: SiteLayout | null | undefined): boolean
 }
 
 /**
- * 편집한 완성본을 레이아웃 기본값과 비교해 저장할 덮어쓰기만 만든다. A·C에서는 B 전용 칸을 싣지 않는다 —
- * 숨긴 칸에 옛 초안의 값이 남아 있어도 저장이 거절되지 않고, 다음 저장에서 기본값으로 돌아간다.
+ * 병원 화면이 아직 그리지 않는 칸(모든 레이아웃, 설계 20절) — 편집기는 숨기고 저장에 싣지 않으며, 서버는 기본값
+ * 아닌 값을 거절한다(`FIELD_NOT_RENDERED`). 진료 철학은 공개 응답에 검수된 문장이 없고, 본문 글자 크기는 A·C 글자가
+ * 고정 크기라 일부만 커지며, 나머지는 사이트에 그릴 자리가 아직 없다.
+ */
+export const UNRENDERED_FIELDS: readonly (readonly [group: string, key: string])[] = [
+  ['doctor', 'show_philosophy'],
+  ['faq', 'merge_questions'],
+  ['region_tags', 'show'],
+  ['region_tags', 'separator'],
+  ['type', 'body_size'],
+  ['article', 'aside'],
+  ['nav', 'section_index'],
+]
+
+/** 정렬·영문 소제목·배경을 그릴 머리가 없는 섹션 — 그 섹션의 세 칸은 숨기고 싣지 않는다(바로가기는 켜기도). */
+export const HEADLESS_SECTIONS: ReadonlySet<SectionId> = new Set<SectionId>(['hero', 'section_index'])
+
+/**
+ * 배경을 바꿀 수 없는 섹션(사이트 `clinic-site-config` `BACKGROUND_FIXED`와 같다) — 지금 진한 띠인 섹션·다른 섹션에
+ * 붙은 섹션·머리 없는 섹션. 진한 바탕의 흰 글자를 밝은 바탕에 남기지 않으려는 것이다.
+ */
+export const BACKGROUND_FIXED: Readonly<Record<SiteLayout, ReadonlySet<SectionId>>> = {
+  A: new Set<SectionId>(['hero', 'hours']),
+  B: new Set<SectionId>(['hero', 'section_index']),
+  C: new Set<SectionId>(['hero', 'news', 'hours', 'care_principles', 'care_flow']),
+}
+
+/** 섹션 설정 칸 중 편집기가 보이는 칸(그 섹션·레이아웃에서 화면에 그려지는 칸). */
+export function sectionLookShown(layout: SiteLayout | null | undefined, id: SectionId) {
+  const headless = HEADLESS_SECTIONS.has(id)
+  return {
+    enabled: id !== 'section_index',
+    align: !headless,
+    label: !headless,
+    background: !headless && !(layout ? BACKGROUND_FIXED[layout].has(id) : false),
+  }
+}
+
+function withoutKey(out: Record<string, unknown>, group: string, key: string): void {
+  const value = out[group]
+  if (!isRecord(value) || !(key in value)) return
+  const rest = Object.fromEntries(Object.entries(value).filter(([child]) => child !== key))
+  if (Object.keys(rest).length) out[group] = rest
+  else delete out[group]
+}
+
+/**
+ * 편집한 완성본을 레이아웃 기본값과 비교해 저장할 덮어쓰기만 만든다. 숨긴 칸(A·C의 B 전용 칸, 화면이 아직 그리지
+ * 않는 칸, 머리 없는 섹션·배경 고정 섹션의 모양 칸)은 싣지 않는다 — 옛 초안에 값이 남아 있어도 저장이 거절되지
+ * 않고, 다음 저장에서 기본값으로 돌아간다. `keepAll`이면 서버에 저장된 모양 그대로(숨긴 칸도) 만든다.
  */
 export function buildOverrides(
   resolved: ResolvedSiteConfig,
   defaults: ResolvedSiteConfig,
   layout: SiteLayout | null = resolved.layout ?? defaults.layout ?? null,
+  keepAll = false,
 ): Record<string, unknown> {
   const out: Record<string, unknown> = {}
-  const sections = sectionOverrides(resolved.sections, defaults.sections)
+  const sections = sectionOverrides(resolved.sections, defaults.sections, keepAll ? null : layout)
   if (sections.length) out.sections = sections
   for (const [key, value] of Object.entries(resolved)) {
     if (RESOLVED_ONLY.has(key)) continue
     const diff = groupOverride(key, value, defaults[key])
     if (diff !== undefined) out[key] = diff
   }
+  if (keepAll) return out
   if (!showsBOnlyFields(layout)) {
-    for (const [group, key] of B_ONLY_FIELDS) {
-      const value = out[group]
-      if (!isRecord(value) || !(key in value)) continue
-      const rest = Object.fromEntries(Object.entries(value).filter(([child]) => child !== key))
-      if (Object.keys(rest).length) out[group] = rest
-      else delete out[group]
-    }
+    for (const [group, key] of B_ONLY_FIELDS) withoutKey(out, group, key)
   }
+  for (const [group, key] of UNRENDERED_FIELDS) withoutKey(out, group, key)
   return out
 }
 
@@ -268,7 +324,7 @@ export function overridesCompareKey(
   defaults: ResolvedSiteConfig,
   asStored = false,
 ): string {
-  return JSON.stringify([layout, buildOverrides(resolved, defaults, asStored ? 'B' : layout)])
+  return JSON.stringify([layout, buildOverrides(resolved, defaults, layout, asStored)])
 }
 
 // --- 요청 ---

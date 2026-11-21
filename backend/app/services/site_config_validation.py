@@ -16,10 +16,15 @@
 6. 정보 띠 — B안의 '예약' 칸은 네이버 플레이스가 없으면 경고(저장은 된다). 공개 화면이 그 칸을 뺀다.
 7. B안 전용 칸 — 첫 화면 정보 띠 칸(`hero.blocks`)과 진료 항목 모양(`treatments.style`)은 B안에서만 그린다.
    A·C에서 기본값과 다른 값은 거절한다(기본값과 같은 값·비운 칸은 그대로 통과 — 옛 초안·완성본이 막히지 않게).
+8. 아직 그리지 않는 칸 — 병원 화면이 그리지 않는 칸(진료 철학·질문 합치기·진료 지역 표기·바로가기·본문 글자 크기·
+   글 보조 칸), 머리 없는 섹션(첫 화면·바로가기)의 정렬·소제목·배경과 바로가기 켜기, 배경을 바꿀 수 없는
+   섹션의 배경은 기본값과 다르면 거절한다(설계 20절). 공개 반영이 이 칸을 공개해 다음 사이트 배포가 재공개 없이
+   화면을 바꾸지 않게 한다.
 """
 
 from __future__ import annotations
 
+import copy
 import uuid
 from dataclasses import dataclass, field
 from typing import Any
@@ -168,6 +173,7 @@ def validate_site_config(
     stored = storage_form(model)
     _check_sections(check, layout, stored)
     _check_b_only(check, layout, stored)
+    _check_unrendered(check, layout, stored)
     if not check.ok:
         return check
     resolved = site_defaults.resolve(layout, stored)
@@ -218,6 +224,86 @@ def _check_b_only(check: SiteConfigCheck, layout: str, stored: dict[str, Any]) -
                 "B_LAYOUT_ONLY",
                 "이 칸은 B 레이아웃에서만 바꿀 수 있습니다.",
             )
+
+
+# 병원 화면이 아직 그리지 않는 칸(모든 레이아웃) — 어드민 `UNRENDERED_FIELDS`와 같다.
+_UNRENDERED_FIELDS: tuple[tuple[str, str], ...] = (
+    ("doctor", "show_philosophy"),
+    ("faq", "merge_questions"),
+    ("region_tags", "show"),
+    ("region_tags", "separator"),
+    ("type", "body_size"),
+    ("article", "aside"),
+    ("nav", "section_index"),
+)
+# 정렬·소제목·배경을 그릴 머리가 없는 섹션. 바로가기는 켜기도 그리지 않는다.
+_HEADLESS_SECTIONS: frozenset[str] = frozenset({"hero", "section_index"})
+# 배경을 바꿀 수 없는 섹션(사이트 `BACKGROUND_FIXED`·어드민 `BACKGROUND_FIXED`와 같다).
+_BACKGROUND_FIXED: dict[str, frozenset[str]] = {
+    "A": frozenset({"hero", "hours"}),
+    "B": frozenset({"hero", "section_index"}),
+    "C": frozenset({"hero", "news", "hours", "care_principles", "care_flow"}),
+}
+
+
+def strip_unrendered(layout: str, config: Any) -> Any:
+    """옛 판 복원용 — 화면이 그리지 않는 칸(A·C의 B 전용 칸 포함)을 덮어쓰기에서 뺀다(그 칸은 기본값으로 돌아간다).
+
+    그 칸이 거절되기 전에 저장·공개된 판도 복원할 수 있게 한다. 형식이 틀린 설정은 그대로 둔다 — 검증이 알린다.
+    """
+
+    if not isinstance(config, dict) or layout not in site_defaults.LAYOUTS:
+        return config
+    out = copy.deepcopy(config)
+    drop = list(_UNRENDERED_FIELDS) + ([] if layout == "B" else list(_B_ONLY_FIELDS))
+    for group, key in drop:
+        value = out.get(group)
+        if isinstance(value, dict) and key in value:
+            value.pop(key)
+            if not value:
+                out.pop(group)
+    sections = out.get("sections")
+    if isinstance(sections, list):
+        for section in sections:
+            if not isinstance(section, dict):
+                continue
+            section_id = section.get("id")
+            fixed: set[str] = set()
+            if section_id in _HEADLESS_SECTIONS:
+                fixed |= {"align", "label", "background"}
+            if section_id == "section_index":
+                fixed.add("enabled")
+            if section_id in _BACKGROUND_FIXED[layout]:
+                fixed.add("background")
+            for key in fixed:
+                section.pop(key, None)
+    return out
+
+
+def _check_unrendered(check: SiteConfigCheck, layout: str, stored: dict[str, Any]) -> None:
+    base = site_defaults.defaults(layout)
+    message = "이 칸은 아직 병원 화면에 반영되지 않아 바꿀 수 없습니다."
+    for group, key in _UNRENDERED_FIELDS:
+        value = (stored.get(group) or {}).get(key)
+        if value is not None and value != base[group][key]:
+            check.error(f"{group}.{key}", "FIELD_NOT_RENDERED", message)
+    defaults_by_id = {section["id"]: section for section in base["sections"]}
+    for index, section in enumerate(stored.get("sections") or []):
+        section_id = section.get("id")
+        default = defaults_by_id.get(section_id)
+        if default is None:
+            continue
+        fixed: list[str] = []
+        if section_id in _HEADLESS_SECTIONS:
+            fixed += ["align", "label", "background"]
+        if section_id == "section_index":
+            fixed.append("enabled")
+        if section_id in _BACKGROUND_FIXED[layout]:
+            fixed.append("background")
+        for key in dict.fromkeys(fixed):
+            value = section.get(key)
+            if value is not None and value != default.get(key):
+                check.error(f"sections.{index}.{key}", "FIELD_NOT_RENDERED", message)
 
 
 def _check_order(check: SiteConfigCheck, layout: str, resolved: dict[str, Any]) -> None:

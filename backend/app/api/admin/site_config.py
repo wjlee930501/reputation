@@ -52,6 +52,7 @@ from app.services.site_config_validation import (
     changed_sections,
     line_break_source,
     lines_match,
+    strip_unrendered,
     validate_site_config,
 )
 from app.services.site_preview_token import issue_preview_token, preview_enabled
@@ -599,7 +600,8 @@ async def restore_site_config_version(
         hospital,
         body,
         layout=source.layout,
-        config=dict(source.config or {}),
+        # 그 판 이후 거절하게 된 칸(화면이 그리지 않는 칸)은 빼고 복원한다 — 기본값으로 돌아간다.
+        config=strip_unrendered(source.layout, dict(source.config or {})),
         origin=ORIGIN_RESTORE,
         based_on_id=source.id,
         audit_action="site_config_restore",

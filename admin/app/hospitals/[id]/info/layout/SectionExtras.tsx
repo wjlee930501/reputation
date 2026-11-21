@@ -316,7 +316,7 @@ export function DoctorSettings({ value, onChange, disabled }: { value: Group; on
         onChange={(title_position) => onChange({ ...value, title_position })}
         disabled={disabled}
       />
-      <Toggle label={COPY.doctorShowPhilosophy} checked={value.show_philosophy === true} onChange={(show_philosophy) => onChange({ ...value, show_philosophy })} disabled={disabled} />
+      {/* 진료 철학 표시(`doctor.show_philosophy`)는 공개 응답에 검수된 철학 문장이 없어 숨긴다(설계 20절). */}
     </div>
   )
 }
@@ -560,18 +560,7 @@ export function PageWideSettings({
       <IssueList issues={issues} />
       <OrderedToggles label={COPY.navItems} options={COPY.navNames} value={navItems} max={7} onChange={(items) => onChange({ nav: { ...nav, items } })} disabled={disabled} />
       <OrderedToggles label={COPY.mobileBar} options={COPY.mobileBarNames} value={mobileBar} max={4} onChange={(mobile_bar) => onChange({ nav: { ...nav, mobile_bar } })} disabled={disabled} />
-      <div className="space-y-2">
-        <Toggle label={COPY.regionTagsShow} checked={region.show !== false} onChange={(show) => onChange({ region_tags: { ...region, show } })} disabled={disabled} />
-        {region.show !== false && (
-          <Choice
-            label={COPY.regionTagsSeparator}
-            value={(typeof region.separator === 'string' ? region.separator : 'comma') as 'comma' | 'dot' | 'slash'}
-            options={COPY.regionTagsSeparators}
-            onChange={(separator) => onChange({ region_tags: { ...region, separator } })}
-            disabled={disabled}
-          />
-        )}
-      </div>
+      {/* 진료 지역 표기(`region_tags`)는 병원 화면이 아직 그리지 않아 숨긴다(설계 20절). */}
       <fieldset className="space-y-2">
         <legend className={small}>{COPY.shareImage}</legend>
         <span className={hint}>{COPY.shareImageHint}</span>
@@ -607,20 +596,7 @@ export function PageWideSettings({
         />
         <span className={hint}>{COPY.shareDescriptionHint}</span>
       </label>
-      <Choice
-        label={COPY.bodySize}
-        value={(type.body_size === 'large' ? 'large' : 'normal') as 'normal' | 'large'}
-        options={COPY.bodySizes}
-        onChange={(body_size) => onChange({ type: { ...type, body_size } })}
-        disabled={disabled}
-      />
-      <Choice
-        label={COPY.articleAside}
-        value={(article.aside === 'right_sticky' ? 'right_sticky' : 'bottom') as 'bottom' | 'right_sticky'}
-        options={COPY.articleAsides}
-        onChange={(aside) => onChange({ article: { ...article, aside } })}
-        disabled={disabled}
-      />
+      {/* 본문 글자 크기(`type.body_size` — A·C 글자가 고정 크기라 일부만 커진다)와 글 보조 칸 위치(`article.aside`)는 숨긴다(설계 20절). */}
     </div>
   )
 }

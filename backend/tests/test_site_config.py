@@ -13,6 +13,7 @@ from app.services.site_config_public import PublicSiteConfigContext, public_site
 from app.services.site_config_validation import (
     SiteConfigContext,
     changed_sections,
+    strip_unrendered,
     validate_site_config,
 )
 
@@ -776,3 +777,55 @@ def test_info_strip_blocks_and_treatment_style_are_b_only(layout: str) -> None:
 def test_b_keeps_the_info_strip_blocks_and_treatment_style() -> None:
     config = {"hero": {"blocks": ["phone", "location", "booking"]}, "treatments": {"style": "list"}}
     assert validate_site_config("B", config, _ctx()).ok
+
+
+@pytest.mark.parametrize(
+    ("layout", "config"),
+    [
+        ("B", {"doctor": {"show_philosophy": True}}),
+        ("A", {"faq": {"merge_questions": True}}),
+        ("C", {"region_tags": {"separator": "slash"}}),
+        ("B", {"region_tags": {"show": False}}),
+        ("B", {"type": {"body_size": "large"}}),
+        ("A", {"article": {"aside": "right_sticky"}}),
+        ("B", {"nav": {"section_index": True}}),
+        ("B", {"sections": [{"id": "hero", "align": "center"}]}),
+        ("B", {"sections": [{"id": "hero", "background": "band"}]}),
+        ("B", {"sections": [{"id": "section_index", "enabled": True}]}),
+        ("A", {"sections": [{"id": "hours", "background": "white"}]}),
+        ("C", {"sections": [{"id": "care_principles", "background": "tint"}]}),
+        ("C", {"sections": [{"id": "news", "background": "band"}]}),
+    ],
+)
+def test_fields_the_site_does_not_render_are_rejected(layout: str, config: dict) -> None:
+    assert "FIELD_NOT_RENDERED" in _codes(validate_site_config(layout, config, _ctx()))
+
+
+def test_unrendered_fields_pass_at_their_defaults_and_rendered_look_fields_pass() -> None:
+    for layout in site_defaults.LAYOUTS:
+        resolved = site_defaults.defaults(layout)
+        same = {group: {key: resolved[group][key]} for group, key in (
+            ("doctor", "show_philosophy"), ("faq", "merge_questions"), ("type", "body_size"), ("article", "aside"),
+        )}
+        same["sections"] = [{"id": "hero", "align": "left", "label": False, "background": "default"}]
+        assert validate_site_config(layout, same, _ctx()).ok, layout
+    rendered = {"sections": [{"id": "treatments", "align": "left", "label": True, "background": "band"}]}
+    assert validate_site_config("B", rendered, _ctx()).ok
+    assert validate_site_config("C", {"sections": [{"id": "treatments", "background": "default"}]}, _ctx()).ok
+
+
+def test_strip_unrendered_keeps_rendered_fields_and_drops_the_rest() -> None:
+    old = {
+        "doctor": {"show_philosophy": True, "photo_ratio": "square"},
+        "treatments": {"style": "list"},
+        "nav": {"section_index": True},
+        "sections": [{"id": "section_index", "enabled": True}, {"id": "faq", "align": "center", "background": "tint"}],
+    }
+    a = strip_unrendered("A", {key: value for key, value in old.items() if key != "sections"})
+    assert a["doctor"] == {"photo_ratio": "square"} and "treatments" not in a and "nav" not in a
+    assert validate_site_config("A", a, _ctx()).ok
+    b = strip_unrendered("B", old)
+    assert b["treatments"] == {"style": "list"}
+    assert b["sections"] == [{"id": "section_index"}, {"id": "faq", "align": "center", "background": "tint"}]
+    assert validate_site_config("B", b, _ctx()).ok
+    assert old["doctor"]["show_philosophy"] is True  # 원본은 그대로

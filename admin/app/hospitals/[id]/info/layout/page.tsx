@@ -299,6 +299,7 @@ export default function SiteLayoutEditorPage() {
                 issues={issuesFor(issues, overrides, current.id)}
                 onChange={(next) => setSections(sections.map((section) => (section.id === next.id ? next : section)))}
                 disabled={locked}
+                layout={working.layout}
               />
               {current.id === 'hero' && (
                 <Extra title={COPY.heroTitle}>
