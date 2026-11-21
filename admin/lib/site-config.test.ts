@@ -412,3 +412,10 @@ test('the weekend label copy is hidden, never saved, and matches the backend lis
   const line = source.match(/_UNRENDERED_COPY_KEYS[^=]*= frozenset\(\{([^}]*)\}\)/)?.[1] ?? ''
   assert.deepEqual([...line.matchAll(/"([a-z_.]+)"/g)].map((m) => m[1]).sort(), [...UNRENDERED_COPY_KEYS].sort())
 })
+
+test('notes for sections the layout does not have are never saved', () => {
+  const base = clone(defaultsC())
+  const edited = clone(base)
+  ;(edited as Record<string, any>).copy = { 'contents.note': '먼저 정리한 글', 'faq.note': '안내' }
+  assert.deepEqual(buildOverrides(edited, base, 'C').copy, { 'faq.note': '안내' })
+})

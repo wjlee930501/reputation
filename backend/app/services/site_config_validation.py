@@ -254,6 +254,14 @@ _BACKGROUND_FIXED: dict[str, frozenset[str]] = {
 # 병원 화면이 그리지 않는 안내 문구 칸(어드민 `UNRENDERED_COPY_KEYS`와 같다) — 진료시간 '주말 진료 이름'은
 # A·C 진료시간 어디에도 그릴 자리가 정해지지 않았다.
 _UNRENDERED_COPY_KEYS: frozenset[str] = frozenset({"hours.weekend_label"})
+
+
+def _copy_section_in_layout(layout: str, key: str) -> bool:
+    """안내 문구 칸(`{섹션}.…`)의 섹션이 그 레이아웃에 있는가 — 없는 섹션의 문구는 그릴 곳이 없다(A 오시는 길 등)."""
+
+    return key.split(".", 1)[0] in site_defaults.section_ids(layout)
+
+
 # B에만 있는 글의 줄바꿈 — A·C는 진료 원칙 안내 문구(`care_principles.lede`)를 그리지 않는다(어드민 `B_ONLY_LINE_BREAK_PATHS`와 같다).
 _B_ONLY_LINE_BREAKS: frozenset[str] = frozenset({"care_principles.lede"})
 
@@ -282,8 +290,9 @@ def strip_unrendered(layout: str, config: Any) -> Any:
                 out.pop(group)
     copy_notes = out.get("copy")
     if isinstance(copy_notes, dict):
-        for key in _UNRENDERED_COPY_KEYS:
-            copy_notes.pop(key, None)
+        for key in list(copy_notes):
+            if key in _UNRENDERED_COPY_KEYS or not _copy_section_in_layout(layout, key):
+                copy_notes.pop(key)
         if not copy_notes:
             out.pop("copy")
     hero = out.get("hero")
@@ -318,9 +327,9 @@ def _check_unrendered(check: SiteConfigCheck, layout: str, stored: dict[str, Any
             check.error(f"{group}.{key}", "FIELD_NOT_RENDERED", message)
     copy_notes = stored.get("copy") or {}
     if isinstance(copy_notes, dict):
-        for key in sorted(_UNRENDERED_COPY_KEYS):
-            value = copy_notes.get(key)
-            if isinstance(value, str) and value.strip():
+        for key, value in sorted(copy_notes.items()):
+            unrendered = key in _UNRENDERED_COPY_KEYS or not _copy_section_in_layout(layout, key)
+            if unrendered and isinstance(value, str) and value.strip():
                 check.error(f"copy.{key}", "FIELD_NOT_RENDERED", message)
     breaks = (stored.get("hero") or {}).get("line_breaks") or {}
     if layout != "B" and isinstance(breaks, dict):

@@ -867,3 +867,12 @@ def test_weekend_label_is_not_rendered_and_is_stripped_on_restore() -> None:
     assert stripped["copy"] == {"faq.note": "자주 묻는 질문입니다."}
     assert validate_site_config("C", stripped, _ctx()).ok
     assert "copy" not in strip_unrendered("A", {"copy": {"hours.weekend_label": "토요일 진료"}})
+
+
+@pytest.mark.parametrize(("layout", "key"), [("A", "visit.note"), ("A", "questions.note"), ("C", "contents.note"), ("B", "hours.weekend_label")])
+def test_notes_for_sections_the_layout_does_not_have_are_rejected_and_stripped(layout: str, key: str) -> None:
+    notes = {"copy": {key: "안내 문구입니다.", "faq.note": "자주 묻는 질문입니다."}}
+    errors = validate_site_config(layout, notes, _ctx()).errors
+    assert [e["path"] for e in errors if e["code"] == "FIELD_NOT_RENDERED"] == [f"copy.{key}"]
+    assert strip_unrendered(layout, notes)["copy"] == {"faq.note": "자주 묻는 질문입니다."}
+    assert validate_site_config("B", {"copy": {"visit.note": "오시는 길 안내입니다."}}, _ctx()).ok

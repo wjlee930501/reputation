@@ -261,6 +261,7 @@ export const UNRENDERED_FIELDS: readonly (readonly [group: string, key: string])
 
 /**
  * 병원 화면이 그리지 않는 안내 문구 칸(서버 `_UNRENDERED_COPY_KEYS`와 같다) — 편집기는 숨기고 저장에 싣지 않는다.
+ * 레이아웃에 없는 섹션의 문구도 싣지 않는다(서버 `_copy_section_in_layout`).
  * 진료시간 '주말 진료 이름'은 A·C 진료시간 어디에도 그릴 자리가 정해지지 않았다.
  */
 export const UNRENDERED_COPY_KEYS: readonly string[] = ['hours.weekend_label']
@@ -334,7 +335,13 @@ export function buildOverrides(
     for (const [group, key] of B_ONLY_FIELDS) withoutKey(out, group, key)
   }
   for (const [group, key] of UNRENDERED_FIELDS) withoutKey(out, group, key)
-  for (const key of UNRENDERED_COPY_KEYS) withoutKey(out, 'copy', key)
+  // 안내 문구 — 그리지 않는 칸과 이 레이아웃에 없는 섹션의 문구(레이아웃을 바꾼 옛 초안)는 싣지 않는다.
+  const sectionIds = new Set(defaults.sections.map((section) => section.id as string))
+  if (isRecord(out.copy)) {
+    for (const key of Object.keys(out.copy)) {
+      if (UNRENDERED_COPY_KEYS.includes(key) || !sectionIds.has(key.split('.')[0])) withoutKey(out, 'copy', key)
+    }
+  }
   const hero = out.hero
   if (isRecord(hero) && isRecord(hero.line_breaks)) {
     const kept = Object.fromEntries(Object.entries(hero.line_breaks).filter(([path]) => lineBreakPathShown(layout, path)))
