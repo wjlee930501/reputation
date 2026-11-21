@@ -212,6 +212,22 @@ def test_a_generation_failure_on_a_live_post_stays_open(db, state):
     assert _state(db, incident) == state
 
 
+def test_a_generation_failure_closes_once_its_post_is_gone(db):
+    """글 단위 사고(식별 키 대상 종류 content_item)인데 글 행이 사라졌으면 다시 볼 글이 없다."""
+
+    hospital = _hospital(db)
+    incident = _incident(
+        db, "CONTENT_GENERATION_FAILED", hospital=hospital, source_id=str(uuid.uuid4())
+    )
+    incident.dedupe_key = f"incident:v1:content_generation:content_item:{uuid.uuid4().hex}"
+    incident.state = "RETRYING"
+    db.flush()
+
+    close_resolved_backlog_incidents(db, now=NOW)
+
+    assert _state(db, incident) == "ACKNOWLEDGED"
+
+
 def test_a_hospital_scoped_generation_hold_is_not_closed_for_lack_of_a_post(db):
     """운영 기준 없음 같은 병원 단위 생성 사고는 source_id가 병원 id다 — 글이 없다고 닫지 않는다."""
 
@@ -219,6 +235,7 @@ def test_a_hospital_scoped_generation_hold_is_not_closed_for_lack_of_a_post(db):
     incident = _incident(
         db, "CONTENT_GENERATION_FAILED", hospital=hospital, source_id=str(hospital.id)
     )
+    incident.dedupe_key = f"incident:v1:content_generation:hospital:{uuid.uuid4().hex}"
     incident.state = "RETRYING"
     db.flush()
 

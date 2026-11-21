@@ -198,10 +198,14 @@ def _v0_report_created(db: Session, incident: Incident, _now: datetime) -> str |
     return "v0_report_created" if report is not None else None
 
 
+# 글 단위 생성 사고의 식별 키 조각(`incidents.build_incident_key`: pipeline:object_type:…).
+_CONTENT_ITEM_GENERATION_KEY = ":content_generation:content_item:"
+
+
 def _content_published(db: Session, incident: Incident, _now: datetime) -> str | None:
     """글 단위 생성 사고의 근거: 사고 뒤 처음 공개됐거나, 공개된 적 없이 취소됐다.
 
-    취소된 글은 어떤 스윕·게이트도 다시 보지 않는다 — 공개만 근거로 두면 그 글의 사고가 처리 목록에
+    취소됐거나 사라진 글은 어떤 스윕·게이트도 다시 보지 않는다 — 공개만 근거로 두면 그 글의 사고가 처리 목록에
     영원히 남는다(2026-11-21, 365서귀포: 11/12 HARD 지적 뒤 일정 변경으로 취소된 글의 사고가 9일째
     「복구 재시도 중」). 병원 단위 사고(`source_id` = 병원 id, 운영 기준 없음 등)는 글을 찾지 못하므로
     여기서 닫히지 않는다.
@@ -209,7 +213,9 @@ def _content_published(db: Session, incident: Incident, _now: datetime) -> str |
 
     item = db.get(ContentItem, incident.source_id) if incident.source_id else None
     if item is None:
-        return None
+        # 글 단위 사고(식별 키의 대상 종류가 content_item)인데 글이 없으면 다시 볼 글이 없다. 병원 단위 사고와
+        # 이미지 재인증 사고는 대상 종류가 달라 여기서 닫히지 않는다(`generation_incident_control._incident_identity`).
+        return "content_missing" if _CONTENT_ITEM_GENERATION_KEY in (incident.dedupe_key or "") else None
     if item.first_published_at and item.first_published_at > incident.first_seen_at:
         return "content_published"
     if item.status == ContentStatus.CANCELLED and item.first_published_at is None:
