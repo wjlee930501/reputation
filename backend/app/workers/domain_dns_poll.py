@@ -230,13 +230,13 @@ async def _escalate(target: PendingDomain) -> None:
         ),
         customer_impact="공개 페이지와 콘텐츠 발행이 시작되지 않습니다.",
         next_action=(
-            "병원 정보 화면의 공개 주소에서 DNS 안내를 병원에 다시 전달하거나, "
+            "도메인·검색 화면에서 DNS 안내를 병원에 다시 전달하거나, "
             "기본 주소로 운영할지 정해 주세요."
         ),
         source_type="DOMAIN_DNS_POLL",
         hospital_name=target.hospital_name,
         hospital_id=target.hospital_id,
-        admin_path=f"/hospitals/{target.hospital_id}/info#domain-setup",
+        admin_path=f"/hospitals/{target.hospital_id}/domain",
         fingerprint=IncidentFingerprint.MISSING_PREREQUISITE,
         actor=DOMAIN_DNS_POLL_ACTOR,
         severity=IncidentSeverity.MEDIUM,

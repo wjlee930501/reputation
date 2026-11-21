@@ -127,7 +127,7 @@ export function todoLines(
     }
     const visual = h.visual_approval_missing?.length ?? 0
     if (h.status !== 'PAUSED' && visual > 0) {
-      add('visual', h, COPY.todoVisual.replace('{count}', String(visual)), `/hospitals/${h.id}/info#info-brand`, COPY.todoVisualAction)
+      add('visual', h, COPY.todoVisual.replace('{count}', String(visual)), `/hospitals/${h.id}/public-page#info-brand`, COPY.todoVisualAction)
     }
     // 사람 몫 조건만 센다 — 「조건이 채워지면 자동 공개」처럼 시스템이 맡은 조건은 할 일이 아니다.
     const humanLeft = humanRemaining(h.public_service_state.remaining.filter((item): item is string => typeof item === 'string')).length

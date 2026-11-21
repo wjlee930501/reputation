@@ -63,13 +63,13 @@ export function legacyHospitalRedirect(
 
   // 자기 도메인 안내로 바로 보내던 `profile#domain-setup` 링크만 앵커가 다르다.
   // 서버는 `#`을 못 보므로 `?section=domain`을 붙여 온 링크에만 앵커를 준다.
-  const hash =
-    segment === 'profile' && firstValue(search.section) === 'domain'
-      ? 'domain-setup'
-      : target.hash
+  // 자기 도메인은 도메인·검색 탭으로 옮겼다(결정 대기 2번 A draft).
+  const toDomain = segment === 'profile' && firstValue(search.section) === 'domain'
+  const hash = toDomain ? 'domain-setup' : target.hash
+  const path = toDomain ? 'domain' : target.path
 
-  const base = target.path
-    ? `/hospitals/${hospitalId}/${target.path}`
+  const base = path
+    ? `/hospitals/${hospitalId}/${path}`
     : `/hospitals/${hospitalId}`
   const queryString = query.toString()
   return `${base}${queryString ? `?${queryString}` : ''}${hash ? `#${hash}` : ''}`

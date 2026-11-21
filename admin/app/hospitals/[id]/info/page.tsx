@@ -1,6 +1,6 @@
 'use client'
 
-import { useParams } from 'next/navigation'
+import { useParams, useRouter } from 'next/navigation'
 import { useEffect, useState } from 'react'
 import { ApiError, fetchAPI, autofillProfile } from '@/lib/api'
 import { OperatorIssuePanel } from '@/app/_components/OperatorIssuePanel'
@@ -21,18 +21,13 @@ import {
 } from '@/lib/physicians'
 import type { AutofillResponse, AutofillFieldMeta } from '@/lib/api'
 import { ADMIN_COPY } from '@/lib/admin-copy'
+import { movedInfoAnchorTarget } from '@/lib/hospital-tabs'
 import type { DoctorPhotoOption } from '@/lib/physicians'
 import type { MissingProfileRequirement } from '@/lib/info-sections'
 import type { ProfileSourceRegistration } from '@/types'
-import type { DomainProfile } from '../DomainSetupTypes'
 import { useHospitalHeader } from '../hospital-context'
-import { DomainSetupPanel } from '../DomainSetupPanel'
 import { AutofillModal } from './AutofillModal'
-import { BrandSection } from './BrandSection'
 import { FactsSection, sourceLabel } from './FactsSection'
-import { OwnershipVerificationSection } from './OwnershipVerificationSection'
-import { PhotosSection } from './PhotosSection'
-import { SourcesSection } from './SourcesSection'
 import type { HospitalInfoProfile, Treatment } from './FactsSection'
 
 /** PATCH /profile 응답. 완료 여부·남은 항목은 서버가 판정해 함께 내려준다. */
@@ -43,11 +38,8 @@ interface ProfileSaveResponse extends Partial<HospitalInfoProfile> {
   geocode_warning?: { code: string; message: string } | null
 }
 
-/**
- * 폼 상태. 사실 칸에 더해 자기 도메인 칸도 같은 상태에 들고 있어야
- * `DomainSetupPanel`이 입력한 값을 화면이 그대로 다시 보여 줄 수 있다.
- */
-type InfoFormProfile = Partial<HospitalInfoProfile> & DomainProfile
+/** 폼 상태. 자기 도메인 칸은 도메인·검색 탭이 따로 들고 있다(결정 대기 2번 A draft). */
+type InfoFormProfile = Partial<HospitalInfoProfile>
 
 // 자동 입력이 문자열 하나로 채울 수 있는 칸(빈 칸인지 판단하는 데 쓴다).
 const SCALAR_AUTOFILL_KEYS = [
@@ -81,7 +73,20 @@ function isBlankObject(val: unknown): boolean {
 export default function HospitalInfoPage() {
   const params = useParams<{ id: string }>()
   const hospitalId = params.id
+  const router = useRouter()
   const { hospital, loading: headerLoading, refetch: refetchHeader } = useHospitalHeader()
+
+  // 옛 `/info#…` 링크(Slack·사고 admin_path·레이아웃 편집기의 돌아가기 링크)가 다른 탭으로 옮긴
+  // 구획을 가리키면 그 탭으로 보낸다. 서버는 `#`을 보지 못하므로 화면이 바꾼다.
+  useEffect(() => {
+    function follow() {
+      const target = movedInfoAnchorTarget(hospitalId, window.location.hash)
+      if (target) router.replace(target)
+    }
+    follow()
+    window.addEventListener('hashchange', follow)
+    return () => window.removeEventListener('hashchange', follow)
+  }, [hospitalId, router])
   const [profile, setProfile] = useState<InfoFormProfile>({})
   // 이 폼에 저장하지 않은 입력이 있는지. 다른 섹션이 저장한 뒤 오는 새 헤더로 다시 채울지를
   // 이 값 하나로 정한다 — 사람이 타이핑하던 내용을 서버 스냅샷이 덮지 않게.
@@ -94,7 +99,6 @@ export default function HospitalInfoPage() {
   const [coordinateNotice, setCoordinateNotice] = useState<string | null>(null)
   const [geocodeWarning, setGeocodeWarning] = useState<string | null>(null)
   const [sourceRegistration, setSourceRegistration] = useState<ProfileSourceRegistration[]>([])
-  const [sourcesRefreshKey, setSourcesRefreshKey] = useState(0)
   // 의료진과 그들이 고를 수 있는 원장 사진은 병원 상세 응답에 없다 — 따로 읽는다.
   const [physiciansLoaded, setPhysiciansLoaded] = useState(false)
   const [doctorPhotos, setDoctorPhotos] = useState<DoctorPhotoOption[]>([])
@@ -162,7 +166,7 @@ export default function HospitalInfoPage() {
       }
     })()
     return () => { cancelled = true }
-  }, [hospitalId, sourcesRefreshKey])
+  }, [hospitalId])
 
   function updateField<K extends keyof HospitalInfoProfile>(key: K, value: HospitalInfoProfile[K]) {
     setFactsDirty(true)
@@ -224,10 +228,6 @@ export default function HospitalInfoPage() {
       }
       setCoordinatesManuallyEdited(false)
       setSuccess(true)
-      if (saved.source_registration?.some((entry) => entry.status === 'QUEUED')) {
-        // 새 자료 행이 생겼다 — 근거 자료 표가 그 행과 처리 진행을 바로 보게 한다.
-        setSourcesRefreshKey((key) => key + 1)
-      }
       // 남은 필수 항목과 헤더 상태는 서버 판정이다 — 저장 후 다시 받는다. 새 헤더가
       // 도착한 뒤에 dirty를 풀어야, 실패한 refetch가 화면을 옛 값으로 되돌리지 않는다.
       await refetchHeader()
@@ -528,44 +528,6 @@ export default function HospitalInfoPage() {
         />
       </form>
 
-      <BrandSection
-        hospital={hospital}
-        hospitalId={hospitalId}
-        onSaved={() => void refetchHeader()}
-      />
-
-      <PhotosSection
-        hospitalId={hospitalId}
-        hospitalName={profile.name ?? hospital.name}
-        hospitalSlug={hospital.slug}
-        heroImageUrl={hospital.hero_image_url ?? null}
-        physicians={profile.physicians ?? []}
-        onHeroChanged={() => void refetchHeader()}
-        onPhotosChanged={() => setSourcesRefreshKey((key) => key + 1)}
-      />
-
-      <OwnershipVerificationSection
-        hospital={hospital}
-        hospitalId={hospitalId}
-        onSaved={() => void refetchHeader()}
-      />
-
-      {hospital.site_built && (
-        <div id="domain-setup" className="scroll-mt-24">
-          <DomainSetupPanel
-            hospitalId={hospitalId}
-            profile={profile}
-            activationReadiness={hospital}
-            onProfileChange={(patch) => {
-              setFactsDirty(true)
-              setProfile((prev) => ({ ...prev, ...patch }))
-            }}
-            onHeaderRefresh={() => void refetchHeader()}
-          />
-        </div>
-      )}
-
-      <SourcesSection hospitalId={hospitalId} refreshKey={sourcesRefreshKey} />
       </div>
     </>
   )

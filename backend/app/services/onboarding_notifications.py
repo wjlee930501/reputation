@@ -71,7 +71,7 @@ def build_site_built_notification(
     (자기 도메인 대기·선행 조건 미충족 등)를 그 자리에서 말한다.
     """
 
-    url = admin_url(admin_base_url, f"/hospitals/{hospital_id}/info#domain-setup")
+    url = admin_url(admin_base_url, f"/hospitals/{hospital_id}/domain#domain-setup")
     name = safe_text(hospital_name, 90)
     reason = safe_text(blocked_reason, 180) if blocked_reason else "공개 주소를 확인해야 합니다."
     message = _onboarding_message(prefixed_for_event(SITE_BUILT_NOTIFICATION_TYPE, "[조치 필요] 병원 공개 주소 확인"), name,

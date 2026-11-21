@@ -25,7 +25,9 @@ test('the hospital list reads the server states instead of judging its own', () 
   assert.match(hospitalsList, /visual_approval_missing\?\.length/)
   assert.match(hospitalsList, /ADMIN_COPY\.visualItemsMissing/)
   assert.doesNotMatch(hospitalsList, /사진 승인 대기/)
-  assert.match(hospitalsList, /hospitals\/\$\{h\.id\}\/info/)
+  // 결정 대기 2번 A draft: 공개 페이지·도메인은 각자의 탭으로 간다.
+  assert.match(hospitalsList, /hospitals\/\$\{h\.id\}\/public-page#info-brand/)
+  assert.match(hospitalsList, /hospitals\/\$\{h\.id\}\/domain#domain-setup/)
   // 링크는 사람이 결정할 문제에만 붙는다 — 연결됨·확인 중은 누를 곳이 아니다.
   assert.match(hospitalsList, /h\.domain_state\.kind === 'problem'/)
   // 공개 후 확인 표본은 발행을 막지 않는 관측용 표본이라 목록 라벨이 되지 않는다(B1).

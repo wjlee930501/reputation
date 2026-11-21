@@ -383,7 +383,7 @@ function HospitalRow({
   const publicService = describePublicService(h.public_service_state)
   const contentReady = describeContentState(h.content_state)
   const domain = describeDomainState(h.domain_state)
-  const domainHref = h.site_built ? `/hospitals/${h.id}/info#domain-setup` : `/hospitals/${h.id}/info`
+  const domainHref = `/hospitals/${h.id}/domain#domain-setup`
   // 공개 주소는 지금 열리는 주소만 링크로(public-address) — 헤더·콘텐츠와 같은 판정.
   const addresses = readPublicAddresses(h)
   const shownAddress = addresses.live ?? addresses.custom ?? addresses.platform
@@ -457,7 +457,7 @@ function HospitalRow({
               (`clinic_visual_readiness`). 옛 배지 이름이 사진으로 읽혀 2026-11-20에 바꿨다. */}
           {(h.visual_approval_missing?.length ?? 0) > 0 && (
             <Link
-              href={`/hospitals/${h.id}/info#info-brand`}
+              href={`/hospitals/${h.id}/public-page#info-brand`}
               className="inline-flex rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-800 hover:bg-amber-100"
             >
               {ADMIN_COPY.visualItemsMissing} {h.visual_approval_missing?.length}건
