@@ -10045,3 +10045,16 @@ a.clinic-tx-list-row:hover .clinic-tx-list-name {
     background: transparent;
   }
 }
+
+/* ══ ③-2f 줄바꿈 지정 — 그 기기에서만 보이는 <br>(LineBroken). 휴대폰 = 720px 이하. ════════ */
+@media (max-width: 720px) {
+  .clinic-br--pc {
+    display: none;
+  }
+}
+
+@media (min-width: 721px) {
+  .clinic-br--mobile {
+    display: none;
+  }
+}
