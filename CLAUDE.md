@@ -1,6 +1,18 @@
 # Re:putation — 현재 프로젝트 개발 안내
 
-## 최신 운영 배포 — 2026-11-21 오후 레이아웃 편집기 ③-2a~e (그날 다섯·여섯 번째)
+## 최신 운영 배포 — 2026-11-21 밤 측정 이어가기·30개 세트 적용 (그날 여덟 번째)
+
+main `8ccca11a`(통합 PR #398 = #385·#386·#387·#392·#393·#394·#396·#397)를 21:03~21:10 KST에 Backend·Site·Admin에 배포했다(`--override-reason`, 마이그레이션 없음). **현재 리비전은 api `00304-jqg`, worker `00297-zmv`, beat `00292-55c`, site `00162-p5t`, admin `00136-fzd`**, DB head `0102`.
+월간 측정은 실패 없이 끝난 페이지(30칸) 뒤 남은 칸이 있고 07:00 전이면 120초 뒤 같은 실행으로 잇는다(#396 — 전에는 :15/:45 틱당 병원별 1페이지뿐이라 300칸에 틱 10번이 필요했다). 배포 뒤 **측정 30개 세트를 16곳에 적용했다**(`measurement_set_rollout apply --confirm`, 16곳 A5·B10·C8·D7, 옛 추적 질문 내림). 롤백 `.omo/rollback-8th1121/rollback.state`. 상세는 [배포 기록](docs/releases/2026-11-21-admin-revamp-production.md)의 '8차'.
+
+## 이전 운영 배포 — 2026-11-21 저녁 공개 반영 열기·측정 키워드 30개·어드민 (그날 일곱 번째)
+
+main `c0ae1adf`(통합 PR #391 = #373 공개 반영 막음 걷기·#375·#376·#369 + 측정 30개 #378~#382 + 어드민 #372·#377·#383·#384, 앞서 병합된 #367·#368·#370·#371·#374 포함)를
+19:29~19:37 KST에 Backend·Site·Admin에 배포했다(`--override-reason`). **현재 리비전은 api `00303-vds`, worker `00296-55n`, beat `00291-2nv`, site `00161-tmh`, admin `00135-wf9`**, **DB head `0102_add_hospital_contract_ended_on`**(0101 측정 세트 역할·0102 계약 종료일, 모두 추가형).
+**레이아웃 편집기 공개 반영이 열렸다**(배포 직전 `site_config_precheck` 초안·공개 판 0). 운영 env `COST_GUARD_MONTHLY_SOV_QUERIES`는 13500(일일 9000 그대로). 측정 30개 세트는 `measurement_set_rollout precheck`(16곳 모두 적용 대상, 30개 초안)까지 했고 **`apply --confirm`은 12/1 00:15 전에 따로 한다**. #377 영향 조회 `changed []`.
+readiness·공개 표면 확인 통과, 16곳 200·hospital ID 일치, 홈 4곳 화면 그대로, Admin 로그인 200. 롤백 `.omo/rollback-ab1121/rollback.state`. 상세는 [배포 기록](docs/releases/2026-11-21-admin-revamp-production.md)의 '7차'.
+
+## 이전 운영 배포 — 2026-11-21 오후 레이아웃 편집기 ③-2a~e (그날 다섯·여섯 번째)
 
 main `84b8f70c`(#357 B안 정보 띠 칸·예약(네이버 플레이스)·진료 항목 목록 모양, #358 A·C에서 그 두 칸 거절 `B_LAYOUT_ONLY`, #359 어드민 A·C 숨김, #360 의료진 사진 비율·초점·직함 위치)을
 15:36~15:43 KST에 Backend·Site·Admin에 배포했다(`--override-reason`, 마이그레이션 없음). 이어 15:47~15:49에 ③-2c~e(#361·#362·#365·#366)와 #363·#364를 Site·Admin에만 배포했다(6차, 백엔드 변경 없음). **현재 리비전은 api `00302-ksn`, worker `00295-5tm`, beat `00290-8mg`, site `00160-txz`, admin `00134-4fv`**, DB head `0100`.

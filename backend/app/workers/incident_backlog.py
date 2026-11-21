@@ -22,9 +22,11 @@ from datetime import UTC, date, datetime, timedelta
 from functools import partial
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import String, and_, cast, func, or_, select
+from sqlalchemy import String, and_, case, cast, func, or_, select
 from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Session, aliased
+from sqlalchemy.sql.elements import ColumnElement
 
 from app.core.config import settings
 from app.models.content import ContentItem, ContentStatus
@@ -48,6 +50,7 @@ from app.models.operations import (
     OperationRunState,
 )
 from app.models.report import MonthlyReport
+from app.services import published_image_recertification as recertification
 from app.services.dependency_incident_helpers import open_notice_exists_sync
 from app.services.finding_criticality import flag_findings_are_critical
 from app.services.incident_types import DEFAULT_RETRYING_DEADLINE, SWEEP_OWNED_INCIDENT_TYPES
@@ -198,11 +201,66 @@ def _v0_report_created(db: Session, incident: Incident, _now: datetime) -> str |
     return "v0_report_created" if report is not None else None
 
 
+_UUID_TEXT = "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+
+# 글 단위 생성 사고의 식별 키 조각(`incidents.build_incident_key`: pipeline:object_type:…).
+_CONTENT_ITEM_GENERATION_KEY = ":content_generation:content_item:"
+
+
 def _content_published(db: Session, incident: Incident, _now: datetime) -> str | None:
+    """글 단위 생성 사고의 근거: 사고 뒤 처음 공개됐거나, 취소됐거나, 글 행이 사라졌다.
+
+    SQL 짝은 `_generation_evidence` — 후보 조회가 근거 있는 생성 사고만 집게 같은 조건을 쓴다. 두 곳이
+    갈리면 근거 없는 사고가 배치 앞자리를 차지하거나(기아) 근거 있는 사고를 영영 보지 못한다.
+
+    취소됐거나 사라진 글은 어떤 스윕·게이트도 다시 보지 않는다 — 공개만 근거로 두면 그 글의 사고가 처리 목록에
+    영원히 남는다(2026-11-21, 365서귀포: 11/12 HARD 지적 뒤 일정 변경으로 취소된 글의 사고가 9일째
+    「복구 재시도 중」). 병원 단위 사고(`source_id` = 병원 id, 운영 기준 없음 등)는 글을 찾지 못하므로
+    여기서 닫히지 않는다.
+    """
+
     item = db.get(ContentItem, incident.source_id) if incident.source_id else None
     if item is not None and item.first_published_at and item.first_published_at > incident.first_seen_at:
         return "content_published"
+    # 이미지 재인증 사고는 사람이 정하는 공개 이미지 결정이라 취소·삭제로 닫지 않는다(대상 종류가 content_item이다).
+    if incident.safe_error_code in recertification.OPERATOR_REQUIRED_CODES:
+        return None
+    if item is None:
+        # 글 단위 사고(식별 키의 대상 종류가 content_item)인데 글이 없으면 다시 볼 글이 없다. 병원 단위 사고는
+        # 대상 종류가 달라 여기서 닫히지 않는다(`generation_incident_control._incident_identity`).
+        return "content_missing" if _CONTENT_ITEM_GENERATION_KEY in (incident.dedupe_key or "") else None
+    if item.status == ContentStatus.CANCELLED:
+        # 공개 이력과 무관하다 — 공개 → 반려 → 재생성 실패 → 취소된 글도 어떤 게이트도 다시 보지 않는다.
+        return "content_cancelled"
     return None
+
+
+def _generation_evidence() -> ColumnElement[bool]:
+    """`_content_published`의 SQL 짝 — 후보 조회가 닫을 근거가 있는 생성 사고만 집는다."""
+
+    item = aliased(ContentItem)
+    # 글 id(UUID 기본키) 인덱스를 쓰게 source_id 쪽을 UUID로 바꾼다. UUID 모양이 아니면(병원 단위 사고의
+    # 다른 값 등) NULL이라 어떤 글과도 같지 않다 — CASE가 잘못된 형식의 형 변환 오류를 막는다.
+    source_uuid = case(
+        (Incident.source_id.op("~*")(_UUID_TEXT), cast(Incident.source_id, PG_UUID(as_uuid=True))),
+        else_=None,
+    )
+    same_item = item.id == source_uuid
+    published_after = (
+        select(item.id)
+        .where(same_item, item.first_published_at > Incident.first_seen_at)
+        .exists()
+    )
+    cancelled = select(item.id).where(same_item, item.status == ContentStatus.CANCELLED).exists()
+    missing = and_(
+        ~select(item.id).where(same_item).exists(),
+        Incident.dedupe_key.like(f"%{_CONTENT_ITEM_GENERATION_KEY}%"),
+    )
+    not_recertification = or_(
+        Incident.safe_error_code.is_(None),
+        Incident.safe_error_code.not_in(tuple(recertification.OPERATOR_REQUIRED_CODES)),
+    )
+    return or_(published_after, and_(not_recertification, or_(cancelled, missing)))
 
 
 _FINAL_OUTBOX_STATES = ("SENT", "FAILED")
@@ -848,7 +906,11 @@ def active_resolvers() -> dict[str, Resolver]:
         return {**RESOLVERS, **POST_PUBLISH_RESOLVERS}
     return RESOLVERS
 # 스윕 소유 종류는 RETRYING으로 열리므로 그 상태에서도 근거로 닫는다. 나머지 RETRYING은 자동화의 것이다.
-_RETRYING_RESOLVABLE = tuple(sorted(SWEEP_OWNED_INCIDENT_TYPES & set(RESOLVERS)))
+# 생성 사고는 스윕 소유 종류가 아니지만 생성 사고 제어가 RETRYING으로 둔다(예약 복구·주제 교체·일일 갱신).
+# 그 글이 공개되거나 취소되면 어떤 게이트도 그 글을 다시 보지 않으므로, 근거 정리가 RETRYING도 닫는다.
+_RETRYING_RESOLVABLE = tuple(
+    sorted((SWEEP_OWNED_INCIDENT_TYPES & set(RESOLVERS)) | {"CONTENT_GENERATION_FAILED"})
+)
 
 
 def _finish_recovered(
@@ -904,6 +966,12 @@ def close_resolved_backlog_incidents(
                 or_(
                     Incident.incident_type != "NOTIFICATION_DELIVERY_UNKNOWN",
                     _delivery_unknown_evidence(Incident.source_id, Incident.first_seen_at),
+                ),
+                # 생성 사고도 같다 — 진행 중인 글의 OPEN·RETRYING 사고(근거 없음)가 앞자리를 차지하면 뒤의 취소·삭제
+                # 글과 다른 종류의 사고를 영영 보지 못한다(2026-11-21 통합 D 검토).
+                or_(
+                    Incident.incident_type != "CONTENT_GENERATION_FAILED",
+                    _generation_evidence(),
                 ),
             )
             .order_by(Incident.last_seen_at, Incident.id)

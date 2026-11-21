@@ -384,6 +384,45 @@ _GENERIC_TOPIC_TERMS: Final[frozenset[str]] = frozenset(
 )
 
 
+# 나열 끝 조각의 마지막 낱말이 이것이면 앞 조각들이 함께 쓰는 꼬리다('경동맥/갑상선 초음파' → '경동맥 초음파').
+_SHARED_HEAD_WORDS: Final[frozenset[str]] = frozenset(
+    {"초음파", "검사", "내시경", "촬영", "주사", "주사치료", "수술", "시술", "검진", "접종"}
+)
+
+
+def _share_list_head(pieces: list[str]) -> list[str]:
+    """'경동맥/갑상선 초음파'·'위/대장 내시경'처럼 끝 조각의 첫 낱말 뒤 꼬리를 띄어쓰기 없는 앞 조각에도 붙인다."""
+
+    if len(pieces) < 2 or " " not in pieces[-1]:
+        return pieces
+    tail = pieces[-1].split(" ", 1)[1]  # '유방 초음파 검사' → '초음파 검사'
+    if tail.rsplit(" ", 1)[-1] not in _SHARED_HEAD_WORDS:
+        return pieces
+    shared = []
+    for piece in pieces[:-1]:
+        if " " in piece or piece.endswith(tail.replace(" ", "")) or not _bare_subject(piece):
+            return pieces
+        shared.append(f"{piece} {tail}")
+    return [*shared, pieces[-1]]
+
+
+# 그 자체로 완결된 진료·검사 이름의 끝말 — 이런 앞 조각('예방접종')에는 공통 꼬리를 붙이지 않는다.
+_COMPLETE_SERVICE_SUFFIXES: Final[tuple[str, ...]] = (
+    *_SERVICE_SUFFIXES, *_SHARED_HEAD_WORDS, "치료", "요법", "술", "클리닉", "센터",
+)
+
+
+def _bare_subject(piece: str) -> bool:
+    """공통 꼬리를 받을 앞 조각 — 부위·장기·질환명처럼 꼬리 없이는 진료 이름이 안 되는 말('경동맥'·'위'·'대상포진').
+
+    사전이 시술·진료 서비스·검사로 읽거나 진료 끝말을 단 조각('예방접종'·'건강검진'·'골밀도')은 이미 완결된 이름이다.
+    """
+
+    if piece.endswith(_COMPLETE_SERVICE_SUFFIXES) or is_exam_term(piece):
+        return False
+    return analyze_keyword(piece, []).keyword_class in (KeywordClass.BODY_PART, KeywordClass.UNKNOWN)
+
+
 def _items(value: object) -> list[str]:
     """괄호 설명을 빼고 나열을 나눈 항목들. 'PET/CT'·'CD4+ T세포 검사'처럼 한글 없는 조각이 있으면 나누지 않는다."""
 
@@ -392,6 +431,7 @@ def _items(value: object) -> list[str]:
     pieces = [_clean(piece) for piece in _LIST_SPLIT_RE.split(text)]
     pieces = [piece for piece in pieces if piece]
     if len(pieces) > 1 and all(_HANGUL_RE.search(piece) for piece in pieces):
+        pieces = _share_list_head(pieces)
         kept = [piece for piece in pieces if len(piece.replace(" ", "")) >= 2]
         if kept:
             return kept
