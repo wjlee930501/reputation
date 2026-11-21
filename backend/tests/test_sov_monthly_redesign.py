@@ -716,9 +716,9 @@ def test_window_mismatch_uses_existing_policy_changed_reason():
 
 
 def test_guard_defaults_pin_locked_august_conversion_envelope():
-    assert Settings.model_fields["COST_GUARD_MONTHLY_SOV_QUERIES"].default == 4260
-    # 1일 새벽 창은 하루 안에서 끝나므로 일 상한도 월 상한과 같다(2026-11-03).
-    assert Settings.model_fields["COST_GUARD_DAILY_SOV_QUERIES"].default == 4260
+    # 측정 키워드 30개(2026-11-21 승인): 월 13,500, 일 9,000(1일 새벽 하루가 일 상한에 묶인다).
+    assert Settings.model_fields["COST_GUARD_MONTHLY_SOV_QUERIES"].default == 13500
+    assert Settings.model_fields["COST_GUARD_DAILY_SOV_QUERIES"].default == 9000
     assert monthly_sov_guard_units(
         3,
         15,

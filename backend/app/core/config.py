@@ -632,13 +632,14 @@ class Settings(BaseSettings):
     # 월간 상한 (병원50 × 리더 20편 × 재시도 여유 ≈ 3000)
     COST_GUARD_MONTHLY_CONTENT_CALLS: int = 3000
     COST_GUARD_MONTHLY_IMAGE_CALLS: int = 3000
-    # Monthly measurements run on one dawn. The daily envelope can use the
-    # existing monthly budget; this does not raise the monthly spending ceiling.
-    COST_GUARD_MONTHLY_SOV_QUERIES: int = 4260
+    # 월간 측정은 1일 새벽 하루에 다 산다 — 실제로 묶이는 것은 일 상한이다. 측정 키워드 30개(병원당
+    # 30문항×2플랫폼×5반복 = 300칸, 칸당 약 1.1~1.25단위)로 월 13,500(2026-11-21 사용자 승인),
+    # 일 9,000(운영값 그대로 — 약 24곳까지). docs/plans/2026-11-21-measurement-30-design.md §4.
+    COST_GUARD_MONTHLY_SOV_QUERIES: int = 13500
     # 일일 상한 = 월간의 1/10 수준(피크 하루 폭주 차단용)
     COST_GUARD_DAILY_CONTENT_CALLS: int = 250
     COST_GUARD_DAILY_IMAGE_CALLS: int = 250
-    COST_GUARD_DAILY_SOV_QUERIES: int = 4260
+    COST_GUARD_DAILY_SOV_QUERIES: int = 9000
     # 운영 기준(Essence) 합성·독립 검수 호출 상한. 야간 생성과 예산을 나눠 온보딩 폭주가
     # 계약 병원의 콘텐츠 생성을 굶기지 않게 한다(병원 1곳 = 합성·1차·2차 ≈ 3~6회).
     COST_GUARD_DAILY_ESSENCE_CALLS: int = 60

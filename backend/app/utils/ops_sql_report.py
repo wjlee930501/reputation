@@ -653,6 +653,61 @@ QUERIES: dict[str, tuple[str, ...]] = {
           AND NOT (c.essence_check_summary ? 'post_publish_critical_alert')
         """,
     ),
+    # 측정 키워드 30개(2026-11-21): 병원별 세트 준비 상태와 가장 최근 월간 측정표의 새벽 창 진행.
+    # q17 — ACTIVE 병원마다 30개 방식 여부·고정/교체 수·그룹별 수·옛 방식 측정 질문 수.
+    # q17b — 가장 최근 측정 달의 병원별 계획 칸·받은 답변·확정 판정·첫/마지막 답변 시각(1일 새벽 확인).
+    "q17": (
+        """
+        SELECT h.name,
+               left(h.id::text, 8) AS hospital_id8,
+               h.monthly_sov_cohort,
+               count(t.id) FILTER (WHERE t.status = 'ACTIVE' AND t.set_role IS NOT NULL) > 0 AS curated,
+               count(t.id) FILTER (WHERE t.status = 'ACTIVE' AND t.set_role = 'FIXED') AS fixed,
+               count(t.id) FILTER (WHERE t.status = 'ACTIVE' AND t.set_role = 'ROTATING') AS rotating,
+               count(t.id) FILTER (WHERE t.status = 'ACTIVE' AND t.set_role IS NOT NULL
+                                   AND t.question_group = 'A') AS group_a,
+               count(t.id) FILTER (WHERE t.status = 'ACTIVE' AND t.set_role IS NOT NULL
+                                   AND t.question_group = 'B') AS group_b,
+               count(t.id) FILTER (WHERE t.status = 'ACTIVE' AND t.set_role IS NOT NULL
+                                   AND t.question_group = 'C') AS group_c,
+               count(t.id) FILTER (WHERE t.status = 'ACTIVE' AND t.set_role IS NOT NULL
+                                   AND t.question_group = 'D') AS group_d,
+               count(t.id) FILTER (WHERE t.status = 'PAUSED' AND t.question_group IS NOT NULL
+                                   AND t.set_role IS NULL) AS candidates,
+               count(t.id) FILTER (WHERE t.status = 'ACTIVE' AND t.set_role IS NULL
+                                   AND t.in_tracking_set) AS legacy_tracked
+        FROM hospitals h
+        LEFT JOIN ai_query_targets t ON t.hospital_id = h.id
+        WHERE h.status = 'ACTIVE'
+        GROUP BY h.id, h.name, h.monthly_sov_cohort
+        ORDER BY h.monthly_sov_cohort DESC, h.name
+        """,
+        """
+        SELECT h.name,
+               mm.period_year,
+               mm.period_month,
+               mm.platform_provenance ? 'query_sets' AS frozen_set30,
+               count(s.id) AS planned_slots,
+               count(s.id) FILTER (WHERE s.answer_status = 'RECEIVED') AS answers_received,
+               count(s.id) FILTER (WHERE s.judgment_status IN ('CONFIRMED', 'AMBIGUOUS')) AS judged,
+               count(s.id) FILTER (WHERE s.answer_status = 'FAILED') AS answer_failed,
+               min(s.answered_at) AS first_answer_at,
+               max(s.answered_at) AS last_answer_at,
+               mm.closed_at
+        FROM monthly_measurement_manifests mm
+        JOIN (
+            SELECT period_year, period_month
+            FROM monthly_measurement_manifests
+            ORDER BY period_year DESC, period_month DESC
+            LIMIT 1
+        ) latest ON latest.period_year = mm.period_year AND latest.period_month = mm.period_month
+        JOIN hospitals h ON h.id = mm.hospital_id
+        LEFT JOIN monthly_measurement_cells c ON c.manifest_id = mm.id
+        LEFT JOIN measurement_observation_slots s ON s.monthly_cell_id = c.id
+        GROUP BY h.name, mm.id, mm.period_year, mm.period_month, mm.closed_at
+        ORDER BY h.name
+        """,
+    ),
 }
 
 
