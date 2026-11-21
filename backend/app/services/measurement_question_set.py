@@ -399,6 +399,15 @@ def _items(value: object) -> list[str]:
     return [whole] if whole else []
 
 
+def _vocabulary_pieces(value: object) -> set[str]:
+    """견줄 말 — 한글 없는 조각이 있어도 나열을 모두 나눈다('초음파/MRI'의 '초음파'). 일반어('치료')는 뺀다."""
+
+    text = _PAREN_RE.sub(" ", str(value or ""))
+    words = {_clean(piece).replace(" ", "") for piece in _LIST_SPLIT_RE.split(text)}
+    words.add(_clean(text).replace(" ", ""))
+    return {word for word in words if len(word) >= 2 and word not in _GENERIC_TOPIC_TERMS}
+
+
 def _first_item(value: object) -> str:
     items = _items(value)
     return items[0] if items else ""
@@ -436,7 +445,7 @@ def _topics(treatments: Iterable[Any], keywords: Iterable[Any], region: Sequence
         for item in tuple(items or ()):
             value = item.get("name") if isinstance(item, Mapping) else item
             pieces = _items(value)
-            vocabulary.update(piece.replace(" ", "") for piece in pieces)
+            vocabulary.update(_vocabulary_pieces(value))
             text = pieces[0] if pieces else ""
             if len(text.replace(" ", "")) >= 2 and all(text != name for name, _ in names):
                 names.append((text, from_keyword))
@@ -456,7 +465,9 @@ def _topics(treatments: Iterable[Any], keywords: Iterable[Any], region: Sequence
             (_Topic(term=term, kind=analysis.keyword_class, exam=is_exam_term(term)), from_keyword)
         )
     # 키워드 순서와 무관하게 모든 항목·나열 조각과 견준다('수원치질'이 '치질'보다 먼저 와도 뺀다).
-    vocabulary.update(topic.term.replace(" ", "") for topic, _ in topics)
+    vocabulary.update(
+        topic.term.replace(" ", "") for topic, _ in topics if topic.term not in _GENERIC_TOPIC_TERMS
+    )
     dropped = _region_glued_keywords(
         [topic.term for topic, from_keyword in topics if from_keyword], vocabulary, region
     )
@@ -469,6 +480,26 @@ _NOT_PLACE: Final[frozenset[str]] = frozenset({"안구", "구강"})
 _CLINICAL_PREFIX_CLASSES: Final = frozenset(
     {KeywordClass.BODY_PART, KeywordClass.DISEASE, KeywordClass.PROCEDURE, KeywordClass.CARE_SERVICE}
 )
+
+
+def _is_place_prefix(prefix: str, region: Sequence[str]) -> bool:
+    """병원 지역의 말('수원'·'팔달구')이거나, 지명 끝말(구·시·동…)을 단 세 글자 이상('영통동')이면 지명.
+
+    두 글자 '운동'·'안구'처럼 끝말만 같은 임상어를 지명으로 보지 않는다.
+    """
+
+    if prefix in _NOT_PLACE:
+        return False
+    known: set[str] = set()
+    for raw in region:
+        for token in _clean(raw).split():
+            known.add(token)
+            stripped = re.sub(r"(특별자치시|특별자치도|광역시|특별시|시|군|구|읍|면|동|역)$", "", token)
+            if len(stripped) >= 2:
+                known.add(stripped)
+    if prefix in known or any(token.startswith(prefix) for token in known if len(prefix) >= 2):
+        return True
+    return len(prefix) >= 3 and analyze_keyword(prefix, list(region)).embedded_region is not None
 
 
 def _region_glued_keywords(
@@ -491,10 +522,7 @@ def _region_glued_keywords(
             continue
         suffix = max(suffixes, key=len)
         prefix = term[: -len(suffix)]
-        place = (
-            prefix not in _NOT_PLACE
-            and analyze_keyword(prefix, list(region)).embedded_region is not None
-        )
+        place = _is_place_prefix(prefix, region)
         families.setdefault(suffix, []).append((term, prefix, place))
     dropped: set[str] = set()
     for members in families.values():

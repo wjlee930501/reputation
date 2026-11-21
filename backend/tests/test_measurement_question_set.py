@@ -292,3 +292,11 @@ def test_codex_review_of_show_fixes():
     assert not {"수원치질", "영통치질"} & topics
     # 신체 부위인 앞말은 지명이 아니다.
     assert "안구건조증" in _topics_of(specialties=["안과"], keywords=["안구건조증", "건조증"])
+
+
+def test_codex_second_review_of_show_fixes():
+    # 일반어('치료')는 견줄 말이 아니고, 두 글자 '운동'은 지명이 아니다.
+    assert "운동치료" in _topics_of(keywords=["운동치료", "치료"])
+    # 영문 조각이 섞인 나열도 뒤 조각까지 견준다('초음파/MRI'의 '초음파').
+    topics = _topics_of(region=["수원시"], specialties=["외과"], treatments=[{"name": "초음파/MRI"}], keywords=["수원초음파"])
+    assert "수원초음파" not in topics
