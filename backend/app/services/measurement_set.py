@@ -96,6 +96,11 @@ SUPERLATIVE_PHRASES: Final[tuple[str, ...]] = (
 )
 
 
+# 비용을 묻는 측정 질문("비용 괜찮은 곳")은 글 주제로 쓰지 않는다 — 가격 유인 표현(D24) 위험(2026-11-21 결정).
+# 옛 질문(그룹 없음)의 진료비 글은 종전 규칙(D23)을 따르므로 30개 세트 질문에만 건다.
+COST_PHRASES: Final[tuple[str, ...]] = ("비용", "가격", "진료비", "저렴", "싼 곳", "싸게")
+
+
 def content_eligible(target: object) -> bool:
     """이 질문을 글 주제·노출 보완 제안의 근거로 써도 되는가.
 
@@ -103,9 +108,12 @@ def content_eligible(target: object) -> bool:
     "잘하는 곳"·"잘 보는 ○○과" 같은 측정 문형도 글 주제로 쓰지 않는다(과장 표현).
     """
 
-    if target_question_group(target) == GROUP_BRAND:
+    group = target_question_group(target)
+    if group == GROUP_BRAND:
         return False
     text = _text(getattr(target, "name", ""))
+    if group is not None and any(phrase in text for phrase in COST_PHRASES):
+        return False
     return not any(phrase in text for phrase in SUPERLATIVE_PHRASES)
 
 
@@ -115,6 +123,10 @@ def content_eligible_clause(group_column: Any, name_column: Any) -> Any:
     return and_(
         or_(group_column.is_(None), group_column != GROUP_BRAND),
         *(name_column.notlike(f"%{phrase}%") for phrase in SUPERLATIVE_PHRASES),
+        or_(
+            group_column.is_(None),
+            and_(*(name_column.notlike(f"%{phrase}%") for phrase in COST_PHRASES)),
+        ),
     )
 
 

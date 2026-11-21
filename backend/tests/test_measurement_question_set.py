@@ -198,3 +198,19 @@ def test_superlative_questions_are_measured_but_never_content_topics():
     assert not measurement_set.content_eligible(target("강남에 잘 보는 내과 있어?"))
     assert measurement_set.content_eligible(target("강남 임플란트 받을 수 있는 치과 알려줘"))
     assert not measurement_set.content_eligible(target("행복의원 어때?", group="A"))
+
+
+def test_cost_set_questions_are_measured_but_never_content_topics():
+    from types import SimpleNamespace
+
+    from app.services import measurement_set
+
+    def target(name, group):
+        return SimpleNamespace(name=name, question_group=group)
+
+    # 30개 세트의 비용 질문은 글 주제가 아니다(가격 유인 D24 위험).
+    assert not measurement_set.content_eligible(target("강남 임플란트 비용 괜찮은 곳", "D"))
+    # 토요일·주차·야간은 글 주제로 쓴다.
+    assert measurement_set.content_eligible(target("합정동 주차 되는 내과 있어?", "D"))
+    # 옛 질문(그룹 없음)의 진료비 질문은 종전 규칙을 따른다.
+    assert measurement_set.content_eligible(target("강남 정형외과 진료비 어느 정도야?", None))
