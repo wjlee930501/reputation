@@ -57,7 +57,10 @@ def http_get(url: str, timeout: float = 30.0) -> tuple[int, dict[str, str], str]
             body = response.read().decode("utf-8", "replace")
             return response.status, {k.lower(): v for k, v in response.headers.items()}, body
     except urllib.error.HTTPError as error:
-        body = error.read().decode("utf-8", "replace") if error.fp else ""
+        try:
+            body = error.read().decode("utf-8", "replace") if error.fp else ""
+        except (TimeoutError, OSError):
+            body = ""
         return error.code, {k.lower(): v for k, v in (error.headers or {}).items()}, body
     except (urllib.error.URLError, TimeoutError, OSError):
         return 0, {}, ""  # 연결 실패 — 호출하는 쪽이 '아직'(wait) 또는 확인 필요(snapshot)로 본다.
@@ -96,7 +99,6 @@ class PageParser(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.sections: list[dict[str, Any]] = []
         self.outside: list[str] = []
-        self.looks: list[str] = []
         self.h1: list[str] = []
         self.h2: list[str] = []
         self.faq_screen: list[str] = []
@@ -157,9 +159,11 @@ class PageParser(HTMLParser):
             section["look"] = _look(attr)
             section["_text"] = []
             self.sections.append(section)
-        elif any(key.startswith(("data-look", "data-hero")) for key in attr):
-            self.looks.append(json.dumps(_look(attr), ensure_ascii=False, sort_keys=True))
         self._stack.append((tag, hidden, section))
+        if section is None and any(key.startswith(("data-look", "data-hero")) for key in attr):
+            # 감싸는 섹션의 글에 넣는다 — 어느 섹션의 정렬·배경·모양인지 함께 비교되게.
+            look = json.dumps(_look(attr), ensure_ascii=False, sort_keys=True)
+            self._emit(f" [look:{look}] ", marker=True)
         if tag == "script" and attr.get("type") == "application/ld+json":
             self._jsonld = []
         elif tag in {"h1", "h2"} or (tag == "dt" and self._in_faq()):
@@ -305,7 +309,6 @@ def page_snapshot(status: int, headers: dict[str, str], body: str) -> dict[str, 
             }
             for section in parser.sections
         ],
-        "looks": parser.looks,
         "outside": _text("".join(parser.outside)),
         "h2": parser.h2,
         "faq_screen": parser.faq_screen,

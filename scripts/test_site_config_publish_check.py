@@ -304,3 +304,30 @@ def test_connection_errors_are_a_status_not_a_crash(monkeypatch):
 
     monkeypatch.setattr(urllib.request, "urlopen", boom)
     assert check.http_get("https://x.test/") == (0, {}, "")
+
+
+def test_look_attributes_stay_with_their_section():
+    # A안 SectionLook처럼 섹션 안쪽 요소에 붙는 정렬·배경 — 다른 섹션으로 옮기면 차이여야 한다.
+    page = """<html><body><section id="treatments"><div {a}><h2>진료 영역</h2></div></section>
+<section id="doctor"><div {b}><h2>의료진</h2></div></section></body></html>"""
+    look = 'data-look-align="start" data-look-bg="tint"'
+    first = check.page_snapshot(200, {}, page.format(a=look, b=""))
+    moved = check.page_snapshot(200, {}, page.format(a="", b=look))
+    assert first["sections"] != moved["sections"]
+    assert "data-look-bg" in first["sections"][0]["text"]
+
+
+def test_error_body_read_failure_is_still_a_status(monkeypatch):
+    import io
+    import urllib.error
+    import urllib.request
+
+    class SlowBody(io.BytesIO):
+        def read(self, *args):
+            raise TimeoutError("read timed out")
+
+    def fail(*args, **kwargs):
+        raise urllib.error.HTTPError("https://x.test/", 503, "unavailable", {}, SlowBody())
+
+    monkeypatch.setattr(urllib.request, "urlopen", fail)
+    assert check.http_get("https://x.test/")[0] == 503
