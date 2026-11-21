@@ -741,12 +741,47 @@ export function linesMatch(value: string, source: string): boolean {
   return position === target.length
 }
 
-export type LineBreakProblem = 'too_many' | 'mismatch' | null
+/** `linesMatch`를 통과한 줄 지정에서 각 줄이 시작하는 자리(이은 원문 기준) — 서버 `line_starts`. */
+export function lineStarts(value: string, source: string): Set<number> {
+  const target = joinedText(source)
+  let position = 0
+  const starts = new Set<number>()
+  const lines = splitLines(value).map(joinedText)
+  for (let index = 0; index < lines.length; index += 1) {
+    starts.add(position)
+    position += lines[index].length
+    if (index < lines.length - 1 && position < target.length && target[position] === ' ') position += 1
+  }
+  return starts
+}
 
-export function lineBreakProblem(value: string, source: string): LineBreakProblem {
+const HEADLINE_PARTS_MAX = 3
+
+/**
+ * 레이아웃이 줄 지정과 무관하게 늘 새 줄로 시작하는 자리(서버 `forced_line_starts`). 첫 화면 제목이 병원 정보에서
+ * 두 줄 이상이면 A·C는 마지막 줄(강조 줄)을, B는 모든 줄을 블록으로 쌓는다(사이트 `buildClinicHeroHeadline`).
+ */
+export function forcedLineStarts(layout: SiteLayout | null | undefined, path: LineBreakPath, source: string): number[] {
+  if (path !== 'hero.headline') return []
+  const parts = source.split('\n').map(joinedText).filter(Boolean).slice(0, HEADLINE_PARTS_MAX)
+  if (parts.length < 2) return []
+  const starts: number[] = []
+  let position = 0
+  for (const part of parts.slice(0, -1)) {
+    position += part.length + 1
+    starts.push(position)
+  }
+  return layout === 'B' ? starts : starts.slice(-1)
+}
+
+export type LineBreakProblem = 'too_many' | 'mismatch' | 'layout_break' | null
+
+export function lineBreakProblem(value: string, source: string, forced: readonly number[] = []): LineBreakProblem {
   const lines = splitLines(value)
   if (lines.length > LINES_MAX || lines.some((line) => !line || line.length > LINE_MAX)) return 'too_many'
-  return linesMatch(value, source) ? null : 'mismatch'
+  if (!linesMatch(value, source)) return 'mismatch'
+  const starts = lineStarts(value, source)
+  return forced.every((at) => starts.has(at)) ? null : 'layout_break'
 }
 
 // --- 섹션별 안내 문구 칸(서버 `COPY_KEYS`) ---

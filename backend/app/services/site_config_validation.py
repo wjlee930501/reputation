@@ -152,6 +152,46 @@ def lines_match(value: str, source: str) -> bool:
     return position == len(target)
 
 
+def line_starts(value: str, source: str) -> set[int]:
+    """`lines_match`를 통과한 줄 지정에서 각 줄이 시작하는 자리(이은 원문 기준 글자 위치)."""
+
+    target = joined(source)
+    position = 0
+    starts: set[int] = set()
+    lines = [joined(line) for line in split_lines(value)]
+    for index, line in enumerate(lines):
+        starts.add(position)
+        position += len(line)
+        if index < len(lines) - 1 and position < len(target) and target[position] == " ":
+            position += 1
+    return starts
+
+
+HEADLINE_PARTS_MAX = 3
+
+
+def forced_line_starts(layout: str, path: str, source: str) -> list[int]:
+    """레이아웃이 줄 지정과 무관하게 늘 새 줄로 시작하는 자리(이은 원문 기준).
+
+    첫 화면 제목은 병원 정보에서 나눈 줄(최대 3줄, 사이트 `buildClinicHeroHeadline`)을 조각으로 그린다.
+    두 줄 이상이면 A·C는 마지막 줄(강조 줄)을 블록으로, B는 모든 줄을 블록으로 쌓는다. 줄 지정이 그 자리를
+    한 줄에 이어 두면 화면은 지정과 다르게 나뉘므로 저장에서 거절한다.
+    """
+
+    if path != "hero.headline":
+        return []
+    parts = [joined(part) for part in source.split("\n")]
+    parts = [part for part in parts if part][:HEADLINE_PARTS_MAX]
+    if len(parts) < 2:
+        return []
+    starts: list[int] = []
+    position = 0
+    for part in parts[:-1]:
+        position += len(part) + 1
+        starts.append(position)
+    return starts if layout == "B" else starts[-1:]
+
+
 def validate_site_config(
     layout: str, config: Any, ctx: SiteConfigContext
 ) -> SiteConfigCheck:
@@ -179,7 +219,7 @@ def validate_site_config(
     resolved = site_defaults.resolve(layout, stored)
     _check_order(check, layout, resolved)
     _check_copy(check, stored, resolved, ctx)
-    _check_line_breaks(check, stored, ctx)
+    _check_line_breaks(check, layout, stored, ctx)
     _check_references(check, stored, ctx)
     _check_nav(check, layout, resolved)
     _check_hero_blocks(check, layout, resolved, ctx)
@@ -495,7 +535,9 @@ def _check_copy(
         _forbidden(check, path, text, source="병원 정보의 문장을 고쳐 주세요")
 
 
-def _check_line_breaks(check: SiteConfigCheck, stored: dict[str, Any], ctx: SiteConfigContext) -> None:
+def _check_line_breaks(
+    check: SiteConfigCheck, layout: str, stored: dict[str, Any], ctx: SiteConfigContext
+) -> None:
     line_breaks = (stored.get("hero") or {}).get("line_breaks") or {}
     for path, spec in line_breaks.items():
         where = f"hero.line_breaks.{path}"
@@ -524,6 +566,18 @@ def _check_line_breaks(check: SiteConfigCheck, stored: dict[str, Any], ctx: Site
                     f"{where}.{device}",
                     "LINES_TEXT_MISMATCH",
                     "줄바꿈 위치만 바꿀 수 있습니다 — 줄을 이은 글이 병원 정보의 문장과 같아야 합니다.",
+                )
+                continue
+            if not set(forced_line_starts(layout, path, source)) <= line_starts(value, source):
+                check.error(
+                    f"{where}.{device}",
+                    "LINES_LAYOUT_BREAK",
+                    (
+                        "B안은 병원 정보에서 나눈 제목 줄마다 새 줄로 시작합니다"
+                        if layout == "B"
+                        else "이 레이아웃은 제목의 마지막 줄(강조 줄)을 늘 새 줄로 시작합니다"
+                    )
+                    + " — 그 자리를 한 줄에 잇지 말고 나눠 주세요.",
                 )
                 continue
             _forbidden(check, f"{where}.{device}", value)
@@ -600,11 +654,13 @@ __all__ = (
     "SiteConfigContext",
     "changed_sections",
     "effective_care_steps",
+    "forced_line_starts",
     "forbidden_words",
     "joined",
     "lines_match",
     "section_title",
     "line_break_source",
+    "line_starts",
     "nav_target",
     "section_note",
     "split_lines",

@@ -461,3 +461,24 @@ test('a text-only hero never saves the photo focus', () => {
   assert.equal(hero.arrangement, 'text')
   assert.equal(hero.image?.focus, undefined)
 })
+
+test('제목 줄바꿈은 레이아웃이 늘 새 줄로 시작하는 자리(A·C 강조 줄, B 승인 줄마다)를 건너뛸 수 없다 — 서버 forced_line_starts', async () => {
+  const { forcedLineStarts, lineBreakProblem } = await import('./site-config.ts')
+  const source = '365서귀포삼성정형외과\n제주 서귀포\n정형외과 전문의 진료'
+  const problem = (layout: 'A' | 'B' | 'C', value: string) =>
+    lineBreakProblem(value, source, forcedLineStarts(layout, 'hero.headline', source))
+  for (const layout of ['A', 'B', 'C'] as const) {
+    assert.equal(problem(layout, source), null)
+    assert.equal(problem(layout, '365서귀포\n삼성정형외과\n제주 서귀포\n정형외과\n전문의 진료'), null)
+  }
+  const joinedLead = '365서귀포삼성정형외과 제주 서귀포\n정형외과 전문의 진료'
+  assert.equal(problem('A', joinedLead), null)
+  assert.equal(problem('C', joinedLead), null)
+  assert.equal(problem('B', joinedLead), 'layout_break')
+  for (const value of ['365서귀포삼성정형외과\n제주 서귀포 정형외과 전문의 진료', '365서귀포삼성정형외과\n제주 서귀포 정형외과\n전문의 진료']) {
+    for (const layout of ['A', 'B', 'C'] as const) assert.equal(problem(layout, value), 'layout_break', `${layout} ${value}`)
+  }
+  // 한 줄 제목·다른 칸에는 강제 자리가 없다.
+  assert.deepEqual(forcedLineStarts('B', 'hero.headline', '365서귀포삼성정형외과 제주'), [])
+  assert.deepEqual(forcedLineStarts('B', 'hero.description', '가\n나'), [])
+})

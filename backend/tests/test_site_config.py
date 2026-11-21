@@ -510,6 +510,41 @@ def test_line_breaks_cannot_change_spacing() -> None:
     assert _codes(joined_wrong) == ["LINES_TEXT_MISMATCH"]
 
 
+def test_headline_line_breaks_must_break_where_the_layout_always_breaks() -> None:
+    # 병원 정보 제목이 세 줄이면 A·C는 마지막 줄(강조 줄)을, B는 모든 줄을 블록으로 쌓는다.
+    ctx = _ctx(hero_headline="365서귀포삼성정형외과\n제주 서귀포\n정형외과 전문의 진료")
+
+    def codes(layout: str, value: str) -> list[str]:
+        check = validate_site_config(layout, {"hero": {"line_breaks": {"hero.headline": {"mobile": value}}}}, ctx)
+        return _codes(check)
+
+    # 원문 그대로(편집기가 채우는 값)와 더 잘게 나눈 지정은 모든 레이아웃에서 통과.
+    for layout in ("A", "B", "C"):
+        assert codes(layout, "365서귀포삼성정형외과\n제주 서귀포\n정형외과 전문의 진료") == []
+        assert codes(layout, "365서귀포\n삼성정형외과\n제주 서귀포\n정형외과\n전문의 진료") == []
+    # 앞 두 줄을 잇는 것은 A·C에서만 그대로 그려진다.
+    joined_lead = "365서귀포삼성정형외과 제주 서귀포\n정형외과 전문의 진료"
+    assert codes("A", joined_lead) == [] and codes("C", joined_lead) == []
+    assert codes("B", joined_lead) == ["LINES_LAYOUT_BREAK"]
+    # 강조 줄을 앞 줄에 잇거나 강조 줄 중간에서 시작하면 어느 레이아웃도 지정대로 그리지 않는다.
+    for value in (
+        "365서귀포삼성정형외과\n제주 서귀포 정형외과 전문의 진료",
+        "365서귀포삼성정형외과\n제주 서귀포 정형외과\n전문의 진료",
+    ):
+        for layout in ("A", "B", "C"):
+            assert codes(layout, value) == ["LINES_LAYOUT_BREAK"], (layout, value)
+
+
+def test_single_line_headline_has_no_forced_breaks() -> None:
+    for layout in ("A", "B", "C"):
+        check = validate_site_config(
+            layout,
+            {"hero": {"line_breaks": {"hero.headline": {"pc": "365서귀포삼성정형외과 제주\n서귀포 정형외과 전문의 진료"}}}},
+            _ctx(),
+        )
+        assert check.ok, (layout, check.errors)
+
+
 def test_line_break_lines_are_bounded() -> None:
     check = validate_site_config(
         "B", {"hero": {"line_breaks": {"hero.headline": {"pc": "365\n\n서귀포"}}}}, _ctx()
