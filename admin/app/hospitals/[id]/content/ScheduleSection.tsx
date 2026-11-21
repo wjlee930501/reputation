@@ -8,10 +8,16 @@ import {
   DAILY_MAX_OPTIONS,
   DAYS,
   DEFAULT_PUBLISH_DAYS_BY_PLAN,
+  MONTH_TARGET_COPY,
+  defaultMonthTarget,
   firstDayOfNextMonthInputValue,
+  monthTargetError,
+  monthTargetPayload,
   moveScheduleMonth,
+  scheduleMonthKey,
   scheduleMonthLabel,
   validateScheduleCapacity,
+  type ScheduleMonthTarget,
 } from '@/lib/schedule'
 import { canSubmitSchedule } from '@/lib/operator-safety'
 import { contentReadinessBlockers, sourceProcessingProgress } from '@/lib/content-readiness'
@@ -44,6 +50,10 @@ export function ScheduleSection({
   // (api/admin/content.py). 타입이 string이면 화면은 없는 날짜를 있다고 말한다(M-22).
   const [result, setResult] = useState<{ slots_created: number; first_publish_date: string | null; month_target?: number | null; slots_cancelled_before_start?: number; slots_kept_before_start?: number } | null>(null)
   const [confirmingReplacement, setConfirmingReplacement] = useState(false)
+  // 시작 달 발행 편수(마케팅 요청 #8) — 시작일의 달이 바뀔 때마다 서버 값을 다시 읽는다.
+  const [monthView, setMonthView] = useState<ScheduleMonthTarget | null>(null)
+  const [monthTargetInput, setMonthTargetInput] = useState('')
+  const monthKey = scheduleMonthKey(activeFrom)
 
   // 현재 운영 중인 발행 일정 — 404는 "아직 발행 일정 없음"으로 처리
   const [existing, setExisting] = useState<ScheduleInfo | null>(null)
@@ -112,6 +122,30 @@ export function ScheduleSection({
     setSelectedDays(DEFAULT_PUBLISH_DAYS_BY_PLAN[plan] ?? [])
   }, [plan, daysChosen, existingLoading, existing])
 
+  useEffect(() => {
+    if (!monthKey) {
+      setMonthView(null)
+      return
+    }
+    let cancelled = false
+    setMonthView(null)
+    fetchAPI<ScheduleMonthTarget>(`/admin/hospitals/${hospitalId}/schedule/month-target?month=${monthKey}`)
+      .then((view) => {
+        if (cancelled) return
+        setMonthView(view)
+        const fallback = defaultMonthTarget(view)
+        setMonthTargetInput(fallback === null ? '' : String(fallback))
+      })
+      .catch((e: unknown) => {
+        // 편수 칸은 부가 기능이다 — 못 읽으면 칸 없이 종전처럼 저장한다(계약 편수).
+        if (!cancelled && !isExpectedOperatorRequestFailure(e)) throw e
+      })
+    return () => { cancelled = true }
+  }, [hospitalId, monthKey])
+
+  const monthTargetInvalid = monthTargetError(monthView, monthTargetInput)
+  const requestedMonthTarget = monthTargetPayload(monthView, monthTargetInput)
+
   const readinessBlockers = contentReadinessBlockers(readiness)
   const processingProgress = sourceProcessingProgress(readiness)
   const canSaveSchedule = canSubmitSchedule(existingLoading, existingError)
@@ -149,8 +183,14 @@ export function ScheduleSection({
       setError('발행 요일을 하나 이상 선택해 주세요.')
       return
     }
+    if (monthTargetInvalid) {
+      setError(monthTargetInvalid)
+      return
+    }
     // 일정 교체는 이미 공개·고정된 항목을 빼고 서버가 판정한다(SCHEDULE_CAPACITY_SHORT).
-    const capacityError = existing ? null : validateScheduleCapacity(plan, selectedDays, activeFrom, dailyMax)
+    const capacityError = existing
+      ? null
+      : validateScheduleCapacity(plan, selectedDays, activeFrom, dailyMax, requestedMonthTarget ?? defaultMonthTarget(monthView))
     if (capacityError) {
       setError(capacityError)
       return
@@ -172,7 +212,13 @@ export function ScheduleSection({
         `/admin/hospitals/${hospitalId}/schedule`,
         {
           method: 'POST',
-          body: JSON.stringify({ plan, publish_days: selectedDays, active_from: activeFrom, daily_max: dailyMax }),
+          body: JSON.stringify({
+            plan,
+            publish_days: selectedDays,
+            active_from: activeFrom,
+            daily_max: dailyMax,
+            ...(requestedMonthTarget !== undefined ? { month_target: requestedMonthTarget } : {}),
+          }),
         },
       )
       setResult(data)
@@ -189,8 +235,11 @@ export function ScheduleSection({
       // 계약 요금제와 어긋난 저장은 서버가 막는다 — 운영자가 다음 행동을 알 수 있게 그대로 보여준다.
       if (e instanceof ApiError && e.detail && typeof e.detail === 'object') {
         const detail = e.detail as { code?: string; message?: string; contracted_plan?: string }
-        // 하루 최대 편수로 그 달 편수를 놓을 수 없으면 서버가 저장하지 않고 이유를 준다.
-        if (detail.code === 'SCHEDULE_CAPACITY_SHORT' && detail.message) {
+        // 하루 최대 편수로 그 달 편수를 놓을 수 없거나 시작 달 편수를 받을 수 없으면 서버가 저장하지 않고 이유를 준다.
+        if (
+          (detail.code === 'SCHEDULE_CAPACITY_SHORT' || detail.code?.startsWith('MONTH_TARGET_'))
+          && detail.message
+        ) {
           setError(detail.message)
           return
         }
@@ -393,6 +442,47 @@ export function ScheduleSection({
               />
             </div>
 
+            {/* 시작 달 발행 편수 — 계약 첫 달만(마케팅 요청 #8) */}
+            {monthView && monthView.contract_quota !== null && (
+              <div>
+                {monthView.editable ? (
+                  <>
+                    <label htmlFor="schedule-month-target" className="mb-2 block text-sm font-medium text-slate-700">
+                      {MONTH_TARGET_COPY.label}
+                    </label>
+                    <div className="flex items-center gap-2">
+                      <input
+                        id="schedule-month-target"
+                        type="number"
+                        inputMode="numeric"
+                        min={0}
+                        max={monthView.contract_quota}
+                        step={1}
+                        value={monthTargetInput}
+                        onChange={(e) => setMonthTargetInput(e.target.value)}
+                        aria-invalid={Boolean(monthTargetInvalid)}
+                        className="min-h-11 w-24 rounded-lg border border-slate-300 px-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      />
+                      <span className="text-sm text-slate-600">편 / 계약 {monthView.contract_quota}편</span>
+                    </div>
+                    <p className="mt-2 text-xs leading-5 text-slate-500">
+                      {MONTH_TARGET_COPY.hint.replace('{quota}', String(monthView.contract_quota))}
+                    </p>
+                    {monthView.month_target !== null && (
+                      <p className="mt-1 text-xs text-slate-500">
+                        {MONTH_TARGET_COPY.current.replace('{current}', String(monthView.month_target))}
+                      </p>
+                    )}
+                    {monthTargetInvalid && <p className="mt-1 text-xs font-medium text-red-700">{monthTargetInvalid}</p>}
+                  </>
+                ) : (
+                  <p className="text-xs text-slate-500">
+                    {MONTH_TARGET_COPY.label} {monthView.month_target ?? monthView.contract_quota}편 · {MONTH_TARGET_COPY.notEditable}
+                  </p>
+                )}
+              </div>
+            )}
+
             {error && (
               <OperatorIssuePanel message={error} surface="onboarding" />
             )}
@@ -430,7 +520,11 @@ export function ScheduleSection({
                   {/* 계약 정정 뒤 일정이 아직 옛 요금제면, 되돌릴 수 없는 교체가 편수까지
                       바꾼다는 사실을 확인 문구가 감추면 안 된다. */}
                   {PLAN_LABELS[existing.plan] ?? existing.plan}
-                  <span className="block text-xs">시작 달도 계약 편수만큼 만듭니다.</span>
+                  <span className="block text-xs">
+                    {monthView?.editable && monthTargetInput !== ''
+                      ? `시작 달은 ${monthTargetInput}편으로 맞춥니다.`
+                      : '시작 달도 계약 편수만큼 만듭니다.'}
+                  </span>
                 </dd>
               </div>
               <div className="grid grid-cols-[100px_1fr] gap-3 py-3">
