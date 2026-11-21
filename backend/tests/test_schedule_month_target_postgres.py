@@ -180,7 +180,7 @@ async def test_lowering_cancels_untouched_slots_and_every_reader_sees_the_new_ta
         assert response["month_target"] == 5
         async with AsyncSession(engine, expire_on_commit=False) as db:
             live = await _live(db, hospital_id)
-            # 빈 슬롯(7·8) 먼저, 그다음 원고가 있는 뒤 순번(6)부터 종료했다.
+            # 뒤 순번(8·7·6)부터 종료했다 — 남는 슬롯이 새 계획(1..5) 안에 든다.
             assert [row.sequence_no for row in live] == [1, 2, 3, 4, 5]
             detail = await _last_audit(db, hospital_id)
             assert detail[OPERATOR_MONTH_TARGET_KEY]["target"] == 5
@@ -295,6 +295,43 @@ async def test_month_target_view_reports_quota_target_and_operator_value(frozen_
         async with AsyncSession(engine, expire_on_commit=False) as db:
             after = await content_api.get_schedule_month_target(hospital_id, month="2026-11", db=db)
         assert (after["month_target"], after["operator_target"]) == (6, 6)
+    finally:
+        await _cleanup(engine, hospital_id)
+        await engine.dispose()
+
+
+async def test_kept_late_sequences_do_not_collide_with_rescheduled_slots(frozen_today):
+    """뒤 순번에 고친 원고가 남아도 옮기는 슬롯과 같은 날에 겹치지 않는다(하루 1편)."""
+    engine = _engine()
+    hospital_id = None
+    try:
+        async with AsyncSession(engine, expire_on_commit=False) as db:
+            hospital_id = (await _seed(db)).id
+            # 6·7·8번은 사람이 고친 원고 — 자리에 남는다.
+            items = (
+                await db.execute(
+                    select(ContentItem).where(
+                        ContentItem.hospital_id == hospital_id, ContentItem.sequence_no >= 6
+                    )
+                )
+            ).scalars().all()
+            for item in items:
+                item.human_edited_at = datetime.now(timezone.utc)
+            await db.commit()
+        async with AsyncSession(engine, expire_on_commit=False) as db:
+            await content_api.set_schedule(hospital_id, _body(5), db=db)
+        async with AsyncSession(engine, expire_on_commit=False) as db:
+            rows = (
+                await db.execute(
+                    select(ContentItem.sequence_no, ContentItem.scheduled_date).where(
+                        ContentItem.hospital_id == hospital_id,
+                        ContentItem.status != ContentStatus.CANCELLED,
+                    )
+                )
+            ).all()
+        assert sorted(row.sequence_no for row in rows) == [1, 2, 6, 7, 8]
+        dates = [row.scheduled_date for row in rows]
+        assert len(dates) == len(set(dates))
     finally:
         await _cleanup(engine, hospital_id)
         await engine.dispose()

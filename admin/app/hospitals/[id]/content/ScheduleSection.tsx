@@ -53,6 +53,8 @@ export function ScheduleSection({
   // 시작 달 발행 편수(마케팅 요청 #8) — 시작일의 달이 바뀔 때마다 서버 값을 다시 읽는다.
   const [monthView, setMonthView] = useState<ScheduleMonthTarget | null>(null)
   const [monthTargetInput, setMonthTargetInput] = useState('')
+  // 저장 뒤 같은 달의 서버 값(마케터 값·계약 편수)을 다시 읽는다 — 옛 값으로 다음 저장의 전송 여부를 정하지 않게.
+  const [monthViewVersion, setMonthViewVersion] = useState(0)
   const monthKey = scheduleMonthKey(activeFrom)
 
   // 현재 운영 중인 발행 일정 — 404는 "아직 발행 일정 없음"으로 처리
@@ -141,7 +143,7 @@ export function ScheduleSection({
         if (!cancelled && !isExpectedOperatorRequestFailure(e)) throw e
       })
     return () => { cancelled = true }
-  }, [hospitalId, monthKey])
+  }, [hospitalId, monthKey, monthViewVersion])
 
   const monthTargetInvalid = monthTargetError(monthView, monthTargetInput)
   const requestedMonthTarget = monthTargetPayload(monthView, monthTargetInput)
@@ -222,6 +224,7 @@ export function ScheduleSection({
         },
       )
       setResult(data)
+      setMonthViewVersion((version) => version + 1)
       // Keep the last verified head until the server read-back succeeds.
       // Saving succeeded. An unavailable read-back is a separate failure.
       try {

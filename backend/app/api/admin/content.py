@@ -505,10 +505,7 @@ async def set_schedule(
         previously_trimmed = operator_cancelled_ids(schedule_records, target_month)
         existing_rows = [row for row in existing_rows if str(row.id) not in previously_trimmed]
         trim_rows, shortfall = plan_allocation_trim(
-            existing_rows,
-            keep=requested_target,
-            today=today_kst,
-            generated_ids=await _generated_item_ids(db, [row.id for row in existing_rows]),
+            existing_rows, keep=requested_target, today=today_kst
         )
         if shortfall:
             # 종료할 수 없는 글(공개·이월·사람 편집·생성 중·지난 날짜)만큼은 남는다.
@@ -803,22 +800,6 @@ async def _is_first_contract_month(db: AsyncSession, hospital_id: uuid.UUID, mon
         )
     ).scalar_one_or_none()
     return earlier is None
-
-
-async def _generated_item_ids(db: AsyncSession, item_ids: list) -> frozenset[str]:
-    """원고(제목·본문)가 이미 있는 슬롯 — 편수를 줄일 때 빈 슬롯부터 종료한다."""
-
-    if not item_ids:
-        return frozenset()
-    rows = (
-        await db.execute(
-            select(ContentItem.id).where(
-                ContentItem.id.in_(item_ids),
-                (ContentItem.title.is_not(None)) | (ContentItem.body.is_not(None)),
-            )
-        )
-    ).scalars().all()
-    return frozenset(str(item_id) for item_id in rows)
 
 
 @router.get("/{hospital_id}/schedule/month-target")

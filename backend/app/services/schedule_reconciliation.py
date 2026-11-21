@@ -317,8 +317,10 @@ async def defer_unstarted_contract(db, hospital_id, *, new_start, today):
 #
 # 마케터가 계약 첫 달의 편수를 지금 살아 있는 슬롯보다 적게 정하면 남는 슬롯을 종료한다. 손대지 않은
 # 슬롯(`allocation_stays`가 아닌 것 — 앞으로의 날짜·DRAFT/READY·공개·이월·사람 편집·생성 중 아님)만
-# 대상이고, 원고가 없는 빈 슬롯을 먼저, 그다음 뒤 순번부터 고른다. 다 종료해도 모자라면(공개·편집된
-# 글이 더 많으면) 아무것도 쓰지 않고 그 수를 돌려준다 — 저장 경로가 422로 알린다.
+# 대상이고, 뒤 순번부터 고른다 — 그래야 남는 옮길 수 있는 슬롯이 새 계획(순번 1..N) 안에 들어
+# 날짜 배치·자리 계산(`place_open_slots`)에서 빠지지 않는다(빈 슬롯을 먼저 고르면 큰 순번이 남아 같은
+# 날에 겹쳤다). 다 종료해도 모자라면(공개·편집된 글이 더 많으면) 아무것도 쓰지 않고 그 수를 돌려준다 —
+# 저장 경로가 422로 알린다.
 
 
 def is_live_allocation(row) -> bool:
@@ -328,18 +330,15 @@ def is_live_allocation(row) -> bool:
     )
 
 
-def plan_allocation_trim(existing, *, keep, today, generated_ids=frozenset()):
-    """`keep`편만 남기려면 종료할 슬롯과, 종료할 수 없어 남는 초과 편수(0이면 충분).
-
-    `generated_ids`는 원고(제목·본문)가 이미 있는 슬롯 id다 — 빈 슬롯을 먼저 종료한다.
-    """
+def plan_allocation_trim(existing, *, keep, today):
+    """`keep`편만 남기려면 종료할 슬롯(뒤 순번부터)과, 종료할 수 없어 남는 초과 편수(0이면 충분)."""
     live = [row for row in existing if is_live_allocation(row)]
     excess = len(live) - keep
     if excess <= 0:
         return [], 0
     candidates = sorted(
         (row for row in live if not allocation_stays(row, today=today)),
-        key=lambda row: (str(row.id) in generated_ids, -(row.sequence_no or 0)),
+        key=lambda row: -(row.sequence_no or 0),
     )
     if len(candidates) < excess:
         return [], excess - len(candidates)
