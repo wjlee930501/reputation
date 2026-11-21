@@ -1,11 +1,12 @@
 import enum
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from typing import TYPE_CHECKING
 
 from sqlalchemy import (
     JSON,
     Boolean,
+    Date,
     DateTime,
     Enum,
     Float,
@@ -241,6 +242,10 @@ class Hospital(Base):
     monthly_sov_cohort: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default=text("false"), nullable=False
     )
+    # 계약 종료일(0101, 2026-11 개편 결정 대기 1번 B). 화면 분류에만 쓴다 — 일시정지이고 이 날짜가
+    # 지났으면 목록·헤더·대시보드가 「운영 종료」로 묶는다(`hospital_states.contract_ended`).
+    # 공개·발행·서비스 구간·보고서 대상·할 일 판정은 이 값을 읽지 않는다(일시정지와 같은 동작).
+    contract_ended_on: Mapped[date | None] = mapped_column(Date, nullable=True)
 
     # ── 타임스탬프 ───────────────────────────────────────────────────
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

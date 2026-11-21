@@ -72,6 +72,10 @@ class HospitalItemBase(BaseModel):
     domain_last_checked_at: Optional[str] = None
     domain_last_check_ok: Optional[bool] = None
     domain_last_check_reason: Optional[str] = None
+    # 계약 종료일(0101)과 「운영 종료」 판정(일시정지 + 종료일 지남, `hospital_states.contract_ended`).
+    # 화면 분류에만 쓴다 — 3상태는 그대로다.
+    contract_ended_on: Optional[str] = None
+    contract_ended: bool = False
     created_at: Optional[str]
 
 
