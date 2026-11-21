@@ -43,10 +43,17 @@ from app.services.essence_engine import (
     ESSENCE_STATUS_NEEDS_REVIEW,
     EssenceScreeningResult,
 )
+from app.services.must_use_verbatim import required_must_use_messages
 from app.services.reference_requirement import (
     REFERENCES_OMITTED_KEY,
     references_omitted_reason,
     references_required_for,
+)
+from app.services.source_copy_check import (
+    SOURCE_COPY_SUMMARY_KEY,
+    copied_source_sentences,
+    source_copy_record,
+    source_copy_remediation,
 )
 
 logger = logging.getLogger(__name__)
@@ -115,6 +122,8 @@ async def generate_reviewed_content(
     """Generate, independently review, and rewrite without bypassing hard gates."""
 
     summary = getattr(item, "essence_check_summary", None)
+    # 원문 그대로가 규칙인 필수 문구 — 자료 문장 복사 검사에서 뺀다(작가 검증과 같은 집합).
+    must_use_messages = required_must_use_messages(philosophy)
     # 일일 갱신 구간이 같은 주제를 다시 쓰면 지난 날들의 거절 사유를 첫 회차부터 싣는다(누적 피드백).
     findings = review_findings(summary) or renewal_feedback(summary)
     automatic_rewrites = int(bool(findings))
@@ -136,6 +145,20 @@ async def generate_reviewed_content(
     last_generation_error: Exception | None = None
     # 세션 안 모든 작가 회차의 결정적 거절 횟수(E5, 사유별).
     rejection_counts: dict[str, dict[str, int]] = {}
+    # 문체 보완 재작성(선택)을 쓰기 직전의 PASS 후보. 보완은 글을 낫게 하려는 선택이라, 그 회차가
+    # 공급자 오류로 끝나거나 PASS를 받지 못하면 이 후보로 돌아간다 — 이미 발행할 수 있던 글을
+    # 선택적 재작성이 막거나 버리게 하지 않는다.
+    soft_fallback: tuple[dict[str, Any], EssenceScreeningResult, Any, list[str]] | None = None
+
+    def _restore_soft_fallback() -> None:
+        nonlocal accepted_content, accepted_screening, last_ai_review, accepted_reference_findings
+        assert soft_fallback is not None
+        (
+            accepted_content,
+            accepted_screening,
+            last_ai_review,
+            accepted_reference_findings,
+        ) = soft_fallback
 
     def _generation_budget_left() -> bool:
         return generations < limits.max_generations
@@ -186,6 +209,15 @@ async def generate_reviewed_content(
                 # 공급자 오류(시간 초과 등) — 이 회차 작가 호출이 실어 보낸 거절 횟수를 합친다. 세션 누적치는
                 # 아래 루프 경계가 싣는다.
                 _merge_rejection_counts(rejection_counts, getattr(exc, GENERATION_REJECTIONS_KEY, None))
+                if soft_fallback is not None:
+                    logger.info(
+                        "Optional soft rewrite failed; keeping the reviewed PASS candidate: "
+                        "hospital=%s error=%s",
+                        hospital.id,
+                        type(exc).__name__,
+                    )
+                    _restore_soft_fallback()
+                    break
                 raise
             generations += 1
             last_generation_error = None
@@ -203,6 +235,10 @@ async def generate_reviewed_content(
             accepted_content, accepted_screening, last_ai_review = candidate, screening, None
             accepted_reference_findings = []
             if screening.status != ESSENCE_STATUS_ALIGNED:
+                if soft_fallback is not None:
+                    # 선택적 보완이 Essence 스크린을 깨뜨렸다 — 보완 전 PASS 후보로 돌아간다.
+                    _restore_soft_fallback()
+                    break
                 screen_findings = review_findings(screening.summary)
                 if screen_findings and _remediation_budget_left():
                     remediation_rewrites += 1
@@ -210,14 +246,31 @@ async def generate_reviewed_content(
                     continue
                 break
 
-            last_ai_review = await dependencies.review(
-                hospital=hospital,
-                philosophy=philosophy,
-                content=candidate,
-                content_brief=approved_brief,
-            )
+            try:
+                last_ai_review = await dependencies.review(
+                    hospital=hospital,
+                    philosophy=philosophy,
+                    content=candidate,
+                    content_brief=approved_brief,
+                )
+            except Exception as exc:
+                if soft_fallback is None:
+                    raise
+                # 선택적 보완 뒤 재검수가 예산·공급자 오류로 끝났다 — 보완 전 PASS 후보로 돌아간다.
+                logger.info(
+                    "Optional soft rewrite review failed; keeping the reviewed PASS candidate: "
+                    "hospital=%s error=%s",
+                    hospital.id,
+                    type(exc).__name__,
+                )
+                _restore_soft_fallback()
+                break
             if last_ai_review.blocking_findings and last_ai_review.candidate_sha256:
                 session_blocking_hashes.append(last_ai_review.candidate_sha256)
+            if soft_fallback is not None and last_ai_review.status != ContentAiReviewStatus.PASS:
+                # 선택적 보완이 PASS를 받지 못했다(차단 지적·검수 장애 등) — 보완 전 PASS 후보로 돌아간다.
+                _restore_soft_fallback()
+                break
             if last_ai_review.status == ContentAiReviewStatus.UNAVAILABLE:
                 # UNAVAILABLE never grants approval: it merely leaves the candidate to
                 # the deterministic generation and publication gates below.
@@ -234,10 +287,27 @@ async def generate_reviewed_content(
                     if soft_rewrites < limits.soft_rewrites
                     else []
                 )
-                soft_findings = bounded_soft_findings + duplicate_remediation
+                # 운영 기준·자료 문장(원장 설문 등)을 그대로 옮긴 문장도 같은 한 번의 보완 예산으로
+                # 다시 쓰게 한다(결정 대기 15번 A). 필수 문구 문장은 보지 않고, 남아도 기록만 한다.
+                copy_remediation = (
+                    source_copy_remediation(
+                        copied_source_sentences(
+                            candidate.get("body"), hospital, philosophy, must_use_messages
+                        )
+                    )
+                    if soft_rewrites < limits.soft_rewrites
+                    else []
+                )
+                soft_findings = bounded_soft_findings + duplicate_remediation + copy_remediation
                 if soft_findings and soft_rewrites < limits.soft_rewrites and _generation_budget_left():
                     soft_rewrites += 1
                     findings = soft_findings
+                    soft_fallback = (
+                        candidate,
+                        screening,
+                        last_ai_review,
+                        list(accepted_reference_findings),
+                    )
                     continue
                 break
             # Only stylistic/soft feedback may spend the shared remediation rewrite.
@@ -328,6 +398,12 @@ async def generate_reviewed_content(
         summary["duplicate_topic_findings"] = [
             {"title": title, "score": score} for title, score in residual_duplicates
         ]
+    # 자료 문장을 그대로 옮긴 문장은 발행을 막지 않는다 — 재작성 뒤에도 남으면 기록만 남긴다.
+    residual_copies = copied_source_sentences(
+        last_content.get("body"), hospital, philosophy, must_use_messages
+    )
+    if residual_copies:
+        summary[SOURCE_COPY_SUMMARY_KEY] = source_copy_record(residual_copies)
     if accepted_reference_findings:
         summary["reference_findings"] = accepted_reference_findings[:5]
     # D36: 참고자료 필수 글이 검증된 참고자료 없이 저장된다 — 막지 않고 기록한다. 검수 지적으로
