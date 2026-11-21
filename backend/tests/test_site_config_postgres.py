@@ -551,3 +551,24 @@ async def test_restoring_an_old_version_drops_fields_the_site_does_not_render(db
     assert config["faq"] == {"limit": 5}
     assert "doctor" not in config and "hero" not in config
     assert config["sections"] == [{"id": "hero"}, {"id": "care_principles"}]
+
+
+async def test_readiness_counts_site_configs_and_layout_divergence(db, client, monkeypatch):
+    from app.utils.production_readiness import SITE_CONFIG_COUNTS_SQL
+
+    before = (await db.execute(text(SITE_CONFIG_COUNTS_SQL))).one()
+    hospital_id = await _hospital(db, layout="B")
+    monkeypatch.setattr(
+        admin_site_config,
+        "profile_publication_verdict",
+        lambda hospital: SimpleNamespace(allowed=False, blockers=()),
+    )
+    draft = (await _save(client, hospital_id, config={"faq": {"limit": 5}})).json()["draft"]
+    assert (await _publish(client, hospital_id, draft)).status_code == 200
+    await _save(client, hospital_id, config={"faq": {"limit": 4}})
+    await db.execute(text("UPDATE hospitals SET site_layout = 'A' WHERE id = :id"), {"id": hospital_id})
+    await db.commit()
+    after = (await db.execute(text(SITE_CONFIG_COUNTS_SQL))).one()
+    assert after.published - before.published == 1
+    assert after.drafts - before.drafts == 1
+    assert after.layout_diverged - before.layout_diverged == 1
