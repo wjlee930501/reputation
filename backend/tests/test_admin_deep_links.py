@@ -70,3 +70,15 @@ def test_the_backend_mapping_matches_the_admin_redirects():
     assert set(targets) == set(_RETIRED) == set(_RETIRED_HOSPITAL_TABS)
     for segment, tab in targets.items():
         assert _RETIRED_HOSPITAL_TABS[segment] == (f"/{tab}" if tab else "")
+
+
+def test_split_hospital_tabs_are_valid_incident_paths():
+    """결정 대기 2번 A draft: 도메인·검색 등 새 탭 경로는 사고 링크로 그대로 저장된다(`#`은 저장되지 않는다)."""
+    from app.services.incident_safety import normalize_admin_path
+
+    hospital = "0f8b9c1e-0000-0000-0000-000000000001"
+    for tab in ("info", "public-page", "sources", "domain"):
+        path = f"/hospitals/{hospital}/{tab}"
+        assert normalize_admin_path(path) == path
+    # 앵커가 붙은 링크는 사고 링크로 저장되지 않는다 — 사고는 앵커 없는 탭 주소를 쓴다.
+    assert normalize_admin_path(f"/hospitals/{hospital}/info#domain-setup") == "/operations"

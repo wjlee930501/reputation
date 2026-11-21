@@ -25,12 +25,16 @@ import {
 import { ADMIN_COPY } from '@/lib/admin-copy'
 import { readPublicAddresses } from '@/lib/public-address'
 import { AddressLink } from '@/app/_components/AddressLink'
+import { confirmLeaveIfGuarded } from '@/lib/use-leave-guard'
 import { Hospital, HospitalOverview, PLAN_CONTRACT_LABELS } from '@/types'
 import { HospitalHeaderContext } from './hospital-context'
 
 const MAIN_TABS: Array<{ label: string; path: string; hint: string }> = [
   { label: '현황', path: '', hint: '3상태 · 예외 · 이번 달 요약' },
-  { label: '병원 정보', path: 'info', hint: `병원·원장·진료·연락처·공식 채널·${ADMIN_COPY.evidence}` },
+  { label: '병원 정보', path: 'info', hint: '병원·원장·진료 항목·연락처·공식 채널·운영 기준 정보' },
+  { label: '공개 페이지', path: 'public-page', hint: '레이아웃·페이지 문구·로고·색·첫 화면·사진' },
+  { label: '근거 자료', path: 'sources', hint: `원장 인터뷰 설문·문서·블로그·${ADMIN_COPY.evidence}` },
+  { label: '도메인·검색', path: 'domain', hint: '자기 도메인 연결·검색엔진 소유 확인' },
   { label: '콘텐츠', path: 'content', hint: `월 표 · 발행 요일 · ${ADMIN_COPY.postPublishReview}` },
   { label: '보고서', path: 'reports', hint: `${ADMIN_COPY.initialReport} · 월간 ${ADMIN_COPY.monthlyReport}` },
 ]
@@ -42,8 +46,11 @@ function tabHref(hospitalId: string, path: string): string {
 }
 
 function isTabActive(pathname: string, hospitalId: string, path: string): boolean {
+  // 레이아웃 편집기는 주소가 `/info/layout`으로 남아 있지만 공개 페이지 탭의 화면이다.
+  const editor = `${tabHref(hospitalId, 'info')}/layout`
+  if (pathname === editor || pathname.startsWith(`${editor}/`)) return path === 'public-page'
   const href = tabHref(hospitalId, path)
-  return path ? pathname.startsWith(href) : pathname === href
+  return path ? pathname === href || pathname.startsWith(`${href}/`) : pathname === href
 }
 
 export default function HospitalLayout({
@@ -314,7 +321,11 @@ export default function HospitalLayout({
             <span className="sr-only">현재 병원 작업 화면</span>
             <select
               value={activeTab.path}
-              onChange={(event) => router.push(tabHref(hospitalId, event.target.value))}
+              onChange={(event) => {
+                // 저장하지 않은 변경이 있으면 링크 이동과 같이 먼저 묻는다(결정 대기 3번 A draft).
+                if (!confirmLeaveIfGuarded()) return
+                router.push(tabHref(hospitalId, event.target.value))
+              }}
               className="min-h-11 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-800 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100"
             >
               {MAIN_TABS.map((tab) => <option key={tab.path} value={tab.path}>{tab.label} — {tab.hint}</option>)}

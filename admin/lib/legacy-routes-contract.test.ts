@@ -37,15 +37,15 @@ test('옛 라우트 8개는 redirect 한 줄짜리 서버 화면이다', () => {
   }
 })
 
-test('병원 탭은 현황·병원 정보·콘텐츠·보고서 넷뿐이다', () => {
+test('병원 탭은 현황·병원 정보·공개 페이지·근거 자료·도메인·검색·콘텐츠·보고서 일곱이다(결정 대기 2번 A draft)', () => {
   const block = hospitalLayout.match(/const MAIN_TABS[\s\S]*?\n\]/)?.[0]
   assert.ok(block, 'MAIN_TABS 정의를 찾지 못했다')
 
   const paths = [...block.matchAll(/path: '([^']*)'/g)].map((match) => match[1])
   const labels = [...block.matchAll(/label: '([^']*)'/g)].map((match) => match[1])
 
-  assert.deepEqual(paths, ['', 'info', 'content', 'reports'])
-  assert.deepEqual(labels, ['현황', '병원 정보', '콘텐츠', '보고서'])
+  assert.deepEqual(paths, ['', 'info', 'public-page', 'sources', 'domain', 'content', 'reports'])
+  assert.deepEqual(labels, ['현황', '병원 정보', '공개 페이지', '근거 자료', '도메인·검색', '콘텐츠', '보고서'])
 })
 
 test('운영 설정 드롭다운과 옛 탭 이름은 남지 않는다', () => {

@@ -92,7 +92,7 @@ def project_onboarding_event(event: OnboardingEvent) -> MilestoneProjection:
                 "병원 기본 정보에서 공개 주소 상태를 확인하고 공개 운영을 시작해 주세요.",
                 event.owner_label,
                 sla_label,
-                f"/hospitals/{event.hospital_id}/info#domain-setup",
+                f"/hospitals/{event.hospital_id}/domain#domain-setup",
                 True,
                 False,
             )

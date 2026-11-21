@@ -59,10 +59,10 @@ async def record_naver_failure(
             ),
             source_type="NAVER_POST",
             next_action=(
-                "병원 자료 화면에서 ‘실패한 글 다시 수집’을 눌러 주세요. 다시 실패하면 "
+                "근거 자료 화면에서 ‘실패한 글 다시 수집’을 눌러 주세요. 다시 실패하면 "
                 "작업 번호와 글 식별값을 개발팀에 전달해 주세요."
             ),
-            admin_path=f"/hospitals/{context.hospital_id}/info",
+            admin_path=f"/hospitals/{context.hospital_id}/sources",
             hospital_id=context.hospital_id,
             operation_run_id=context.operation_run_id,
             source_id=context.item.url_hash,
@@ -146,7 +146,7 @@ async def _find_incident(
 
 def _recovery_intent(context: NaverIncidentContext, incident: Incident) -> NotificationIntent:
     admin_url = (
-        f"{settings.ADMIN_BASE_URL.rstrip('/')}/hospitals/{context.hospital_id}/info"
+        f"{settings.ADMIN_BASE_URL.rstrip('/')}/hospitals/{context.hospital_id}/sources"
     )
     label = label_for_event("NAVER_SOURCE_RECOVERED")
     message = SlackMessage(

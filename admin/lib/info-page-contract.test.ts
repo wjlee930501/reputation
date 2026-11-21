@@ -25,6 +25,12 @@ const hospitalLayout = readFileSync(
   'utf8',
 )
 const physiciansSection = infoFile('PhysiciansSection.tsx')
+function tabPage(tab: string): string {
+  return readFileSync(new URL(`../app/hospitals/[id]/${tab}/page.tsx`, import.meta.url), 'utf8')
+}
+const publicPage = tabPage('public-page')
+const sourcesPage = tabPage('sources')
+const domainPage = tabPage('domain')
 const infoSources = `${infoPage}\n${factsSection}`
 
 test('남은 필수 항목은 서버 판정을 그대로 읽는다', () => {
@@ -55,10 +61,10 @@ test('다른 섹션이 저장한 뒤에는 사실 칸도 새 헤더로 다시 �
   )
 })
 
-test('자료를 등록한 저장은 근거 자료 표를 다시 읽게 한다', () => {
-  assert.match(infoPage, /status === 'QUEUED'/)
-  assert.match(infoPage, /setSourcesRefreshKey/)
-  assert.match(infoPage, /<SourcesSection hospitalId=\{hospitalId\} refreshKey=\{sourcesRefreshKey\}/)
+test('근거 자료 표는 근거 자료 탭에 있고, 열 때마다 목록을 다시 읽는다', () => {
+  // 결정 대기 2번 A draft: 병원 정보 저장이 등록한 자료는 근거 자료 탭을 열면 보인다.
+  assert.doesNotMatch(infoPage, /<SourcesSection/)
+  assert.match(sourcesPage, /<SourcesSection hospitalId=\{params\.id\} \/>/)
   assert.match(sourcesSection, /refreshKey/)
 })
 
@@ -264,17 +270,24 @@ test('사진 행은 공유 게이트가 판정하고 허용 용도 select를 다
   assert.doesNotMatch(photosSection, /asset_kind/)
 })
 
-test('세 섹션이 사실 섹션 뒤에 브랜드·사진·자기 도메인 순서로 붙는다', () => {
-  const facts = infoPage.indexOf('<FactsSection')
-  const brand = infoPage.indexOf('<BrandSection')
-  const photos = infoPage.indexOf('<PhotosSection')
-  const domain = infoPage.indexOf('<DomainSetupPanel')
-
-  assert.ok(facts >= 0 && brand > facts, '브랜드 섹션이 사실 섹션 뒤에 없다')
-  assert.ok(photos > brand, '사진 섹션이 브랜드 섹션 뒤에 없다')
-  assert.ok(domain > photos, '자기 도메인이 사진 섹션 뒤에 없다')
+test('공개 페이지·도메인·검색은 병원 정보에서 각자의 탭으로 나뉜다', () => {
+  // 결정 대기 2번 A draft. 병원 정보 화면에는 사실 칸만 남는다.
+  for (const moved of ['<BrandSection', '<PhotosSection', '<DomainSetupPanel', '<OwnershipVerificationSection']) {
+    assert.ok(!infoPage.includes(moved), `${moved}가 병원 정보 화면에 남았다`)
+  }
+  const brand = publicPage.indexOf('<BrandSection')
+  const photos = publicPage.indexOf('<PhotosSection')
+  assert.ok(brand >= 0 && photos > brand, '공개 페이지 탭은 브랜드 뒤에 사진을 둔다')
+  const domain = domainPage.indexOf('<DomainSetupPanel')
+  const ownership = domainPage.indexOf('<OwnershipVerificationSection')
+  assert.ok(domain >= 0 && ownership > domain, '도메인·검색 탭은 자기 도메인 뒤에 소유 확인을 둔다')
   // 도메인 확인은 자동 폴링이다 — 사이트가 준비된 뒤에만 칸을 연다.
-  assert.match(infoPage, /site_built && \(\s*<div id="domain-setup"/)
+  assert.match(domainPage, /site_built \? \(\s*<div id="domain-setup"/)
+})
+
+test('옛 병원 정보 앵커는 새 탭으로 보낸다', () => {
+  assert.match(infoPage, /movedInfoAnchorTarget\(hospitalId, window\.location\.hash\)/)
+  assert.match(infoPage, /addEventListener\('hashchange'/)
 })
 
 test('근거 자료 표는 읽고, 올리고, 제외하는 것만 한다', () => {
@@ -369,12 +382,6 @@ test('파일 고르는 칸은 이름이 있다', () => {
     sourcesSection,
     /id="info-source-file"[\s\S]{0,80}aria-label=\{ADMIN_COPY\.documentUploadLabel\}/,
   )
-})
-
-test('근거 자료는 사람이 입력하는 섹션 뒤 마지막에 붙는다', () => {
-  const domain = infoPage.indexOf('<DomainSetupPanel')
-  const sources = infoPage.indexOf('<SourcesSection')
-  assert.ok(domain >= 0 && sources > domain, '근거 자료 섹션이 마지막에 없다')
 })
 
 test('저장된 초안 불러오기 흐름은 없고, 수동 미리보기 버튼만 남는다', () => {

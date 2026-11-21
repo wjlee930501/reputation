@@ -942,6 +942,18 @@ export const ADMIN_COPY = {
     saving: '저장 중…',
     saved: '문구를 저장했습니다. 공개 페이지에는 몇 분 안에 반영됩니다.',
   },
+  // 병원 정보 탭 「모두 저장」 바(결정 대기 3번 A draft).
+  saveBar: {
+    none: '변경 없음',
+    // {count}는 바뀐 구획 수, {sections}는 구획 이름 목록.
+    pending: '저장 안 된 변경 {count}곳 · {sections}',
+    save: '모두 저장',
+    saving: '저장 중...',
+    saved: '저장되었습니다 ✓',
+    leaveConfirm: '저장하지 않은 병원 정보 변경이 있습니다. 저장하지 않고 이동할까요?',
+    hint: '사진·도메인·공개 페이지 칸은 그 칸의 버튼이 바로 저장합니다.',
+    sectionBadge: '저장 안 된 변경',
+  },
 } as const
 
 export function describeMentionRate(value: number | null): string {

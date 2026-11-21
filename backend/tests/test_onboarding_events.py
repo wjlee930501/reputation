@@ -120,7 +120,7 @@ def test_accepted_handoff_can_close_an_overdue_action_without_success_spam() -> 
     [
         (
             OnboardingEventType.ACTIVATION_READY,
-            f"/hospitals/{uuid.UUID('b1300000-0000-0000-0000-000000000001')}/info#domain-setup",
+            f"/hospitals/{uuid.UUID('b1300000-0000-0000-0000-000000000001')}/domain#domain-setup",
         ),
         (
             OnboardingEventType.HOSPITAL_ACTIVE,
