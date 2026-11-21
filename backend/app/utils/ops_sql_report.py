@@ -1,5 +1,6 @@
 """읽기 전용 운영 조회: 자율 운영 지표(Q1~Q6), 배포 전 확인(Q7), 롤백 점검(Q8), 콘텐츠 게이트 지표(Q9~Q11),
-Phase 4 사전 조회(Q12~Q14), 월간 보고서 보장(Q15), D36·D37 배포 전 영향(Q16)을 JSON 한 줄씩 출력한다.
+Phase 4 사전 조회(Q12~Q14), 월간 보고서 보장(Q15), D36·D37 배포 전 영향(Q16), 측정 키워드 30개 세트·새벽
+진행(Q17)을 JSON 한 줄씩 출력한다.
 
 새 세션의 트랜잭션에서 첫 문장으로 `SET TRANSACTION READ ONLY`를 실행해 DB 수준에서 쓰기를 막고,
 끝나면 롤백한다. 받은 세션에 이미 열린 트랜잭션이 있으면 먼저 롤백해 새로 시작한다::
@@ -657,6 +658,11 @@ QUERIES: dict[str, tuple[str, ...]] = {
     # q17 — ACTIVE 병원마다 30개 방식 여부·고정/교체 수·그룹별 수·옛 방식 측정 질문 수.
     # q17b — 새벽 창(month_start_dawn)으로 얼린 가장 최근 달의 병원별 계획 칸·받은 답변·확정 판정·첫/마지막 답변
     # 시각(1일 새벽 확인). 1일에 신규 병원 주간 측정이 이번 달 측정표를 만들어도 지난달 새벽 진행을 가리지 않는다.
+    # 플랫폼별 계획·받은 수로 Gemini 미설정(150칸)·한쪽 공급자 장애를 가른다.
+    # q17c — 지난 KST 달에 서비스 구간이 있는 코호트 병원마다 그 달 측정표가 있는지(없는 병원 먼저). q17b는
+    # 측정표가 생긴 병원만 보이므로 '아직 첫 실행을 못 받은 병원'은 여기서 본다.
+    # q17d — 지난 KST 달의 월간 측정 실행 기록(창 전체 MONTHLY_SOV_PERIOD 하나 + 병원별 RUN_SOV). 한 병원만
+    # 멈췄을 때 실행 상태·다음 시각(`not_before_at`)·lease·마지막 갱신 뒤 경과(`idle_for`)를 본다.
     "q17": (
         """
         SELECT h.name,
@@ -692,6 +698,12 @@ QUERIES: dict[str, tuple[str, ...]] = {
                count(s.id) FILTER (WHERE s.answer_status = 'RECEIVED') AS answers_received,
                count(s.id) FILTER (WHERE s.judgment_status IN ('CONFIRMED', 'AMBIGUOUS')) AS judged,
                count(s.id) FILTER (WHERE s.answer_status = 'FAILED') AS answer_failed,
+               count(s.id) FILTER (WHERE lower(s.platform) = 'chatgpt') AS planned_chatgpt,
+               count(s.id) FILTER (WHERE lower(s.platform) = 'gemini') AS planned_gemini,
+               count(s.id) FILTER (WHERE lower(s.platform) = 'chatgpt' AND s.answer_status = 'RECEIVED')
+                 AS received_chatgpt,
+               count(s.id) FILTER (WHERE lower(s.platform) = 'gemini' AND s.answer_status = 'RECEIVED')
+                 AS received_gemini,
                min(s.answered_at) AS first_answer_at,
                max(s.answered_at) AS last_answer_at,
                mm.closed_at
@@ -709,6 +721,63 @@ QUERIES: dict[str, tuple[str, ...]] = {
         WHERE mm.platform_provenance->'measurement_protocol'->>'measurement_window' = 'month_start_dawn'
         GROUP BY h.name, mm.id, mm.period_year, mm.period_month, mm.closed_at
         ORDER BY h.name
+        """,
+        """
+        SELECT h.name,
+               left(h.id::text, 8) AS hospital_id8,
+               period.y AS period_year,
+               period.m AS period_month,
+               mm.id IS NOT NULL AS has_manifest,
+               mm.platform_provenance->'measurement_protocol'->>'measurement_window' AS manifest_window,
+               coalesce(mm.platform_provenance ? 'query_sets', false) AS frozen_set30,
+               EXISTS (
+                   SELECT 1 FROM ai_query_targets t
+                   WHERE t.hospital_id = h.id AND t.status = 'ACTIVE' AND t.set_role IS NOT NULL
+               ) AS curated,
+               mm.frozen_at AS manifest_frozen_at
+        FROM (
+            SELECT extract(year FROM d)::int AS y,
+                   extract(month FROM d)::int AS m,
+                   make_timestamptz(extract(year FROM d)::int, extract(month FROM d)::int, 1,
+                                    0, 0, 0, 'Asia/Seoul') AS starts_at
+            FROM (SELECT date_trunc('month', now() AT TIME ZONE 'Asia/Seoul')
+                         - interval '1 month' AS d) AS anchor
+        ) AS period
+        JOIN hospitals h ON h.monthly_sov_cohort AND h.status = 'ACTIVE' AND EXISTS (
+            SELECT 1 FROM hospital_service_intervals si
+            WHERE si.hospital_id = h.id
+              AND si.started_at < period.starts_at + interval '1 month'
+              AND (si.ended_at IS NULL OR si.ended_at > period.starts_at)
+        )
+        LEFT JOIN monthly_measurement_manifests mm
+               ON mm.hospital_id = h.id AND mm.period_year = period.y AND mm.period_month = period.m
+        ORDER BY (mm.id IS NOT NULL), h.name
+        """,
+        """
+        SELECT coalesce(h.name, '-') AS hospital,
+               r.operation_type,
+               r.idempotency_key,
+               r.state,
+               r.attempt_count,
+               r.redispatch_count,
+               r.safe_error_code,
+               r.started_at,
+               r.heartbeat_at,
+               r.lease_expires_at,
+               r.not_before_at,
+               r.updated_at,
+               r.completed_at,
+               now() - r.updated_at AS idle_for
+        FROM (
+            SELECT to_char(date_trunc('month', now() AT TIME ZONE 'Asia/Seoul') - interval '1 month',
+                           'YYYY-MM') AS period_key
+        ) AS period
+        JOIN operation_runs r
+          ON (r.operation_type = 'RUN_SOV' AND r.idempotency_key LIKE 'monthly-sov:%:' || period.period_key)
+          OR (r.operation_type = 'MONTHLY_SOV_PERIOD'
+              AND r.idempotency_key = 'monthly-sov-period:' || period.period_key)
+        LEFT JOIN hospitals h ON h.id = r.hospital_id
+        ORDER BY r.operation_type DESC, r.state, h.name
         """,
     ),
 }

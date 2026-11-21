@@ -33,13 +33,13 @@ gcloud run jobs execute reputation-migrate --project mso-platform-481505 --regio
   --args=python,-m,app.utils.ops_sql_report,--only=q17,--only=q15,--only=q1
 ```
 
-출력은 `q17`(세트), `q17b`(새벽 진행), `q15`(보고서)·`q15b`(월간 사고)·`q15c`(보고서 재생성 실행), `q1`(열린 사고 종류별 수) 줄이다.
+출력은 `q17`(세트), `q17b`(새벽 진행 — 측정표가 생긴 병원만, 플랫폼별 `planned_/received_chatgpt·gemini` 포함), `q17c`(지난달 서비스 구간이 있는 코호트 병원마다 측정표 유무 — **없는 병원이 맨 위**), `q17d`(지난달 월간 측정 실행 기록 — 창 전체 `MONTHLY_SOV_PERIOD` 하나 + 병원별 `RUN_SOV`의 상태·`not_before_at`·lease·`idle_for`), `q15`(보고서)·`q15b`(월간 사고)·`q15c`(보고서 재생성 실행), `q1`(열린 사고 종류별 수) 줄이다. q17c·q17d·q15는 **지난 KST 달**을 본다 — 12/1에 돌리면 11월분이다.
 
 | 시각 | 볼 곳 | 정상 | 이상하면 |
 |---|---|---|---|
 | **00:00~00:15** | 운영센터 > 비용 패널의 SoV | 오늘 사용 0, 일 한도 9,000 | N × 330이 9,000에 가까우면(N ≥ 25) **이때** '오늘 일일 상한'을 올린다(대표 확인). 상향은 그날 키에만 걸려 11/30에 올리면 12/1에 적용되지 않는다 |
-| **00:45** | q17b | `period_month=11` 행이 생기기 시작, `frozen_set30=true`, `planned_slots=300` | 행이 하나도 없으면 첫 틱이 돌지 않았다 — 워커 로그 `run_monthly_sov_measurement`·`Monthly measurement dawn window is not open`, Beat 상태 확인. `frozen_set30=false`인 병원은 30개 세트가 아닌 채로 얼었다(q17에서 그 병원 `curated` 확인) — 이번 달은 되돌릴 수 없고 기록만 남긴다 |
-| **01:15** | q17b | **N곳 전부** 행이 있고 `answers_received` 합이 약 1,500(워커 2대 기준 분당 약 30칸) | 행이 없는 병원은 아직 첫 실행을 못 받았다(큐 적체). 01:45에도 없으면 q1의 `MONTHLY_SOV_COHORT_GAP`, 워커 로그 `Monthly visibility measurement dispatch failed` |
+| **00:45** | q17b | `period_month=11` 행이 생기기 시작, `frozen_set30=true`, `planned_slots=300`(`planned_chatgpt=150`·`planned_gemini=150` — gemini가 0이면 Gemini 미설정으로 150칸만 잰다) | 행이 하나도 없으면 첫 틱이 돌지 않았다 — 워커 로그 `run_monthly_sov_measurement`·`Monthly measurement dawn window is not open`, Beat 상태 확인. `frozen_set30=false`인 병원은 30개 세트가 아닌 채로 얼었다(q17에서 그 병원 `curated` 확인) — 이번 달은 되돌릴 수 없고 기록만 남긴다 |
+| **01:15** | q17b, q17c | q17c가 **모두 `has_manifest=true`**(N곳 전부 첫 실행을 받았다), q17b `answers_received` 합이 약 1,500(워커 2대 기준 분당 약 30칸) | q17c 맨 위 `has_manifest=false` 병원은 아직 첫 실행을 못 받았다(큐 적체). q17d에 그 병원 `RUN_SOV`가 없거나 `REQUESTED`/`QUEUED`면 큐 차례다. 01:45에도 없으면 q1의 `MONTHLY_SOV_COHORT_GAP`, 워커 로그 `Monthly visibility measurement dispatch failed` |
 | **02:15** | q17b | `answers_received` 합이 전체(N × 300)의 60% 이상, 먼저 시작한 병원은 300에 닿기 시작 | 합이 40% 미만이면 느리다 — 워커 2대인지, 01:00 콘텐츠 스윕과 겹쳤는지, 공급자 429가 많은지(`answer_failed`) 본다. 한 병원만 30분 넘게 그대로면 그 병원은 실패 페이지 뒤 다음 틱을 기다리는 중이다(아래 §3) |
 | **03:15** | q17b, q15b, 비용 패널 | 대부분 병원 300/300(`judged`≈300), `answer_failed`가 받은 답의 5% 미만, 남은 병원의 `last_answer_at`이 10분 안 | `answer_failed`가 늘면 공급자 장애(Gemini 429 등) — 다음 틱이 실패 칸을 다시 산다. q15b에 `MONTHLY_SOV_MEASUREMENT_FAILED`가 `safe_error_code=…_COST_GUARD_BLOCKED`면 비용 한도다 → 운영센터에서 오늘 상한을 올리면 **다음 틱이 그 병원을 다시 연다** |
 | **04:45** | q17b | N곳 전부 300/300 | 남은 병원은 실패 칸을 다시 사는 중이거나 늦게 시작했다. 07:00까지 끝나지 않은 칸은 LIMITED가 된다 — 기록만 남긴다(창 안에서 할 수 있는 조치 없음) |
@@ -66,9 +66,9 @@ gcloud run jobs execute reputation-migrate --project mso-platform-481505 --regio
 | 증상 | 먼저 볼 것 | 비고 |
 |---|---|---|
 | 모든 병원이 함께 멈춤 | 운영센터 비용 패널(SoV 일 사용량이 한도에 닿았나), q1의 `COST_GUARD_FAIL_OPEN`, 워커 `/live` 재시작 로그, Beat `beat_lock_wait_long` | 비용 한도면 오늘 상한 상향 → 다음 틱이 이어간다 |
-| 한 병원만 멈춤 | 그 병원 q15b 행의 `safe_error_code` | `MONTHLY_SOV_MEASUREMENT_PARTIAL`(실패 칸 있음)은 다음 틱이 다시 연다. `…_INCOMPLETE`는 마감·이어가기 예산 소진 때만 나온다 |
-| `answer_failed` 급증 | 워커 로그의 공급자 오류(429·5xx) | 슬롯은 재시도 예산 안에서 다음 틱에 다시 산다 |
-| q17b에 병원이 안 나옴 | q17의 그 병원 `monthly_sov_cohort`, q1의 `MONTHLY_SOV_COHORT_GAP` | 코호트가 아니면 이번 달 월간 측정 대상이 아니다 |
+| 한 병원만 멈춤 | q17d의 그 병원 `RUN_SOV` 행(`state`·`not_before_at`·`lease_expires_at`·`idle_for`), 그 병원 q15b 행의 `safe_error_code` | `MONTHLY_SOV_MEASUREMENT_PARTIAL`(실패 칸 있음)은 다음 틱이 다시 연다. `…_INCOMPLETE`는 마감·이어가기 예산 소진 때만 나온다 |
+| `answer_failed` 급증 | q17b의 플랫폼별 받은 수(`received_chatgpt`·`received_gemini`)로 어느 공급자인지, 워커 로그의 공급자 오류(429·5xx) | 슬롯은 재시도 예산 안에서 다음 틱에 다시 산다 |
+| q17b에 병원이 안 나옴 | q17c(측정표가 아직 없는 코호트 병원), q17의 그 병원 `monthly_sov_cohort`, q1의 `MONTHLY_SOV_COHORT_GAP` | 코호트가 아니면 이번 달 월간 측정 대상이 아니다 |
 | `frozen_set30=false` | q17의 그 병원 `curated`·`legacy_tracked` | 등록이 빠진 병원 — 이번 달은 옛 방식으로 잰다(되돌리지 않는다) |
 
 ## 4. 끝난 뒤 남길 것
