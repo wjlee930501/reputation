@@ -1,6 +1,6 @@
-# 2026-11-21 일곱 번 배포 — 어드민 개편 1단계·레이아웃 편집기 3a~③-2f·공개 반영 열기·측정 30개
+# 2026-11-21 여덟 번 배포 — 어드민 개편 1단계·레이아웃 편집기 3a~③-2f·공개 반영 열기·측정 30개
 
-상태: **2026-11-21 KST에 일곱 번 배포했다.**
+상태: **2026-11-21 KST에 여덟 번 배포했다.**
 - 1차: 02:01~02:07, main `2241f431`, Backend·Admin.
 - 2차: 04:46~04:51, main `85754f20`, Backend·Admin. 2차에는 마이그레이션 `0100`이 있다.
 - 3차: 08:46~08:52, main `0f93551b`, **Backend·Site·Admin**. 마이그레이션은 없다.
@@ -8,6 +8,7 @@
 - 5차: 15:36~15:43, main `84b8f70c`, **Backend·Site·Admin**. 레이아웃 편집기 ③-2a·③-2b(#357~#360). 마이그레이션은 없다. 14:20 첫 시도는 gcloud 로그인 만료로 사전 검증에서 멈췄다(운영 변경 없음).
 - 6차: 15:47~15:49, main `f98c433b`, **Site·Admin만**(백엔드 변경 없음). ③-2c-1·③-2c-2·③-2d·③-2e(#361·#362·#365·#366)와 어드민 의료진 사진 안내(#363), 결정 대기 문서(#364).
 - 7차: 19:29~19:37, main `c0ae1adf`(통합 PR #391), **Backend·Site·Admin**. 마이그레이션 `0101`·`0102`. **공개 반영을 열었다**(#373, 사용자 지시 "배포 끝나면 공개 반영 열어"). 측정 키워드 30개(#378~#382)와 운영 env 월간 SoV 한도 9000→13500(사용자 지시 "한도는 13500으로 올려").
+- 8차: 21:03~21:10, main `8ccca11a`(통합 PR #398), **Backend·Site·Admin**. 마이그레이션 없음. 측정 페이지 이어가기(#396)·30개 초안 생성기 결함 수정, readiness 섹션 설정 사실(#387), 미전달 집계 철회 제외(#392), 첫 화면 줄바꿈 강제 자리 검사(#397), 공유 이미지 대체 글(#386), 문서 #385·#393·#394. 배포 뒤 측정 30개 세트를 16곳에 적용했다.
 - 사용자 지시: "완료 되면 병합, 배포까지 하고 바로 다음 단계로", "1단계에서 할 수 있는 것들 바로 진행 먼저 싹하고, 다음으로 레이아웃 편집기 3a 진행", "배포 2차 끝나고 문서 쓰고, 다음도 이어서 알아서 진행해".
 - 1·2차는 Site를 바꾸지 않았다. 3차에서 Site가 `00157-q7b` → `00158-qt2`가 됐다.
 
@@ -148,6 +149,24 @@ DEPLOY_ROLLBACK_STATE_FILE=.deploy-rollback-admin bash scripts/deploy.sh admin -
 - 첫 달 편수(#377)를 마케터가 줄인 뒤 Worker를 7차 이전으로 롤백하면 옛 판정이 그 달을 계약 편수로 보고 「미달」로 표시한다 — 롤백 전에 위 영향 조회로 `changed`를 남긴다.
 - `--accept-env-diff` 배포는 로컬 파일을 정본으로 삼으므로 Terraform이 선언한 키를 파일에 모두 적어야 한다(빈 값 = 설정 안 함). 운영 env 정본 배포(옵션 없음)에서는 이 검사를 건너뛴다.
 
+
+## 8차 — 통합 C(측정 이어가기·초안 생성기·남은 PR)
+
+| 단계 | 시각(KST) | 결과 |
+|---|---|---|
+| 통합 C #398 CI | 21:03 | 10/10 통과(헤드 `3764adf0`). 개별 PR CI는 러너를 비우려 취소했다. 로컬: 백엔드 관련 307, Site 633, Admin 791, 두 쪽 `tsc` |
+| 배포 전 리비전 | 21:03 | api `00303-vds`, worker `00296-55n`, beat `00291-2nv`, site `00161-tmh`, admin `00135-wf9`. `.omo/rollback-8th1121/rollback.state` |
+| 병합 | 21:03 | main `8ccca11a`, 트리 = 통합 헤드 트리 |
+| `deploy.sh backend` | 21:03~21:08 | 성공(운영 env 정본, 변경 없음). worker `00297-zmv`, beat `00292-55c`, api `00304-jqg`, readiness·공개 표면 확인 통과. 21:15 배치 시간대 직전 |
+| `deploy.sh site`·`admin` | 21:08~21:10 | 성공. site `00162-p5t`, admin `00136-fzd` |
+| 측정 30개 `show` 재검토 | 21:1x | 새 생성기 초안을 측정 세션이 자동 점검기로 검토 — 옛 초안의 지적 44건(기관명 '건강검진'·나열형 진료 항목·일반어 주제·지명 키워드) 0건, 45자 넘는 문장 2건은 자연스러워 그대로 |
+| `measurement_set_rollout apply --confirm` | 21:10~ | 16곳 `applied`, problems 0, 병원마다 고정 20·교체 10·후보 9(만든 행 39). 옛 추적 질문 15개는 13곳에서 내려갔다(released 15) |
+| precheck 다시 | | 16곳 `skip_curated`·`legacy_tracked 0` |
+| q17 | | 16곳 모두 A5·B10·C8·D7. 코호트 13곳, 코호트 밖 3곳(유내과·다올연합·다대으뜸)은 11/23 02:00 주간 배치 또는 12/1 00:15 첫 틱이 자동 편입 |
+
+- 병원 16곳 200·hospital ID 일치, Admin 로그인 200.
+- 마케터 몫(12/1 전 어드민 콘텐츠 > 측정 키워드): 유내과 '경동맥 때문에…' 문장, 다대으뜸 'GLP 1'→'GLP-1', 마포 'C arm'→'C-arm', 365서귀포 '종물 제거' 표기, 다올 기관명이 '신경과'(진료과 순서 확인), 뉴플랜 민감 문항 유지 여부, 신기한속·연세속시원·행복드림·노원탑 주제 중복, 세종다온 '고혈압 … 신경과'.
+
 ## 배포 뒤 확인
 
 ### 1차
@@ -244,7 +263,7 @@ DEPLOY_ROLLBACK_STATE_FILE=.deploy-rollback-admin bash scripts/deploy.sh admin -
 - **CI 리허설은 DB head를 하드코딩한다.** 위치는 `scripts/integrity_rehearsal/check.py`다. 마이그레이션을 더하는 PR은 이 값도 함께 올려야 한다(#349가 0100으로 올렸다).
 
 ## 지금 운영 리비전
-- api `00303-vds`, worker `00296-55n`, beat `00291-2nv`, site `00161-tmh`, admin `00135-wf9`.
+- api `00304-jqg`, worker `00297-zmv`, beat `00292-55c`, site `00162-p5t`, admin `00136-fzd`.
 - DB head는 `0102_add_hospital_contract_ended_on`다.
 
 ## 롤백
@@ -256,6 +275,7 @@ DEPLOY_ROLLBACK_STATE_FILE=$PWD/.omo/rollback-admin1121/rollback.state bash scri
 ```bash
 DEPLOY_ROLLBACK_STATE_FILE=$PWD/.omo/rollback-3rd1121/rollback.state bash scripts/deploy.sh rollback   # 3차만(Site 포함 다섯 서비스)
 ```
+- 8차만 되돌릴 때: `DEPLOY_ROLLBACK_STATE_FILE=$PWD/.omo/rollback-8th1121/rollback.state` — api `00303-vds`, worker `00296-55n`, beat `00291-2nv`, site `00161-tmh`, admin `00135-wf9`. 측정 30개 적용(데이터)은 코드 롤백으로 되돌아가지 않는다.
 - 7차만 되돌릴 때: `DEPLOY_ROLLBACK_STATE_FILE=$PWD/.omo/rollback-ab1121/rollback.state` — api `00302-ksn`, worker `00295-5tm`, beat `00290-8mg`, site `00160-txz`, admin `00134-4fv`. 마이그레이션 0101·0102(추가형 칸)는 되돌리지 않는다. 월간 SoV 한도도 옛 리비전 env(9000)로 돌아간다.
 - 6차만 되돌릴 때: `DEPLOY_ROLLBACK_STATE_FILE=$PWD/.omo/rollback-6th1121/rollback.state` — site `00159-jzr`, admin `00133-lp7`.
 - 5차만 되돌릴 때: `DEPLOY_ROLLBACK_STATE_FILE=$PWD/.omo/rollback-5th1121/rollback.state` — api `00301-pjs`, worker `00294-zv7`, beat `00289-m8j`, site `00158-qt2`, admin `00132-ssx`(공개된 설정이 없으니 화면은 같다).
