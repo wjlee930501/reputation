@@ -436,10 +436,10 @@ def _render(template: str, **values: str) -> str:
     return re.sub(r"(검사|검진)\s+검사", r"\1", text)
 
 
-def _interleave(columns: Sequence[Sequence[tuple[str, str | None]]]) -> list[tuple[str, str | None]]:
+def _interleave(columns: Sequence[Sequence[tuple[str, Any]]]) -> list[tuple[str, Any]]:
     """열마다 한 줄씩 돌아가며 — 한 항목·한 문형이 앞자리를 몰아 차지하지 않게."""
 
-    rows: list[tuple[str, str | None]] = []
+    rows: list[tuple[str, Any]] = []
     depth = max((len(column) for column in columns), default=0)
     for index in range(depth):
         for column in columns:
@@ -494,18 +494,21 @@ def draft_measurement_set(
         else:
             brand.append((_render(template, 병원명=name), None))
 
-    # B 진료·검사 탐색 — 진료과 문형 한 열 + 항목마다 한 열.
-    explore_columns: list[list[tuple[str, str | None]]] = [
-        [(_render(template, 지역=region_at(), 기관=clinic), None) for template in _EXPLORE_SPECIALTY]
-    ]
-    for topic in topics:
-        explore_columns.append(
-            [
+    # B 진료·검사 탐색 — 진료과 문형 한 열 + 항목마다 한 열. 항목마다 시작 문형을 돌려(첫 줄이 모두 '검사 되는
+    # 곳'이 되지 않게) 열을 번갈아 뽑은 뒤, 지역은 뽑힌 순서대로 돌려 붙인다(같은 지역이 몰리지 않게 — 지침 3-1·3-3).
+    columns: list[list[tuple[str, _Topic | None]]] = [[(template, None) for template in _EXPLORE_SPECIALTY]]
+    for index, topic in enumerate(topics):
+        templates = list(_explore_templates(topic))
+        shift = index % len(templates)
+        columns.append([(template, topic) for template in templates[shift:] + templates[:shift]])
+    explore: list[tuple[str, str | None]] = []
+    for template, topic in _interleave(columns):
+        if topic is None:
+            explore.append((_render(template, 지역=region_at(), 기관=clinic), None))
+        else:
+            explore.append(
                 (_render(template, 지역=region_at(), 항목=topic.term, 기관=clinic), topic.term)
-                for template in _explore_templates(topic)
-            ]
-        )
-    explore = _interleave(explore_columns)
+            )
 
     # C 증상·고민 — 진료과별 문형, 없으면 질환·증상 항목으로 기본 문형.
     symptom: list[tuple[str, str | None]] = []

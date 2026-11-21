@@ -225,7 +225,9 @@ async def _load_targets(db: AsyncSession, hospital_id: uuid.UUID) -> list[AIQuer
             AIQueryTarget.hospital_id == hospital_id,
             AIQueryTarget.status.in_(ACTIVE_TARGET_STATUSES),
             # 병원명 질문(측정 키워드 그룹 A)은 노출 보완 제안·글 주제의 근거가 아니다.
-            measurement_set.content_eligible_clause(AIQueryTarget.question_group),
+            measurement_set.content_eligible_clause(
+                AIQueryTarget.question_group, AIQueryTarget.name
+            ),
         )
     )
     return list(result.scalars().all())

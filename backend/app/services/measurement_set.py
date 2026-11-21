@@ -17,7 +17,7 @@ import hashlib
 from collections.abc import Iterable
 from typing import Any, Final
 
-from sqlalchemy import or_
+from sqlalchemy import and_, or_
 
 from app.services.sov_engine import QUERY_INTENT_BRAND, QUERY_INTENT_LOCAL
 
@@ -89,19 +89,33 @@ def set_measurement_intent(target: object) -> str | None:
     return QUERY_INTENT_BRAND if group == GROUP_BRAND else QUERY_INTENT_LOCAL
 
 
+# 측정 질문에는 쓰지만(지침 3-1: "잘하는 곳", "잘 보는 ○○과") 글 주제·제목으로는 쓰지 않는 문형 — 과장 표현이라
+# 2026-08-14 유료 템플릿에서 뺀 말이다. 글 제목은 자동 발행된다(설계 §9-7).
+SUPERLATIVE_PHRASES: Final[tuple[str, ...]] = (
+    "잘하는", "잘 하는", "잘보는", "잘 보는", "잘 빼는", "잘빼는", "잘 놓는", "잘놓는", "잘해주는", "잘 해주는",
+)
+
+
 def content_eligible(target: object) -> bool:
     """이 질문을 글 주제·노출 보완 제안의 근거로 써도 되는가.
 
     병원명 질문(A)은 쓸 수 없다 — "{병원명} 어때?"는 글 주제가 아니라 병원 정보 정확도 점검이다.
+    "잘하는 곳"·"잘 보는 ○○과" 같은 측정 문형도 글 주제로 쓰지 않는다(과장 표현).
     """
 
-    return target_question_group(target) != GROUP_BRAND
+    if target_question_group(target) == GROUP_BRAND:
+        return False
+    text = _text(getattr(target, "name", ""))
+    return not any(phrase in text for phrase in SUPERLATIVE_PHRASES)
 
 
-def content_eligible_clause(column: Any) -> Any:
-    """`content_eligible`의 SQL 꼴 — `AIQueryTarget.question_group` 칸을 받는다."""
+def content_eligible_clause(group_column: Any, name_column: Any) -> Any:
+    """`content_eligible`의 SQL 꼴 — `AIQueryTarget.question_group`·`name` 칸을 받는다."""
 
-    return or_(column.is_(None), column != GROUP_BRAND)
+    return and_(
+        or_(group_column.is_(None), group_column != GROUP_BRAND),
+        *(name_column.notlike(f"%{phrase}%") for phrase in SUPERLATIVE_PHRASES),
+    )
 
 
 def _question_texts(target: object) -> list[str]:

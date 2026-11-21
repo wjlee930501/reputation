@@ -157,3 +157,44 @@ def test_codex_review_generator_cases():
         keywords=["고혈압"],
     )
     assert not any(" 내과" in r.text for r in family)
+
+
+def test_fixed_b_questions_vary_template_and_region():
+    """지침 3-1(한두 틀만 반복 금지)·3-3(지역 단위 섞기) — 고정 B가 같은 틀·같은 지역으로 몰리지 않는다."""
+
+    from collections import Counter
+
+    for args in (
+        {"hospital_name": "행복드림의원", "region": ["서울 마포구", "합정동"], "specialties": ["내과"],
+         "keywords": ["위내시경", "갑상선초음파", "대장내시경", "당뇨"], "treatments": [{"name": "건강검진"}]},
+        {"hospital_name": "미소가득치과", "region": ["창원 마산", "합성동"], "specialties": ["치과"],
+         "keywords": ["임플란트", "충치치료", "사랑니"]},
+    ):
+        rows = [r for r in draft_measurement_set(**args) if r.group == "B" and r.role == "FIXED"]
+        regions = sorted({part for value in args["region"] for part in (value, *value.split())}, key=len, reverse=True)
+        items = [str(k) for k in args["keywords"]] + [t["name"] for t in args.get("treatments", [])]
+
+        def region_of(text: str) -> str:
+            return next(region for region in regions if region in text)
+
+        def skeleton(text: str) -> str:
+            for item in sorted(items, key=len, reverse=True):
+                text = text.replace(item, "{항목}")
+            return text.replace(region_of(text), "{지역}", 1)
+
+        assert max(Counter(skeleton(r.text) for r in rows).values()) <= 2
+        assert max(Counter(region_of(r.text) for r in rows).values()) <= 3
+
+
+def test_superlative_questions_are_measured_but_never_content_topics():
+    from types import SimpleNamespace
+
+    from app.services import measurement_set
+
+    def target(name, group="B"):
+        return SimpleNamespace(name=name, question_group=group)
+
+    assert not measurement_set.content_eligible(target("강남 임플란트 잘하는 치과"))
+    assert not measurement_set.content_eligible(target("강남에 잘 보는 내과 있어?"))
+    assert measurement_set.content_eligible(target("강남 임플란트 받을 수 있는 치과 알려줘"))
+    assert not measurement_set.content_eligible(target("행복의원 어때?", group="A"))
