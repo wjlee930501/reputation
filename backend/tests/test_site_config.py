@@ -695,7 +695,9 @@ def test_preview_token_round_trip_tamper_expiry_and_disabled(monkeypatch) -> Non
     assert claim == tokens.PreviewClaim(hospital_id, draft_id, 7, expires_at)
     assert tokens.verify_preview_token(token, now=expires_at) is None
     body, signature = token.split(".")
-    assert tokens.verify_preview_token(f"{body}.{signature[:-1]}A", now=1010) is None
+    # 변조는 서명 첫 글자를 다른 글자로 — 마지막 글자는 base64url의 버려지는 하위 비트라 바꿔도 같은 서명이 될 수 있다.
+    tampered = ("B" if signature[0] != "B" else "C") + signature[1:]
+    assert tokens.verify_preview_token(f"{body}.{tampered}", now=1010) is None
     # 다른 비밀값으로는 열리지 않는다.
     monkeypatch.setattr(settings, "SITE_PREVIEW_TOKEN_SECRET", "other")
     assert tokens.verify_preview_token(token, now=1010) is None

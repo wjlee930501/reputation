@@ -1,6 +1,8 @@
 import Link from 'next/link'
 import type { ReactNode } from 'react'
 import { SectionLabel } from './SectionLabel'
+import { LineBroken } from './LineBroken'
+import { lineBreaksFor, type ClinicSiteConfig } from '@/lib/clinic-site-config'
 
 import { IconAftercare, IconExam, IconExplain } from '@/components/brand'
 import { CARE_PRINCIPLES, CARE_PRINCIPLES_LEDE, resolveCarePrinciples } from '@/lib/clinic-template-copy'
@@ -8,6 +10,8 @@ import type { CarePrinciplesCopy } from '@/lib/hospital-payload'
 import { regionSentenceLabel } from '@/lib/clinic-region'
 
 interface Props {
+  /** 섹션 설정(줄바꿈 지정을 읽는다, `lineBreaksFor`). 없으면 지금 마크업 그대로. */
+  siteConfig?: ClinicSiteConfig | null
   /** 영문 소제목(섹션 설정·레이아웃 기본, `plan.label`). 없으면 그리지 않는다 — 지금 마크업 그대로. */
   sectionLabel?: string | null
   hospitalRootUrl: string
@@ -69,6 +73,7 @@ export function CarePrinciples({
   useDefaultCards = true,
   channelsHref,
   sectionLabel = null,
+  siteConfig = null,
 }: Props) {
   const principles = resolveCarePrinciples(custom)
   const own = useDefaultCards ? principles.cards : principles.cards.filter((_, index) => Boolean(custom?.cards[index]))
@@ -100,19 +105,40 @@ export function CarePrinciples({
             {/* 영문 소제목은 우리말 머리글 위 — 'POLICY / 진료 원칙 / 제목'(레퍼런스 3-라: 영문 + 작은 우리말). */}
             {sectionLabel ? <SectionLabel text={sectionLabel} /> : null}
             <span className="clinic-principles-eyebrow">진료 원칙</span>
-            <h2 className="clinic-section-title">{title ?? principles.title}</h2>
-            <p className="clinic-principles-statement">{lede}</p>
+            <h2 className="clinic-section-title">
+              <LineBroken
+                text={title ?? principles.title}
+                breaks={lineBreaksFor(siteConfig, 'care_principles.title', title ?? principles.title)}
+              />
+            </h2>
+            <p className="clinic-principles-statement">
+              <LineBroken text={lede} breaks={lineBreaksFor(siteConfig, 'care_principles.lede', lede)} />
+            </p>
           </header>
 
           <div className="clinic-belief-grid">
-            {cards.map((principle) => (
-              <BeliefCard
-                key={principle.key}
-                icon={BELIEF_ICONS[principle.key]}
-                title={principle.title}
-                body={principle.body}
-              />
-            ))}
+            {cards.map((principle) => {
+              // 줄바꿈 경로의 카드 번호는 카드 자리(기본 카드를 끄거나 카드 수를 줄여도 그 자리 번호)다.
+              const slot = principles.cards.indexOf(principle)
+              return (
+                <BeliefCard
+                  key={principle.key}
+                  icon={BELIEF_ICONS[principle.key]}
+                  title={
+                    <LineBroken
+                      text={principle.title}
+                      breaks={lineBreaksFor(siteConfig, `care_principles.cards[${slot}].title`, principle.title)}
+                    />
+                  }
+                  body={
+                    <LineBroken
+                      text={principle.body}
+                      breaks={lineBreaksFor(siteConfig, `care_principles.cards[${slot}].body`, principle.body)}
+                    />
+                  }
+                />
+              )
+            })}
           </div>
 
           <div className="clinic-principles-actions">
@@ -132,8 +158,8 @@ function BeliefCard({
   body,
 }: {
   icon: ReactNode
-  title: string
-  body: string
+  title: ReactNode
+  body: ReactNode
 }) {
   return (
     <article className="clinic-belief-card">

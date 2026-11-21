@@ -100,7 +100,8 @@ test('a single-line approved headline needs no lead part', () => {
 test('the hero renders the separator and lets the browser choose the line breaks', () => {
   // 공백은 JSX에서 조각 사이에 명시적으로 넣어야 한다 — 줄바꿈만 두면 사라진다.
   // 조각은 줄바꿈 묶음(KeepTogether)으로 그리되 사이 공백은 그대로 둔다.
-  assert.match(HERO, /<KeepTogether text=\{part\} compounds \/>\{' '\}/)
+  // 줄바꿈 지정(③-2f)이 없을 때의 모양(fallback)은 지금 그대로 KeepTogether이고, 조각 뒤 공백도 그대로다.
+  assert.match(HERO, /fallback=\{<KeepTogether text=\{part\} compounds \/>\}\s*\/>\{' '\}/)
 
   const titleRules: postcss.Rule[] = []
   const fragments: postcss.Rule[] = []
