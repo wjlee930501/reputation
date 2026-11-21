@@ -704,3 +704,8 @@
   font-size: 16px;
   line-height: 1.75;
 }
+
+/* ③-2c 영문 소제목 — 진한 띠(오늘 진료) 위에서는 띠 글자색. */
+.band :global(.clinic-look-label) {
+  color: var(--clinic-on-brand-strong);
+}

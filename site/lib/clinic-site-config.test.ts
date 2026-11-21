@@ -18,8 +18,12 @@ import {
   FIXED_SECTIONS,
   DEFAULT_HERO_BLOCKS,
   limitCarePrincipleCards,
+  DEFAULT_PHOTO_RATIO,
+  DEFAULT_SECTION_LOOK,
+  SECTION_LABEL_WORDS,
   naverBookingUrl,
   normalizeSiteConfig,
+  physicianPhotoLook,
   resolveCareFlow,
   resolveHeroBlocks,
   resolveHomeFaqEntries,
@@ -105,8 +109,20 @@ for (const layout of LAYOUTS) {
     assert.equal(config.hero.blocks, null)
     assert.equal(resolveHeroBlocks(config, 'https://map.naver.com/p/entry/place/1'), null)
     assert.deepEqual(config.treatments, { style: 'cards', showDescription: true })
+    // ③-2b 의료진 칸도 기본값이면 지금 마크업이다.
+    assert.deepEqual(config.doctor, { photoRatio: null, photoFocus: null, titleBelow: false })
+    // ③-2c 섹션 머리도 기본값이면 지금 마크업이다 — 정렬 틀 없음, 소제목은 레이아웃 기본(C만 보임).
+    for (const id of DEFAULT_SECTION_ORDER[layout]) {
+      assert.equal(withConfig.align(id), null, `${layout} ${id}`)
+      assert.equal(withConfig.label(id), without.label(id), `${layout} ${id}`)
+    }
+    assert.equal(physicianPhotoLook(config), null)
   })
 }
+
+test('the default doctor photo ratio per layout equals the backend default', () => {
+  for (const layout of LAYOUTS) assert.equal(DEFAULT_PHOTO_RATIO[layout], DEFAULTS.layouts[layout].doctor.photo_ratio, layout)
+})
 
 test('the default info strip blocks equal the backend default', () => {
   for (const layout of LAYOUTS) assert.deepEqual([...DEFAULT_HERO_BLOCKS], DEFAULTS.layouts[layout].hero.blocks)
@@ -387,4 +403,90 @@ test('the booking link is the Naver place page (stored URL first, else built fro
   assert.equal(naverBookingUrl({ naver_place_url: 'javascript:alert(1)', naver_place_id: null }), null)
   assert.equal(naverBookingUrl({ naver_place_url: null, naver_place_id: 'abc' }), null)
   assert.equal(naverBookingUrl({}), null)
+})
+
+// ── ③-2b 의료진 사진 비율·초점, 직함 위치(A·B·C) ─────────────────────────
+
+test('a doctor photo ratio counts only when it differs from the layout default', () => {
+  const ratio = (layout: 'A' | 'B' | 'C', value: string) =>
+    normalizeSiteConfig(published(layout, (c) => (c.doctor.photo_ratio = value)), layout)?.doctor.photoRatio
+  assert.equal(ratio('A', 'landscape'), null)
+  assert.equal(ratio('A', 'portrait'), 'portrait')
+  assert.equal(ratio('B', 'portrait'), null)
+  assert.equal(ratio('B', 'square'), 'square')
+  assert.equal(ratio('C', 'portrait'), null)
+  assert.equal(ratio('C', 'landscape'), 'landscape')
+  assert.equal(ratio('B', 'wide'), null)
+})
+
+test('the photo look carries only the changed ratio and focus', () => {
+  const look = (patch: (c: Record<string, any>) => void) =>
+    physicianPhotoLook(normalizeSiteConfig(published('B', patch), 'B'))
+  assert.deepEqual(look((c) => (c.doctor.photo_ratio = 'square')), { aspectRatio: '1 / 1', objectPosition: null })
+  assert.deepEqual(look((c) => (c.doctor.photo_focus = { x: 0.5, y: 0.2 })), { aspectRatio: null, objectPosition: '50% 20%' })
+  assert.equal(look((c) => (c.doctor.photo_focus = { x: 0.5, y: 0.5 })), null)
+  assert.equal(look((c) => (c.doctor.photo_focus = { x: 2, y: 0.2 })), null)
+  assert.equal(look((c) => (c.doctor.photo_focus = 'top')), null)
+  assert.equal(physicianPhotoLook(null), null)
+})
+
+test('the title goes below the name only when the config says so', () => {
+  for (const layout of LAYOUTS) {
+    const below = normalizeSiteConfig(published(layout, (c) => (c.doctor.title_position = 'below')), layout)
+    assert.equal(below?.doctor.titleBelow, true, layout)
+    const above = normalizeSiteConfig(published(layout, (c) => (c.doctor.title_position = 'side')), layout)
+    assert.equal(above?.doctor.titleBelow, false, layout)
+  }
+})
+
+// ── ③-2c 섹션 머리: 제목 정렬·영문 소제목 ─────────────────────────────
+
+test('the section head defaults equal the backend defaults (align, label)', () => {
+  for (const layout of LAYOUTS) {
+    for (const section of DEFAULTS.layouts[layout].sections as Array<{ id: string; align: string; label: boolean }>) {
+      const look = DEFAULT_SECTION_LOOK[layout][section.id as never] as { align: string; label: boolean } | undefined
+      if (section.id === 'hero' || section.id === 'section_index') {
+        assert.equal(look, undefined, `${layout} ${section.id} has no head`)
+        continue
+      }
+      assert.deepEqual(look, { align: section.align, label: section.label }, `${layout} ${section.id}`)
+    }
+  }
+})
+
+test('C keeps its current English labels; A and B show none by default', () => {
+  const c = buildHomeSectionPlan('C', null)
+  const expected = {
+    news: 'NEWS', hours: 'INFORMATION', treatments: 'MEDICAL', doctor: 'DOCTOR', care_principles: 'POLICY',
+    care_flow: 'FLOW', questions: 'Q&A', faq: 'FAQ', gallery: 'CLINIC', facts: 'ACCESS',
+  } as const
+  for (const [id, word] of Object.entries(expected)) assert.equal(c.label(id as never), word, id)
+  for (const layout of ['A', 'B'] as const) {
+    const plan = buildHomeSectionPlan(layout, null)
+    for (const id of DEFAULT_SECTION_ORDER[layout]) assert.equal(plan.label(id), null, `${layout} ${id}`)
+  }
+  for (const layout of LAYOUTS) {
+    for (const id of Object.keys(DEFAULT_SECTION_LOOK[layout])) {
+      assert.ok(SECTION_LABEL_WORDS[layout][id as never], `${layout} ${id} needs a label word`)
+    }
+  }
+})
+
+test('a changed align or label shows; the same as the default does not; heads-less sections ignore them', () => {
+  const plan = (layout: 'A' | 'B' | 'C', patch: (sections: Array<Record<string, any>>) => void) => {
+    const config = normalizeSiteConfig(published(layout, (c) => patch(c.sections)), layout)
+    return buildHomeSectionPlan(layout, config)
+  }
+  const set = (id: string, values: Record<string, unknown>) => (sections: Array<Record<string, any>>) =>
+    Object.assign(sections.find((section) => section.id === id) ?? {}, values)
+  const b = plan('B', set('treatments', { align: 'left', label: true }))
+  assert.equal(b.align('treatments'), 'left')
+  assert.equal(b.label('treatments'), 'MEDICAL')
+  assert.equal(plan('B', set('treatments', { align: 'center', label: false })).align('treatments'), null)
+  const c = plan('C', set('faq', { label: false, align: 'center' }))
+  assert.equal(c.label('faq'), null)
+  assert.equal(c.align('faq'), 'center')
+  const hero = plan('B', set('hero', { align: 'center', label: true }))
+  assert.equal(hero.align('hero'), null)
+  assert.equal(hero.label('hero'), null)
 })

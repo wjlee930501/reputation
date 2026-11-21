@@ -1,6 +1,7 @@
 import { CLINIC_IMAGE_SIZES } from '@/lib/clinic-image-delivery'
 import Image from 'next/image'
 import Link from 'next/link'
+import { SectionLabel } from './SectionLabel'
 
 import { resolveAssetUrl, type HospitalPhoto } from '@/lib/api'
 import { countLabel, previewCountLabel } from '@/lib/clinic-counters'
@@ -11,6 +12,8 @@ import { GALLERY_SECTION_TITLE } from '@/lib/clinic-template-copy'
 import { isPreviewAssetUrl } from '@/lib/site-preview-assets'
 
 interface Props {
+  /** 영문 소제목(섹션 설정·레이아웃 기본, `plan.label`). 없으면 그리지 않는다 — 지금 마크업 그대로. */
+  sectionLabel?: string | null
   photos: HospitalPhoto[]
   /**
    * 표면별 장수 정책. 기본값을 두지 않는다 — 홈과 `/visit`이 컴포넌트 기본값과
@@ -33,7 +36,7 @@ export const GALLERY_TYPE_LABELS: Record<HospitalPhoto['source_type'], string> =
   PHOTO_TREATMENT_ROOM: '진료·시술실',
 }
 
-export function ClinicGallery({ photos, policy, excludeUrl = null, allPhotosHref = null, title, note }: Props) {
+export function ClinicGallery({ photos, policy, excludeUrl = null, allPhotosHref = null, title, note, sectionLabel = null }: Props) {
   const selection = selectClinicGalleryPhotos(photos, policy.previewLimit, { excludeUrl })
   const visible = selection.photos
   if (visible.length < policy.minimumPhotoCount) return null
@@ -44,6 +47,7 @@ export function ClinicGallery({ photos, policy, excludeUrl = null, allPhotosHref
     <section className="clinic-section">
       <div className="clinic-section-inner">
         <header className="clinic-section-head">
+          {sectionLabel ? <SectionLabel text={sectionLabel} /> : null}
           <h2 className="clinic-section-title">{title ?? GALLERY_SECTION_TITLE}</h2>
           {note ? <p className="clinic-section-note">{note}</p> : null}
         </header>

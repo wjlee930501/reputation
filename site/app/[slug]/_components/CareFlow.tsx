@@ -1,9 +1,12 @@
 import Link from 'next/link'
+import { SectionLabel } from './SectionLabel'
 
 import type { CareFlowStepView } from '@/lib/clinic-site-config'
 import { CARE_FLOW_NOTE, CARE_FLOW_TITLE, CARE_STEPS } from '@/lib/clinic-template-copy'
 
 interface Props {
+  /** 영문 소제목(섹션 설정·레이아웃 기본, `plan.label`). 없으면 그리지 않는다 — 지금 마크업 그대로. */
+  sectionLabel?: string | null
   hospitalRootUrl: string
   hospitalName: string
   /** 섹션 설정이 바꾼 제목·안내·단계(레이아웃 편집기, `resolveCareFlow`). 없으면 공통 4단계. */
@@ -12,11 +15,12 @@ interface Props {
   steps?: readonly CareFlowStepView[]
 }
 
-export function CareFlow({ hospitalRootUrl, title, note, steps = CARE_STEPS }: Props) {
+export function CareFlow({ hospitalRootUrl, title, note, steps = CARE_STEPS, sectionLabel = null }: Props) {
   return (
     <section className="clinic-section clinic-section--flow">
       <div className="clinic-section-inner">
         <header className="clinic-section-head clinic-section-head--center">
+          {sectionLabel ? <SectionLabel text={sectionLabel} /> : null}
           <h2 className="clinic-section-title">{title ?? CARE_FLOW_TITLE}</h2>
           <p className="clinic-section-note">{note ?? CARE_FLOW_NOTE}</p>
         </header>

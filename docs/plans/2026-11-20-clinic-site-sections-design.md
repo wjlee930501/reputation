@@ -378,4 +378,30 @@ gpt-6.1-sol high로 이 문서를 코드와 대조했다. 15건 모두 받아들
 | 진료 항목 목록(B만) | 한 줄에 이름(명조)과 설명 한 줄(말줄임), 줄 사이 점선, 두 열(720px 아래 한 열), 8개까지 + '전체 N개 보기'. 설명 숨김은 카드·목록 모두 |
 | A·C | 두 칸을 읽지 않는다(A 알약·C 타일). A·C 편집 화면에서 숨기고 저장 검증이 거절하는 것은 어드민 숨김과 함께 나가야 해 별도 PR이다 |
 | 판 | 기본값을 바꾸지 않았다 — `DEFAULTS_VERSION`·`REFRESHED_SINCE` 그대로 |
-| 공개 반영 막음 | Admin `SITE_RENDERS_SITE_CONFIG`는 ③-2d까지 닫아 둔다 — 그 전에 열면 사이트가 아직 그리지 않는 칸(첫 화면 배치 등)을 공개할 수 있고, 다음 사이트 배포가 재공개 없이 화면을 바꾼다 |
+| 공개 반영 막음 | Admin `SITE_RENDERS_SITE_CONFIG`는 **`REFRESHED_SINCE`의 모든 칸을 사이트가 그리거나, 어드민에서 숨기고 서버가 거절할 때까지** 닫아 둔다. ③-2a~d가 다루는 칸은 `hero`·`treatments`·`doctor`·`sections.*`뿐이라 ③-2d 뒤에도 `care_principles.use_default_cards`·`visit`·`faq.merge_questions`·`region_tags`·`nav.section_index`·`type`·`article`, 그리고 `hero.line_breaks`·`doctor.show_philosophy`가 남는다. 그 전에 열면 사이트가 아직 그리지 않는 칸을 공개할 수 있고, 다음 사이트 배포가 재공개 없이 화면을 바꾼다 |
+
+## 16. ③-2b 의료진 사진 비율·초점, 직함 위치(2026-11-21, 브랜치 `claude/site-config-3c2b-doctor`)
+
+| 항목 | 정한 것 |
+|---|---|
+| 범위 | A·B·C 모두. `doctor.photo_ratio`·`photo_focus`·`title_position`. 진료 철학(`show_philosophy`)은 뒤로 미룬다(공개 응답에 검수된 철학 문장이 있는지 먼저 확인 — 없으면 숨기고 거절) |
+| 기본값 = 지금 마크업 | 레이아웃의 지금 비율(A 가로·B·C 세로)과 같은 비율, 가운데 초점, 직함 위는 '바꾼 것이 아니다' — 사진 상자에 아무 스타일도 더하지 않는다 |
+| 비율 | 바꾼 비율만 사진 상자에 `aspect-ratio`로 준다: 세로 4:5(B와 같음), 정사각 1:1, 가로 4:3. 상자 너비 규칙(레이아웃별 최대 폭)은 그대로다. **사진이 있을 때만** — 사진이 없거나 못 불러오면 지금의 이름 첫 글자 타일 모양 그대로(`ClinicAvatar look`) |
+| 초점 | 가운데가 아니면 사진의 `object-position`(x%·y%). 0~1 밖·형식이 틀린 값은 버린다 |
+| 직함 위치 | '아래'면 직함(`physician.title`)을 이름 바로 아래에 둔다(B `clinic-curator-eyebrow--below`, A·C `[data-role=eyebrow][data-position=below]`). 직함이 없을 때의 역할 라벨은 원래부터 이름 아래다 |
+| 판 | 기본값을 바꾸지 않았다 — `DEFAULTS_VERSION`·`REFRESHED_SINCE` 그대로 |
+
+## 17. ③-2c-1 섹션 제목 정렬·영문 소제목(2026-11-21, 브랜치 `claude/site-config-3c2c-heads`)
+
+| 항목 | 정한 것 |
+|---|---|
+| 범위 | A·B·C의 `sections[].align`·`label`. 배경(`background`)·진료 철학은 다음 단계 |
+| 머리가 없는 섹션 | 첫 화면(`hero`)·바로가기(`section_index`)는 두 칸을 읽지 않는다(정렬·소제목을 그릴 머리가 없다). 어드민 숨김·서버 거절은 다음 짝 PR |
+| 기본값 = 지금 마크업 | 레이아웃 기본(`DEFAULT_SECTION_LOOK` — 백엔드 섹션 표와 같다는 테스트)과 같으면 정렬 틀이 없고, 소제목은 레이아웃 기본대로(C만 보임, 낱말도 지금과 같음) |
+| 영문 소제목 | 제목 h2 **밖**의 실제 요소(`aria-hidden`, 클래스 `.clinic-look-label` — 하위 페이지의 `.clinic-section-label`과 다르다) — h2 글자는 그대로다. A안의 가로 머리 줄(질문 목록·병원 공간)에서는 제목과 한 묶음으로 제목 위에 둔다. 낱말은 C안 낱말(MEDICAL·DOCTOR·POLICY·FLOW·Q&A·FAQ·CLINIC·ACCESS·NEWS·INFORMATION) + A·B에만 있는 섹션(B 먼저 정리한 글 ARTICLES, A 질문 목록 Q&A, 오시는 길 LOCATION). 모양은 C안 라벨과 같다. 진료 원칙은 'POLICY / 진료 원칙 / 제목'(레퍼런스 3-라) |
+| 정렬 | 바꾼 섹션만 `.clinic-look[data-look-align]` 틀로 감싸고 머리(제목·안내 문장·소제목)에만 건다 — B는 h2의 부모 머리, A·C는 `.clinic-look-head`/`.clinic-look-title`/`.clinic-look-note`. 본문 배치는 그대로. `.clinic-shell.clinic-shell`로 레이아웃 모듈의 `.shell.shell` 머리 규칙보다 앞선다 |
+| 다른 섹션 안의 섹션 | C 최근 소식·진료시간(첫 화면 아래 줄)·진료 과정(진료 원칙 띠 안), A 질문 목록 바로 뒤 FAQ는 `.clinic-look-nested` 틀 — 바깥 섹션의 정렬이 들어오지 않고 자기 정렬만 건다(바깥이 정렬을 바꿨으면 자기 정렬이 없어도 경계 틀) |
+| 질문 목록(B) | 옆 칸(`aside`)에 본문(처음 오시나요·전체 보기)이 함께 있어, 머리 묶음이 아니라 글줄(머리글·소제목·제목·안내)만 맞춘다 |
+| 틀 | 정렬 틀은 `display: contents`라 상자를 만들지 않는다 — 감싼 섹션이 그대로 부모(C 첫 화면 아래 줄의 flex 등)의 자식으로 배치된다 |
+| 가로 머리 줄 | 제목과 '전체 보기'가 한 줄인 머리(`.clinic-look-row` — A 질문 목록·병원 공간, C 최근 소식·질문·병원 공간)는 가운데일 때 세로로 쌓아 제목이 섹션 가운데에 온다 |
+| A 진한 띠 | 오늘 진료 띠 위 소제목은 띠 글자색 |

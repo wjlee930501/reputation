@@ -1,5 +1,6 @@
 import Link from 'next/link'
 import type { ReactNode } from 'react'
+import { SectionLabel } from './SectionLabel'
 
 import { IconAftercare, IconExam, IconExplain } from '@/components/brand'
 import { CARE_PRINCIPLES, CARE_PRINCIPLES_LEDE, resolveCarePrinciples } from '@/lib/clinic-template-copy'
@@ -7,6 +8,8 @@ import type { CarePrinciplesCopy } from '@/lib/hospital-payload'
 import { regionSentenceLabel } from '@/lib/clinic-region'
 
 interface Props {
+  /** 영문 소제목(섹션 설정·레이아웃 기본, `plan.label`). 없으면 그리지 않는다 — 지금 마크업 그대로. */
+  sectionLabel?: string | null
   hospitalRootUrl: string
   hospitalName: string
   specialties: string[]
@@ -62,6 +65,7 @@ export function CarePrinciples({
   title,
   cardCount,
   channelsHref,
+  sectionLabel = null,
 }: Props) {
   const principles = resolveCarePrinciples(custom)
   const cards = cardCount ? principles.cards.slice(0, cardCount) : principles.cards
@@ -87,6 +91,8 @@ export function CarePrinciples({
       <div className="clinic-section-inner">
         <div className="clinic-principles-band">
           <header className="clinic-principles-lead">
+            {/* 영문 소제목은 우리말 머리글 위 — 'POLICY / 진료 원칙 / 제목'(레퍼런스 3-라: 영문 + 작은 우리말). */}
+            {sectionLabel ? <SectionLabel text={sectionLabel} /> : null}
             <span className="clinic-principles-eyebrow">진료 원칙</span>
             <h2 className="clinic-section-title">{title ?? principles.title}</h2>
             <p className="clinic-principles-statement">{lede}</p>

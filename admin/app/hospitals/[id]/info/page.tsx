@@ -541,6 +541,7 @@ export default function HospitalInfoPage() {
         heroImageUrl={hospital.hero_image_url ?? null}
         physicians={profile.physicians ?? []}
         onHeroChanged={() => void refetchHeader()}
+        onPhotosChanged={() => setSourcesRefreshKey((key) => key + 1)}
       />
 
       <OwnershipVerificationSection

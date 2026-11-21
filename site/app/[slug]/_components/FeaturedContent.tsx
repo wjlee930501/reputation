@@ -1,6 +1,7 @@
 import { CLINIC_IMAGE_SIZES } from '@/lib/clinic-image-delivery'
 import { formatSeoulDate } from '@/lib/clinic-dates'
 import Link from 'next/link'
+import { SectionLabel } from './SectionLabel'
 
 import { resolveAssetUrl, TYPE_LABELS, type ContentSummary } from '@/lib/api'
 import { categoryTagClass } from '@/lib/content-meta'
@@ -9,6 +10,8 @@ import { ContentCover } from './ContentCover'
 import { ChevronRightIcon } from './icons'
 
 interface Props {
+  /** 영문 소제목(섹션 설정·레이아웃 기본, `plan.label`). 없으면 그리지 않는다 — 지금 마크업 그대로. */
+  sectionLabel?: string | null
   contents: ContentSummary[]
   hospitalRootUrl: string
   hospitalName: string
@@ -45,6 +48,7 @@ export function FeaturedContent({
   secondaryLimit = 4,
   title,
   note,
+  sectionLabel = null,
 }: Props) {
   const { primary, rest } = selectFeatured(contents, secondaryLimit)
   if (!primary) return null
@@ -56,6 +60,7 @@ export function FeaturedContent({
     <section className="clinic-featured" aria-label="대표 의료 정보">
       <div className="clinic-featured-inner">
         <header className="clinic-section-head">
+          {sectionLabel ? <SectionLabel text={sectionLabel} /> : null}
           <h2 className="clinic-section-title">{title ?? '먼저 정리한 글'}</h2>
           <p className="clinic-section-note">
             {note ?? (

@@ -1,7 +1,7 @@
 import Image from 'next/image'
 import { formatSeoulDotDate } from '@/lib/clinic-dates'
 import Link from 'next/link'
-import { Fragment, type ReactNode } from 'react'
+import type { ReactNode } from 'react'
 import { KeepTogether } from '../_components/KeepTogether'
 
 import { resolveAssetUrl, TYPE_LABELS } from '@/lib/api'
@@ -21,7 +21,7 @@ import {
   WEEK_DAY_KEYS,
 } from '@/lib/clinic-layout'
 import { fullClinicAddress } from '@/lib/clinic-schema'
-import { limitCarePrincipleCards, type SiteSectionId } from '@/lib/clinic-site-config'
+import { physicianPhotoLook, limitCarePrincipleCards, type SiteSectionId } from '@/lib/clinic-site-config'
 import {
   CARE_FLOW_TITLE,
   resolveCarePrinciples,
@@ -37,6 +37,7 @@ import {
 } from '@/lib/clinic-template-copy'
 import { buildTreatmentSlug } from '@/lib/treatment-slug'
 
+import { SectionLook } from '../_components/SectionLook'
 import { PhysicianProfile } from './PhysicianProfile'
 import type { ClinicHomeModel } from './model'
 import s from './layout-c.module.css'
@@ -80,8 +81,8 @@ export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
   const flowBlock =
     plan.enabled('care_flow') && composition.showCareFlow ? (
       <>
-        <SectionTitle label="FLOW" className={s.flowTitle}>{plan.title('care_flow', CARE_FLOW_TITLE)}</SectionTitle>
-        <p className={s.note}>{careFlow.note}</p>
+        <SectionTitle label={plan.label('care_flow')} className={s.flowTitle}>{plan.title('care_flow', CARE_FLOW_TITLE)}</SectionTitle>
+        <p className={`${s.note} clinic-look-note`}>{careFlow.note}</p>
         <ol className={s.flow}>
           {careFlow.steps.map((step) => (
             <li key={step.label}>
@@ -160,9 +161,10 @@ export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
 
         <div className={s.infoRow}>
           {plan.enabled('news') && news.length > 0 ? (
+            <SectionLook nested align={plan.align('news')}>
             <section id="contents" className={s.newsBlock}>
-              <div className={s.blockHead}>
-                <SectionTitle label="NEWS">{plan.title('news', '최근 의료 정보')}</SectionTitle>
+              <div className={`${s.blockHead} clinic-look-row`}>
+                <SectionTitle label={plan.label('news')}>{plan.title('news', '최근 의료 정보')}</SectionTitle>
                 <Link className={s.moreLink} href={`${hospitalRootUrl}/contents`}>
                   {contents.length}편 모두 보기 →
                 </Link>
@@ -179,11 +181,13 @@ export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
                 ))}
               </ul>
             </section>
+            </SectionLook>
           ) : null}
 
           {plan.enabled('hours') && hasHours ? (
+            <SectionLook nested align={plan.align('hours')}>
             <section className={s.scheduleBlock} aria-label="진료시간">
-              <SectionTitle label="INFORMATION">{plan.title('hours', '진료시간')}</SectionTitle>
+              <SectionTitle label={plan.label('hours')}>{plan.title('hours', '진료시간')}</SectionTitle>
               {grid ? (
                 <div className={s.tableScroll}>
                   <table className={s.schedule}>
@@ -241,6 +245,7 @@ export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
                 ) : null}
               </div>
             </section>
+            </SectionLook>
           ) : null}
         </div>
       </>
@@ -250,8 +255,8 @@ export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
         <section id="treatments" className={s.tintSection}>
           <div className={s.inner}>
             <div className={s.centerHead}>
-              <SectionTitle label="MEDICAL">{plan.title('treatments', TREATMENT_SECTION_TITLE)}</SectionTitle>
-              <p className={s.note}>{plan.note('treatments', TREATMENT_SECTION_NOTE)}</p>
+              <SectionTitle label={plan.label('treatments')}>{plan.title('treatments', TREATMENT_SECTION_TITLE)}</SectionTitle>
+              <p className={`${s.note} clinic-look-note`}>{plan.note('treatments', TREATMENT_SECTION_NOTE)}</p>
             </div>
             <ul className={s.tiles}>
               {hospital.treatments.map((treatment, index) => {
@@ -283,8 +288,8 @@ export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
     doctor: (
       physicians.length > 0 ? (
         <section id="doctor" className={s.section}>
-          <SectionTitle label="DOCTOR">{plan.title('doctor', DOCTOR_SECTION_TITLE)}</SectionTitle>
-          {plan.customNote('doctor') ? <p className={s.note}>{plan.customNote('doctor')}</p> : null}
+          <SectionTitle label={plan.label('doctor')}>{plan.title('doctor', DOCTOR_SECTION_TITLE)}</SectionTitle>
+          {plan.customNote('doctor') ? <p className={`${s.note} clinic-look-note`}>{plan.customNote('doctor')}</p> : null}
           <div className={s.doctorList}>
             {physicians.map((physician) => (
               <PhysicianProfile
@@ -294,6 +299,8 @@ export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
                 className={s.doctor}
                 photoClassName={s.doctorPhoto}
                 bodyClassName={s.doctorBody}
+                photoLook={physicianPhotoLook(model.siteConfig)}
+                titleBelow={model.siteConfig?.doctor.titleBelow ?? false}
                 asTable
                 tableClassName={s.doctorTable}
               />
@@ -306,7 +313,7 @@ export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
     care_principles: (
       <section className={s.darkSection} aria-label="진료 원칙과 진료 과정">
         <div className={s.inner}>
-          <SectionTitle label="POLICY">{plan.title('care_principles', principles.title)}</SectionTitle>
+          <SectionTitle label={plan.label('care_principles')}>{plan.title('care_principles', principles.title)}</SectionTitle>
           <div className={s.policyGrid}>
             {limitCarePrincipleCards(principles.cards, model.siteConfig).map((principle, index) => (
               <div key={principle.key} className={s.policyCard}>
@@ -316,18 +323,20 @@ export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
               </div>
             ))}
           </div>
-          {flowBlock}
+          <SectionLook nested align={plan.align('care_flow')} force={plan.align('care_principles') !== null}>
+            {flowBlock}
+          </SectionLook>
         </div>
       </section>
     ),
     questions: (
       questions.length > 0 ? (
         <section className={s.section} aria-label={plan.title('questions', QUESTIONS_SECTION_TITLE)}>
-          <div className={s.blockHead}>
-            <SectionTitle label="Q&A">{plan.title('questions', QUESTIONS_SECTION_TITLE)}</SectionTitle>
+          <div className={`${s.blockHead} clinic-look-row`}>
+            <SectionTitle label={plan.label('questions')}>{plan.title('questions', QUESTIONS_SECTION_TITLE)}</SectionTitle>
             <Link className={s.moreLink} href={`${hospitalRootUrl}/contents`}>의료 정보 {contents.length}편 →</Link>
           </div>
-          {plan.customNote('questions') ? <p className={s.note}>{plan.customNote('questions')}</p> : null}
+          {plan.customNote('questions') ? <p className={`${s.note} clinic-look-note`}>{plan.customNote('questions')}</p> : null}
           <div className={s.qaGrid}>
             {questions.map((content) => (
               <Link key={content.id} className={s.qaCard} href={`${hospitalRootUrl}/contents/${content.id}`}>
@@ -346,8 +355,8 @@ export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
     faq: (
       faqEntries.length > 0 ? (
         <section id="faq" className={s.section}>
-          <SectionTitle label="FAQ">{plan.title('faq', FAQ_SECTION_TITLE)}</SectionTitle>
-          <p className={s.note}>{plan.note('faq', FAQ_SECTION_NOTE)}</p>
+          <SectionTitle label={plan.label('faq')}>{plan.title('faq', FAQ_SECTION_TITLE)}</SectionTitle>
+          <p className={`${s.note} clinic-look-note`}>{plan.note('faq', FAQ_SECTION_NOTE)}</p>
           <dl className={s.faq}>
             {faqEntries.map((entry) => (
               <div key={entry.id} className={s.faqItem}>
@@ -371,11 +380,11 @@ export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
     gallery: (
       gallery.photos.length >= galleryPolicy.minimumPhotoCount ? (
         <section className={s.section} aria-label={plan.title('gallery', GALLERY_SECTION_TITLE)}>
-          <div className={s.blockHead}>
-            <SectionTitle label="CLINIC">{plan.title('gallery', GALLERY_SECTION_TITLE)}</SectionTitle>
+          <div className={`${s.blockHead} clinic-look-row`}>
+            <SectionTitle label={plan.label('gallery')}>{plan.title('gallery', GALLERY_SECTION_TITLE)}</SectionTitle>
             <Link className={s.moreLink} href={`${hospitalRootUrl}/visit#gallery`}>사진 전체 보기 →</Link>
           </div>
-          {plan.customNote('gallery') ? <p className={s.note}>{plan.customNote('gallery')}</p> : null}
+          {plan.customNote('gallery') ? <p className={`${s.note} clinic-look-note`}>{plan.customNote('gallery')}</p> : null}
           <div className={s.gallery}>
             {gallery.photos.map((photo) => {
               const url = resolveAssetUrl(photo.url)
@@ -396,8 +405,8 @@ export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
     facts: (
       <div id="contact">
         <section id="facts" className={`${s.section} ${s.factsSection}`}>
-          <SectionTitle label="ACCESS">{factsSectionTitle(hospital.name)}</SectionTitle>
-          <p className={s.note}>{FACTS_SECTION_NOTE}</p>
+          <SectionTitle label={plan.label('facts')}>{factsSectionTitle(hospital.name)}</SectionTitle>
+          <p className={`${s.note} clinic-look-note`}>{FACTS_SECTION_NOTE}</p>
           <div className={s.factsRow}>
             <table className={s.factsTable}>
               <tbody>
@@ -466,7 +475,9 @@ export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
   return (
     <main id="main-content" className={s.home}>
       {plan.order.map((id) => (
-        <Fragment key={id}>{sections[id]}</Fragment>
+        <SectionLook key={id} align={plan.align(id)}>
+          {sections[id]}
+        </SectionLook>
       ))}
     </main>
   )
@@ -476,11 +487,11 @@ export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
  * C안의 섹션 머리. 영문 라벨(NEWS·FAQ …)은 시안의 장식이라 제목(h2) 밖에 두고 읽지 않게 한다 —
  * 제목 글자는 레이아웃 도입 전 화면과 같아야 한다.
  */
-function SectionTitle({ label, className, children }: { label: string; className?: string; children: ReactNode }) {
+function SectionTitle({ label, className, children }: { label: string | null; className?: string; children: ReactNode }) {
   return (
-    <div className={className}>
-      <p className={s.label} aria-hidden="true">{label}</p>
-      <h2 className={s.title}>{children}</h2>
+    <div className={`${className ? `${className} ` : ''}clinic-look-head`}>
+      {label ? <p className={s.label} aria-hidden="true">{label}</p> : null}
+      <h2 className={`${s.title} clinic-look-title`}>{children}</h2>
     </div>
   )
 }

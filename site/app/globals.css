@@ -9807,3 +9807,108 @@ a.clinic-tx-list-row:hover .clinic-tx-list-name {
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+/* ③-2b 직함을 이름 아래에 둘 때(섹션 설정 doctor.title_position = below) — 이름과 붙여 한 묶음으로 읽힌다. */
+.clinic-curator-eyebrow--below {
+  display: block;
+  margin: 0 0 6px;
+}
+
+/* ══ ③-2c 섹션 머리 — 영문 소제목·제목 정렬 ═══════════════════════
+   영문 소제목(`.clinic-look-label`)은 C안 라벨(layout-c `.label`)과 같은 모양이다. 하위 페이지가 쓰는
+   `.clinic-section-label`과는 다른 클래스다. 정렬 틀(`.clinic-look`, SectionLook)은 설정이 레이아웃 기본과 다를 때만
+   생기고, 머리(제목·안내 문장·소제목)에만 걸린다 — 본문 배치는 그대로다. 머리 묶음은 B안 공용 컴포넌트의
+   `header`(질문 목록의 옆 칸 `aside`는 본문이 함께 있어 묶음으로 보지 않고 글줄만 맞춘다)와 A·C안의
+   `.clinic-look-head`다. 다른 섹션 안에 그려지는 섹션은 `.clinic-look-nested` 틀 — 바깥 정렬이 들어오지 않고 자기
+   정렬만 건다. `.clinic-shell.clinic-shell`로 레이아웃 모듈의 `.shell.shell …` 머리 규칙보다 앞선다. */
+/* 틀은 상자를 만들지 않는다 — 감싼 섹션이 그대로 부모(flex 줄 등)의 자식으로 배치된다(C 첫 화면 아래 줄). */
+.clinic-look {
+  display: contents;
+}
+
+.clinic-look-label {
+  display: block;
+  margin: 0 0 4px;
+  color: var(--clinic-accent-strong, var(--clinic-brand-strong));
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+}
+
+/* center — 바깥 섹션(안쪽 섹션 틀 밖) */
+.clinic-shell.clinic-shell .clinic-look:not(.clinic-look-nested)[data-look-align='center'] :is(.clinic-section-title, .clinic-look-title, .clinic-look-note, .clinic-section-note, .clinic-look-label, .clinic-answers-eyebrow):not(.clinic-look-nested *) {
+  text-align: center;
+}
+
+.clinic-shell.clinic-shell .clinic-look:not(.clinic-look-nested)[data-look-align='center'] :is(header:has(> .clinic-section-title), .clinic-look-head):not(.clinic-look-nested *) {
+  justify-content: center;
+  justify-items: center;
+  align-items: center;
+  margin-inline: auto;
+  text-align: center;
+}
+
+.clinic-shell.clinic-shell .clinic-look:not(.clinic-look-nested)[data-look-align='center'] .clinic-section-note:not(.clinic-look-nested *) {
+  margin-inline: auto;
+}
+
+/* center — 안쪽 섹션 틀(자기 정렬만) */
+.clinic-shell.clinic-shell .clinic-look-nested[data-look-align='center'] :is(.clinic-section-title, .clinic-look-title, .clinic-look-note, .clinic-section-note, .clinic-look-label, .clinic-answers-eyebrow) {
+  text-align: center;
+}
+
+.clinic-shell.clinic-shell .clinic-look-nested[data-look-align='center'] :is(header:has(> .clinic-section-title), .clinic-look-head) {
+  justify-content: center;
+  justify-items: center;
+  align-items: center;
+  margin-inline: auto;
+  text-align: center;
+}
+
+/* left — 바깥 섹션(안쪽 섹션 틀 밖) */
+.clinic-shell.clinic-shell .clinic-look:not(.clinic-look-nested)[data-look-align='left'] :is(.clinic-section-title, .clinic-look-title, .clinic-look-note, .clinic-section-note, .clinic-look-label, .clinic-answers-eyebrow):not(.clinic-look-nested *) {
+  text-align: left;
+}
+
+.clinic-shell.clinic-shell .clinic-look:not(.clinic-look-nested)[data-look-align='left'] :is(header:has(> .clinic-section-title), .clinic-look-head):not(.clinic-look-nested *) {
+  justify-content: flex-start;
+  justify-items: start;
+  align-items: flex-start;
+  margin-inline: 0;
+  text-align: left;
+}
+
+.clinic-shell.clinic-shell .clinic-look:not(.clinic-look-nested)[data-look-align='left'] .clinic-section-note:not(.clinic-look-nested *) {
+  margin-inline: 0;
+}
+
+/* left — 안쪽 섹션 틀(자기 정렬만) */
+.clinic-shell.clinic-shell .clinic-look-nested[data-look-align='left'] :is(.clinic-section-title, .clinic-look-title, .clinic-look-note, .clinic-section-note, .clinic-look-label, .clinic-answers-eyebrow) {
+  text-align: left;
+}
+
+.clinic-shell.clinic-shell .clinic-look-nested[data-look-align='left'] :is(header:has(> .clinic-section-title), .clinic-look-head) {
+  justify-content: flex-start;
+  justify-items: start;
+  align-items: flex-start;
+  margin-inline: 0;
+  text-align: left;
+}
+
+/* 가운데 — 제목과 '전체 보기'가 한 줄인 머리(A 질문 목록·병원 공간, C 최근 소식·질문·병원 공간)는 세로로 쌓아
+   제목이 섹션 가운데에 온다. 질문 목록(B)의 머리글은 글 너비 상자라 상자째 가운데로 옮긴다. */
+.clinic-shell.clinic-shell .clinic-look:not(.clinic-look-nested)[data-look-align='center'] .clinic-look-row:not(.clinic-look-nested *),
+.clinic-shell.clinic-shell .clinic-look-nested[data-look-align='center'] .clinic-look-row {
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+}
+
+.clinic-shell.clinic-shell .clinic-look:not(.clinic-look-nested)[data-look-align='center'] .clinic-answers-eyebrow:not(.clinic-look-nested *) {
+  display: table;
+  margin-inline: auto;
+}
+
+.clinic-shell.clinic-shell .clinic-look:not(.clinic-look-nested)[data-look-align='left'] .clinic-answers-eyebrow:not(.clinic-look-nested *) {
+  margin-inline: 0;
+}
