@@ -538,3 +538,37 @@ async def test_editor_gets_the_hospital_care_principles_title_the_site_draws(db,
     await db.commit()
     body = (await client.get(_base(hospital_id), headers=ADMIN)).json()
     assert body["hospital_section_titles"] == {"care_principles": None}
+
+
+async def test_restoring_an_old_version_drops_fields_the_site_does_not_render(db, client, monkeypatch):
+    """옛 공개 판에 지금은 거절하는 칸(FIELD_NOT_RENDERED)이 있어도 복원된다 — 그 칸은 기본값으로 돌아간다."""
+
+    hospital_id = await _hospital(db, layout="C")
+    monkeypatch.setattr(
+        admin_site_config,
+        "profile_publication_verdict",
+        lambda hospital: SimpleNamespace(allowed=True, blockers=()),
+    )
+    draft = (await _save(client, hospital_id, layout="C", config={"faq": {"limit": 5}})).json()["draft"]
+    v1 = (await _publish(client, hospital_id, draft)).json()["published"]
+    # 그 칸을 거절하기 전에 공개된 판처럼 만든다.
+    row = await db.get(HospitalSiteConfig, uuid.UUID(v1["id"]))
+    row.config = {
+        "faq": {"limit": 5, "merge_questions": True},
+        "doctor": {"show_philosophy": True},
+        "hero": {"blocks": ["phone", "location"]},
+        "sections": [{"id": "hero", "align": "center"}, {"id": "care_principles", "background": "tint"}],
+    }
+    await db.commit()
+    # 공개 판을 하나 더 만들어 v1을 지난 판으로.
+    draft = (await _save(client, hospital_id, layout="C", config={"faq": {"limit": 4}})).json()["draft"]
+    assert (await _publish(client, hospital_id, draft)).status_code == 200
+
+    restored = await client.post(
+        f"{_base(hospital_id)}/versions/{v1['id']}/restore", headers=ADMIN, json={}
+    )
+    assert restored.status_code == 200, restored.text
+    config = restored.json()["draft"]["config"]
+    assert config["faq"] == {"limit": 5}
+    assert "doctor" not in config and "hero" not in config
+    assert config["sections"] == [{"id": "hero"}, {"id": "care_principles"}]

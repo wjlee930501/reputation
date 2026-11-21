@@ -17,6 +17,7 @@
  * ③-2b가 더한 칸(A·B·C): 의료진 사진 비율·초점, 직함 위치(`doctor`).
  * ③-2c가 더한 칸(A·B·C): 섹션 제목 정렬·영문 소제목(`sections[].align`·`label`), 섹션 배경(`background`).
  * ③-2d가 더한 칸(A·B·C): 첫 화면 배치·덮개·제목 크기·사진 초점(`hero.arrangement`·`image`·`title_size`).
+ * ③-2f가 더한 칸: 줄바꿈 지정(`hero.line_breaks` — 첫 화면 제목·설명, 진료 원칙 제목·안내·카드, PC·휴대폰 따로).
  * ③-2e가 더한 칸: 진료 원칙 기본 카드 쓰기(`care_principles.use_default_cards`, A·B·C), 오시는 길 항목 순서·대중교통
  * 보이기(`visit`, B — 오시는 길 섹션은 B에만 있다).
  * 첫 화면 배치·배경·정렬·영문 소제목·줄바꿈·진료 철학 같은 나머지 모양 칸은 다음 PR이다(받아 두기만 한다).
@@ -24,6 +25,7 @@
 
 import type { ContentSummary } from './api.ts'
 import type { ClinicLayout } from './clinic-layout.ts'
+import { lineBreakMap, type LineBreakDevice, type LineBreakSpec } from './clinic-line-breaks.ts'
 import { CARE_FLOW_NOTE, CARE_STEPS } from './clinic-template-copy.ts'
 import { selectFaqEntries, type FaqEntry } from './schema.ts'
 
@@ -238,6 +240,8 @@ export interface ClinicSiteConfig {
    * B안만. 기본값(지금 띠)과 같거나 B안이 아니면 null — 컴포넌트는 null이면 지금 마크업을 그대로 그린다.
    */
   hero: { blocks: SiteHeroBlock[] | null; look: HeroLook | null }
+  /** 줄바꿈 지정(경로 → PC·휴대폰 줄). 공개 응답은 원문과 맞는 줄만 싣고, 화면은 그 글을 다시 대조해 쓴다. */
+  lineBreaks: Record<string, LineBreakSpec>
   /** B안만. A·C는 언제나 지금 모양(카드·설명 보임)이다 — A 알약·C 타일은 이 칸을 읽지 않는다. */
   treatments: { style: SiteTreatmentStyle; showDescription: boolean }
   /**
@@ -375,6 +379,7 @@ export function normalizeSiteConfig(value: unknown, siteLayout: ClinicLayout | n
     copy,
     carePrinciples: { cardCount, useDefaultCards: principles.use_default_cards !== false },
     visit: visitLook(value.visit),
+    lineBreaks: lineBreakSpecs(value.hero),
     careFlow: { note: text(flow.note), steps },
     faq: { mode, limit, entries },
     nav: {
@@ -386,6 +391,32 @@ export function normalizeSiteConfig(value: unknown, siteLayout: ClinicLayout | n
     treatments: layout === 'B' ? treatmentLook(value.treatments) : { ...DEFAULT_TREATMENT_LOOK },
     doctor: doctorLook(value.doctor, layout),
   }
+}
+
+function lineBreakSpecs(rawHero: unknown): Record<string, LineBreakSpec> {
+  const hero = isRecord(rawHero) ? rawHero : {}
+  const raw = isRecord(hero.line_breaks) ? hero.line_breaks : {}
+  const out: Record<string, LineBreakSpec> = {}
+  for (const [path, spec] of Object.entries(raw)) {
+    if (!isRecord(spec)) continue
+    const pc = typeof spec.pc === 'string' && spec.pc.trim() ? spec.pc : null
+    const mobile = typeof spec.mobile === 'string' && spec.mobile.trim() ? spec.mobile : null
+    if (pc || mobile) out[path] = { pc, mobile }
+  }
+  return out
+}
+
+/**
+ * 화면에 보이는 글(`text`)의 줄바꿈 자리. 설정이 없거나, 그 글이 줄바꿈을 지정한 원문과 다르면(섹션 제목을 바꿨거나
+ * 병원 정보가 바뀌었으면) 빈 자리표 — 지금 마크업 그대로다.
+ */
+export function lineBreaksFor(
+  config: ClinicSiteConfig | null | undefined,
+  path: string,
+  text: string | null | undefined,
+): Map<number, LineBreakDevice> {
+  const spec = config?.lineBreaks[path]
+  return spec && text ? lineBreakMap(text, spec) : new Map()
 }
 
 function visitLook(raw: unknown): ClinicSiteConfig['visit'] {

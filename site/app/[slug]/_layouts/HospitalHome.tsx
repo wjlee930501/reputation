@@ -239,6 +239,7 @@ export function HospitalHome({
         blocks={heroBlocks}
         bookingUrl={bookingUrl}
         lookAttributes={heroLookAttributes(siteConfig?.hero.look)}
+        siteConfig={siteConfig}
       />
     ),
     // 첫 화면 아래 바로가기 메뉴(.clinic-section-index)는 2026-11-20 결정 12a로 뺐다 — 상단 메뉴와
@@ -283,6 +284,7 @@ export function HospitalHome({
         title={plan.customTitle('care_principles')}
         cardCount={siteConfig?.carePrinciples.cardCount}
         useDefaultCards={siteConfig?.carePrinciples.useDefaultCards ?? true}
+        siteConfig={siteConfig}
         // '공식 채널 보기'는 오시는 길(#contact)로 간다 — 그 섹션이 꺼지면 하위 페이지로.
         channelsHref={plan.enabled('visit') ? `${hospitalRootUrl}#contact` : `${hospitalRootUrl}/visit`}
         sectionLabel={plan.label('care_principles')}

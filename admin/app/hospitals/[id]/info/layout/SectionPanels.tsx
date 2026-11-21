@@ -5,6 +5,7 @@ import { useEffect, useState } from 'react'
 import { ADMIN_COPY } from '@/lib/admin-copy'
 import { fetchAPI } from '@/lib/api'
 import { isExpectedOperatorRequestFailure } from '@/lib/operations-journey'
+import type { SiteLayout } from '@/lib/site-layout'
 import { isRecord } from '@/lib/type-guards'
 import {
   canDisable,
@@ -12,6 +13,7 @@ import {
   canMoveUp,
   canRetitle,
   moveSection,
+  sectionLookShown,
   siteConfigPath,
   type SectionAlign,
   type SectionBackground,
@@ -181,6 +183,7 @@ export function SectionSettings({
   issues,
   onChange,
   disabled,
+  layout = null,
 }: {
   section: SiteSection
   defaultTitle: string | null
@@ -189,12 +192,15 @@ export function SectionSettings({
   issues: readonly SiteConfigIssue[]
   onChange: (section: SiteSection) => void
   disabled: boolean
+  /** 화면이 그리지 않는 칸(머리 없는 섹션의 정렬·소제목·배경, 배경 고정 섹션의 배경, 바로가기 켜기)을 숨기려고 받는다. */
+  layout?: SiteLayout | null
 }) {
+  const shown = sectionLookShown(layout, section.id)
   return (
     <div className="space-y-4">
       <h4 className="text-sm font-semibold text-slate-800">{sectionName(section.id)}</h4>
       <IssueList issues={issues} />
-      {canDisable(section) && (
+      {canDisable(section) && shown.enabled && (
         <label className="flex items-center gap-2 text-sm text-slate-700">
           <input
             type="checkbox"
@@ -222,29 +228,35 @@ export function SectionSettings({
       ) : (
         <p className="text-xs text-slate-500">{COPY.sectionTitleFixed}</p>
       )}
-      <Choice<SectionBackground>
-        label={COPY.background}
-        value={section.background}
-        options={COPY.backgrounds}
-        onChange={(background) => onChange({ ...section, background })}
-        disabled={disabled}
-      />
-      <Choice<SectionAlign>
-        label={COPY.align}
-        value={section.align}
-        options={COPY.aligns}
-        onChange={(align) => onChange({ ...section, align })}
-        disabled={disabled}
-      />
-      <label className="flex items-center gap-2 text-sm text-slate-700">
-        <input
-          type="checkbox"
-          checked={section.label}
+      {shown.background && (
+        <Choice<SectionBackground>
+          label={COPY.background}
+          value={section.background}
+          options={COPY.backgrounds}
+          onChange={(background) => onChange({ ...section, background })}
           disabled={disabled}
-          onChange={(event) => onChange({ ...section, label: event.target.checked })}
         />
-        {COPY.label}
-      </label>
+      )}
+      {shown.align && (
+        <Choice<SectionAlign>
+          label={COPY.align}
+          value={section.align}
+          options={COPY.aligns}
+          onChange={(align) => onChange({ ...section, align })}
+          disabled={disabled}
+        />
+      )}
+      {shown.label && (
+        <label className="flex items-center gap-2 text-sm text-slate-700">
+          <input
+            type="checkbox"
+            checked={section.label}
+            disabled={disabled}
+            onChange={(event) => onChange({ ...section, label: event.target.checked })}
+          />
+          {COPY.label}
+        </label>
+      )}
     </div>
   )
 }
@@ -470,15 +482,7 @@ export function FaqSettings({
           </ul>
         </div>
       )}
-      <label className="flex items-center gap-2 text-sm text-slate-700">
-        <input
-          type="checkbox"
-          checked={faq.merge_questions}
-          disabled={disabled}
-          onChange={(event) => onChange({ ...faq, merge_questions: event.target.checked })}
-        />
-        {COPY.faqMerge}
-      </label>
+      {/* 질문 합치기(`faq.merge_questions`)는 병원 화면이 아직 그리지 않아 숨긴다(설계 20절, UNRENDERED_FIELDS). */}
     </div>
   )
 }

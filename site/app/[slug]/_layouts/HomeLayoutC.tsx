@@ -21,7 +21,7 @@ import {
   WEEK_DAY_KEYS,
 } from '@/lib/clinic-layout'
 import { fullClinicAddress } from '@/lib/clinic-schema'
-import { heroLookAttributes, physicianPhotoLook, limitCarePrincipleCards, type SiteSectionId } from '@/lib/clinic-site-config'
+import { heroLookAttributes, lineBreaksFor, physicianPhotoLook, limitCarePrincipleCards, type SiteSectionId } from '@/lib/clinic-site-config'
 import {
   CARE_FLOW_TITLE,
   resolveCarePrinciples,
@@ -37,7 +37,9 @@ import {
 } from '@/lib/clinic-template-copy'
 import { buildTreatmentSlug } from '@/lib/treatment-slug'
 
+import { LineBroken } from '../_components/LineBroken'
 import { SectionLook } from '../_components/SectionLook'
+import { partStarts } from '@/lib/clinic-line-breaks'
 import { PhysicianProfile } from './PhysicianProfile'
 import type { ClinicHomeModel } from './model'
 import s from './layout-c.module.css'
@@ -66,6 +68,9 @@ export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
     specialtyLabel,
     hospitalName: hospital.name,
   })
+  // 줄바꿈 지정(③-2f) — 조각(앞 조각들·강조)을 이은 글 기준 자리. 앞 조각이 없으면 강조 한 조각.
+  const headlineParts = partStarts([...headline.lead, headline.emphasis])
+  const headlineBreaks = lineBreaksFor(model.siteConfig, 'hero.headline', headline.text)
   const today = seoulToday()
   const todays = todayHours(hospital.business_hours, today.key)
   const todaysTime = todays && !todays.closed ? splitHoursNote(todays.time) : null
@@ -129,12 +134,25 @@ export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
                 {/* 승인 문구가 한 조각뿐이면 앞부분(lead)이 없다 — 그 조각을 큰 제목으로 쓴다. */}
                 <span className={s.heroLead}>
                   {(headline.lead.length > 0 ? headline.lead : [headline.emphasis]).map((part, index) => (
-                    <span key={`${part}-${index}`}><KeepTogether text={part} compounds />{' '}</span>
+                    <span key={`${part}-${index}`}>
+                      <LineBroken
+                        text={headlineParts[index].text}
+                        start={headlineParts[index].start}
+                        breakAtStart={index > 0}
+                        breaks={headlineBreaks}
+                        fallback={<KeepTogether text={part} compounds />}
+                      />{' '}
+                    </span>
                   ))}
                 </span>
                 {headline.lead.length > 0 ? (
                   <span className={s.heroEmphasis}>
-                    <KeepTogether text={headline.emphasis} compounds />
+                    <LineBroken
+                    text={headlineParts[headlineParts.length - 1].text}
+                    start={headlineParts[headlineParts.length - 1].start}
+                    breaks={headlineBreaks}
+                    fallback={<KeepTogether text={headline.emphasis} compounds />}
+                  />
                   </span>
                 ) : null}
               </h1>
@@ -317,13 +335,28 @@ export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
     care_principles: !principlesShown ? null : (
       <section className={s.darkSection} aria-label="진료 원칙과 진료 과정">
         <div className={s.inner}>
-          <SectionTitle label={plan.label('care_principles')}>{plan.title('care_principles', principles.title)}</SectionTitle>
+          <SectionTitle label={plan.label('care_principles')}>
+            <LineBroken
+              text={plan.title('care_principles', principles.title)}
+              breaks={lineBreaksFor(model.siteConfig, 'care_principles.title', plan.title('care_principles', principles.title))}
+            />
+          </SectionTitle>
           <div className={s.policyGrid}>
             {principleCards.map((principle, index) => (
               <div key={principle.key} className={s.policyCard}>
                 <span className={s.policyIndex} aria-hidden="true">{String(index + 1).padStart(2, '0')}</span>
-                <h3>{principle.title}</h3>
-                <p>{principle.body}</p>
+                <h3>
+                  <LineBroken
+                    text={principle.title}
+                    breaks={lineBreaksFor(model.siteConfig, `care_principles.cards[${principles.cards.indexOf(principle)}].title`, principle.title)}
+                  />
+                </h3>
+                <p>
+                  <LineBroken
+                    text={principle.body}
+                    breaks={lineBreaksFor(model.siteConfig, `care_principles.cards[${principles.cards.indexOf(principle)}].body`, principle.body)}
+                  />
+                </p>
               </div>
             ))}
           </div>
@@ -440,7 +473,15 @@ export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
               </tbody>
             </table>
             <div className={s.factsSide}>
-              {hospital.hero_description?.trim() ? <p className={s.factsNote}>{hospital.hero_description}</p> : null}
+              {hospital.hero_description?.trim() ? (
+                <p className={s.factsNote}>
+                  <LineBroken
+                    text={hospital.hero_description.trim()}
+                    breaks={lineBreaksFor(model.siteConfig, 'hero.description', hospital.hero_description.trim())}
+                    fallback={hospital.hero_description}
+                  />
+                </p>
+              ) : null}
               {visibleLinks.length > 0 ? (
                 <>
                   <p className={s.sideLabel}>병원 공식 채널</p>

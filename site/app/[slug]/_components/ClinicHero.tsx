@@ -4,7 +4,9 @@ import Link from 'next/link'
 import type { CSSProperties, ReactNode } from 'react'
 import { KeepTogether } from './KeepTogether'
 
-import type { SiteHeroBlock } from '@/lib/clinic-site-config'
+import { lineBreaksFor, type ClinicSiteConfig, type SiteHeroBlock } from '@/lib/clinic-site-config'
+import { partStarts } from '@/lib/clinic-line-breaks'
+import { LineBroken } from './LineBroken'
 
 import { seoulToday } from '@/lib/clinic-layout'
 import { displayClinicLabels } from '@/lib/clinic-design'
@@ -41,6 +43,8 @@ interface Props {
   bookingUrl?: string | null
   /** 섹션 설정의 첫 화면 모양 표지(`heroLookAttributes`) — 비어 있으면 지금 마크업 그대로. */
   lookAttributes?: Record<string, unknown>
+  /** 섹션 설정(줄바꿈 지정을 읽는다, `lineBreaksFor`). 없으면 지금 마크업 그대로. */
+  siteConfig?: ClinicSiteConfig | null
 }
 
 function compactAddress(address: string): string {
@@ -74,6 +78,7 @@ export function ClinicHero({
   blocks = null,
   bookingUrl = null,
   lookAttributes = {},
+  siteConfig = null,
 }: Props) {
   // 오늘에 따라 바뀌는 칸(오늘 진료·전화 버튼·다음 진료)은 HeroToday가 브라우저에서 한국 시간으로
   // 다시 잰다 — 캐시된 HTML이 지난 요일 값을 보이지 않게. 연중무휴·다음 진료·주말 규칙은 그 파일에 있다.
@@ -86,6 +91,15 @@ export function ClinicHero({
     specialtyLabel,
     hospitalName,
   })
+
+  // 줄바꿈 지정(③-2f) — 제목은 조각(앞 조각·강조)을 이은 글 기준 자리, 설명은 승인 설명이 있을 때만.
+  const headlineBreaks = lineBreaksFor(siteConfig, 'hero.headline', headline.text)
+  const [leadStarts, emphasisStart] = (() => {
+    const starts = partStarts([...headline.lead, headline.emphasis])
+    return [starts.slice(0, -1), starts[starts.length - 1]] as const
+  })()
+  const description = heroDescription?.trim() || null
+  const descriptionBreaks = lineBreaksFor(siteConfig, 'hero.description', description)
 
   return (
     <section
@@ -107,15 +121,33 @@ export function ClinicHero({
           >
             {headline.lead.map((part, index) => (
               <span key={`${part}-${index}`}>
-                <KeepTogether text={part} compounds />{' '}
+                <LineBroken
+                  text={leadStarts[index].text}
+                  start={leadStarts[index].start}
+                  breakAtStart={index > 0 && !headline.explicitLines}
+                  breaks={headlineBreaks}
+                  fallback={<KeepTogether text={part} compounds />}
+                />{' '}
               </span>
             ))}
-            <strong><KeepTogether text={headline.emphasis} compounds /></strong>
+            <strong>
+              <LineBroken
+                text={emphasisStart.text}
+                start={emphasisStart.start}
+                breakAtStart={headline.lead.length > 0 && !headline.explicitLines}
+                breaks={headlineBreaks}
+                fallback={<KeepTogether text={headline.emphasis} compounds />}
+              />
+            </strong>
           </h1>
           <p className="clinic-hero-editorial-lede">
-            <KeepTogether
-              text={heroDescription?.trim() || `${hospitalName}의 진료 영역, 진료시간과 위치를 한곳에서 확인할 수 있습니다.`}
-            />
+            {description && descriptionBreaks.size > 0 ? (
+              <LineBroken text={description} breaks={descriptionBreaks} />
+            ) : (
+              <KeepTogether
+                text={description || `${hospitalName}의 진료 영역, 진료시간과 위치를 한곳에서 확인할 수 있습니다.`}
+              />
+            )}
           </p>
           <div className="clinic-hero-editorial-actions">
             {accessMode === 'specialist' ? (

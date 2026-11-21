@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { ApiError, fetchAPI } from '@/lib/api'
@@ -11,6 +11,7 @@ import { SiteLayoutPicker } from '@/app/_components/SiteLayoutPicker'
 import {
   layoutDistributionPath,
   readLayoutDistribution,
+  suggestedLayout,
   type SiteLayout,
   type SiteLayoutDistribution,
 } from '@/lib/site-layout'
@@ -37,6 +38,11 @@ export default function RegisterContractPage() {
   const [plan, setPlan] = useState<PlanCode>('PLAN_12')
   const [aeOwnerId, setAeOwnerId] = useState('')
   const [siteLayout, setSiteLayout] = useState<SiteLayout | null>(null)
+  // 사람이 한 번이라도 고르면 추천으로 덮지 않는다.
+  const layoutChosenByOperator = useRef(false)
+  const [suggestion, setSuggestion] = useState<SiteLayout | null>(null)
+  // 화면의 안내는 state로 — ref는 늦게 온 분포가 사람의 선택을 덮지 않게 하는 데만 쓴다.
+  const [suggestionApplied, setSuggestionApplied] = useState(false)
   // 상담 요청의 지역으로 찾은 같은 시·도 공개 병원의 레이아웃 수. 지역을 모르면 분포 없이 고른다.
   const [leadRegion, setLeadRegion] = useState<string | null>(null)
   const [distribution, setDistribution] = useState<SiteLayoutDistribution | null>(null)
@@ -117,6 +123,13 @@ export default function RegisterContractPage() {
         const parsed = readLayoutDistribution(response)
         setDistribution(parsed)
         setDistributionError(parsed === null)
+        // 같은 지역에서 가장 적게 쓰는 틀을 미리 골라 둔다 — 칸은 그대로 필수이고 바꿀 수 있다.
+        const suggested = suggestedLayout(parsed)
+        setSuggestion(suggested)
+        if (suggested && !layoutChosenByOperator.current) {
+          setSiteLayout(suggested)
+          setSuggestionApplied(true)
+        }
       })
       .catch((cause: unknown) => {
         if (!isExpectedOperatorRequestFailure(cause)) throw cause
@@ -233,10 +246,24 @@ export default function RegisterContractPage() {
           <SiteLayoutPicker
             name="register-site-layout"
             value={siteLayout}
-            onChange={setSiteLayout}
+            onChange={(layout) => {
+              layoutChosenByOperator.current = true
+              setSuggestionApplied(false)
+              setSiteLayout(layout)
+            }}
             distribution={distribution}
             distributionError={distributionError}
+            suggested={suggestion}
           />
+          {suggestionApplied && suggestion && distribution?.province && (
+            <p className="break-keep text-xs leading-5 text-blue-800">
+              {(distribution.total > 0
+                ? ADMIN_COPY.siteLayout.suggestedPicked
+                : ADMIN_COPY.siteLayout.suggestedPickedFirst)
+                .replace('{province}', distribution.province)
+                .replace('{layout}', suggestion)}
+            </p>
+          )}
         </fieldset>
 
         {error && (
