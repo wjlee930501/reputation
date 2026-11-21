@@ -626,6 +626,10 @@ export const ADMIN_COPY = {
     lineBreakCustom: '직접 나누기 — 줄을 나눌 자리에서 Enter',
     lineBreakTooMany: '{max}줄까지, 빈 줄 없이 써 주세요.',
     lineBreakMismatch: '글자나 띄어쓰기가 병원 정보의 문장과 달라졌습니다. 줄을 나누는 자리만 바꿀 수 있습니다.',
+    lineBreakLayoutBreak: {
+      B: 'B안은 병원 정보에서 나눈 제목 줄마다 새 줄로 시작합니다. 그 자리를 한 줄에 잇지 말고 나눠 주세요.',
+      other: '이 레이아웃은 제목의 마지막 줄(강조 줄)을 늘 새 줄로 시작합니다. 그 자리를 한 줄에 잇지 말고 나눠 주세요.',
+    },
     lineBreakPaths: {
       'hero.headline': '첫 화면 카피',
       'hero.description': '첫 화면 설명',
