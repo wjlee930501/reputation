@@ -1,4 +1,4 @@
-import { articleDateLabels, formatSeoulDate } from '@/lib/clinic-dates'
+import { articleDateLabels, contentModifiedAt, formatSeoulDate } from '@/lib/clinic-dates'
 import { CLINIC_IMAGE_SIZES } from '@/lib/clinic-image-delivery'
 import { Metadata } from 'next'
 import Link from 'next/link'
@@ -102,7 +102,7 @@ export async function generateMetadata({ params: paramsPromise }: Props): Promis
         url: canonicalUrl,
         type: 'article',
         publishedTime: content.published_at || undefined,
-        modifiedTime: content.body_updated_at || content.published_at || undefined,
+        modifiedTime: contentModifiedAt(content),
         authors: [hospital.name],
         images: imageUrl ? [{ url: imageUrl, alt: `${TYPE_LABELS[content.content_type] ?? '의료 정보'}: ${content.title}` }] : [],
       },
@@ -182,7 +182,7 @@ export default async function ContentDetailPage({ params: paramsPromise }: Props
 
   const articleUrl = `${hospitalRootUrl}/contents/${params.contentId}`
   const datePublished = content.published_at || undefined
-  const dateModified = content.body_updated_at || content.published_at || undefined
+  const dateModified = contentModifiedAt(content)
 
   // 모든 article 공통 base. type별 추가 schema는 jsonLd 배열에 별도로 push.
   const physicianId = `${hospitalRootUrl}/doctor#physician`

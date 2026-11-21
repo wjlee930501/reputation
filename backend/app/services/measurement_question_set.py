@@ -384,6 +384,28 @@ _GENERIC_TOPIC_TERMS: Final[frozenset[str]] = frozenset(
 )
 
 
+# 나열 끝 조각의 마지막 낱말이 이것이면 앞 조각들이 함께 쓰는 꼬리다('경동맥/갑상선 초음파' → '경동맥 초음파').
+_SHARED_HEAD_WORDS: Final[frozenset[str]] = frozenset(
+    {"초음파", "검사", "내시경", "촬영", "주사", "주사치료", "수술", "시술", "검진", "접종"}
+)
+
+
+def _share_list_head(pieces: list[str]) -> list[str]:
+    """'경동맥/갑상선 초음파'·'위/대장 내시경'처럼 끝 조각의 첫 낱말 뒤 꼬리를 띄어쓰기 없는 앞 조각에도 붙인다."""
+
+    if len(pieces) < 2 or " " not in pieces[-1]:
+        return pieces
+    tail = pieces[-1].split(" ", 1)[1]  # '유방 초음파 검사' → '초음파 검사'
+    if tail.rsplit(" ", 1)[-1] not in _SHARED_HEAD_WORDS:
+        return pieces
+    shared = []
+    for piece in pieces[:-1]:
+        if " " in piece or piece.endswith(tail.replace(" ", "")):
+            return pieces
+        shared.append(f"{piece} {tail}")
+    return [*shared, pieces[-1]]
+
+
 def _items(value: object) -> list[str]:
     """괄호 설명을 빼고 나열을 나눈 항목들. 'PET/CT'·'CD4+ T세포 검사'처럼 한글 없는 조각이 있으면 나누지 않는다."""
 
@@ -392,6 +414,7 @@ def _items(value: object) -> list[str]:
     pieces = [_clean(piece) for piece in _LIST_SPLIT_RE.split(text)]
     pieces = [piece for piece in pieces if piece]
     if len(pieces) > 1 and all(_HANGUL_RE.search(piece) for piece in pieces):
+        pieces = _share_list_head(pieces)
         kept = [piece for piece in pieces if len(piece.replace(" ", "")) >= 2]
         if kept:
             return kept

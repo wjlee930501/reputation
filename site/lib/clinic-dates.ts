@@ -5,8 +5,8 @@
  * 08:00 KST 발행 글(전날 23:00Z)이 하루 전 날짜로 보였고, 관리자 공개일(11.02 08:00)과 화면
  * 발행일(11월 1일)이 어긋났다. 날짜를 그리는 곳은 모두 이 파일의 함수를 쓴다.
  *
- * 표시만 바꾼다 — 구조화 데이터(datePublished·dateModified)·sitemap·llms.txt의 값과
- * 발행일의 의미(published_at vs first_published_at)는 바꾸지 않는다.
+ * 구조화 데이터(dateModified·OG modifiedTime)·sitemap lastmod·llms.txt의 수정 시각도 `contentModifiedAt`으로
+ * 같은 규칙(발행 뒤 편집만 수정)을 쓴다. 발행일의 의미(published_at vs first_published_at)는 바꾸지 않는다.
  */
 
 const SEOUL = 'Asia/Seoul'
@@ -80,4 +80,22 @@ export function articleDateLabels(content: {
       ? { label: formatSeoulDate(content.body_updated_at, ''), value: content.body_updated_at }
       : null
   return { published, updated }
+}
+
+/**
+ * 글의 수정 시각(구조화 데이터·sitemap·llms.txt) — 발행 뒤에 본문을 고쳤을 때만 그 시각, 아니면 발행 시각.
+ *
+ * `body_updated_at`은 발행 전 편집에도 찍혀, 그대로 쓰면 dateModified가 datePublished보다 앞섰다(화면의
+ * `articleDateLabels`와 같은 문제). 시각 단위로 비교한다 — 같은 날 발행 뒤 고친 것도 수정이다.
+ */
+export function contentModifiedAt(content: {
+  published_at: string | null
+  body_updated_at: string | null
+}): string | undefined {
+  const published = parse(content.published_at)
+  const updated = parse(content.body_updated_at)
+  if (updated && content.body_updated_at && (!published || updated.getTime() > published.getTime())) {
+    return content.body_updated_at
+  }
+  return content.published_at || undefined
 }
