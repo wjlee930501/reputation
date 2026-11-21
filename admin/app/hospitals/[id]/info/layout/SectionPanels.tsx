@@ -252,17 +252,19 @@ type HeroValue = {
 
 const BLOCKS = ['today', 'phone', 'location', 'booking', 'hours'] as const
 
-/** 첫 화면 — 배치·제목 크기·정보 블록(고른 순서대로 보인다). */
+/** 첫 화면 — 배치·제목 크기·정보 블록(고른 순서대로 보인다). 정보 블록은 B 레이아웃에만 있다. */
 export function HeroSettings({
   hero,
   issues,
   onChange,
   disabled,
+  showBlocks = true,
 }: {
   hero: HeroValue
   issues: readonly SiteConfigIssue[]
   onChange: (hero: HeroValue) => void
   disabled: boolean
+  showBlocks?: boolean
 }) {
   return (
     <div className="space-y-4">
@@ -281,6 +283,7 @@ export function HeroSettings({
         onChange={(title_size) => onChange({ ...hero, title_size })}
         disabled={disabled}
       />
+      {showBlocks && (
       <fieldset className="space-y-1">
         <legend className="text-xs font-semibold text-slate-700">{COPY.blocks}</legend>
         <div className="flex flex-wrap gap-1.5">
@@ -307,6 +310,7 @@ export function HeroSettings({
           })}
         </div>
       </fieldset>
+      )}
     </div>
   )
 }

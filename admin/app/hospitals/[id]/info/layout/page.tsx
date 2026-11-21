@@ -10,6 +10,7 @@ import { isPubliclyServing } from '@/lib/public-service-state'
 import {
   SITE_RENDERS_SITE_CONFIG,
   buildOverrides,
+  showsBOnlyFields,
   changeLabels,
   COPY_KEYS_BY_SECTION,
   LINE_BREAK_PATHS,
@@ -119,7 +120,8 @@ export default function SiteLayoutEditorPage() {
   }
 
   const defaults = state.defaults[working.layout]
-  const overrides = buildOverrides(working.resolved, defaults)
+  const overrides = buildOverrides(working.resolved, defaults, working.layout)
+  const bOnly = showsBOnlyFields(working.layout)
   const live = isPubliclyServing(hospital)
   const locked = busy !== null
   const sections = working.resolved.sections
@@ -300,7 +302,7 @@ export default function SiteLayoutEditorPage() {
               />
               {current.id === 'hero' && (
                 <Extra title={COPY.heroTitle}>
-                  <HeroSettings hero={hero} issues={[]} onChange={(next) => update({ hero: next })} disabled={locked} />
+                  <HeroSettings hero={hero} issues={[]} onChange={(next) => update({ hero: next })} disabled={locked} showBlocks={bOnly} />
                   <HeroImageSettings hero={group('hero')} onChange={(next) => update({ hero: next })} disabled={locked} />
                   <LineBreaksSettings
                     paths={['hero.headline', 'hero.description']}
@@ -319,7 +321,7 @@ export default function SiteLayoutEditorPage() {
               )}
               {current.id === 'treatments' && (
                 <Extra>
-                  <TreatmentsSettings value={group('treatments')} onChange={(next) => update({ treatments: next })} disabled={locked} />
+                  <TreatmentsSettings value={group('treatments')} onChange={(next) => update({ treatments: next })} disabled={locked} showStyle={bOnly} />
                 </Extra>
               )}
               {current.id === 'doctor' && (
