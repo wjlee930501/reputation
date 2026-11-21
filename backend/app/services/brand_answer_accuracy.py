@@ -35,8 +35,10 @@ _MAX_EXCERPTS: Final = 3
 
 # 도로명 + 건물번호. 번호 뒤에 '번길'이 이어지면 다른 도로("월드컵북로 123번길 4")이고, 뒤 숫자가 이어지는
 # 소수점이 아니어야 한다. 앞이 숫자·하이픈이면(전화번호 "02-1234") 주소가 아니다.
+# 도로명에는 숫자가 들 수 있다("강남대로94길"). 번호 바로 뒤에 '길'·'번길'·'로'가 이어지면 도로명의 일부다.
 _ROAD_RE = re.compile(
-    r"(?<![\d-])([가-힣A-Za-z0-9]*[가-힣A-Za-z](?:대로|로|길))\s*(\d+(?:-\d+)?)(?!\d|\.\d|-\d|\s*번길)"
+    r"(?<![\d-])([가-힣][가-힣A-Za-z0-9]*(?:대로|로|길)(?:\s*\d+번?길)?)\s*(\d+(?:-\d+)?)"
+    r"(?!\d|\.\d|-\d|\s*번?길|\s*로)"
 )
 _PHONE_RE = re.compile(r"(?<!\d)0\d{1,2}[-.\s]?\d{3,4}[-.\s]?\d{4}(?!\d)")
 _MERIDIEM = r"(오전|오후|낮|저녁|밤)?\s*"
@@ -50,7 +52,10 @@ _KOREAN_TIME_RE = re.compile(
 )
 # "8~18시", "9-18시": 앞쪽 시각이 '시'를 뒤와 같이 쓴다.
 _SHARED_HOUR_RANGE_RE = re.compile(
-    _MERIDIEM + r"(?<![\d.:])(2[0-4]|1\d|[1-9])\s*[~∼\-–]\s*" + _MERIDIEM + r"(2[0-4]|1\d|[1-9])\s*시(?![간술행작험력청설])"
+    _MERIDIEM
+    + r"(?<![\d.:])(2[0-4]|1\d|[1-9])\s*[~∼\-–]\s*"
+    + _MERIDIEM
+    + r"(2[0-4]|1\d|[1-9])\s*시(?![간술행작험력청설])(?:\s*([0-5]?\d)\s*분|\s*(반))?"
 )
 _ROUND_THE_CLOCK_RE = re.compile(r"24\s*시간\s*(진료|운영|영업|문을\s*연|열)")
 _SPACE_RE = re.compile(r"\s+")
@@ -124,9 +129,12 @@ def _times(text: str) -> set[int]:
         found.add(ROUND_THE_CLOCK)
     for meridiem, hour, minute in _CLOCK_RE.findall(text):
         found.add(_hour(meridiem, hour) * 60 + int(minute))
-    for start_meridiem, start, end_meridiem, end in _SHARED_HOUR_RANGE_RE.findall(text):
+    for start_meridiem, start, end_meridiem, end, end_minute, end_half in _SHARED_HOUR_RANGE_RE.findall(text):
         found.add(_hour(start_meridiem, start) * 60)
-        found.add(_hour(end_meridiem or start_meridiem, end) * 60)
+        minutes = 30 if end_half else int(end_minute or 0)
+        found.add(_hour(end_meridiem or start_meridiem, end) * 60 + minutes)
+    # 범위로 읽은 구간은 낱개 시각으로 다시 읽지 않는다('9~18시 30분'에서 18:00을 따로 뽑지 않게).
+    text = _SHARED_HOUR_RANGE_RE.sub(" ", text)
     for meridiem, hour, minute, half in _KOREAN_TIME_RE.findall(text):
         minutes = 30 if half else int(minute or 0)
         found.add(_hour(meridiem, hour) * 60 + minutes)

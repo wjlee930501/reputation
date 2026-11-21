@@ -152,3 +152,13 @@ def test_codex_review_edge_cases():
     assert check_answer(facts, "행복드림의원은 12.1 시행되는 검진을 안내합니다.")["hours"] == "ABSENT"
     # '24시간 진료' 주장은 진료 시간표와 다르다.
     assert check_answer(facts, "행복드림의원은 24시간 진료합니다.")["hours"] == "MISMATCH"
+
+
+def test_codex_second_review_cases():
+    gangnam = _facts(address="서울 강남구 강남대로94길 10", business_hours={"mon": "09:00-18:30"})
+
+    assert gangnam.road == ("강남대로94길", "10")
+    assert check_answer(gangnam, "행복드림의원은 강남대로94길 99에 있습니다")["address"] == "MISMATCH"
+    assert check_answer(gangnam, "행복드림의원은 강남대로94길 10에 있습니다")["address"] == "MATCH"
+    assert check_answer(gangnam, "행복드림의원은 9~18시 30분 진료합니다")["hours"] == "MATCH"
+    assert check_answer(gangnam, "행복드림의원은 9~18시 반까지 진료합니다")["hours"] == "MATCH"
