@@ -16,9 +16,12 @@ import {
   DEFAULT_SECTION_ORDER,
   DEFAULT_SECTION_TITLES,
   FIXED_SECTIONS,
+  DEFAULT_HERO_BLOCKS,
   limitCarePrincipleCards,
+  naverBookingUrl,
   normalizeSiteConfig,
   resolveCareFlow,
+  resolveHeroBlocks,
   resolveHomeFaqEntries,
 } from './clinic-site-config.ts'
 import { CARE_FLOW_NOTE, CARE_STEPS } from './clinic-template-copy.ts'
@@ -98,8 +101,16 @@ for (const layout of LAYOUTS) {
     assert.deepEqual(config.nav.items, [...DEFAULT_NAV_ITEMS])
     assert.deepEqual(config.nav.mobileBar, [...DEFAULT_MOBILE_BAR])
     assert.deepEqual(limitCarePrincipleCards([1, 2, 3], config), [1, 2, 3])
+    // 모양 칸(③-2a)도 기본값이면 지금 마크업이다 — 정보 띠 칸 null, 진료 항목 카드·설명 보임.
+    assert.equal(config.hero.blocks, null)
+    assert.equal(resolveHeroBlocks(config, 'https://map.naver.com/p/entry/place/1'), null)
+    assert.deepEqual(config.treatments, { style: 'cards', showDescription: true })
   })
 }
+
+test('the default info strip blocks equal the backend default', () => {
+  for (const layout of LAYOUTS) assert.deepEqual([...DEFAULT_HERO_BLOCKS], DEFAULTS.layouts[layout].hero.blocks)
+})
 
 test('no config plans the current markup order (the hospitals without a layout use B)', () => {
   assert.deepEqual(buildHomeSectionPlan(null, null).order, DEFAULT_SECTION_ORDER.B.filter((id) => id !== 'section_index'))
@@ -313,4 +324,67 @@ test('every hospital page passes the same menu config to the header', () => {
     const headers = source.split('<ClinicHeader').slice(1).map((part) => part.slice(0, part.indexOf('/>')))
     for (const header of headers) assert.match(header, /siteConfig=\{\w+\.site_config\}/, file)
   }
+})
+
+// ── ③-2a 모양 칸: B안 정보 띠 칸·진료 항목 모양 ─────────────────────────
+
+const PLACE = 'https://m.place.naver.com/place/1595672233'
+
+test('B reads the chosen info strip blocks, dropping unknown or repeated ones', () => {
+  const config = normalizeSiteConfig(
+    published('B', (c) => (c.hero.blocks = ['phone', 'location', 'phone', 'weather', 'booking'])),
+    'B',
+  )
+  assert.deepEqual(config?.hero.blocks, ['phone', 'location', 'booking'])
+  assert.deepEqual(resolveHeroBlocks(config, PLACE), ['phone', 'location', 'booking'])
+})
+
+test('blocks equal to the current strip, empty or malformed stay on the current markup', () => {
+  assert.equal(normalizeSiteConfig(published('B', (c) => (c.hero.blocks = [...DEFAULT_HERO_BLOCKS])), 'B')?.hero.blocks, null)
+  assert.equal(normalizeSiteConfig(published('B', (c) => (c.hero.blocks = ['weather'])), 'B')?.hero.blocks, null)
+  assert.equal(normalizeSiteConfig(published('B', (c) => (c.hero.blocks = 'phone')), 'B')?.hero.blocks, null)
+  assert.equal(normalizeSiteConfig(published('B', (c) => (c.hero = null)), 'B')?.hero.blocks, null)
+})
+
+test('the booking block needs a Naver place; without it the block is dropped', () => {
+  const withBooking = normalizeSiteConfig(
+    published('B', (c) => (c.hero.blocks = ['today', 'phone', 'booking', 'location', 'hours'])),
+    'B',
+  )
+  assert.deepEqual(resolveHeroBlocks(withBooking, PLACE), ['today', 'phone', 'booking', 'location', 'hours'])
+  // 빼고 나니 지금 띠와 같다 → 지금 마크업.
+  assert.equal(resolveHeroBlocks(withBooking, null), null)
+  const onlyBooking = normalizeSiteConfig(published('B', (c) => (c.hero.blocks = ['booking'])), 'B')
+  // 고른 칸이 모두 빠지면 띠가 없다 — 고르지 않은 기본 칸을 대신 보이지 않는다.
+  assert.deepEqual(resolveHeroBlocks(onlyBooking, null), [])
+  assert.deepEqual(resolveHeroBlocks(onlyBooking, PLACE), ['booking'])
+  assert.equal(resolveHeroBlocks(null, PLACE), null)
+})
+
+test('B reads the treatment look; A and C always keep the current look', () => {
+  const list = (layout: 'A' | 'B' | 'C') =>
+    normalizeSiteConfig(
+      published(layout, (c) => {
+        c.treatments = { style: 'list', show_description: false }
+        c.hero.blocks = ['phone', 'location']
+      }),
+      layout,
+    )
+  assert.deepEqual(list('B')?.treatments, { style: 'list', showDescription: false })
+  for (const layout of ['A', 'C'] as const) {
+    assert.deepEqual(list(layout)?.treatments, { style: 'cards', showDescription: true }, layout)
+    assert.equal(list(layout)?.hero.blocks, null, layout)
+  }
+  assert.deepEqual(
+    normalizeSiteConfig(published('B', (c) => (c.treatments = { style: 'grid' })), 'B')?.treatments,
+    { style: 'cards', showDescription: true },
+  )
+})
+
+test('the booking link is the Naver place page (stored URL first, else built from the place id)', () => {
+  assert.equal(naverBookingUrl({ naver_place_url: ` ${PLACE} `, naver_place_id: '9' }), PLACE)
+  assert.equal(naverBookingUrl({ naver_place_url: null, naver_place_id: '1595672233' }), 'https://map.naver.com/p/entry/place/1595672233')
+  assert.equal(naverBookingUrl({ naver_place_url: 'javascript:alert(1)', naver_place_id: null }), null)
+  assert.equal(naverBookingUrl({ naver_place_url: null, naver_place_id: 'abc' }), null)
+  assert.equal(naverBookingUrl({}), null)
 })

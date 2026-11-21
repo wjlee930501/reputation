@@ -9718,3 +9718,92 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
     margin-left: calc(240px + 32px);
   }
 }
+
+/* ══ ③-2a 섹션 설정 모양 — B안 정보 띠 칸·진료 항목 목록 ═══════════════
+   설정이 기본값이면 아래 클래스는 그려지지 않는다(지금 마크업 그대로). 칸을 고른 띠는 칸마다 지금 띠와
+   같은 너비 비율을 쓰고(--clinic-rail-columns, ClinicHero), 좁은 화면에서는 지금처럼 두 칸씩이며
+   칸 수가 홀수면 마지막 칸이 한 줄을 다 쓴다. */
+.clinic-hero-fact-rail--custom {
+  grid-template-columns: var(--clinic-rail-columns, repeat(4, minmax(0, 1fr)));
+}
+
+/* 당일·야간 진료형의 '오늘 진료' 강조(위 `> div:first-child` 규칙, 브랜드 강조색)는 칸을 고른 띠에서 쓰지 않는다 —
+   이 띠는 B안에만 있고 B안 띠 배경이 진한 대표색이라 강조색 글자가 배경에 묻힌다(기본 대표색에서 둘 다 #17365D).
+   띠의 글자색을 따른다. */
+.clinic-hero--access-urgent .clinic-hero-fact-rail--custom > div:first-child dt,
+.clinic-hero--access-urgent .clinic-hero-fact-rail--custom > div:first-child dd {
+  color: inherit;
+}
+
+/* 진료 항목 목록 — 한 줄에 이름(과 설명 한 줄), 줄 사이 점선. 두 열, 좁은 화면 한 열. */
+.clinic-tx-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: 40px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--clinic-line);
+}
+
+.clinic-tx-list > li {
+  min-width: 0;
+  border-bottom: 1px dashed var(--clinic-line);
+}
+
+.clinic-tx-list-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 20px;
+  align-items: center;
+  gap: 2px 12px;
+  min-height: 56px;
+  padding: 16px 4px;
+  color: inherit;
+  text-decoration: none;
+}
+
+.clinic-tx-list-name {
+  grid-column: 1;
+  color: var(--color-revisit-text-title);
+  font-size: 18px;
+  line-height: 1.45;
+  font-weight: 700;
+  word-break: keep-all;
+}
+
+.clinic-tx-list-desc {
+  grid-column: 1;
+  overflow: hidden;
+  color: var(--color-revisit-text-caption);
+  font-size: var(--clinic-type-meta);
+  line-height: 1.6;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.clinic-tx-list-more {
+  display: flex;
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  color: var(--clinic-brand-action);
+}
+
+a.clinic-tx-list-row:hover .clinic-tx-list-name {
+  color: var(--clinic-brand-action);
+}
+
+@media (max-width: 920px) {
+  .clinic-hero-fact-rail--custom {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .clinic-hero-fact-rail--odd > div:last-child {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 720px) {
+  .clinic-tx-list {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
