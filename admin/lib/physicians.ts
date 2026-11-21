@@ -8,6 +8,7 @@
  */
 
 import { fetchAPI } from './api.ts'
+import { doctorPhotoPublicBlocker, type DoctorPhotoBlocker, type DoctorPhotoSourceLike } from './photo-public-gate.ts'
 import type { Physician } from '../types/index.ts'
 
 /** 직함 제안. 고르지 않고 직접 적을 수도 있다 — 서버는 자유 문자열을 받는다. */
@@ -91,11 +92,12 @@ export function seedPhysicians(rows: Physician[] | null | undefined): Physician[
 export interface DoctorPhotoOption {
   id: string
   title: string
+  /** 공개 페이지에 의료진 사진으로 나가지 못하는 이유. 나가면 null. */
+  blocker: DoctorPhotoBlocker | null
 }
 
-interface SourceRowLike {
+interface SourceRowLike extends DoctorPhotoSourceLike {
   id: string
-  source_type: string
   title: string
   status: string
 }
@@ -104,7 +106,7 @@ interface SourceRowLike {
 export function doctorPhotoOptions(rows: SourceRowLike[]): DoctorPhotoOption[] {
   return rows
     .filter((row) => row.source_type === 'PHOTO_DOCTOR' && row.status !== 'EXCLUDED')
-    .map((row) => ({ id: row.id, title: row.title }))
+    .map((row) => ({ id: row.id, title: row.title, blocker: doctorPhotoPublicBlocker(row) }))
 }
 
 /**

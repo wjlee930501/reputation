@@ -12,7 +12,13 @@ import {
   publicPhotoAssetUrl,
 } from '@/lib/info-sections'
 import { safeOperatorError } from '@/lib/operations-journey'
-import { PHOTO_PUBLIC_GATE_COPY, describePhotoPublicGate } from '@/lib/photo-public-gate'
+import {
+  PHOTO_PUBLIC_GATE_COPY,
+  describePhotoPublicGate,
+  doctorPhotoBlockerMessage,
+  doctorPhotoPublicBlocker,
+  type DoctorPhotoSourceLike,
+} from '@/lib/photo-public-gate'
 import { formatActorLabel } from '@/lib/actor-display'
 import { physicianUsingPhoto } from '@/lib/physicians'
 import type { Physician } from '@/types'
@@ -40,6 +46,7 @@ interface PhotoSource {
   file_url: string | null
   file_access_url: string | null
   is_public: boolean
+  source_metadata?: DoctorPhotoSourceLike['source_metadata']
   photo_provenance?: PhotoProvenance | null
   display: { source_type_label: string } | null
 }
@@ -215,6 +222,7 @@ function PhotoRow({
   const [error, setError] = useState<string | null>(null)
   const provenance = photo.photo_provenance ?? null
   const gate = describePhotoPublicGate(photo)
+  const doctorBlocker = doctorPhotoPublicBlocker(photo)
   const fileHref = photo.file_access_url ?? photo.file_url
 
   async function patchPublic(body: Record<string, unknown>, failure: string) {
@@ -292,7 +300,12 @@ function PhotoRow({
           </p>
           {photo.source_type === 'PHOTO_DOCTOR' && (
             <p className="mt-0.5 text-xs text-slate-500">
-              {usedBy ? `의료진 ${usedBy} 사진으로 사용 중` : '아직 어느 의료진에도 연결되지 않았습니다'}
+              {usedBy ? `의료진 ${usedBy} 사진으로 연결됨` : '아직 어느 의료진에도 연결되지 않았습니다'}
+            </p>
+          )}
+          {photo.source_type === 'PHOTO_DOCTOR' && usedBy && doctorBlocker && (
+            <p role="note" className="mt-1 rounded bg-amber-50 px-2 py-1 text-xs leading-5 text-amber-900">
+              {doctorPhotoBlockerMessage(doctorBlocker)}
             </p>
           )}
         </div>

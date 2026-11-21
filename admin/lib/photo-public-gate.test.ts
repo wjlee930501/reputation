@@ -2,7 +2,13 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
-import { PHOTO_PUBLIC_GATE_COPY, describePhotoPublicGate } from './photo-public-gate.ts'
+import {
+  PHOTO_PUBLIC_GATE_COPY,
+  describePhotoPublicGate,
+  doctorPhotoBlockerMessage,
+  doctorPhotoPublicBlocker,
+  type DoctorPhotoSourceLike,
+} from './photo-public-gate.ts'
 
 const complete = { is_complete: true, missing_message: null }
 const incomplete = { is_complete: false, missing_message: '사진을 공개하려면 사진 소유자을(를) 입력해야 합니다.' }
@@ -65,4 +71,57 @@ test('the photo section states the real gate and never claims review status deci
   assert.match(section, /describePhotoPublicGate/)
   assert.doesNotMatch(section, /검수 완료된 사진만/)
   assert.doesNotMatch(section, /사진 자산은 토글로/)
+})
+
+const REAL = { asset_kind: 'VERIFIED_REAL_PERSON', approved_usage: ['DOCTOR_IDENTITY'] }
+
+function doctorPhoto(overrides: Partial<DoctorPhotoSourceLike> = {}): DoctorPhotoSourceLike {
+  return {
+    source_type: 'PHOTO_DOCTOR',
+    status: 'PROCESSED',
+    is_public: true,
+    file_url: 'gs://bucket/doctor.jpg',
+    source_metadata: REAL,
+    photo_provenance: { is_complete: true },
+    ...overrides,
+  }
+}
+
+test('공개·실제 인물·파일이 있는 원장 사진만 의료진 사진으로 나간다', () => {
+  assert.equal(doctorPhotoPublicBlocker(doctorPhoto()), null)
+})
+
+test('캐릭터·일러스트로 분류된 원장 사진은 공개 중이어도 나가지 않는다', () => {
+  const blocker = doctorPhotoPublicBlocker(
+    doctorPhoto({ source_metadata: { asset_kind: 'EDITORIAL_GRAPHIC', approved_usage: ['CONTENT_EDITORIAL'] } }),
+  )
+  assert.equal(blocker, 'NOT_REAL_PERSON')
+  assert.match(doctorPhotoBlockerMessage(blocker!), /이름 첫 글자/)
+  assert.match(doctorPhotoBlockerMessage(blocker!), /실제 원장 사진을 올려/)
+})
+
+test('분류가 없는 옛 원장 사진은 서버처럼 일러스트로 읽는다', () => {
+  assert.equal(doctorPhotoPublicBlocker(doctorPhoto({ source_metadata: null })), 'NOT_CLASSIFIED')
+  assert.equal(doctorPhotoPublicBlocker(doctorPhoto({ source_metadata: { original_filename: 'a.jpg' } as never })), 'NOT_CLASSIFIED')
+})
+
+test('실제 인물 분류여도 용도에 의료진 신원이 없으면 나가지 않는다', () => {
+  assert.equal(
+    doctorPhotoPublicBlocker(doctorPhoto({ source_metadata: { asset_kind: 'VERIFIED_REAL_PERSON', approved_usage: [] } })),
+    'NOT_REAL_PERSON',
+  )
+})
+
+test('제외·파일 없음·권리 미기록·공개 중지는 각각의 이유로 막힌다', () => {
+  assert.equal(doctorPhotoPublicBlocker(doctorPhoto({ status: 'EXCLUDED' })), 'EXCLUDED')
+  assert.equal(doctorPhotoPublicBlocker(doctorPhoto({ file_url: null })), 'NO_FILE')
+  assert.equal(
+    doctorPhotoPublicBlocker(doctorPhoto({ is_public: false, photo_provenance: { is_complete: false } })),
+    'NO_RIGHTS',
+  )
+  assert.equal(doctorPhotoPublicBlocker(doctorPhoto({ is_public: false })), 'NOT_PUBLIC')
+})
+
+test('원장 사진이 아닌 자료는 의료진 사진으로 나가지 않는다', () => {
+  assert.equal(doctorPhotoPublicBlocker(doctorPhoto({ source_type: 'PHOTO_CLINIC_INTERIOR' })), 'NOT_REAL_PERSON')
 })
