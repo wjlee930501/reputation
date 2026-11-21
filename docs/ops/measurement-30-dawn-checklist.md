@@ -1,0 +1,77 @@
+# 12/1 새벽 첫 실행 점검 목록 — 측정 키워드 30개 (2026-11-21 작성)
+
+12/1 00:15~09:00 KST, 11월분 월간 측정이 30개 세트로 처음 도는 날에 **어느 조회로 무엇을 볼지**를 시각 순서로 적는다.
+배포·병원별 등록은 [운영 반영 절차](measurement-30-rollout.md)를 따른다. 이 문서는 그 뒤, 측정 당일만 다룬다.
+코드 기준: main `c0ae1adf`(통합 PR #391, 2026-11-21 병합).
+
+**이날 하지 않는 것**: 배포·env 변경(1일 00:15~09:00 금지), 워커 인스턴스 조정(새 리비전이 생기면 실행 중 작업이 큐로 돌아간다), `measurement_set_rollout apply`(측정표가 얼면 이번 달에 쓰이지 않는다).
+**이날 할 수 있는 것**: 읽기 전용 조회(`ops_sql_report`), 운영센터 비용 패널의 '오늘 일일 상한' 상향(그날 하루만, 기본값의 2배까지).
+
+## 0. 미리 알아 둘 동작
+
+| 항목 | 값 | 근거 |
+|---|---|---|
+| 틱 | 1일 00:15~06:45, 매시 :15·:45 (14번) | `celery_app.py` `monthly-sov-measurement` |
+| 병원당 칸 | 30문항 × 2플랫폼 × 5반복 = **300칸** (Gemini 미설정이면 150) | `SOV_REPEAT_COUNT_WEEKLY=5` |
+| 실행 하나가 사는 칸 | 미완료 **30칸**(한 페이지). 답변은 페이지 안에서 동시에 산다(ChatGPT 6, Gemini 프로세스당 1) | `MONTHLY_SOV_PAGE_SIZE`, `_prefetch_monthly_answers` |
+| 다음 페이지 | **다음 틱**에 다시 연다(PARTIAL → re-arm). 페이지가 끝났다고 곧바로 이어가지 않는다 | `_complete_monthly_measurement_and_dispatch_report` → `_ensure_monthly_sov_operation_run` |
+| 따라서 | 병원마다 **틱당 최대 +30칸**, 300칸에 틱 10번 → 가장 빨라도 **04:45 틱** 뒤 완료. 여유는 틱 4번 | |
+| 측정표 얼림 | 그 병원 첫 실행이 얼린다(`platform_provenance.query_sets`). 얼린 뒤 어드민 저장은 12월분에 쓰인다 | `freeze_dispatch_manifest` |
+| 마감 | 07:00. 남은 칸은 LIMITED/UNAVAILABLE로 닫힌다 | `is_monthly_recovery_window` |
+| 비용 | 병원당 약 330단위(답변 300 + 판정 보조 호출). 일·월 카운터는 **KST** 자정에 새로 시작 — 12/1은 일·월 모두 0부터 | `cost_guard._KST` |
+
+> 위 '다음 페이지는 다음 틱' 동작은 2026-11-21 저녁에 확인한 지금 코드다. 페이지 사이를 120초로 잇게 고치면(상위 세션 결정 대기) 아래 '틱당 +30칸' 기준은 '병원별로 계속 늘어난다'로 바뀌고 완료 예상도 앞당겨진다 — 고친 PR이 이 문서도 함께 고친다.
+
+**코호트 병원 수(N)**: 11/30 저녁 q17의 `monthly_sov_cohort=true` 행 수. 아래 기준의 '전부'는 이 N곳이다.
+
+## 1. 시각별 점검
+
+조회는 모두 migrate Job에서 돈다(읽기 전용):
+
+```bash
+gcloud run jobs execute reputation-migrate --project mso-platform-481505 --region asia-northeast3 --wait \
+  --args=python,-m,app.utils.ops_sql_report,--only=q17,--only=q15,--only=q1
+```
+
+출력은 `q17`(세트), `q17b`(새벽 진행), `q15`(보고서)·`q15b`(월간 사고)·`q15c`(보고서 재생성 실행), `q1`(열린 사고 종류별 수) 줄이다.
+
+| 시각 | 볼 곳 | 정상 | 이상하면 |
+|---|---|---|---|
+| **00:00~00:15** | 운영센터 > 비용 패널의 SoV | 오늘 사용 0, 일 한도 9,000 | N × 330이 9,000에 가까우면(N ≥ 25) **이때** '오늘 일일 상한'을 올린다(대표 확인). 상향은 그날 키에만 걸려 11/30에 올리면 12/1에 적용되지 않는다 |
+| **00:45** | q17b | `period_month=11` 행이 생기기 시작, `frozen_set30=true`, `planned_slots=300` | 행이 하나도 없으면 첫 틱이 돌지 않았다 — 워커 로그 `run_monthly_sov_measurement`·`Monthly measurement dawn window is not open`, Beat 상태 확인. `frozen_set30=false`인 병원은 30개 세트가 아닌 채로 얼었다(q17에서 그 병원 `curated` 확인) — 이번 달은 되돌릴 수 없고 기록만 남긴다 |
+| **01:15** | q17b | **N곳 전부** 행이 있고 `answers_received`가 병원마다 30~60 | 행이 없는 병원은 아직 첫 실행을 못 받았다(큐 적체). 01:45에도 없으면 q1의 `MONTHLY_SOV_COHORT_GAP`, 워커 로그 `Monthly visibility measurement dispatch failed` |
+| **02:15** | q17b | 병원마다 `answers_received` ≈ 틱 수 × 30(이때 약 120~150) | 다른 병원보다 2틱(60칸) 넘게 뒤처진 병원은 그 병원 페이지가 30분 안에 끝나지 못하고 있다 — 워커 2대인지, 01:00 콘텐츠 스윕과 겹쳤는지 본다 |
+| **03:15** | q17b, q15b, 비용 패널 | 병원마다 약 180~210, `answer_failed`가 받은 답의 5% 미만, `last_answer_at`이 30분 안 | `answer_failed`가 늘면 공급자 장애(Gemini 429 등) — 다음 틱이 실패 칸을 다시 산다. q15b에 `MONTHLY_SOV_MEASUREMENT_FAILED`가 `safe_error_code=…_COST_GUARD_BLOCKED`면 비용 한도다 → 운영센터에서 오늘 상한을 올리면 **다음 틱이 그 병원을 다시 연다** |
+| **04:45** | q17b | 앞선 병원부터 `answers_received=300`·`judged≈300` | 이 틱 뒤 남은 틱은 4번(05:15·05:45·06:15·06:45). 그때 남은 칸 ÷ 30 > 4인 병원은 LIMITED가 된다 — 기록만 남긴다(창 안에서 할 수 있는 조치 없음) |
+| **06:15** | q17b | N곳 전부 300/300, `closed_at`이 차기 시작 | 06:45가 마지막 틱이다. 남은 병원 목록을 적어 둔다 |
+| **07:00** | — | 측정 마감 | 사고는 09:00 최종 판정까지 RETRYING이라 Slack '조치 필요'는 오지 않는다 |
+| **07:15~08:45** | q15 | 병원마다 `version` 생김, `adequacy_status=COMPLETE`(못 끝낸 병원은 LIMITED), `has_manifest`·`manifest_closed`·`manifest_linked` true, `has_doctor_artifact` true | 보고서 없음·원장 PDF 없음은 안전망이 30분 간격으로 다시 만든다(q15c의 `report-repair:` 실행). 이 시각엔 기다린다 |
+| **08:00 무렵** | 원장 보고서 2~3곳 실물 | 아래 §2 | 이상하면 상위 세션에 바로 알린다(숫자·문구 문제는 템플릿 갱신/일반 재생성으로 새 버전) |
+| **09:00** | q15, q15b, Slack 공백 요약 | 전부 전달 게이트 통과, 월간 사고 닫힘 | 남은 공백은 09:00 공백 요약이 Slack으로 알린다 |
+| **09:00 뒤** | 워커 | 최소 인스턴스 2 → 1 (운영 반영 절차 §0 12번) | |
+
+**판정 기준 한 줄**: 틱마다 병원별 `answers_received`가 약 30씩 늘면 정상이다. 같은 병원이 두 틱 연속 그대로면 그 병원만 막힌 것이고, 모든 병원이 함께 멈추면 워커·Beat·비용 한도 중 하나다.
+
+## 2. 08:00 원장 보고서 실물 확인
+
+- 1면 AI 노출률이 **B~D 기준**이다(A 병원명 질문이 들어가면 값이 크게 뛴다 — 부록 A의 B~D 칸으로 손 계산과 맞춰 본다).
+- 11월분은 세트가 바뀐 첫 달이라 지난달 증감이 **조용히 빠진다**. 비교 불가 안내 문구가 없어야 한다.
+- P3 그룹 표에 A~D 행, A행 아래 'AI가 병원 정보를 맞게 안내한 답변: 주소 n건 중 n건 …' 한 줄(병원명 질문 답변이 주소·진료 시간·진료 항목을 말했을 때만).
+- 부록 A에 30개 질문과 그룹. 30개 달은 플랫폼 안내 줄이 없다.
+- 경쟁 현황·대표 사례에 A(병원명) 질문이 섞이지 않는다.
+- 마케팅팀이 지운 공통 문구(측정 방법·측정 실패·고정 키워드로만 등)가 없다.
+
+## 3. 막힘별 원인 찾기
+
+| 증상 | 먼저 볼 것 | 비고 |
+|---|---|---|
+| 모든 병원이 함께 멈춤 | 운영센터 비용 패널(SoV 일 사용량이 한도에 닿았나), q1의 `COST_GUARD_FAIL_OPEN`, 워커 `/live` 재시작 로그, Beat `beat_lock_wait_long` | 비용 한도면 오늘 상한 상향 → 다음 틱이 이어간다 |
+| 한 병원만 멈춤 | 그 병원 q15b 행의 `safe_error_code` | `MONTHLY_SOV_MEASUREMENT_PARTIAL`(실패 칸 있음)·`…_INCOMPLETE`(페이지 끝, 정상)은 다음 틱이 다시 연다 |
+| `answer_failed` 급증 | 워커 로그의 공급자 오류(429·5xx) | 슬롯은 재시도 예산 안에서 다음 틱에 다시 산다 |
+| q17b에 병원이 안 나옴 | q17의 그 병원 `monthly_sov_cohort`, q1의 `MONTHLY_SOV_COHORT_GAP` | 코호트가 아니면 이번 달 월간 측정 대상이 아니다 |
+| `frozen_set30=false` | q17의 그 병원 `curated`·`legacy_tracked` | 등록이 빠진 병원 — 이번 달은 옛 방식으로 잰다(되돌리지 않는다) |
+
+## 4. 끝난 뒤 남길 것
+
+- 병원별 완료 시각(`last_answer_at`), 완료 못 한 병원과 남은 칸, `answer_failed` 합, SoV 일 사용량.
+- 위 숫자로 운영 반영 절차 §1의 부하 계산을 실측으로 고친다(1월 1일 측정 전).
