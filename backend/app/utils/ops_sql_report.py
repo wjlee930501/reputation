@@ -655,7 +655,8 @@ QUERIES: dict[str, tuple[str, ...]] = {
     ),
     # 측정 키워드 30개(2026-11-21): 병원별 세트 준비 상태와 가장 최근 월간 측정표의 새벽 창 진행.
     # q17 — ACTIVE 병원마다 30개 방식 여부·고정/교체 수·그룹별 수·옛 방식 측정 질문 수.
-    # q17b — 가장 최근 측정 달의 병원별 계획 칸·받은 답변·확정 판정·첫/마지막 답변 시각(1일 새벽 확인).
+    # q17b — 새벽 창(month_start_dawn)으로 얼린 가장 최근 달의 병원별 계획 칸·받은 답변·확정 판정·첫/마지막 답변
+    # 시각(1일 새벽 확인). 1일에 신규 병원 주간 측정이 이번 달 측정표를 만들어도 지난달 새벽 진행을 가리지 않는다.
     "q17": (
         """
         SELECT h.name,
@@ -698,12 +699,14 @@ QUERIES: dict[str, tuple[str, ...]] = {
         JOIN (
             SELECT period_year, period_month
             FROM monthly_measurement_manifests
+            WHERE platform_provenance->'measurement_protocol'->>'measurement_window' = 'month_start_dawn'
             ORDER BY period_year DESC, period_month DESC
             LIMIT 1
         ) latest ON latest.period_year = mm.period_year AND latest.period_month = mm.period_month
         JOIN hospitals h ON h.id = mm.hospital_id
         LEFT JOIN monthly_measurement_cells c ON c.manifest_id = mm.id
         LEFT JOIN measurement_observation_slots s ON s.monthly_cell_id = c.id
+        WHERE mm.platform_provenance->'measurement_protocol'->>'measurement_window' = 'month_start_dawn'
         GROUP BY h.name, mm.id, mm.period_year, mm.period_month, mm.closed_at
         ORDER BY h.name
         """,
