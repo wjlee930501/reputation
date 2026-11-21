@@ -358,6 +358,10 @@ def _gemini_client():
 # 것"이라 애초에 다른 지표다 — 하나로 뭉개면 둘 다 못 읽는다.
 QUERY_INTENT_LOCAL = "LOCAL"
 QUERY_INTENT_INFO = "INFO"
+# 병원명 질문(측정 키워드 그룹 A, "{병원명} 어때?"). 이름이 질문에 들어 있어 거의 늘 노출되므로
+# 대표 노출률(LOCAL만)에 넣지 않는다 — 그룹 A의 성과는 노출이 아니라 정보 정확도다. 문구로
+# 추정하지 않고 질문의 저장된 그룹(`AIQueryTarget.question_group == "A"`)으로만 정한다.
+QUERY_INTENT_BRAND = "BRAND"
 
 # 언급률(원장 보고 헤드라인)의 분모에 들어가는 유형.
 MENTION_RATE_INTENTS = frozenset({QUERY_INTENT_LOCAL})

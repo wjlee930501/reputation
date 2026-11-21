@@ -72,7 +72,8 @@
 <table class="group-table"><colgroup><col style="width:31%"><col style="width:18%"><col style="width:15%"><col style="width:36%"></colgroup>
 <thead><tr>{% for head in e.group_headers %}<th{{ ' class="num"' if loop.index in (2, 3) else '' }}>{{ head }}</th>{% endfor %}</tr></thead>
 <tbody>{% for row in e.group_rows %}<tr><td><span class="group-code">{{ row.group }}</span> {{ row.label }}</td><td class="num">{% if row.rate is none and row.keyword_count == 0 %}—{% else %}{{ row.keyword_count }}개{% endif %}</td><td class="num">{% if row.rate is none %}—{% else %}{{ row.rate|pct }}{% endif %}</td><td class="caption-cell">{{ row.detail }}</td></tr>
-{% endfor %}</tbody></table>{% endmacro %}
+{% endfor %}</tbody></table>
+{% if e.group_note %}<p class="caption group-note">{{ e.group_note }}</p>{% endif %}{% endmacro %}
 {% if has_trend %}<div class="module"><div class="two-col"><div class="col">
 {% if e.trend_heading %}<h2>{{ e.trend_heading }}</h2>{% endif %}
 {% set n = e.trend|length %}{% set base = svg_h - 8 %}{% set span = svg_h - 24 %}

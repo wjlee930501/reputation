@@ -9,7 +9,6 @@ import {
 
 const TABS: readonly { readonly value: OperationsQueueParam; readonly api: string; readonly label: string }[] = [
   { value: 'onboarding', api: 'ONBOARDING', label: '신규·온보딩' },
-  { value: 'today', api: 'TODAY', label: '오늘의 운영' },
   { value: 'reports', api: 'REPORTS', label: '월간 보고서' },
   { value: 'incidents', api: 'INCIDENTS', label: '문제·복구' },
 ]
@@ -36,6 +35,12 @@ export function OperationsFilters({ query, overview, onPatch }: Props) {
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-900">
           <p className="font-semibold">보고서에서 선택한 병원만 보고 있습니다.</p>
           <button type="button" onClick={() => onPatch({ hospitalId: null, detail: null })} className="ops-control rounded-lg border border-blue-300 bg-white px-3 text-sm font-semibold">전체 병원 보기</button>
+        </div>
+      ) : null}
+      {query.queue === 'today' ? (
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+          <p className="font-semibold">오늘 발행 예정 글을 보고 있습니다(발행 정지 경보에서 연 화면).</p>
+          <button type="button" onClick={() => onPatch({ queue: 'incidents' })} className="ops-control rounded-lg border border-amber-300 bg-white px-3 text-sm font-semibold">문제·복구로</button>
         </div>
       ) : null}
       <nav className="ops-tabs" aria-label="운영 작업 구분">

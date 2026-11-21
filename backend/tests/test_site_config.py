@@ -808,6 +808,8 @@ def test_b_keeps_the_info_strip_blocks_and_treatment_style() -> None:
         ("C", {"sections": [{"id": "news", "background": "band"}]}),
         ("A", {"hero": {"line_breaks": {"care_principles.lede": {"pc": "LEDE", "mobile": None}}}}),
         ("C", {"hero": {"line_breaks": {"care_principles.lede": {"pc": None, "mobile": "LEDE"}}}}),
+        ("A", {"copy": {"hours.weekend_label": "토요일 진료"}}),
+        ("C", {"copy": {"hours.weekend_label": "토요일 진료"}}),
     ],
 )
 def test_fields_the_site_does_not_render_are_rejected(layout: str, config: dict) -> None:
@@ -855,3 +857,48 @@ def test_lede_line_breaks_are_b_only_and_stripped_from_a_c_on_restore() -> None:
     stripped = strip_unrendered("C", {"hero": {"line_breaks": dict(lede)}})
     assert stripped["hero"]["line_breaks"] == {"hero.headline": {"pc": "H", "mobile": None}}
     assert strip_unrendered("B", {"hero": {"line_breaks": dict(lede)}})["hero"]["line_breaks"] == lede
+
+
+def test_weekend_label_is_not_rendered_and_is_stripped_on_restore() -> None:
+    notes = {"copy": {"hours.weekend_label": "토요일 진료", "faq.note": "자주 묻는 질문입니다."}}
+    errors = validate_site_config("C", notes, _ctx()).errors
+    assert [e["path"] for e in errors if e["code"] == "FIELD_NOT_RENDERED"] == ["copy.hours.weekend_label"]
+    stripped = strip_unrendered("C", notes)
+    assert stripped["copy"] == {"faq.note": "자주 묻는 질문입니다."}
+    assert validate_site_config("C", stripped, _ctx()).ok
+    assert "copy" not in strip_unrendered("A", {"copy": {"hours.weekend_label": "토요일 진료"}})
+
+
+@pytest.mark.parametrize(("layout", "key"), [("A", "visit.note"), ("A", "questions.note"), ("C", "contents.note"), ("B", "hours.weekend_label")])
+def test_notes_for_sections_the_layout_does_not_have_are_rejected_and_stripped(layout: str, key: str) -> None:
+    notes = {"copy": {key: "안내 문구입니다.", "faq.note": "자주 묻는 질문입니다."}}
+    errors = validate_site_config(layout, notes, _ctx()).errors
+    assert [e["path"] for e in errors if e["code"] == "FIELD_NOT_RENDERED"] == [f"copy.{key}"]
+    assert strip_unrendered(layout, notes)["copy"] == {"faq.note": "자주 묻는 질문입니다."}
+    assert validate_site_config("B", {"copy": {"visit.note": "오시는 길 안내입니다."}}, _ctx()).ok
+
+
+@pytest.mark.parametrize("layout", ["A", "B", "C"])
+def test_veil_fields_are_drawn_only_on_overlay_and_opacity_only_on_full(layout: str) -> None:
+    def veil_errors(hero: dict) -> list[str]:
+        errors = validate_site_config(layout, {"hero": hero}, _ctx()).errors
+        return [e["path"] for e in errors if e["code"] == "FIELD_NOT_RENDERED"]
+
+    split_veil = {"image": {"veil": {"extent": "full", "opacity": 0.3}}}
+    assert veil_errors(split_veil) == ["hero.image.veil.extent", "hero.image.veil.opacity"]
+    text_veil = {"arrangement": "overlay", "image": {"veil": {"extent": "text", "opacity": 0.3}}}
+    assert veil_errors(text_veil) == ["hero.image.veil.opacity"]
+    assert veil_errors({"arrangement": "overlay", "image": {"veil": {"extent": "full", "opacity": 0.3}}}) == []
+    assert veil_errors({"arrangement": "overlay", "image": {"veil": {"extent": "text", "opacity": 0.6}}}) == []
+    stripped = strip_unrendered(layout, {"hero": {"arrangement": "overlay", "image": {"veil": {"extent": "text", "opacity": 0.3}}}})
+    assert stripped["hero"]["image"]["veil"] == {"extent": "text"}
+    assert strip_unrendered(layout, {"hero": split_veil})["hero"]["image"]["veil"] == {}
+
+
+@pytest.mark.parametrize("layout", ["A", "B", "C"])
+def test_photo_focus_is_not_drawn_on_text_only_hero(layout: str) -> None:
+    hero = {"arrangement": "text", "image": {"focus": {"x": 0.1, "y": 0.9}}}
+    errors = validate_site_config(layout, {"hero": hero}, _ctx()).errors
+    assert [e["path"] for e in errors if e["code"] == "FIELD_NOT_RENDERED"] == ["hero.image.focus"]
+    assert validate_site_config(layout, {"hero": {"arrangement": "overlay", "image": {"focus": {"x": 0.1, "y": 0.9}}}}, _ctx()).ok
+    assert "focus" not in strip_unrendered(layout, {"hero": hero})["hero"]["image"]

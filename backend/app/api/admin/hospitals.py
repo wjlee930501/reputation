@@ -14,7 +14,7 @@ import logging
 import re
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any, Literal
 from urllib.parse import urlparse
 
@@ -117,6 +117,7 @@ from app.services.hospital_states import (
     DomainState,
     PublicServiceState,
     content_state,
+    contract_ended,
     domain_state,
     public_service_state,
     schedule_availability_verdict,
@@ -1544,6 +1545,49 @@ async def resume_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(get
     return serialize_hospital_detail(h)
 
 
+class ContractEndUpdate(BaseModel):
+    """계약 종료일. null이면 지운다."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    ended_on: date | None
+
+
+@router.put("/{hospital_id}/contract-end", response_model=HospitalDetail)
+async def set_contract_end(
+    hospital_id: uuid.UUID,
+    body: ContractEndUpdate,
+    db: AsyncSession = Depends(get_db),
+):
+    """계약 종료일을 기록하거나 지운다(2026-11 개편 결정 대기 1번 B).
+
+    화면 분류에만 쓰는 사실이다 — 일시정지이고 이 날짜가 지난 병원을 목록·헤더·대시보드가
+    「운영 종료」로 묶는다. 병원 상태·공개·발행·서비스 구간·보고서 대상은 바꾸지 않는다
+    (일시정지·재개는 따로 한다). 어떤 상태에서도 기록할 수 있고, 재개해도 지우지 않는다.
+    """
+    await acquire_hospital_advisory_lock(db, hospital_id)
+    h = await _get_or_404(db, hospital_id)
+    before = h.contract_ended_on
+    if before == body.ended_on:
+        return serialize_hospital_detail(h)
+    h.contract_ended_on = body.ended_on
+    await write_audit_log(
+        db,
+        action="set_contract_end",
+        hospital_id=hospital_id,
+        actor=default_actor(),
+        target_type="hospital",
+        target_id=hospital_id,
+        detail={
+            "before": before.isoformat() if before else None,
+            "after": body.ended_on.isoformat() if body.ended_on else None,
+        },
+    )
+    await db.commit()
+    await db.refresh(h)
+    return serialize_hospital_detail(h)
+
+
 @router.get("/{hospital_id}/readiness")
 async def get_readiness(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     """병원별 AI 검색 운영 준비도를 계산한다."""
@@ -1908,6 +1952,7 @@ def serialize_hospital_detail(h: Hospital) -> dict:
             else None
         ),
         **_serialize_domain_live_check(h),
+        **_serialize_contract_end(h),
         "v0_report_done": h.v0_report_done,
         "site_built": h.site_built,
         "site_live": h.site_live,
@@ -1953,6 +1998,7 @@ def _serialize_list(
         else None,
         "domain_cert_job_state": getattr(h, "domain_cert_job_state", None),
         **_serialize_domain_live_check(h),
+        **_serialize_contract_end(h),
         "created_at": h.created_at.isoformat() if h.created_at else None,
         # 3상태는 `hospital_states`가 유일한 판정이다 — admin은 라벨만 붙인다(설계 §4.2).
         "public_service_state": _serialize_state(public_service_state(h)),
@@ -1992,6 +2038,15 @@ def _serialize_domain_live_check(h: Hospital) -> dict:
         "domain_last_checked_at": checked_at.isoformat() if checked_at else None,
         "domain_last_check_ok": getattr(h, "domain_last_check_ok", None),
         "domain_last_check_reason": getattr(h, "domain_last_check_reason", None),
+    }
+
+
+def _serialize_contract_end(h: Hospital) -> dict:
+    """계약 종료일과 「운영 종료」 판정 — 목록·상세가 같은 값을 받는다(화면은 라벨만 붙인다)."""
+    ended_on = getattr(h, "contract_ended_on", None)
+    return {
+        "contract_ended_on": ended_on.isoformat() if ended_on else None,
+        "contract_ended": contract_ended(h),
     }
 
 

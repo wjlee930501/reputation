@@ -14,12 +14,16 @@ from app.services.monthly_sov_payload import (
     QueryIntent,
     QueryIntentSource,
     QueryPayload,
+    QuestionGroup,
     SegmentPayload,
+    SetRole,
 )
 from app.services.sov_statistics import DeltaSignificance
 
 
 def _query_intent_label(value: QueryIntent) -> str:
+    if value == "BRAND":
+        return "병원명 질문"
     return "지역·병원 선택 질문" if value == "LOCAL" else "일반 건강정보 질문"
 
 
@@ -83,6 +87,9 @@ class ManifestCellInput:
     judgment_failed_slot_count: int = 0
     pending_slot_count: int = 0
     slot_lineage: str = "LEGACY_UNKNOWN"
+    # 측정표에 얼린 30개 세트의 그룹·역할(`platform_provenance.query_sets`). 옛 세트는 None.
+    question_group: QuestionGroup | None = None
+    set_role: SetRole | None = None
 
     @property
     def successful_attempts(self) -> tuple[CellAttempt, ...]:
@@ -169,6 +176,10 @@ class ManifestCellInput:
                 "pending": self.pending_slot_count,
                 "lineage": self.slot_lineage,
             }
+        if self.question_group is not None:
+            payload["question_group"] = self.question_group
+        if self.set_role is not None:
+            payload["set_role"] = self.set_role
         return payload
 
 
@@ -254,9 +265,11 @@ class QuerySummary:
     mentioned_count: int
     attempts_used: int = 0
     mentioned_attempts: int = 0
+    question_group: QuestionGroup | None = None
+    set_role: SetRole | None = None
 
     def to_payload(self) -> QueryPayload:
-        return {
+        payload: QueryPayload = {
             "query_key": self.query_key,
             "query_text": self.query_text,
             "query_intent": self.query_intent,
@@ -272,6 +285,11 @@ class QuerySummary:
             "attempts_used": self.attempts_used,
             "mentioned_attempts": self.mentioned_attempts,
         }
+        if self.question_group is not None:
+            payload["question_group"] = self.question_group
+        if self.set_role is not None:
+            payload["set_role"] = self.set_role
+        return payload
 
 
 @dataclass(frozen=True, slots=True)

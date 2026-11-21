@@ -69,6 +69,11 @@ export default function HospitalLayout({
   const [lifecycleError, setLifecycleError] = useState<string | null>(null)
   // 일시정지·재개 확인창. 일시정지는 병원명을 다시 입력해야 한다(2026-11-20).
   const [lifecycleDialog, setLifecycleDialog] = useState<HospitalLifecycleAction | null>(null)
+  // 계약 종료일(개편 결정 대기 1번 B) — 화면 분류에만 쓰는 사실이라 병원 상태는 바꾸지 않는다.
+  const [contractEndOpen, setContractEndOpen] = useState(false)
+  const [contractEndValue, setContractEndValue] = useState('')
+  const [contractEndSaving, setContractEndSaving] = useState(false)
+  const [contractEndError, setContractEndError] = useState<string | null>(null)
 
   const requestSeq = useRef(0)
 
@@ -173,8 +178,69 @@ export default function HospitalLayout({
     }
   }
 
+  function openContractEnd() {
+    setContractEndValue(hospital?.contract_ended_on ?? '')
+    setContractEndError(null)
+    setContractEndOpen(true)
+  }
+
+  async function saveContractEnd() {
+    setContractEndSaving(true)
+    setContractEndError(null)
+    try {
+      const saved = await fetchAPI<Hospital>(`/admin/hospitals/${hospitalId}/contract-end`, {
+        method: 'PUT',
+        body: JSON.stringify({ ended_on: contractEndValue || null }),
+      })
+      // 응답으로 바로 바꾼다 — 재조회가 늦을 때 다시 열면 옛 날짜가 입력돼 방금 저장한 값을 되돌린다.
+      setHospital((prev) => (prev ? { ...prev, contract_ended_on: saved.contract_ended_on ?? null, contract_ended: saved.contract_ended ?? false } : prev))
+      setContractEndOpen(false)
+      await refetch()
+    } catch (e: unknown) {
+      setContractEndError(e instanceof ApiError && e.message ? e.message : ADMIN_COPY.contractEnd.saveFailed)
+    } finally {
+      setContractEndSaving(false)
+    }
+  }
+
+  const contractEndBadge = hospital?.contract_ended_on
+    ? (hospital.contract_ended ? ADMIN_COPY.contractEnd.endedBadge : ADMIN_COPY.contractEnd.scheduledBadge)
+      .replace('{date}', hospital.contract_ended_on)
+    : null
+
+  const headerMenuItems = [
+    ...(lifecycleAction === 'pause'
+      ? [{ label: ADMIN_COPY.dangerConfirm.pauseItem, danger: true, disabled: lifecycleLoading, onSelect: () => setLifecycleDialog('pause') }]
+      : []),
+    ...(hospital ? [{ label: ADMIN_COPY.contractEnd.menuItem, onSelect: openContractEnd }] : []),
+  ]
+
   return (
     <HospitalHeaderContext.Provider value={{ hospital, overview, loading: headerLoading, refetch }}>
+    <ConfirmDialog
+      open={contractEndOpen}
+      title={ADMIN_COPY.contractEnd.title}
+      description={ADMIN_COPY.contractEnd.body}
+      confirmLabel={ADMIN_COPY.contractEnd.save}
+      tone="neutral"
+      busy={contractEndSaving}
+      error={contractEndError}
+      onConfirm={() => void saveContractEnd()}
+      onClose={() => {
+        setContractEndOpen(false)
+        setContractEndError(null)
+      }}
+    >
+      <label className="block text-xs font-medium text-slate-600">
+        {ADMIN_COPY.contractEnd.inputLabel}
+        <input
+          type="date"
+          value={contractEndValue}
+          onChange={(event) => setContractEndValue(event.target.value)}
+          className="mt-1.5 block min-h-11 w-full rounded-lg border border-slate-300 px-3 text-sm text-slate-900 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100"
+        />
+      </label>
+    </ConfirmDialog>
     <ConfirmDialog
       open={lifecycleDialog !== null}
       title={lifecycleDialog === 'pause' ? ADMIN_COPY.dangerConfirm.pauseTitle : ADMIN_COPY.dangerConfirm.resumeTitle}
@@ -235,8 +301,13 @@ export default function HospitalLayout({
                     <OverviewFailureChip onRetry={() => void refetch()} />
                   )}
                   {planLabel && <p className="mt-3 border-t border-slate-100 pt-3 text-xs text-slate-500">{ADMIN_COPY.plan} {planLabel}</p>}
+                  {contractEndBadge && <p className="mt-1 text-xs text-slate-500">{contractEndBadge}</p>}
                 </div>
               </details>
+            )}
+            {/* 모바일에서도 계약 종료일을 기록·수정한다(일시 정지 같은 위험 동작은 넓은 화면에서만). */}
+            {hospital && (
+              <DangerMenu items={[{ label: ADMIN_COPY.contractEnd.menuItem, onSelect: openContractEnd }]} />
             )}
           </div>
           <label className="mt-2 block">
@@ -288,11 +359,12 @@ export default function HospitalLayout({
                   {lifecycleLoading ? '처리 중...' : '재개'}
                 </button>
               )}
-              {lifecycleAction === 'pause' && (
-                <DangerMenu
-                  items={[{ label: ADMIN_COPY.dangerConfirm.pauseItem, danger: true, disabled: lifecycleLoading, onSelect: () => setLifecycleDialog('pause') }]}
-                />
+              {contractEndBadge && (
+                <span className="details2 inline-flex rounded-full bg-slate-100 px-2.5 py-0.5 text-slate-600">
+                  {contractEndBadge}
+                </span>
               )}
+              {headerMenuItems.length > 0 && <DangerMenu items={headerMenuItems} />}
             </div>
             {publicAddress && (
               <div className="mt-1.5 flex flex-wrap items-center gap-2 text-xs text-slate-500 sm:gap-3">
