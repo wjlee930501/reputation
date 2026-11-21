@@ -893,3 +893,12 @@ def test_veil_fields_are_drawn_only_on_overlay_and_opacity_only_on_full(layout: 
     stripped = strip_unrendered(layout, {"hero": {"arrangement": "overlay", "image": {"veil": {"extent": "text", "opacity": 0.3}}}})
     assert stripped["hero"]["image"]["veil"] == {"extent": "text"}
     assert strip_unrendered(layout, {"hero": split_veil})["hero"]["image"]["veil"] == {}
+
+
+@pytest.mark.parametrize("layout", ["A", "B", "C"])
+def test_photo_focus_is_not_drawn_on_text_only_hero(layout: str) -> None:
+    hero = {"arrangement": "text", "image": {"focus": {"x": 0.1, "y": 0.9}}}
+    errors = validate_site_config(layout, {"hero": hero}, _ctx()).errors
+    assert [e["path"] for e in errors if e["code"] == "FIELD_NOT_RENDERED"] == ["hero.image.focus"]
+    assert validate_site_config(layout, {"hero": {"arrangement": "overlay", "image": {"focus": {"x": 0.1, "y": 0.9}}}}, _ctx()).ok
+    assert "focus" not in strip_unrendered(layout, {"hero": hero})["hero"]["image"]

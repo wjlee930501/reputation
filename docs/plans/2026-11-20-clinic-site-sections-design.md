@@ -458,7 +458,7 @@ gpt-6.1-sol high로 이 문서를 코드와 대조했다. 15건 모두 받아들
 |---|---|
 | 막음 | Admin `SITE_RENDERS_SITE_CONFIG`와 막음 안내(`publishWaitsForSite`)를 지웠다. 공개 반영 버튼은 저장한 임시 저장본이 있고 바뀐 것이 없으면 늘 열린다. 다시 막으려면 이 PR을 되돌려 Admin만 배포한다(서버·사이트는 그대로) |
 | 미리보기 | 언제나 같은 화면 iframe(`/preview/{token}`, 사이트 `frame-ancestors`는 어드민 주소). 막혀 있던 동안 쓰던 새 탭 링크 줄(`previewOpen`·`previewExpires`)은 지웠다 — iframe 카드의 '새 탭에서 열기'가 남는다 |
-| 공개 반영 조건 | (1) `REFRESHED_SINCE`의 모든 칸이 '사이트가 그림' 또는 '어드민 숨김 + 서버 거절'(#368 본문 대조표). (2) 레이아웃·섹션·문구·메뉴·공유·FAQ 등 그 밖의 모든 칸도 사이트가 읽는다 — 이 PR에서 칸마다 대조했다. 빈틈 하나(진료시간 '주말 진료 이름' `copy.hours.weekend_label` — 어느 레이아웃도 그리지 않는다)를 숨김·거절했다(`_UNRENDERED_COPY_KEYS`, 복원 때 뺀다). (3) 기본값 = 지금 화면(③-1, `DEFAULTS_VERSION`), 옛 판은 `refresh_stale_defaults`로 맞춘다 |
+| 공개 반영 조건 | (1) `REFRESHED_SINCE`의 모든 칸이 '사이트가 그림' 또는 '어드민 숨김 + 서버 거절'(#368 본문 대조표). (2) 레이아웃·섹션·문구·메뉴·공유·FAQ 등 그 밖의 모든 칸도 사이트가 읽는다 — 이 PR에서 칸마다 대조했다. 빈틈을 숨김·거절했다(어드민 숨김·저장 제외, 서버 `FIELD_NOT_RENDERED`, 복원 때 뺀다): 진료시간 '주말 진료 이름' `copy.hours.weekend_label`(어느 레이아웃도 그리지 않는다, `_UNRENDERED_COPY_KEYS`), 레이아웃에 없는 섹션의 안내 문구(A `visit.note`·`questions.note`, C `contents.note` 등 — 레이아웃을 바꾼 옛 초안), 그려지지 않는 첫 화면 사진 칸(덮개는 '사진 위 글자'에서만, 농도는 '사진 전체' 덮개에서만, 사진 초점은 '글자만'이 아닐 때만 — Codex). (3) 기본값 = 지금 화면(③-1, `DEFAULTS_VERSION`), 옛 판은 `refresh_stale_defaults`로 맞춘다 |
 | 끝-끝 확인 | 실제 Postgres에서 초안 저장(그리지 않는 칸 422) → 미리보기 토큰·미리보기 응답 → 공개 반영 → 공개 응답 `site_config` 1판을 만들고, 그 응답 그대로 사이트(공개 홈·`/preview/{token}`)에 먹여 화면을 확인했다 |
 | 남은 위험 | 레이아웃 갈라짐(병원 `site_layout`과 공개 판 레이아웃이 다르면 공개 응답이 `site_config: null` — 지금 화면, readiness·편집기 경고 `SITE_LAYOUT_DIVERGED`), 다음 사이트 배포가 공개 판을 재공개 없이 다르게 그릴 수 있음(그리는 방식을 바꾸는 PR은 기본값 판·`REFRESHED_SINCE`를 함께 본다), 줄바꿈의 조각 경계 한계(21절) |
 

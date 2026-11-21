@@ -311,16 +311,19 @@ function withoutKey(out: Record<string, unknown>, group: string, key: string): v
   else delete out[group]
 }
 
-/** 첫 화면 덮개가 화면에 그려지는가 — 덮개는 '사진 위 글자' 배치에서만, 농도는 '사진 전체' 덮개에서만 그린다. */
-export function veilShown(hero: unknown): { extent: boolean; opacity: boolean } {
+/**
+ * 첫 화면 사진 칸이 화면에 그려지는가 — '글자만' 배치는 사진을 그리지 않아 초점이 없고, 덮개는 '사진 위 글자'
+ * 배치에서만, 농도는 '사진 전체' 덮개에서만 그린다.
+ */
+export function veilShown(hero: unknown): { focus: boolean; extent: boolean; opacity: boolean } {
   const group = isRecord(hero) ? hero : {}
   const image = isRecord(group.image) ? group.image : {}
   const veil = isRecord(image.veil) ? image.veil : {}
   const overlay = group.arrangement === 'overlay'
-  return { extent: overlay, opacity: overlay && veil.extent === 'full' }
+  return { focus: group.arrangement !== 'text', extent: overlay, opacity: overlay && veil.extent === 'full' }
 }
 
-/** 그려지지 않는 덮개 칸을 기본값으로 되돌린 완성본(저장에 싣지 않게). */
+/** 그려지지 않는 첫 화면 사진 칸(초점·덮개)을 기본값으로 되돌린 완성본(저장에 싣지 않게). */
 function withDrawnVeil(resolved: ResolvedSiteConfig, defaults: ResolvedSiteConfig): ResolvedSiteConfig {
   const hero = isRecord(resolved.hero) ? resolved.hero : null
   const image = hero && isRecord(hero.image) ? hero.image : null
@@ -328,14 +331,18 @@ function withDrawnVeil(resolved: ResolvedSiteConfig, defaults: ResolvedSiteConfi
   const baseHero = isRecord(defaults.hero) ? defaults.hero : {}
   const baseImage = isRecord(baseHero.image) ? baseHero.image : {}
   const baseVeil = isRecord(baseImage.veil) ? baseImage.veil : {}
-  if (!hero || !image || !veil) return resolved
+  if (!hero || !image) return resolved
   const shown = veilShown(hero)
-  const next = {
-    ...veil,
-    ...(shown.extent ? {} : { extent: baseVeil.extent }),
-    ...(shown.opacity ? {} : { opacity: baseVeil.opacity }),
+  const next: Record<string, unknown> = { ...image }
+  if (veil) {
+    next.veil = {
+      ...veil,
+      ...(shown.extent ? {} : { extent: baseVeil.extent }),
+      ...(shown.opacity ? {} : { opacity: baseVeil.opacity }),
+    }
   }
-  return { ...resolved, hero: { ...hero, image: { ...image, veil: next } } }
+  if (!shown.focus && 'focus' in baseImage) next.focus = baseImage.focus
+  return { ...resolved, hero: { ...hero, image: next } }
 }
 
 /**

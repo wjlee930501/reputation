@@ -253,9 +253,13 @@ export function HeroImageSettings({ hero, onChange, disabled }: { hero: Group; o
   return (
     <div className="space-y-3">
       <p className="text-sm font-semibold text-slate-800">{COPY.imageTitle}</p>
-      <Slider label={COPY.focusX} value={focus.x} onChange={(x) => setImage({ focus: { ...focus, x } })} disabled={disabled} />
-      <Slider label={COPY.focusY} value={focus.y} onChange={(y) => setImage({ focus: { ...focus, y } })} disabled={disabled} />
-      {/* 덮개는 '사진 위 글자' 배치에서만, 농도는 '사진 전체' 덮개에서만 그려진다 — 그 밖에는 칸을 숨긴다. */}
+      {veilShown(hero).focus && (
+        <>
+          <Slider label={COPY.focusX} value={focus.x} onChange={(x) => setImage({ focus: { ...focus, x } })} disabled={disabled} />
+          <Slider label={COPY.focusY} value={focus.y} onChange={(y) => setImage({ focus: { ...focus, y } })} disabled={disabled} />
+        </>
+      )}
+      {/* 초점은 사진을 그리는 배치에서만, 덮개는 '사진 위 글자'에서만, 농도는 '사진 전체' 덮개에서만 그려진다. */}
       {veilShown(hero).extent && (
         <Choice
           label={COPY.veilExtent}

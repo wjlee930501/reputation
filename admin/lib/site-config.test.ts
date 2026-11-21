@@ -422,9 +422,10 @@ test('notes for sections the layout does not have are never saved', () => {
 })
 
 test('the veil is shown and saved only where it is drawn (overlay; opacity on full)', () => {
-  assert.deepEqual(veilShown({ arrangement: 'split', image: { veil: { extent: 'full' } } }), { extent: false, opacity: false })
-  assert.deepEqual(veilShown({ arrangement: 'overlay', image: { veil: { extent: 'text' } } }), { extent: true, opacity: false })
-  assert.deepEqual(veilShown({ arrangement: 'overlay', image: { veil: { extent: 'full' } } }), { extent: true, opacity: true })
+  assert.deepEqual(veilShown({ arrangement: 'split', image: { veil: { extent: 'full' } } }), { focus: true, extent: false, opacity: false })
+  assert.deepEqual(veilShown({ arrangement: 'overlay', image: { veil: { extent: 'text' } } }), { focus: true, extent: true, opacity: false })
+  assert.deepEqual(veilShown({ arrangement: 'overlay', image: { veil: { extent: 'full' } } }), { focus: true, extent: true, opacity: true })
+  assert.deepEqual(veilShown({ arrangement: 'text' }), { focus: false, extent: false, opacity: false })
   const base = clone(defaultsC())
   const edited = clone(base) as Record<string, any>
   edited.hero = { ...edited.hero, arrangement: 'overlay', image: { ...edited.hero.image, veil: { extent: 'text', opacity: 0.2 } } }
@@ -434,4 +435,13 @@ test('the veil is shown and saved only where it is drawn (overlay; opacity on fu
   edited.hero.arrangement = 'split'
   const split = buildOverrides(edited as ResolvedSiteConfig, base, 'C').hero as Record<string, any> | undefined
   assert.equal(split?.image?.veil?.extent, undefined)
+})
+
+test('a text-only hero never saves the photo focus', () => {
+  const base = clone(defaultsC())
+  const edited = clone(base) as Record<string, any>
+  edited.hero = { ...edited.hero, arrangement: 'text', image: { ...edited.hero.image, focus: { x: 0.1, y: 0.9 } } }
+  const hero = buildOverrides(edited as ResolvedSiteConfig, base, 'C').hero as Record<string, any>
+  assert.equal(hero.arrangement, 'text')
+  assert.equal(hero.image?.focus, undefined)
 })

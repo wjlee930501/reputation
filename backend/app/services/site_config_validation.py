@@ -286,6 +286,14 @@ def _undrawn_veil_keys(layout: str, hero: Any) -> list[str]:
     return [] if extent == "full" else ["opacity"]
 
 
+def _undrawn_focus(layout: str, hero: Any) -> bool:
+    """'글자만' 배치는 첫 화면 사진을 그리지 않는다 — 사진 초점이 화면에 없다."""
+
+    base = site_defaults.defaults(layout)["hero"]
+    hero = hero if isinstance(hero, dict) else {}
+    return hero.get("arrangement", base["arrangement"]) == "text"
+
+
 def strip_unrendered(layout: str, config: Any) -> Any:
     """옛 판 복원용 — 화면이 그리지 않는 칸(A·C의 B 전용 칸 포함)을 덮어쓰기에서 뺀다(그 칸은 기본값으로 돌아간다).
 
@@ -315,6 +323,8 @@ def strip_unrendered(layout: str, config: Any) -> Any:
     if isinstance(veil, dict):
         for key in _undrawn_veil_keys(layout, hero):
             veil.pop(key, None)
+    if isinstance(image, dict) and _undrawn_focus(layout, hero):
+        image.pop("focus", None)
     breaks = hero.get("line_breaks") if isinstance(hero, dict) else None
     if layout != "B" and isinstance(breaks, dict):
         for path in _B_ONLY_LINE_BREAKS:
@@ -353,6 +363,9 @@ def _check_unrendered(check: SiteConfigCheck, layout: str, stored: dict[str, Any
     stored_hero = stored.get("hero") or {}
     stored_veil = ((stored_hero.get("image") or {}) if isinstance(stored_hero, dict) else {}).get("veil") or {}
     base_veil = base["hero"]["image"]["veil"]
+    stored_focus = ((stored_hero.get("image") or {}) if isinstance(stored_hero, dict) else {}).get("focus")
+    if _undrawn_focus(layout, stored_hero) and stored_focus is not None and stored_focus != base["hero"]["image"]["focus"]:
+        check.error("hero.image.focus", "FIELD_NOT_RENDERED", message)
     for key in _undrawn_veil_keys(layout, stored_hero):
         value = stored_veil.get(key) if isinstance(stored_veil, dict) else None
         if value is not None and value != base_veil[key]:
