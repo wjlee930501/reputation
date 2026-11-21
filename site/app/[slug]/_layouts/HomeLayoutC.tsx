@@ -54,6 +54,10 @@ const NEWS_LIMIT = 5
 export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
   const { hospital, hospitalRootUrl, physicians, faqEntries, clusterContents, contents, composition, plan, careFlow } = model
   const principles = resolveCarePrinciples(hospital.care_principles)
+  // 보일 진료 원칙 카드. 기본 카드를 끄고 병원 카드가 없으면 0장 — 그때는 진료 원칙을 끈 것과 같다(제목뿐인 띠를
+  // 남기지 않는다. 진료 과정이 켜져 있으면 과정만 같은 띠에 그린다).
+  const principleCards = limitCarePrincipleCards(principles.cards, model.siteConfig, hospital.care_principles?.cards ?? null)
+  const principlesShown = plan.enabled('care_principles') && principleCards.length > 0
   const specialtyLabel = displayClinicLabels(hospital.specialties).join(' · ')
   const locationLabel = regionSentenceLabel(hospital.region)
   const headline = buildClinicHeroHeadline({
@@ -310,12 +314,12 @@ export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
         </section>
       ) : null
     ),
-    care_principles: (
+    care_principles: !principlesShown ? null : (
       <section className={s.darkSection} aria-label="진료 원칙과 진료 과정">
         <div className={s.inner}>
           <SectionTitle label={plan.label('care_principles')}>{plan.title('care_principles', principles.title)}</SectionTitle>
           <div className={s.policyGrid}>
-            {limitCarePrincipleCards(principles.cards, model.siteConfig).map((principle, index) => (
+            {principleCards.map((principle, index) => (
               <div key={principle.key} className={s.policyCard}>
                 <span className={s.policyIndex} aria-hidden="true">{String(index + 1).padStart(2, '0')}</span>
                 <h3>{principle.title}</h3>
@@ -465,7 +469,7 @@ export function HomeLayoutC({ model }: { model: ClinicHomeModel }) {
     news: null,
     hours: null,
     care_flow:
-      !plan.enabled('care_principles') && flowBlock ? (
+      !principlesShown && flowBlock ? (
         <section className={s.darkSection} aria-label="진료 과정">
           <div className={s.inner}>{flowBlock}</div>
         </section>

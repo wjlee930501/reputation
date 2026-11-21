@@ -139,7 +139,9 @@ test('the pre-layout home keeps rendering the template copy from the shared modu
   const flow = read(SLUG_DIR, '_components', 'CareFlow.tsx')
   // 병원마다 바꾼 문구(0096)도 공통 모듈의 resolveCarePrinciples가 기본 문구 위에 얹는다.
   assert.match(principles, /resolveCarePrinciples\(custom\)/)
-  assert.match(principles, /const cards = cardCount \? principles\.cards\.slice\(0, cardCount\) : principles\.cards/)
+  // 기본 카드 끄기(섹션 설정 ③-2e)가 없으면(useDefaultCards 기본 true) 공통 카드 그대로, 카드 수로 앞에서부터 자른다.
+  assert.match(principles, /const own = useDefaultCards \? principles\.cards : /)
+  assert.match(principles, /const cards = cardCount \? own\.slice\(0, cardCount\) : own/)
   assert.match(principles, /cards\.map/)
   // 단계는 섹션 설정이 없으면 공통 4단계(기본값 CARE_STEPS).
   assert.match(flow, /steps = CARE_STEPS/)

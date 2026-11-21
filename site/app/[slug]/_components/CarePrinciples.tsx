@@ -22,6 +22,8 @@ interface Props {
   title?: string | null
   /** 보일 카드 수(섹션 설정). 없으면 전부. */
   cardCount?: number | null
+  /** false면 병원이 쓴 카드만(섹션 설정 `care_principles.use_default_cards`). 기본은 지금처럼 빈 자리를 기본 카드로. */
+  useDefaultCards?: boolean
   /** '공식 채널 보기'가 가는 곳. 오시는 길 섹션이 꺼진 홈은 하위 페이지로 보낸다. */
   channelsHref?: string
 }
@@ -64,11 +66,15 @@ export function CarePrinciples({
   custom = null,
   title,
   cardCount,
+  useDefaultCards = true,
   channelsHref,
   sectionLabel = null,
 }: Props) {
   const principles = resolveCarePrinciples(custom)
-  const cards = cardCount ? principles.cards.slice(0, cardCount) : principles.cards
+  const own = useDefaultCards ? principles.cards : principles.cards.filter((_, index) => Boolean(custom?.cards[index]))
+  const cards = cardCount ? own.slice(0, cardCount) : own
+  // 기본 카드를 끄고 병원 카드가 없으면 섹션을 그리지 않는다(빈 카드 칸이 오른쪽 열을 차지하지 않게).
+  if (cards.length === 0) return null
   const specialtyText = specialties.filter(Boolean).join(', ')
   const regionText = regionSentenceLabel(region)
 
