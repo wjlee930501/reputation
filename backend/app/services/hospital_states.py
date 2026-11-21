@@ -21,7 +21,6 @@ from app.services.hospital_lifecycle import (
     profile_publication_verdict,
 )
 
-
 _KST = ZoneInfo("Asia/Seoul")
 
 
